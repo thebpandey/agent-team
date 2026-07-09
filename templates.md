@@ -1,4 +1,4 @@
-# agent-team — Templates and Worked Examples
+# agent-team: Templates and Worked Examples
 
 Load this only when you need the exact prompt wording, the full report schema, or an example to copy. Do not paste this file's headers into your output.
 
@@ -9,7 +9,10 @@ Load this only when you need the exact prompt wording, the full report schema, o
 This is the shape of the prompt you emit. Replace every bracketed placeholder. Delete any section that does not apply, but never delete the phase plan, the report schema, the suppression rules, or the stop conditions.
 
 ```
-You are the orchestrator for a multi-agent run in Claude Code. Your job: [ONE SENTENCE GOAL].
+You are the orchestrator for a multi-agent run. Your job: [ONE SENTENCE GOAL].
+Spawn parallel workers using your runtime's sub-agent mechanism (Claude Code:
+the Task tool; Codex: parallel worker calls). Only you, the orchestrator, fan out.
+Workers cannot spawn their own workers.
 
 GOAL
 [The single end deliverable this whole run must produce.]
@@ -44,11 +47,28 @@ not read, edit, or create anything outside that scope.
 
 STOP CONDITIONS
 Pause and ask the operator before: deleting any file, adding any dependency, or
-changing the database or any schema. Do not take these actions on your own.
+changing the database or any schema. Do not take these actions on your own. The one
+exception is the run's own temp directory, which you delete automatically in the
+cleanup step below.
+
+TEARDOWN
+Before an agent returns, it cleans up anything it started: dev servers, containers,
+temp files, background jobs. Do not leave processes running.
+
+LARGE OUTPUT
+If an agent's result is large, it writes the full output to a file under the run's
+temp directory (for example ./.agent-team-tmp/) and returns a short summary plus
+the file path. Do not paste large output back into the run, or the combined
+returns can overflow me and crash the session.
 
 FAN-IN
-After the last phase, gather every agent's return and write ONE consolidated
-report using the format below.
+After the last phase, read any temp files, fold their needed content into ONE
+consolidated report using the format below, and display it.
+
+CLEANUP
+After the report is displayed, delete the run's temp directory (./.agent-team-tmp/).
+Delete only that directory. Do not touch pre-existing files or the real
+deliverables. If a delete fails, note it in one line rather than stopping.
 
 REPORT FORMAT (write for a high-school reader: short sentences, plain words)
 For each agent:
@@ -68,7 +88,7 @@ tool logs or step-by-step commentary. Do not explain anything unless the
 explanation changes a decision I must make now or a next step I must take. Print
 only a short marker at the start of each phase, and the final report.
 
-[COST NOTE — include only when fan-out is large or effort is High across many
+[COST NOTE: include only when fan-out is large or effort is High across many
 agents:]  This run spawns [N] agents at [effort]. That multiplies token and
 credit use and may hit rate limits. Reduce agent count or effort if that is a
 concern.
@@ -100,7 +120,7 @@ short clause right where it appears.
 
 Right (plain, scannable):
 ```
-Agent B — check the login code
+Agent B: check the login code
 What happened: It read the three login files and traced how a user signs in.
 Findings: The password check works, but the "stay signed in" setting is never saved.
 Concerns: A user who ticks "stay signed in" will still get logged out. Worth a fix.
@@ -117,7 +137,7 @@ to the token store, resulting in premature session invalidation.
 
 ---
 
-## Worked Example 1 — Independent fan-out (all parallel)
+## Worked Example 1: Independent fan-out (all parallel)
 
 User: "Audit my codebase across four areas and tell me what's wrong."
 
@@ -145,7 +165,7 @@ Plan line: `Plan: 1 phase, parallel, 4 agents. Effort High.`
 
 ---
 
-## Worked Example 2 — The dependency trap (sequential then parallel)
+## Worked Example 2: The dependency trap (sequential then parallel)
 
 User: "Build the user feature: types, model, API routes, tests, and docs."
 
@@ -175,7 +195,7 @@ sequential step prevents a long cleanup.
 
 ---
 
-## Worked Example 3 — User number smaller than the unit count
+## Worked Example 3: User number smaller than the unit count
 
 User: "Use 3 agents to research these 5 competitors."
 
@@ -193,7 +213,7 @@ Plan line: `Plan: 1 parallel phase. 5 competitors grouped into your 3 agents (A+
 
 ---
 
-## Worked Example 4 — More units than the concurrent cap (waves)
+## Worked Example 4: More units than the concurrent cap (waves)
 
 User: "Explore all 12 modules in parallel."
 
@@ -208,3 +228,44 @@ Phase 1 [PARALLEL] Wave 2  (start after Wave 1 returns)
 ```
 
 Plan line: `Plan: 1 parallel phase in 2 waves (7 then 5). 12 agents total. Effort Low (exploration).`
+
+---
+
+## Worked Example 5: Heist mode with crew personas (ASCII prefixes)
+
+User: "Audit the app: security, frontend, and deploy config. Heist mode on."
+
+Three independent units map to Livingston (security), Frank (frontend), Basher
+(DevOps). Heist mode colors the log lines only; the report stays plain.
+
+```
+You are the orchestrator (Danny Ocean) for a multi-agent run. Your job: audit the
+app across security, frontend, and deploy config. Only you fan out.
+
+PHASE PLAN
+Phase 1 [PARALLEL]
+  - Livingston Dell (security). Prefix log lines with "[Livingston] ->".
+    Scope: /src, /config. Effort: High.
+  - Frank Catton (frontend). Prefix log lines with "[Frank] ->".
+    Scope: /src/components, /src/styles. Effort: Medium.
+  - Basher Tarr (DevOps). Prefix log lines with "[Basher] ->".
+    Scope: /docker, /.github/workflows. Effort: Medium.
+
+CREW (heist mode ON)
+Each agent may write its prefixed log lines in character and add one short
+in-character quip at the top of its report section. Findings, concerns, failures,
+and successes stay plain high-school language. If a quirk would hide information,
+drop it.
+
+[teardown, large-output, stop conditions, fan-in, report format, output
+discipline as in the master template]
+
+REPORT FORMAT
+Section headers use the ASCII prefix, for example "[Basher] ->". Everything under
+them is plain language.
+```
+
+Plan line: `Plan: 1 parallel phase, 3 crew agents (Livingston, Frank, Basher). Heist mode on, report plain. Effort High/Medium.`
+
+Log line, heist on: `[Basher] -> Blimey, the Dockerfile runs as root. Flagging it.`
+Same finding in the report, always plain: `Findings: The Docker image runs as root, which is a security risk. Switch to a non-root user.`
