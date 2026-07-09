@@ -4,7 +4,7 @@ A Claude skill that turns a rough task into one paste-ready prompt for Claude Co
 
 It answers a simple question every time: what can run at the same time, and what has to wait?
 
-Optional heist mode assigns named Ocean's-Eleven crew personas to the agents for themed terminal logs, using ASCII prefixes. Personas color the logs only; the final report is always plain.
+The prompt has two stages. Stage A defines a crew of named specialists, each with a locked model and effort, and lays out the implementation plan. Stage B is the orchestrator's job: Danny Ocean, pinned to Opus 4.8 or GPT-5.5, reads each phase and routes it to the specialist whose tier fits its difficulty, then fans in one report. Agents are always named. Heist mode is on by default: each agent gets an Ocean's-Eleven persona that colors its logs and report, closed by a plain summary in parentheses. Turn it off with plain mode.
 
 ## What it does
 
@@ -13,49 +13,40 @@ Give it a task. It:
 1. Splits the task into work units.
 2. Works out the dependencies. If one unit needs another unit's output, the second waits.
 3. Groups independent units into **parallel** phases and chains dependent units into **sequential** phases. Every phase is tagged so the run order is obvious.
-4. Decides how many agents to spawn. It uses your number if you give one, or derives one, capped at 7 running at once, with extras in later waves.
-5. Sets an effort level per agent. High is the default.
-6. Writes the prompt so Claude Code returns one clean report, written for a high-school reader, covering each agent's work, findings, concerns, failures, and successes.
-7. Tells Claude Code to stay quiet: no narration, no logs, no over-explaining.
+4. Builds an implementation plan: phases tagged parallel or sequential, dependencies, and a difficulty tag per phase.
+5. Defines a crew of specialists, each with a locked model and effort (Stage A), but does not pre-assign them to phases.
+6. Lets the orchestrator route each phase to the fitting specialist at runtime (Stage B), based on the phase's severity, complexity, and length.
+7. Keeps the runtime quiet: no narration, no logs, no over-explaining. Each report section ends with a plain summary in parentheses.
 
-## How it maps to Claude Code
+## How the two stages map to the runtimes
 
-The name describes the shape of the work, not a specific product feature. This skill writes a Task-tool fan-out prompt. It does not use Claude Code's experimental Agent Teams feature.
+The name describes the shape of the work, not a product feature. It does not use Claude Code's experimental Agent Teams feature.
 
-- Sub-agents spawn through the Task tool. Each runs in its own fresh context and returns one result to the orchestrator.
-- Parallel means the orchestrator fires several Task calls at once, then waits for all of them (fan-out, then fan-in).
-- A sub-agent cannot spawn its own sub-agents. Only the main agent fans out.
-- Effort is not a native setting. It maps to model choice, verification depth, and turn budget. Confirm current model IDs against the Claude Code docs.
-- Sub-agents self-terminate when they return, so the prompt never tells them to "close." Instead it makes each agent tear down anything it started (servers, containers, temp files) before returning. A separate known Claude Code process leak, where the OS process lingers, is a runtime bug fixed by updating Claude Code, not by the prompt.
-- Codex works too. The fan-out mechanism is described generically, so the same prompt maps to Codex's parallel worker calls.
-- Large agent outputs are written to a run-scoped temp directory and passed back as a summary plus file path, which prevents the parent context from overflowing when many agents return at once. After the final report is displayed, that temp directory is auto-deleted. Only that directory, never your existing files or the real deliverables.
+- Stage A writes real named agent files. Claude Code: `.claude/agents/agent-team/<name>.md` with `model` and `effort`. Codex: `.codex/agents/<name>.toml` with `model` and `model_reasoning_effort`. Both runtimes bind model and effort as real fields, so names and tiers actually stick. Earlier versions only labeled agents inline, which is why names did not hold.
+- Effort is real on both, and it needs Opus or Sonnet; Haiku has no effort. The crew runs in a medium-to-high effort band.
+- Stage A also builds the plan but assigns no agents. Stage B is where the orchestrator routes each phase to the specialist whose tier fits, which is the intelligence you want at runtime, not baked in.
+- The orchestrator (Danny) runs on the session model: Opus 4.8 in Claude Code, GPT-5.5 in Codex, at high or xhigh effort. Set it when you start the session.
+- Only the orchestrator fans out; agents cannot nest (Claude Code cannot; Codex `agents.max_depth` defaults to 1).
+- Large outputs go to a run temp directory and come back as a summary plus file path, so many returns at once cannot overflow the orchestrator. After the report is displayed, the run deletes its temp directory and the agent files it created. Only those, never your existing files or agents.
 
-## Effort levels
+## Crew tiers (locked model and effort)
 
-| Effort | Model preference | Verification |
-|--------|------------------|--------------|
-| Low | haiku or inherit | none, one pass |
-| Medium | sonnet | one self-check |
-| High (default) | sonnet or opus | self-check, re-derive, cross-check against other agents |
+Each specialist has a fixed capability profile. The orchestrator routes each phase to the one whose tier fits the difficulty. Effort stays in the medium-to-high band; no Haiku, because Haiku has no effort.
 
-## Crew personas (optional heist mode)
+| Crew member | Specialty | Claude Code | Codex |
+|-------------|-----------|-------------|-------|
+| Danny Ocean | orchestrator, routing | opus (4.8) / xhigh | gpt-5.5 / high |
+| Livingston Dell | security | opus / high | flagship / high |
+| Rusty Ryan | code audit | opus / high | flagship / high |
+| Saul Bloom | legacy | opus / medium | flagship / medium |
+| The Malloy Twins | concurrency | opus / high | flagship / high |
+| Amazing Yen | optimization | sonnet / high | coding model / high |
+| Frank Catton | frontend | sonnet / medium | coding model / medium |
+| Basher Tarr | devops | sonnet / medium | coding model / medium |
+| Linus Caldwell | data extraction | sonnet / medium | coding model / medium |
+| Reuben Tishkoff | budget | sonnet / medium | coding model / medium |
 
-Off by default. Turn it on by adding "heist mode" to your request. Each sub-task type gets a named crew member and an ASCII log prefix, so parallel work is easy to tell apart in your terminal.
-
-| Task type | Crew member | Prefix |
-|-----------|-------------|--------|
-| Security, observability | Livingston Dell | `[Livingston] ->` |
-| DevOps, CI/CD | Basher Tarr | `[Basher] ->` |
-| Frontend, UI | Frank Catton | `[Frank] ->` |
-| Concurrency, async | The Malloy Twins | `[Malloys] ->` |
-| Optimization, regex, perf | Amazing Yen | `[Yen] ->` |
-| Legacy, monolith | Saul Bloom | `[Saul] ->` |
-| Scraping, API extraction | Linus Caldwell | `[Linus] ->` |
-| Code review, audit | Rusty Ryan | `[Rusty] ->` |
-| Token budget, cost | Reuben Tishkoff | `[Reuben] ->` |
-| Orchestration | Danny Ocean | `[Danny] ->` |
-
-Rules: prefixes are ASCII, so they render in any terminal. Personas color the log lines only. Findings, concerns, failures, and the final report stay plain high-school language in both modes. Full roster and mapping live in `references/personas.md`.
+Confirm current model IDs against the runtime docs. Aliases (opus, sonnet) are safer than pinned IDs, except Danny, who is pinned to Opus 4.8 / GPT-5.5.
 
 ## Where you can invoke it
 
