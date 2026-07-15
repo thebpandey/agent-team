@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 320" role="img" aria-label="agent-team banner">
+  <!-- dark navy background -->
+  <rect x="0" y="0" width="1280" height="320" fill="#0d1b2a"/>
+  <rect x="0" y="0" width="1280" height="320" fill="none" stroke="#1b2a41" stroke-width="6"/>
+
+  <!-- faint blueprint grid, hand-drawn feel -->
+  <g stroke="#16263c" stroke-width="1">
+    <path d="M0 80 Q640 74 1280 82"/>
+    <path d="M0 160 Q640 166 1280 158"/>
+    <path d="M0 240 Q640 236 1280 244"/>
+    <path d="M320 0 Q314 160 322 320"/>
+    <path d="M640 0 Q646 160 638 320"/>
+    <path d="M960 0 Q954 160 962 320"/>
+  </g>
+
+  <!-- title block -->
+  <g font-family="'Brush Script MT','Segoe Script','Snell Roundhand','Comic Sans MS',cursive" fill="#e0e1dd">
+    <text x="70" y="150" font-size="96" font-weight="bold">agent-team</text>
+  </g>
+  <!-- rough underline stroke under the title -->
+  <path d="M72 172 Q300 186 560 170 Q600 168 612 174" fill="none" stroke="#d9a441" stroke-width="7" stroke-linecap="round"/>
+  <path d="M96 186 Q280 196 470 184" fill="none" stroke="#d9a441" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
+
+  <g font-family="'Brush Script MT','Segoe Script','Snell Roundhand','Comic Sans MS',cursive" fill="#a9b4c2">
+    <text x="76" y="238" font-size="40">one task in, a coordinated crew out</text>
+  </g>
+
+  <!-- heist crew lineup: simple line-art silhouettes, right side -->
+  <g stroke="#e0e1dd" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- ground line, slightly wobbly -->
+    <path d="M690 282 Q985 274 1230 282"/>
+
+    <!-- figure 1: the planner, hands in pockets -->
+    <g>
+      <circle cx="730" cy="140" r="16"/>
+      <path d="M730 156 L730 232"/>
+      <path d="M730 172 Q712 190 716 210"/>
+      <path d="M730 172 Q748 190 744 210"/>
+      <path d="M730 232 L716 278"/>
+      <path d="M730 232 L744 278"/>
+      <path d="M712 132 Q730 122 748 132"/>
+    </g>
+
+    <!-- figure 2: the tall one with a hat -->
+    <g>
+      <circle cx="810" cy="120" r="15"/>
+      <path d="M792 110 L828 110"/>
+      <path d="M798 102 L822 102"/>
+      <path d="M810 135 L810 226"/>
+      <path d="M810 152 L784 188"/>
+      <path d="M810 152 L836 188"/>
+      <path d="M810 226 L796 278"/>
+      <path d="M810 226 L824 278"/>
+    </g>
+
+    <!-- figure 3: short, arms crossed -->
+    <g>
+      <circle cx="885" cy="168" r="14"/>
+      <path d="M885 182 L885 240"/>
+      <path d="M868 202 Q885 214 902 202"/>
+      <path d="M868 210 Q885 198 902 210"/>
+      <path d="M885 240 L874 278"/>
+      <path d="M885 240 L896 278"/>
+    </g>
+
+    <!-- figure 4: carrying a case -->
+    <g>
+      <circle cx="955" cy="140" r="15"/>
+      <path d="M955 155 L955 230"/>
+      <path d="M955 170 L934 214"/>
+      <path d="M955 170 L978 208"/>
+      <rect x="968" y="208" width="30" height="22" rx="3"/>
+      <path d="M978 208 Q983 200 988 208"/>
+      <path d="M955 230 L942 278"/>
+      <path d="M955 230 L968 278"/>
+    </g>
+
+    <!-- figure 5: pointing at the plan -->
+    <g>
+      <circle cx="1040" cy="132" r="15"/>
+      <path d="M1040 147 L1040 228"/>
+      <path d="M1040 164 L1010 148"/>
+      <path d="M1040 164 L1064 196"/>
+      <path d="M1040 228 L1026 278"/>
+      <path d="M1040 228 L1054 278"/>
+    </g>
+
+    <!-- figure 6: the lookout, hand shading eyes -->
+    <g>
+      <circle cx="1115" cy="150" r="14"/>
+      <path d="M1100 142 L1130 142"/>
+      <path d="M1115 164 L1115 236"/>
+      <path d="M1115 178 L1096 158"/>
+      <path d="M1115 178 L1136 214"/>
+      <path d="M1115 236 L1103 278"/>
+      <path d="M1115 236 L1127 278"/>
+    </g>
+
+    <!-- figure 7: leaning back, cool -->
+    <g>
+      <circle cx="1190" cy="146" r="15"/>
+      <path d="M1190 161 Q1198 200 1192 234"/>
+      <path d="M1191 178 Q1172 192 1176 212"/>
+      <path d="M1191 178 Q1210 192 1206 212"/>
+      <path d="M1192 234 L1178 278"/>
+      <path d="M1192 234 L1206 278"/>
+    </g>
+  </g>
+
+  <!-- small accent: a sketched vault dial, far left of the crew -->
+  <g stroke="#d9a441" stroke-width="3" fill="none" stroke-linecap="round">
+    <circle cx="672" cy="120" r="26"/>
+    <circle cx="672" cy="120" r="10"/>
+    <path d="M672 94 L672 102"/>
+    <path d="M672 138 L672 146"/>
+    <path d="M646 120 L654 120"/>
+    <path d="M690 120 L698 120"/>
+  </g>
+</svg>
