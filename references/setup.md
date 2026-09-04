@@ -43,7 +43,7 @@ Use installed-version help and current upstream installation instructions from t
 
 Git, Node, Python, package managers, browser tooling, and model access are prerequisites only when selected workflows require them. Detect existing tools before adding any. Follow supported OS/host installation procedures; report privileged or manual steps precisely. Do not reconfigure the machine globally simply to satisfy a catalog.
 
-In ChatGPT-managed environments, use the supported personal-skill/plugin management workflow instead of writing to arbitrary skill directories. In a user's Codex environment, use its current documented skills locations and installer. A remote ChatGPT installation does not install software on the user's laptop/server. If the host cannot expose a newly installed skill until a later turn, report that state and give the supported refresh/resume instruction; do not bypass discovery or claim it ran.
+In ChatGPT-managed environments, use the supported personal-skill/plugin management workflow instead of writing to arbitrary skill directories. In Codex or Claude Code, use the selected platform adapter's supported locations and installer. For Claude Code, also provision the bundled native role definitions as described in its adapter, preserving existing definitions and verifying discovery before dispatch. A remote ChatGPT installation does not install software on the user's laptop/server. If the host cannot expose a newly installed skill until a later turn, report that state and give the supported refresh/resume instruction; do not bypass discovery or claim it ran.
 
 ## 4. Verify and resume
 

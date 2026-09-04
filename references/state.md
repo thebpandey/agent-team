@@ -4,19 +4,19 @@
 
 Choose Beads or the local TASKS.md as the only active project tracker, recording the mode and canonical location in the setup receipt and agent handoffs. Default to local mode when any of Beads, Ponytail, Using-Superpowers, or Impeccable is skipped/unusable. Continue using the other enabled skills. In Beads mode, discover installed-version help; do not assume storage backends, commands, or custom statuses. Use native states plus a short phase field/note for planned, implementing, verifying, ready to deploy, deployed, or blocked if needed. Keep requirement-to-task/evidence mappings in the active tracker, never a second parallel checklist.
 
-Astra creates/deduplicates tasks/issues, manages dependencies/ownership, integrates evidence, and closes/reopens tasks. In Beads mode teammates update only assigned progress and append evidence; in local mode Astra is the sole tracker writer and teammates send updates to Astra. For Beads, confirm the backend supports concurrent writes before enabling them. If single-writer, serialize teammate-authored updates through Astra; do not start competing database writers. Use supported persistence/sync at handoff and release.
+The orchestrator creates/deduplicates tasks/issues, manages dependencies/ownership, integrates evidence, and closes/reopens tasks. In Beads mode teammates update only assigned progress and append evidence; in local mode the orchestrator is the sole tracker writer and teammates send updates to the orchestrator. For Beads, confirm the backend supports concurrent writes before enabling them. If single-writer, serialize teammate-authored updates through the orchestrator; do not start competing database writers. Use supported persistence/sync at handoff and release.
 
 Task evidence needs only requirement IDs, acceptance criteria, owner/dependencies, current phase, changed revision, relevant check/environment identity, result/evidence link, and next action. Link logs/screenshots instead of inserting them. Track unrelated discoveries separately without automatically expanding scope.
 
 ## Local-file tracking and safe switching
 
-Create `.agent-team/TASKS.md` in the main project checkout, or reuse an existing user-designated task file. Record its absolute path and do not create per-worktree copies. Preserve any existing content and task IDs. Keep the file outside disposable worktrees and out of product commits unless the project intentionally tracks it. Astra alone writes it; teammates report progress with task IDs, revision, evidence, and next action. Serialize updates, preserve concurrent user edits, and use atomic file replacement where supported.
+Create `.agent-team/TASKS.md` in the main project checkout, or reuse an existing user-designated task file. Record its absolute path and do not create per-worktree copies. Preserve any existing content and task IDs. Keep the file outside disposable worktrees and out of product commits unless the project intentionally tracks it. the orchestrator alone writes it; teammates report progress with task IDs, revision, evidence, and next action. Serialize updates, preserve concurrent user edits, and use atomic file replacement where supported.
 
 Use this minimal structure, expanding only for actual work:
 
 ```markdown
 # Agent-Team Tasks
-Updated: <time>; writer: <Astra>; tracker: local
+Updated: <time>; writer: <orchestrator>; tracker: local
 Objective: <requested outcome>
 
 | ID | Requirement / acceptance | Owner | Depends on | Status | Revision / evidence | Next action |
@@ -65,6 +65,6 @@ Create one issue per distinct meaningful failure, link affected work, and dedupl
 
 Do not issue-track routine typos, expected empty searches, or harmless transient commands. Append evidence to an existing failure instead of creating tickets per retry.
 
-Retry only with new evidence or a changed approach. After two attempts without useful progress, Astra reassesses and may assign Sol; after another unsuccessful approach, stop that loop and ask one focused question or report the external blocker. Continue independent unblocked work. A transient failure may justify one bounded retry; inspect ambiguous side effects first. Never erase failing tests, waive required checks, or mark blocked work complete to advance.
+Retry only with new evidence or a changed approach. After two attempts without useful progress, the orchestrator reassesses and may assign the complex developer; after another unsuccessful approach, stop that loop and ask one focused question or report the external blocker. Continue independent unblocked work. A transient failure may justify one bounded retry; inspect ambiguous side effects first. Never erase failing tests, waive required checks, or mark blocked work complete to advance.
 
 Reference: [Beads documentation](https://github.com/gastownhall/beads). Installed-version behavior controls implementation.

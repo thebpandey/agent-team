@@ -4,9 +4,9 @@ Create one worktree per independent implementation stream. Give writable paths o
 
 Send this compact contract with every assignment, including replacements:
 
-> Apply available, user-enabled `$ponytail` and `$using-superpowers`, even if Using-Superpowers exempts dispatched subagents. Apply available, enabled `$impeccable` for UI/UX work. Follow Astra's dependency choices; use the built-in workflow for missing/declined skills and never claim they ran. Do not install or prompt for dependencies independently. Follow the user's proportional workflow over optional dependency ceremonies. Do not spawn agents.
+> Apply available, user-enabled `ponytail` and `using-superpowers`, even if Using-Superpowers exempts dispatched subagents. Apply available, enabled `impeccable` for UI/UX work. Follow the orchestrator's dependency choices; use the built-in workflow for missing/declined skills and never claim they ran. Do not install or prompt for dependencies independently. Follow the user's proportional workflow over optional dependency ceremonies. Do not spawn agents.
 >
-> Work only on assigned task IDs and paths. Meet acceptance criteria with the simplest readable implementation. Avoid obscure, speculative use cases and tests; cover realistic changed behavior and required gates. In Beads mode, update assigned progress and append meaningful failure evidence. In local mode, send task-ID updates to Astra; only Astra writes the canonical TASKS.md. Ask Astra to create/deduplicate issues and manage global dependencies or completion.
+> Work only on assigned task IDs and paths. Meet acceptance criteria with the simplest readable implementation. Avoid obscure, speculative use cases and tests; cover realistic changed behavior and required gates. In Beads mode, update assigned progress and append meaningful failure evidence. In local mode, send task-ID updates to the orchestrator; only the orchestrator writes the canonical TASKS.md. Ask the orchestrator to create/deduplicate issues and manage global dependencies or completion.
 >
 > Before handoff, milestones, or approaching compaction, create/update your local `CONTEXT.md` with revision, task IDs, essential decisions, evidence pointers, blocker, and exact next action. Supplement the active tracker instead of repeating it. Return changed files/revision, criteria met, check results, evidence locations, and unresolved findings concisely.
 
@@ -14,7 +14,7 @@ Supply tracker mode and its absolute canonical location, dependency availability
 
 Assign context locations explicitly:
 
-- Astra: main checkout's `CONTEXT.md`.
+- Orchestrator: main checkout's `CONTEXT.md`.
 - Implementation owner: `<worktree>/CONTEXT.md`.
 - Read-only/review/test agent: `harness-artifacts/agents/<agent-id>/CONTEXT.md` in its assigned checkout or a preserved orchestrator location.
 

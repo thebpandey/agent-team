@@ -4,7 +4,7 @@
 
 Use the active user's standing authorization for automatic deployment and safe rollback when it covers this project and established target/process. Do not ask again per task. If no applicable deployment authorization exists, prepare a concrete verified release and request the missing authorization once; installing or invoking this public skill does not itself grant it. Preserve authorization in project/task context so resumption does not ask again. Loading the skill does not identify a new destination or grant destructive data authority. If the target is unclear, finish concrete reviewable implementation first, then ask one focused question. Honor enforced approval gates and access controls.
 
-Before release, Astra verifies:
+Before release, the orchestrator verifies:
 
 1. Requirements and required reviews/checks pass for the exact integrated source and resulting artifact. Identify target environment and release identity. Exclude unrelated uncommitted changes from the artifact.
 2. The established deployment process, live health/smoke signals, and a bounded observation window appropriate to the project are known. If absent, establish a small realistic check rather than an elaborate monitoring exercise.
@@ -22,6 +22,6 @@ After every successful release, including a verified rollback, record outcome, r
 
 ## Remove completed worktrees
 
-Astra verifies each non-main task worktree's required changes are integrated into the successfully deployed and live-verified revision. Stop its writers/task processes, preserve evidence and resumption notes outside the checkout, inspect tracked/untracked files, then remove the clean disposable checkout through normal Git worktree removal. Verify removal and update the active tracker. Never remove the checkout containing the canonical local tracker or its referenced unarchived evidence.
+The orchestrator verifies each non-main task worktree's required changes are integrated into the successfully deployed and live-verified revision. Stop its writers/task processes, preserve evidence and resumption notes outside the checkout, inspect tracked/untracked files, then remove the clean disposable checkout through normal Git worktree removal. Verify removal and update the active tracker. Never remove the checkout containing the canonical local tracker or its referenced unarchived evidence.
 
 Preserve the main checkout regardless of directory name, unrelated user worktrees, active work, unintegrated changes, failed/rolled-back feature work, and unarchived evidence. Do not force-delete, reset away changes, or delete branches as a substitute for checking. Remove all eligible completed task worktrees, including explicitly adopted ones. Report retained trees with concrete reasons. Free only task-owned resources.

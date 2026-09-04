@@ -1,6 +1,6 @@
 # UI/UX direction and implementation
 
-Load only for UI/UX tasks. Use Impeccable for Astra and involved teammates when available and enabled. If declined/unavailable, continue with the structured workflow below using existing design tokens, semantic components, responsive layouts, and rendered inspection. Do not claim Impeccable ran. Preserve approved design systems. For new systems, establish audience, primary user job, brand constraints, visual direction, and representative content before decoration. Ask only about material unresolved decisions; do not restart discovery for known facts.
+Load only for UI/UX tasks. Use Impeccable for the orchestrator and involved teammates when available and enabled. If declined/unavailable, continue with the structured workflow below using existing design tokens, semantic components, responsive layouts, and rendered inspection. Do not claim Impeccable ran. Preserve approved design systems. For new systems, establish audience, primary user job, brand constraints, visual direction, and representative content before decoration. Ask only about material unresolved decisions; do not restart discovery for known facts.
 
 ## Structured, bounded workflow
 

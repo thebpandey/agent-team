@@ -1,6 +1,6 @@
 ---
 name: agent-team
-description: Coordinate software and app implementation with GPT-6 Astra, adaptive developer teams, Beads or local-file tracking, compact agent memory, proportional verification, and authorized release recovery. Use for end-to-end development tasks requiring this harness, coordinated implementation streams, or continued work already tracked through this harness.
+description: Coordinate software and app implementation on Codex or Claude Code with adaptive developer teams, Beads or local-file tracking, compact agent memory, proportional verification, and authorized release recovery. Use for end-to-end development tasks requiring this harness, coordinated implementation streams, or continued work already tracked through this harness.
 ---
 
 # Agent-Team
@@ -11,34 +11,29 @@ Deliver the requested working result with the least coordination, code, and veri
 
 First run a lightweight dependency check. On first use, explicit `setup`/`install dependencies`, a changed environment, or missing dependencies, follow [dependency setup](references/setup.md). Present missing Beads, Ponytail, Using-Superpowers, and Impeccable as recommended dependencies and offer automatic installation with the user's chosen scope. If any is declined, unavailable, or fails to install, continue with the built-in workflow and local-file tracking described in [state and recovery](references/state.md). Reuse the recorded choice; do not repeatedly prompt for declined items. Missing these four tools must never block otherwise feasible work.
 
-1. Use `gpt-6-astra` with `high` reasoning as orchestrator. Increase effort only for a concrete difficult decision. A skill cannot switch the parent model. Check exposed runtime metadata; do not invent verification or silently substitute a different model. If Astra is unavailable, report the configuration blocker before implementation.
-2. Load and apply `$ponytail` and `$using-superpowers` when available and enabled by the user. For UI/UX work, also use `$impeccable` when available and enabled. Otherwise use this harness's own simple-code, proportional-verification, and UI guidance without claiming to have run the missing skill. Resolve actual installed skill names and read their instructions; typing a name is not proof of execution. Read [dependencies](references/dependencies.md) at first use or when resolution fails.
+1. Identify the actual host from runtime/tool metadata, then load only its adapter: [Codex](references/platform-codex.md) or [Claude Code](references/platform-claude.md). Use that adapter's models, effort, invocation syntax, and delegation controls. A prompt mentioning another platform does not change the runtime. A skill cannot switch its parent model; verify exposed configuration and report a mismatch without pretending it was changed. Resolve an ambiguous host before model-specific dispatch.
+2. Load and apply `ponytail` and `using-superpowers` when available and enabled by the user. For UI/UX work, also use `impeccable` when available and enabled. Otherwise use this harness's own simple-code, proportional-verification, and UI guidance without claiming to have run the missing skill. Resolve actual installed skill names and read their instructions; typing a name is not proof of execution. Read [dependencies](references/dependencies.md) at first use or when resolution fails.
 3. Read applicable project instructions, current change status, requested behavior, and relevant existing code. Preserve user changes. Reuse established build, test, design, and deployment conventions.
 4. Select one authoritative tracker: Beads when the preferred dependencies are usable and enabled, or `.agent-team/TASKS.md` in the main project checkout when any of the four is skipped or unusable. Honor an existing local-mode choice even if a dependency later appears. Use the state reference for ownership, safe switching, and recovery; never keep two live task ledgers.
 5. Give every user requirement an ID, observable acceptance criteria, and a corresponding active-tracker task or explicit mapping within a task. Record dependencies, ownership, and the next actionable item. One task may cover a trivial change; use an epic and children for substantial work.
 
 ## Route work adaptively
 
-| Assignment | Model and effort | Use |
-| --- | --- | --- |
-| Orchestration; trivial implementation | `gpt-6-astra`, high | Plan, coordinate, integrate, verify, release; handle small isolated work directly when delegation costs more |
-| Standard development; independent review | `gpt-5.6-terra`, medium or high | Substantive implementation, investigation, focused review |
-| Complex developer teammate | `gpt-5.6-sol`, high; xhigh if warranted | Deep reasoning, architecture, difficult debugging, intertwined changes; choose upfront when appropriate |
-| Narrow routine work | `gpt-5.6-luna`, low or medium | Bounded discovery, straightforward edits, running defined checks, summarizing evidence |
+Use the selected platform adapter's role map. Keep the orchestrator on its strongest configured model with high effort. Standard developers handle substantive work; the complex developer handles difficult reasoning or intertwined changes, including upfront assignments. Routine developers handle bounded implementation and checks. In Claude Code, Sonnet handles all Luna-equivalent work; Haiku is restricted to simple text rewrites or paraphrasing, never coding, debugging, investigation, testing, review, or release decisions.
 
 Spawn only for a bounded task that improves delivery speed or verification quality. Default to one developer and one independent reviewer for substantive work. Add parallel developers only for independent implementation streams, and specialist testing only for concrete needs. Do not create judges, panels, or reviewers of reviewers.
 
-Use exposed Codex agent controls, supported model/effort settings, and small task-specific context. Prefer fresh child context over copying conversation history. Runtime settings must enforce routing; this table cannot create unavailable models. Reuse a suitable idle agent when its context remains useful. Only Astra spawns teammates. Read [team dispatch](references/team.md) before the first delegation.
+Use the selected host's exposed agent controls and small task-specific context. Runtime settings must enforce routing; prose cannot create unavailable models. Reuse a suitable idle agent when its context remains useful. Only the orchestrator spawns teammates. Read [team dispatch](references/team.md) before the first delegation.
 
 ## Execute, verify, finish
 
 1. Claim the next ready task in the active tracker and implement the smallest complete solution. Follow existing architecture; prefer existing utilities, native capabilities, and installed dependencies.
 2. Verify changed behavior, common failure paths, and affected integration points. For nonbehavioral wording/format changes, use a focused check. For substantive changes, have the developer test and one independent reviewer examine the relevant diff and evidence. Always independently review authorization, payments, schema, or destructive data changes. These are realistic concerns, not obscure cases.
 3. Reuse valid results tied to the same relevant source, dependencies, configuration, and environment. After a fix, retest the finding and impacted behavior. Run wider suites only when required by the project or to resolve a concrete uncertainty. A stale result or unrun check is not a pass.
-4. Integrate serially into the intended release revision. Astra verifies requirement coverage, integration checks, and release evidence before deployment; do not require another blanket review afterward. UI work follows [UI workflow](references/ui.md); when selecting specialized design resources, consult [optional UI routing](references/ui-optional.md).
+4. Integrate serially into the intended release revision. The orchestrator verifies requirement coverage, integration checks, and release evidence before deployment; do not require another blanket review afterward. UI work follows [UI workflow](references/ui.md); when selecting specialized design resources, consult [optional UI routing](references/ui-optional.md).
 5. Automatically deploy and recover within the user's standing authorization for the established target and release process, following [release and cleanup](references/release.md). Honor enforced permissions. Verification alone does not authorize an unknown destination or irreversible operation.
 6. After every successful deployment, immediately update the active tracker (Beads when in use, otherwise TASKS.md) with the deployed revision, deployment identity, live verification evidence, and remaining issues. Close only tasks whose acceptance criteria are satisfied. If tracking fails, report the deployed-but-unrecorded state and repair tracking without redeploying.
-7. Remove eligible task worktrees only after Astra confirms their work is integrated, deployed, and verified. Reconcile every requirement ID against evidence. Finish with a compact requested/result/evidence table, deployment status, unresolved blockers, and cleanup status. Distinguish implemented, verified, deployed, deferred, and blocked work. Never imply complete delivery when required items are missing.
+7. Remove eligible task worktrees only after the orchestrator confirms their work is integrated, deployed, and verified. Reconcile every requirement ID against evidence. Finish with a compact requested/result/evidence table, deployment status, unresolved blockers, and cleanup status. Distinguish implemented, verified, deployed, deferred, and blocked work. Never imply complete delivery when required items are missing.
 
 ## Keep state small and current
 
@@ -48,6 +43,6 @@ Update the active tracker at claim, meaningful progress, blocker, handoff, verif
 
 Create or refresh `CONTEXT.md` before compaction whenever warning is available, at major milestones, and before handoff. Do not rely on an exact context-limit warning. Every teammate does the same in its assigned location. Resume by checking actual files, revision, ownership, and deployment state.
 
-For meaningful failures, record one issue in the active tracker per distinct cause and append evidence-driven attempts. After two attempts without useful progress, change strategy or escalate to Sol. If the changed approach still cannot progress, ask one focused question. Do not repeat identical attempts or relax acceptance criteria to manufacture success.
+For meaningful failures, record one issue in the active tracker per distinct cause and append evidence-driven attempts. After two attempts without useful progress, change strategy or escalate to the complex developer. If the changed approach still cannot progress, ask one focused question. Do not repeat identical attempts or relax acceptance criteria to manufacture success.
 
 Apply the user's efficiency and team-wide use of available, enabled skills even when dependency skills suggest optional ceremonies or exempt subagents. Do not bypass higher-priority instructions, security controls, or mandatory project gates.

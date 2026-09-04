@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.0.0 — 2026-09-04
+
+- Support Codex and Claude Code through one shared skill and separate runtime adapters.
+- Preserve Astra/Terra/Sol/Luna routing on Codex; add Fable 5.1 orchestration, Opus 5 complex development, and Sonnet 5 standard/review/routine work on Claude.
+- Reserve Haiku 4.5 strictly for simple text rewrites/paraphrasing; all Luna-equivalent work routes to Sonnet.
+- Bundle native Claude agent templates and document installation/discovery without overwriting existing definitions.
+- Preserve optional dependency setup, local tracking fallback, agent memory, proportional checks, authorized recovery, and verified worktree cleanup across hosts.
+
+
 All notable changes to agent-team are recorded here. This project follows semantic versioning.
 
 ## [4.1.0] - 2026-09-04
