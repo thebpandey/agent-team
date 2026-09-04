@@ -9,15 +9,17 @@ These are workflow choices, not benchmark equivalence claims. Verified against A
 | Role | Anthropic model ID | Effort |
 | --- | --- | --- |
 | Orchestrator; trivial direct work | `claude-fable-5-1` | high |
-| Complex developer | `claude-opus-5` | high; xhigh only for a concrete need |
-| Standard developer | `claude-sonnet-5` | medium; high when justified |
-| Independent reviewer | `claude-sonnet-5` | high |
-| Routine developer, including all Codex Luna-equivalent tasks | `claude-sonnet-5` | medium |
+| Complex developer: Sol-level work | `claude-opus-5` | xhigh |
+| Standard developer: Terra-level work | `claude-opus-5` | high |
+| Independent reviewer: Terra-level work | `claude-opus-5` | high |
+| Routine developer: Luna-level work only | `claude-sonnet-5` | high |
 | Optional text assistant: simple rewrite/paraphrase only | `claude-haiku-4-5-20251001` | omit effort override |
+
+Use `xhigh` for the user's “extra effort” setting. Sonnet is reserved for Luna-level assignments and must not substitute for Terra- or Sol-level work. If a required model or effort cannot be enforced, report the constraint instead of silently lowering the tier.
 
 Haiku is never a fallback for development, source discovery, debugging, tests, review, UI decisions, task planning, or releases. Do tiny text edits directly when delegation costs more. If Sonnet is unavailable, use a suitable available higher-tier developer or report the constraint; never downgrade that work to Haiku.
 
-Fable is preferred for long, demanding orchestration; Opus is the complex developer. See [Fable](https://platform.claude.com/docs/en/models/fable-5-1/overview), [Opus](https://platform.claude.com/docs/en/models/opus-5/overview), [Sonnet](https://platform.claude.com/docs/en/models/sonnet-5/overview), and [Haiku](https://platform.claude.com/docs/en/models/haiku-4-5/overview).
+Fable is preferred for long, demanding orchestration; Opus handles standard development/review at high effort and complex development at xhigh effort. See [Fable](https://platform.claude.com/docs/en/models/fable-5-1/overview), [Opus](https://platform.claude.com/docs/en/models/opus-5/overview), [Sonnet](https://platform.claude.com/docs/en/models/sonnet-5/overview), and [Haiku](https://platform.claude.com/docs/en/models/haiku-4-5/overview).
 
 ## Configure the actual runtime
 
@@ -31,9 +33,9 @@ Fable 5.1 needs Claude Code v2.1.255+. Confirm installed version and account/pro
 
 ## Native dispatch
 
-Bundled definitions are in `assets/claude-agents/` relative to the skill root. During setup, copy missing definitions to `.claude/agents/` in the project, or `~/.claude/agents/` for selected user scope. Preserve existing files; inspect conflicts before changing them. Record paths in the setup receipt. Verify registration; use a supported refresh or new session when required. Templates have explicit models, supported effort, and disabled child spawning. Do not preload unavailable dependencies.
+Bundled definitions are in `assets/claude-agents/` relative to the skill root. During setup, copy missing definitions to `.claude/agents/` in the project, or `~/.claude/agents/` for selected user scope. For updates, compare installed definitions with the bundled versions. Refresh unchanged harness-managed definitions within the established installation scope, preserving any user modifications; inspect conflicts before changing them. Do not leave old model/effort settings active while reporting the new routing installed. Record paths in the setup receipt. Verify registration; use a supported refresh or new session when required. Templates have explicit models, supported effort, and disabled child spawning. Do not preload unavailable dependencies.
 
-Dispatch using Claude's native Agent tool and registered role names. Supply the shared team contract, resolved skill paths, ownership, tracker mode, and context location each time. Verify effective model/effort; never select a generic built-in agent that silently routes to Haiku. If definitions are not registered, use supported per-call configuration only when it can enforce the required role; otherwise report the dispatch blocker. See [subagent configuration](https://code.claude.com/docs/en/sub-agents).
+Dispatch using Claude's native Agent tool and registered role names. Supply the shared team contract, resolved skill paths, ownership, tracker mode, and context location each time. Verify effective model/effort, including environment overrides or provider caps; never select a generic built-in agent that silently routes to Haiku. If definitions are not registered, use supported per-call configuration only when it can enforce the required role; otherwise report the dispatch blocker. See [subagent configuration](https://code.claude.com/docs/en/sub-agents).
 
 Create persistent implementation worktrees under orchestrator ownership and pass their absolute paths. Do not rely on an ephemeral agent checkout surviving return until deployment. The shared release policy controls removal. Reviewers may use a stable checkout and write only their assigned context/evidence. Only the orchestrator spawns; no experimental agent-team mode or background monitor is required.
 

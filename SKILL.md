@@ -19,7 +19,7 @@ First run a lightweight dependency check. On first use, explicit `setup`/`instal
 
 ## Route work adaptively
 
-Use the selected platform adapter's role map. Keep the orchestrator on its strongest configured model with high effort. Standard developers handle substantive work; the complex developer handles difficult reasoning or intertwined changes, including upfront assignments. Routine developers handle bounded implementation and checks. In Claude Code, Sonnet handles all Luna-equivalent work; Haiku is restricted to simple text rewrites or paraphrasing, never coding, debugging, investigation, testing, review, or release decisions.
+Use the selected platform adapter's role map. Keep the orchestrator on its strongest configured model with high effort. Standard developers handle substantive work; the complex developer handles difficult reasoning or intertwined changes, including upfront assignments. Routine developers handle bounded implementation and checks. In Claude Code, use Opus at xhigh effort for Sol-level work, Opus at high effort for Terra-level development and review, and Sonnet at high effort only for Luna-level work; Haiku is restricted to simple text rewrites or paraphrasing, never coding, debugging, investigation, testing, review, or release decisions.
 
 Spawn only for a bounded task that improves delivery speed or verification quality. Default to one developer and one independent reviewer for substantive work. Add parallel developers only for independent implementation streams, and specialist testing only for concrete needs. Do not create judges, panels, or reviewers of reviewers.
 

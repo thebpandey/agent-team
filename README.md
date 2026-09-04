@@ -91,13 +91,13 @@ See [UI workflow](references/ui.md) and [optional routing](references/ui-optiona
 | Role | Codex | Claude Code |
 | --- | --- | --- |
 | Orchestrator; trivial direct work | GPT-6 Astra, high | Fable 5.1, high |
-| Standard developer | GPT-5.6 Terra, medium/high | Sonnet 5, medium/high |
-| Independent reviewer | GPT-5.6 Terra, medium/high | Sonnet 5, high |
-| Complex developer | GPT-5.6 Sol, high; xhigh when warranted | Opus 5, high; xhigh when warranted |
-| Routine developer and defined checks | GPT-5.6 Luna, low/medium | Sonnet 5, medium |
+| Standard developer | GPT-5.6 Terra, medium/high | Opus 5, high |
+| Independent reviewer | GPT-5.6 Terra, medium/high | Opus 5, high |
+| Complex developer | GPT-5.6 Sol, high; xhigh when warranted | Opus 5, xhigh |
+| Routine developer and defined checks | GPT-5.6 Luna, low/medium | Sonnet 5, high |
 | Optional simple text rewrite/paraphrase | Usually direct or Luna | Haiku 4.5, no effort override |
 
-All Luna-equivalent work goes to **Sonnet** in Claude Code. Haiku is limited to menial text transformations, never coding, investigation, testing, review, planning, or release decisions. Tiny rewrites may stay with the orchestrator to avoid dispatch overhead.
+Claude routing uses **Opus xhigh for Sol-level work**, **Opus high for Terra-level development and review**, and **Sonnet high only for Luna-level work**. “Extra effort” means the native `xhigh` setting. If a required tier is unavailable, the harness reports it instead of silently downgrading. Haiku is limited to menial text transformations, never coding, investigation, testing, review, planning, or release decisions. Tiny rewrites may stay with the orchestrator to avoid dispatch overhead.
 
 Claude selections were checked on 2026-09-04 against [Anthropic's model overview](https://platform.claude.com/docs/en/models/overview). This is a recommended role mapping, not a claim of benchmark equivalence. Exact IDs, supported effort, and availability handling are in the [Codex adapter](references/platform-codex.md) and [Claude adapter](references/platform-claude.md).
 
@@ -115,7 +115,7 @@ The orchestrator verifies the integrated revision before release, checks live be
 
 - `SKILL.md`: shared entrypoint; selects the adapter for the actual host.
 - `agents/openai.yaml`: OpenAI display metadata; ignored by Claude.
-- `assets/claude-agents/`: installable Sonnet developer/reviewer, Opus complex developer, and restricted Haiku text assistant definitions.
+- `assets/claude-agents/`: installable Opus developer/reviewer and complex developer, Sonnet routine developer, and restricted Haiku text assistant definitions.
 - `references/`: platform adapters and conditional setup, dependency, team, state, UI, and release instructions.
 - `legacy/claude-v3/`: preserved previous Claude workflow, inactive and not part of the current installation instructions.
 - `CHANGELOG.md`: release history.

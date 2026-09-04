@@ -1,7 +1,7 @@
 ---
 name: agent-team-reviewer
-description: Independently review Agent-Team changes and their evidence.
-model: claude-sonnet-5
+description: Independently review Terra-level Agent-Team changes and evidence using Opus at high effort.
+model: claude-opus-5
 effort: high
 disallowedTools: Agent
 ---

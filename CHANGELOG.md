@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.1.0 — 2026-09-04
+
+- Route Sol-level Claude work to Opus 5 at xhigh effort and Terra-level development/review to Opus 5 at high effort.
+- Reserve Sonnet 5 at high effort for Luna-level tasks; add a separate native routine agent definition.
+- Refresh existing managed role definitions on upgrade without overwriting user customizations; verify effective effort and report unavailable tiers.
+- Keep Fable orchestration, Codex routing, and the Haiku text-only restriction unchanged.
+
+
 ## 5.0.0 — 2026-09-04
 
 - Support Codex and Claude Code through one shared skill and separate runtime adapters.
