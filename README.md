@@ -37,24 +37,24 @@ Agent-Team checks installed skills, project packages, runtimes, and Beads before
 
 | Profile | What it installs |
 | --- | --- |
-| Required + project needs (recommended) | Missing core dependencies and only the optional tools needed by this project |
+| Recommended dependencies + project needs | Offer all four recommended dependencies and install accepted items plus relevant optional tools |
 | All compatible free dependencies | Eligible referenced skills/reference packs and compatible application packages, with exclusions and overlaps shown first |
 | Choose individually or defer | Your selected items, or no installation |
 
-It uses your chosen scope, skips existing usable installations, verifies results, remembers the choice locally, and resumes the original task. It does not reinstall or upgrade everything each time. Required dependencies that remain unavailable block affected implementation; optional ones do not.
+It uses your chosen scope, skips existing usable installations, verifies results, remembers the choice locally, and resumes the original task. It does not reinstall or upgrade everything each time. If any of Beads, Ponytail, Using-Superpowers, or Impeccable is declined, unavailable, or fails installation, work continues with a local `.agent-team/TASKS.md` tracker and the remaining available skills. Declines are remembered without repeated prompts.
 
 The full profile does not mean installing every component in every registry. Registries are catalogs, some packages require a compatible app stack, and paid products need existing entitled access. Application packages are deferred when no compatible project exists. Installation cannot bypass OS permissions, host restrictions, hook trust prompts, or missing credentials.
 
 Setup details and official sources: [dependency setup](references/setup.md).
 
-## Required dependencies
+## Recommended dependencies, with a built-in fallback
 
 - [Ponytail](https://github.com/DietrichGebert/ponytail): simple, complete implementation.
 - [Using-Superpowers](https://github.com/obra/superpowers): relevant development procedures.
-- [Beads](https://github.com/gastownhall/beads): authoritative task and failure tracking.
-- [Impeccable](https://github.com/pbakaus/impeccable): required whenever the task includes UI/UX.
+- [Beads](https://github.com/gastownhall/beads): preferred task and failure tracking when enabled.
+- [Impeccable](https://github.com/pbakaus/impeccable): preferred for UI/UX; built-in design guidance is available without it.
 
-Every teammate receives the applicable skill requirements. Dependencies are installed through their supported distributions, not copied into this repository. The setup workflow handles missing dependencies before enforcing implementation blockers.
+Every teammate receives the selected tracker mode and available skills. Dependencies are installed through their supported distributions, not copied into this repository. Choosing not to install any or all of these four does not block development.
 
 ## Optional design resources
 
@@ -83,13 +83,13 @@ See [UI workflow](references/ui.md) and [optional routing](references/ui-optiona
 
 Astra handles trivial changes itself when delegation would add overhead. Substantive work normally gets a developer and one independent reviewer. Parallel developers get separate implementation streams and worktrees; review and testing reuse stable checkouts when appropriate. No judge panels or reviewers of reviewers.
 
-Beads holds requirements, ownership, dependencies, progress, evidence, and meaningful failure history. Local `CONTEXT.md` checkpoints hold short resumption notes; they do not duplicate the task graph. Retries need new evidence or a changed approach. Verification focuses on changed behavior, common failures, and required project gates.
+The selected tracker, Beads or the canonical local TASKS.md, holds requirements, ownership, dependencies, progress, evidence, and meaningful failure history. In local mode Astra is the only writer; teammates send updates to Astra to avoid conflicting edits. Local `CONTEXT.md` checkpoints hold short resumption notes; they do not duplicate the task graph. Retries need new evidence or a changed approach. Verification focuses on changed behavior, common failures, and required project gates.
 
 ## Deployment and cleanup
 
 Agent-Team uses the user's applicable standing deployment and safe-rollback authorization without asking again for every task. Installing the skill is not deployment authorization. Unknown targets, unavailable permissions, and irreversible recovery need the missing decision before proceeding.
 
-Astra verifies the integrated revision before release, checks live behavior afterward, records every successful deployment or recovery in Beads, and removes eligible completed task worktrees only after confirmed deployment. Main, unrelated work, unintegrated changes, and needed evidence are preserved. Prefer platform-native rollback; an instruction file cannot keep monitoring after its runtime stops.
+Astra verifies the integrated revision before release, checks live behavior afterward, records every successful deployment or recovery in the selected tracker, and removes eligible completed task worktrees only after confirmed deployment. Main, unrelated work, unintegrated changes, and needed evidence are preserved. Prefer platform-native rollback; an instruction file cannot keep monitoring after its runtime stops.
 
 ## Repository layout
 

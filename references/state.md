@@ -2,11 +2,42 @@
 
 ## One authoritative task graph
 
-Use Beads in every project. Discover installed-version help; do not assume storage backends, commands, or custom statuses. Use native states plus a short phase field/note for planned, implementing, verifying, ready to deploy, deployed, or blocked if needed. Keep requirement-to-task/evidence mappings in the parent task, not HARNESS_STATE.md or a separate task checklist.
+Choose Beads or the local TASKS.md as the only active project tracker, recording the mode and canonical location in the setup receipt and agent handoffs. Default to local mode when any of Beads, Ponytail, Using-Superpowers, or Impeccable is skipped/unusable. Continue using the other enabled skills. In Beads mode, discover installed-version help; do not assume storage backends, commands, or custom statuses. Use native states plus a short phase field/note for planned, implementing, verifying, ready to deploy, deployed, or blocked if needed. Keep requirement-to-task/evidence mappings in the active tracker, never a second parallel checklist.
 
-Astra creates/deduplicates tasks/issues, manages dependencies/ownership, integrates evidence, and closes/reopens tasks. Teammates update only assigned progress and append evidence. Confirm the backend supports concurrent writes before enabling them. If single-writer, serialize teammate-authored updates through Astra; do not start competing database writers. Use supported persistence/sync at handoff and release.
+Astra creates/deduplicates tasks/issues, manages dependencies/ownership, integrates evidence, and closes/reopens tasks. In Beads mode teammates update only assigned progress and append evidence; in local mode Astra is the sole tracker writer and teammates send updates to Astra. For Beads, confirm the backend supports concurrent writes before enabling them. If single-writer, serialize teammate-authored updates through Astra; do not start competing database writers. Use supported persistence/sync at handoff and release.
 
 Task evidence needs only requirement IDs, acceptance criteria, owner/dependencies, current phase, changed revision, relevant check/environment identity, result/evidence link, and next action. Link logs/screenshots instead of inserting them. Track unrelated discoveries separately without automatically expanding scope.
+
+## Local-file tracking and safe switching
+
+Create `.agent-team/TASKS.md` in the main project checkout, or reuse an existing user-designated task file. Record its absolute path and do not create per-worktree copies. Preserve any existing content and task IDs. Keep the file outside disposable worktrees and out of product commits unless the project intentionally tracks it. Astra alone writes it; teammates report progress with task IDs, revision, evidence, and next action. Serialize updates, preserve concurrent user edits, and use atomic file replacement where supported.
+
+Use this minimal structure, expanding only for actual work:
+
+```markdown
+# Agent-Team Tasks
+Updated: <time>; writer: <Astra>; tracker: local
+Objective: <requested outcome>
+
+| ID | Requirement / acceptance | Owner | Depends on | Status | Revision / evidence | Next action |
+| --- | --- | --- | --- | --- | --- | --- |
+| AT-001 | <observable result> | <owner> | <IDs or none> | planned | <links> | <action> |
+
+## Failures
+<One ID per distinct meaningful issue, linked task IDs, attempts, result and resolution proof.>
+
+## Releases and cleanup
+<Deployment/recovery identity, revision, live evidence, retained/removed worktrees.>
+
+## Reconciliation
+<Every original requirement ID, outcome, evidence and any approved deferral.>
+```
+
+Use planned, in_progress, blocked, verified, deployed, or deferred status as appropriate. A non-deployed task can finish at verified if deployment is outside scope. Update after claims, meaningful progress, failures, handoffs, verification, each successful deployment/rollback, and cleanup. Keep release history and unresolved evidence references; remove redundant narration instead of appending a diary. CONTEXT.md remains short resumption memory, not a second task list.
+
+If an existing Beads tracker becomes unavailable, reconstruct local tasks from the latest accessible evidence and preserve original IDs. Mark unknown states explicitly, retain the original data, and do not repeat external actions to infer their outcome. Genuine uncertainty about an operation may require inspection; absence of these four dependencies alone does not block development.
+
+Do not switch back just because Beads is later installed. On explicit selection of Beads, pause tracker writes, snapshot the local file, transfer tasks/IDs or record an ID mapping, dependencies, failures, and evidence, and verify coverage before changing the active mode. Mark the old file as an archived snapshot with a pointer to Beads. If transfer fails, keep local mode active. Apply the same reconciliation when leaving an accessible Beads tracker. Never maintain two writable authorities or destroy original records.
 
 ## Small resumption checkpoints
 
@@ -15,7 +46,7 @@ Aim for a few hundred words per agent's CONTEXT.md, normally below 600. Replace 
 ```
 Updated: <time>; agent: <owner>
 Location: <checkout/branch/revision>; uncommitted changes: <summary>
-Tasks: <Beads IDs and canonical tracker location>
+Tasks: <task IDs, tracker mode, and absolute canonical location>
 Decisions: <essential facts; durable doc links>
 Evidence: <result locations and matching revisions>
 Pending: <running process/deployment identity, blocker or handoff>
@@ -24,9 +55,9 @@ Next: <one executable action>
 
 Include authorization/target pointers for release resumption. Never store secrets, credentials, raw personal data, or private reasoning traces. Keep local checkpoints out of product commits unless intentionally tracked, and preserve them before checkout cleanup. Give read-only agents unique paths.
 
-Checkpoint at milestones, before handoff, when context pressure is signaled, and before requested compaction. Exact warnings are not guaranteed. After interruption, read the checkpoint, Beads tasks, current Git state, and in-flight operation status. Old memory and task labels are not proof of success. Reconstruct missing memory from evidence rather than guessing or repeating deployment.
+Checkpoint at milestones, before handoff, when context pressure is signaled, and before requested compaction. Exact warnings are not guaranteed. After interruption, read the checkpoint, active tasks, current Git state, and in-flight operation status. Old memory and task labels are not proof of success. Reconstruct missing memory from evidence rather than guessing or repeating deployment.
 
-Store enduring conventions in existing project docs and use one canonical design-system source. Promote solved failures into durable guidance only for actionable lessons likely to recur. Keep task-specific attempts in Beads; do not create a global failure diary or duplicate lessons across memories.
+Store enduring conventions in existing project docs and use one canonical design-system source. Promote solved failures into durable guidance only for actionable lessons likely to recur. Keep task-specific attempts in the active tracker; do not create a global failure diary or duplicate lessons across memories.
 
 ## Evidence-driven failures
 

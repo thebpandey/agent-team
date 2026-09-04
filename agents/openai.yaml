@@ -1,8 +1,8 @@
 interface:
   display_name: Agent-Team
   short_description: Efficient agent teams, task memory, and safe releases
-  default_prompt: Use $agent-team to implement this task with tracked progress
-    and verified delivery.
+  default_prompt: Use $agent-team to implement this task with tracked progress and
+    verified delivery.
   icon_small: assets/icon.svg
   icon_large: assets/icon.svg
 policy:

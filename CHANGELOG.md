@@ -2,6 +2,13 @@
 
 All notable changes to agent-team are recorded here. This project follows semantic versioning.
 
+## [4.1.0] - 2026-09-04
+
+### Changed
+- Make Beads, Ponytail, Using-Superpowers, and Impeccable recommended dependencies with opt-in automatic installation.
+- Continue after declined/unavailable dependencies using one local TASKS.md tracker, available skills, and built-in guidance.
+- Add single-writer task updates, failure/release/reconciliation records, remembered declines, and safe tracker migration.
+
 ## [4.0.0] - 2026-09-04
 
 ### Changed
