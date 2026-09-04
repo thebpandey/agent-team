@@ -1,181 +1,108 @@
-<p align="center">
-  <img src="assets/banner.svg" alt="agent-team banner: a hand-drawn heist crew lineup on dark navy, with the tagline one task in, a coordinated crew out" width="100%">
-</p>
+# Agent-Team
 
-# agent-team
+A Codex development skill that coordinates GPT-6 Astra, Terra, Luna, and Sol to deliver tracked, verified software changes. Give it a task; it chooses the smallest useful team, preserves task state, and reconciles the result against every requirement.
 
-You type one task into Claude Code. A coordinated crew of AI agents plans it, splits it into small jobs, does the work in parallel where that is safe, double-checks the risky parts, and reports back in plain language. You do not manage the agents and you do not copy anything anywhere. The session you are already sitting in becomes the crew boss and runs the whole job, start to finish, inside Claude Code.
+## Install
 
-## How it works, in plain words
+Install this repository as the `agent-team` skill using your host's supported skill installer. The repository root contains `SKILL.md` and its supporting references.
 
-Think of a heist movie.
-
-**Danny Ocean plans the job.** When you hand agent-team a task, your Claude Code session takes on the role of the orchestrator (the one agent that makes every judgment call). Danny decides what the task really requires, writes a Definition of Done (a short checklist that says exactly when the job counts as finished), and breaks the work into tickets (small written job descriptions, each with its own checklist). He maps which tickets depend on which, so independent work can run at the same time while dependent work waits its turn. Danny keeps the thinking and delegates the doing. He touches code himself only under one narrow exception: a fix of ten lines or fewer, in one file, never in a risky area, and every such fix is logged and audited later.
-
-**Terry Benedict tries to break the plan.** Benedict is the adversary (a dedicated critic agent that never writes code). Before any risky work starts, he audits the ticket and hunts for holes. After the work is submitted, he cross-examines the result against his own audit. He holds a veto: if he stamps a ticket REJECTED, that work freezes until the problem is fixed. Risky here means anything touching login and permissions, money, security, stored data, migrations (changes to how data is stored), shared state, caching, concurrency, public APIs, or workflows users see and rely on. Routine tickets skip the up-front audit but get spot-checked afterward, one in five.
-
-**Specialists do the hands-on work.** Each ticket routes to a worker agent sized for the job. Hard problems get the strongest (and most expensive) models. Simple lookups get fast, cheap ones. Workers that edit code do it inside a worktree (a separate working copy of the project's files, created by git) so parallel workers never collide. Workers report progress with heartbeats (short timestamped log lines), and a stalled worker gets its ticket taken back and reassigned.
-
-**A different crew member always double-checks.** When a worker finishes, another, cheaper agent re-runs the ticket's checklist and confirms the evidence. The verifier is never the author. Only after that does Danny merge the work (fold it back into the main project, in dependency order) and write you a short report.
-
-The whole run is evidence-driven. Agents return test output, file paths, and diffs (line-by-line records of what changed), not promises.
-
-### The lifecycle at a glance
-
-```mermaid
-flowchart TD
-    A[Task in] --> B[Stage 0 probe]
-    B --> C[Decompose into tickets]
-    C --> D{Risky ticket?}
-    D -- yes --> E[Adversary gate]
-    E -- passed --> F[Execute in phases]
-    D -- no --> F
-    F --> G[Independent verification]
-    G --> H[Merge in dependency order]
-    H --> I[Short report]
-```
-
-## Stage 0: the crew checks its gear
-
-Every run opens with a quick probe called Stage 0, before any real work. It confirms the session is on a strong model (it prefers Fable, then Opus 4.8, and warns you to switch with `/model` if the session is on something weaker). Then it looks for Codex (OpenAI's coding agent) on your machine, in a fixed order of preference.
-
-```mermaid
-flowchart LR
-    S[Stage 0 probe] --> P{Codex found?}
-    P -- codex-plugin-cc --> A[HYBRID-PLUGIN]
-    P -- codex MCP server --> B[HYBRID-MCP]
-    P -- codex CLI --> C[HYBRID-CLI]
-    P -- none --> D[ALL-CLAUDE]
-```
-
-The official plugin is the preferred path. MCP (Model Context Protocol, a standard way to plug outside tools into Claude Code) and the bare command-line tool are fallbacks.
-
-If any Codex path is found, the topology (the shape of the team) is HYBRID: GPT-5.6 Sol takes the hardest build work and the adversary role, and Opus reviews the Codex-built code. Different model families miss different things, so cross-family review catches more. If nothing is found, the topology is ALL-CLAUDE: Opus absorbs those roles, and the run says once, honestly, that same-family review is weaker.
-
-Stage 0 also checks that the project has been initialized (a `/specs/Agents.md` file with the crew's roles and rules) and offers to run `init` if it has not.
-
-## What one risky ticket looks like
-
-Here is the full path of a single high-risk ticket, from Danny's desk to the merge:
-
-```mermaid
-sequenceDiagram
-    participant D as Danny
-    participant B as Benedict
-    participant W as Worker
-    participant V as Verifier
-    D->>B: New high-risk ticket, audit it
-    B-->>D: Audit passed
-    D->>W: Ticket is open
-    W->>W: Claims it, builds in a worktree
-    W->>B: Submits work with evidence
-    B-->>D: Cross-examined, no holes
-    D->>V: Re-check everything
-    V-->>D: Every checklist item passes
-    D->>D: Merges the work
-```
-
-If Benedict rejects at either gate, the work goes back with his findings. A worker that fails twice escalates the ticket one tier up. Three failed loops and the ticket halts and lands back on Danny's desk.
-
-## The crew
-
-The crew members are named skins from Ocean's Eleven, layered over the tiers below. Every agent logs under an ASCII prefix so parallel work reads clearly in the terminal.
-
-| Crew member | Log prefix | What they handle, in plain words |
-|---|---|---|
-| Danny Ocean | `[Danny] ->` | The orchestrator. Plans the job, routes every ticket, makes every final call. |
-| Terry Benedict | `[Benedict] ->` | The adversary. Audits risky plans and finished work, holds the veto, never writes code. |
-| Livingston Dell | `[Livingston] ->` | Security, plus observability (the logging and monitoring that let you see what a system is doing). |
-| Rusty Ryan | `[Rusty] ->` | Code review and audit assistance. |
-| Saul Bloom | `[Saul] ->` | Legacy code (old systems) and monoliths (big all-in-one codebases). |
-| The Malloy Twins | `[Malloys] ->` | Concurrency and async work (code where many things happen at once). |
-| Amazing Yen | `[Yen] ->` | Performance and optimization (making things measurably faster). |
-| Frank Catton | `[Frank] ->` | Frontend and UI (the parts users see and click). |
-| Basher Tarr | `[Basher] ->` | DevOps and CI/CD (the pipelines that build, test, and ship the code). |
-| Linus Caldwell | `[Linus] ->` | Data extraction and scraping (pulling structured data out of files and pages). |
-| Reuben Tishkoff | `[Reuben] ->` | Budget checkpoints. Watches token spend (tokens are the units AI usage is billed in) and speaks up before things get expensive. |
-
-A ticket with no matching domain gets a plain `[Agent N] ->` label and no persona.
-
-**Heist mode is on by default.** Agents speak in character in their log lines and report sections, and every report section closes with a plain-language summary in parentheses, so you never have to decode the theater. Next Steps are always written plain, in both modes. Say **"plain mode"** to turn the voice off while keeping the names as labels. There are no emoji in either mode.
-
-## Tiers: who does what, on which engine
-
-Underneath the skins, work routes by tier. The tier is picked from the ticket's difficulty and risk, so premium reasoning is spent only where judgment matters.
-
-| Tier | Role | ALL-CLAUDE engine | HYBRID engine | Effort |
-|---|---|---|---|---|
-| Orchestrator | judgment: intent, architecture, tradeoffs, final review | fable, else opus 4.8 (the session itself) | same session; Codex is a worker, never the orchestrator | xhigh |
-| Adversary | audits plans and risky submissions, veto power | opus 4.8 | gpt-5.6-sol | high |
-| T1 hardest build | complex implementation, deep debugging, security-sensitive work | opus 4.8 | gpt-5.6-sol, with Opus reviewing its output | high |
-| T2 systems | schemas, backend math, data consistency, concurrency, reviewing cheaper agents | opus 4.8 | gpt-5.6-terra | medium-high / high |
-| T3 features | scoped implementation, tests, local refactors | sonnet 4.6 | gpt-5.6-terra | medium |
-| T4 evidence | discovery, file and log summaries, checklist verification, boilerplate | haiku 4.5 | gpt-5.6-luna or gpt-5.4-mini | n/a / low |
-
-Two rules keep the tiers honest: T3 never makes product or architecture calls, and T4 reports facts, never direction.
-
-## Install (Claude Code)
-
-Clone the skill, then copy the two commands into your commands folder.
-
-Windows PowerShell:
-
-```powershell
-git clone https://github.com/thebpandey/agent-team "$env:USERPROFILE\.claude\skills\agent-team"
-Copy-Item "$env:USERPROFILE\.claude\skills\agent-team\claude-code\agent-team.md" "$env:USERPROFILE\.claude\commands\agent-team.md"
-Copy-Item "$env:USERPROFILE\.claude\skills\agent-team\claude-code\architect.md" "$env:USERPROFILE\.claude\commands\architect.md"
-```
-
-Mac or Linux:
+For Codex CLI on macOS/Linux, a manual user-wide installation is:
 
 ```bash
-git clone https://github.com/thebpandey/agent-team ~/.claude/skills/agent-team
-cp ~/.claude/skills/agent-team/claude-code/agent-team.md ~/.claude/commands/agent-team.md
-cp ~/.claude/skills/agent-team/claude-code/architect.md ~/.claude/commands/architect.md
+mkdir -p ~/.agents/skills
+git clone https://github.com/thebpandey/agent-team.git ~/.agents/skills/agent-team
 ```
 
-Optional, for the HYBRID topology: install OpenAI's official Codex plugin inside Claude Code.
+If that destination already exists, inspect and update your existing installation instead of cloning over it. Use the current host documentation for other installation locations or operating systems. ChatGPT-managed skill installation is separate from installing into your own laptop/server.
 
-```
-/plugin marketplace add openai/codex-plugin-cc
-/plugin install codex@openai-codex
-```
+Select GPT-6 Astra with high reasoning in a host that exposes the required models and agent controls. A skill cannot switch the parent model or grant access to unavailable models.
 
-## Usage
+Then invoke:
 
-Once per project, scaffold the protocol files:
-
-```
-/agent-team init
+```text
+$agent-team setup
 ```
 
-This creates `/specs/Agents.md` (the crew's roles and rules, which Codex also reads natively), `architecture.md` and `design.md` stubs, a `/goals/` folder for tickets, and the persistent crew definitions under `.claude/agents/agent-team/`. Nothing existing is ever overwritten.
+Or start work directly:
 
-Then hand it work, in plain words:
-
-```
-/agent-team harden the app before launch
-/agent-team add CSV export to the reports page, plain mode
+```text
+$agent-team Add the requested feature, verify it, and reconcile every requirement.
 ```
 
-To plan without executing, use the architect command. It designs the lanes, drafts the tickets into `/goals/`, and pre-clears the risky ones with the Adversary, but changes no code:
+In ChatGPT, select Agent-Team from the available skills or use the host-supported mention. A newly installed skill may require a refresh or later turn before the host exposes it.
 
-```
-/architect a billing subsystem with usage-based pricing
-```
+## First-run setup
 
-Run the session on the strongest model available (prefer Fable, else Opus 4.8). The skill warns you at Stage 0 if the session model is weaker.
+Agent-Team checks installed skills, project packages, runtimes, and Beads before implementation. It shows missing items and a concrete installation plan, then offers one choice:
 
-## Safety notes
+| Profile | What it installs |
+| --- | --- |
+| Required + project needs (recommended) | Missing core dependencies and only the optional tools needed by this project |
+| All compatible free dependencies | Eligible referenced skills/reference packs and compatible application packages, with exclusions and overlaps shown first |
+| Choose individually or defer | Your selected items, or no installation |
 
-Merging is done by the orchestrator in dependency order. Enable branch protection and keep a human approval step on merges touching high-risk areas.
+It uses your chosen scope, skips existing usable installations, verifies results, remembers the choice locally, and resumes the original task. It does not reinstall or upgrade everything each time. Required dependencies that remain unavailable block affected implementation; optional ones do not.
 
-The codex-plugin-cc review gate (a Stop hook that blocks completion until a Codex review passes) is opt-in for high-risk phases only. OpenAI's own docs warn it can loop and drain usage limits quickly, so agent-team never enables it silently.
+The full profile does not mean installing every component in every registry. Registries are catalogs, some packages require a compatible app stack, and paid products need existing entitled access. Application packages are deferred when no compatible project exists. Installation cannot bypass OS permissions, host restrictions, hook trust prompts, or missing credentials.
 
-Ticket files treat pasted logs and PR text as data, not instructions.
+Setup details and official sources: [dependency setup](references/setup.md).
 
-Cost is real: Sol and Opus at high effort across many parallel tickets adds up. Every ticket carries a token budget, and the run checkpoints with you at 80 percent of the session budget (Reuben delivers that line in heist mode).
+## Required dependencies
 
-## License
+- [Ponytail](https://github.com/DietrichGebert/ponytail): simple, complete implementation.
+- [Using-Superpowers](https://github.com/obra/superpowers): relevant development procedures.
+- [Beads](https://github.com/gastownhall/beads): authoritative task and failure tracking.
+- [Impeccable](https://github.com/pbakaus/impeccable): required whenever the task includes UI/UX.
 
-Standalone, with no dependency on any other skill. MIT license, see [LICENSE](LICENSE).
+Every teammate receives the applicable skill requirements. Dependencies are installed through their supported distributions, not copied into this repository. The setup workflow handles missing dependencies before enforcing implementation blockers.
+
+## Optional design resources
+
+| Resource | Use when |
+| --- | --- |
+| UI UX Pro Max | Broader design-system exploration needs searchable references |
+| UI Skills | A targeted design-engineering procedure is useful |
+| shadcn/ui | A compatible app needs reusable interface components |
+| Magic UI / React Bits | Selected expressive components serve the brief |
+| Motion | Purposeful animations need more than CSS |
+| Taste Skill | Landing pages, portfolios, or substantial redesigns need more art direction |
+| Awesome DESIGN.md | A relevant design-system example helps establish direction |
+| Bklit UI | A compatible dashboard needs charts and data visualization |
+| img2threejs | A real 3D task needs procedural reconstruction from imagery |
+
+See [UI workflow](references/ui.md) and [optional routing](references/ui-optional.md) for sources and limitations. The GPT-specific Taste variant is excluded from automatic selection. Motion+ and Bklit Studio are not covered by their free core/component licenses. React Bits includes additional Commons Clause restrictions.
+
+## Team and workflow
+
+| Role | Default model | Effort |
+| --- | --- | --- |
+| Orchestrator and trivial direct work | GPT-6 Astra | High |
+| Standard development / independent review | GPT-5.6 Terra | Medium or high |
+| Complex developer teammate | GPT-5.6 Sol | High; higher when justified |
+| Narrow routine tasks | GPT-5.6 Luna | Low or medium |
+
+Astra handles trivial changes itself when delegation would add overhead. Substantive work normally gets a developer and one independent reviewer. Parallel developers get separate implementation streams and worktrees; review and testing reuse stable checkouts when appropriate. No judge panels or reviewers of reviewers.
+
+Beads holds requirements, ownership, dependencies, progress, evidence, and meaningful failure history. Local `CONTEXT.md` checkpoints hold short resumption notes; they do not duplicate the task graph. Retries need new evidence or a changed approach. Verification focuses on changed behavior, common failures, and required project gates.
+
+## Deployment and cleanup
+
+Agent-Team uses the user's applicable standing deployment and safe-rollback authorization without asking again for every task. Installing the skill is not deployment authorization. Unknown targets, unavailable permissions, and irreversible recovery need the missing decision before proceeding.
+
+Astra verifies the integrated revision before release, checks live behavior afterward, records every successful deployment or recovery in Beads, and removes eligible completed task worktrees only after confirmed deployment. Main, unrelated work, unintegrated changes, and needed evidence are preserved. Prefer platform-native rollback; an instruction file cannot keep monitoring after its runtime stops.
+
+## Repository layout
+
+- `SKILL.md`: compact entrypoint.
+- `agents/openai.yaml`: skill display metadata.
+- `references/`: conditional setup, dependency, team, state, UI, and release instructions.
+- `legacy/claude-v3/`: preserved previous Claude workflow, inactive and not part of the current installation instructions.
+- `CHANGELOG.md`: release history.
+
+The former `astra-dev-harness` personal skill is renamed `agent-team`; avoid keeping two active copies. The public repository is the distribution source. Updates to an installed personal copy are explicit, not automatic two-way synchronization.
+
+## Validation and license
+
+This is an instruction-based skill. Structure, internal links, and workflow consistency are checked; model routing, third-party installers, and production recovery still depend on the actual host/project and must be verified there. No universal cross-platform installation guarantee is made.
+
+[MIT License](LICENSE). Third-party dependencies retain their own licenses.

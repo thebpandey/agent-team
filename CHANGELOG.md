@@ -2,6 +2,15 @@
 
 All notable changes to agent-team are recorded here. This project follows semantic versioning.
 
+## [4.0.0] - 2026-09-04
+
+### Changed
+- Repurpose Agent-Team as a Codex skill with GPT-6 Astra orchestration, Terra/Luna teammates, and Sol for complex development.
+- Replace adversary/judge panels with adaptive implementation and proportional independent review.
+- Use Beads for tasks/failures, compact per-agent CONTEXT.md checkpoints, and verified deployment/recovery/cleanup.
+- Add first-run dependency inventory, user-selected installation profiles, verified setup receipts, and project-specific optional UI resources.
+- Preserve the Claude v3 instructions under legacy/claude-v3; the root SKILL.md is now the supported entrypoint.
+
 ## [3.1.0] - 2026-07-14
 
 ### Added
