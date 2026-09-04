@@ -1,0 +1,12 @@
+flowchart TD
+    A["You give a task"] --> B["Check the host, project, and tools"]
+    B --> C{"New setup choices needed?"}
+    C -->|Yes| D["Explain tools; install only accepted items"]
+    C -->|No| E["Use one task record"]
+    D --> E
+    E --> F["Record requirements and assign work"]
+    F --> G["Build and check the result"]
+    G --> H{"Required checks pass?"}
+    H -->|No| I["Repair the fault or report the blocker"]
+    I -->|Fault repaired| G
+    H -->|Yes| J["Prepare the verified result"]

@@ -1,0 +1,9 @@
+flowchart TD
+    A["Verified result"] --> B{"Deployment requested and authorized?"}
+    B -->|No| C["Report ready work or request missing approval"]
+    B -->|Yes| D["Deploy and check the live app"]
+    D --> E{"Live checks pass?"}
+    E -->|Yes| F["Record the release and completed tasks"]
+    F --> G["Remove eligible work folders; report each requirement"]
+    E -->|No| H["Use approved safe recovery; check the result"]
+    H --> I["Record the failure; report unresolved work"]

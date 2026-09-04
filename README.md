@@ -1,5 +1,7 @@
 # Agent-Team
 
+Codex and Claude Code spin up a team of agents to get the job done faster and more efficiently. Agents work in a review-remediate loop to ensure clean, efficient code.
+
 Agent-Team is a development skill for **Codex and Claude Code**. A skill is a set of instructions for an AI agent. The host is the app that runs the agent.
 
 Give Agent-Team a task. It selects a suitable team, records progress, checks the result, and reports which requirements it met. The lead agent is called the **orchestrator**. It assigns work and controls the final checks.
@@ -51,22 +53,11 @@ Both platforms use the same main instructions and tool list. Agent-Team loads th
 
 ## How Agent-Team works
 
-The first diagram shows setup and development. Small tasks can stay with the lead agent. Larger tasks use developers and one focused review.
+The first flowchart shows setup, development, and the review-remediate loop. Remediate means to repair a problem found during review. Small tasks can stay with the lead agent. Larger tasks use developers and one focused review.
 
-```mermaid
-flowchart TD
-    A["You give a task"] --> B["Check the host, project, and tools"]
-    B --> C{"New setup choices needed?"}
-    C -->|Yes| D["Explain tools; install only accepted items"]
-    C -->|No| E["Use one task record"]
-    D --> E
-    E --> F["Record requirements and assign work"]
-    F --> G["Build and check the result"]
-    G --> H{"Required checks pass?"}
-    H -->|No| I["Repair the fault or report the blocker"]
-    I -->|Fault repaired| G
-    H -->|Yes| J["Prepare the verified result"]
-```
+[![Setup and development flowchart, including the review and repair loop](assets/diagrams/setup-development.png)](assets/diagrams/setup-development.svg)
+
+[Open the full-size flowchart](assets/diagrams/setup-development.svg) · [Mermaid source](assets/diagrams/setup-development.mmd)
 
 Agent-Team uses Beads or one local `TASKS.md` file. If any recommended tool is missing or declined, it uses the local file. Each agent saves short resume notes in its assigned `CONTEXT.md` file. The task record holds progress and failure history.
 
@@ -74,17 +65,9 @@ After two attempts without useful progress, the lead agent changes the approach 
 
 The second diagram shows release and recovery. **Deployment** means publication of a checked app version to the intended destination. **Rollback** means restoration of an earlier working version.
 
-```mermaid
-flowchart TD
-    A["Verified result"] --> B{"Deployment requested and authorized?"}
-    B -->|No| C["Report ready work or request missing approval"]
-    B -->|Yes| D["Deploy and check the live app"]
-    D --> E{"Live checks pass?"}
-    E -->|Yes| F["Record the release and completed tasks"]
-    F --> G["Remove eligible work folders; report each requirement"]
-    E -->|No| H["Use approved safe recovery; check the result"]
-    H --> I["Record the failure; report unresolved work"]
-```
+[![Release and recovery flowchart, including authorization and live checks](assets/diagrams/release-recovery.png)](assets/diagrams/release-recovery.svg)
+
+[Open the full-size flowchart](assets/diagrams/release-recovery.svg) · [Mermaid source](assets/diagrams/release-recovery.mmd)
 
 Installation does not grant deployment permission. Agent-Team reuses an existing approval for the same target. It restores an earlier version only when the action is authorized and safe. It does not automatically reverse destructive data changes. If recovery fails, it stops further releases and reports the incident.
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.2.1 — 2026-09-04
+
+- Replace README Mermaid blocks with styled, rendered flowchart images for consistent display.
+- Include SVG graphics, PNG previews, and editable Mermaid source for both workflows.
+- Update the README summary to name Codex and Claude Code and explain the review-remediate loop.
+
+
 ## 5.2.0 — 2026-09-04
 
 - Explain every recommended and optional tool in simple English using ASD-STE100 principles.
