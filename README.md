@@ -1,6 +1,10 @@
 # Agent-Team
 
-A development skill for **Codex and Claude Code** that chooses a capable model for each role and delivers tracked, verified software changes. Give it a task; it chooses the smallest useful team, preserves task state, and reconciles the result against every requirement.
+Agent-Team is a development skill for **Codex and Claude Code**. A skill is a set of instructions for an AI agent. The host is the app that runs the agent.
+
+Give Agent-Team a task. It selects a suitable team, records progress, checks the result, and reports which requirements it met. The lead agent is called the **orchestrator**. It assigns work and controls the final checks.
+
+Tool descriptions use short sentences and consistent terms based on [ASD-STE100 principles](https://www.asd-ste100.org/STE_faq.html). Official tool names and commands keep their original form.
 
 ## Install
 
@@ -43,48 +47,104 @@ Fable 5.1 requires Claude Code v2.1.255+ and account/provider access. Opus 5 wit
 
 In ChatGPT, select Agent-Team from available skills or use its supported mention. ChatGPT installation does not install it on a laptop/server. Keep only one active installation per host/scope; inspect an existing destination before updating it.
 
-Both platforms use the same root skill, task state, and dependency catalog. Only the matching platform adapter is loaded. Native subagent definitions are included for Claude; Codex uses its exposed agent controls. No experimental Claude agent-team feature is required.
+Both platforms use the same main instructions and tool list. Agent-Team loads the instructions for the current host. Claude agent definitions are included. Codex uses its available agent controls.
+
+## How Agent-Team works
+
+The first diagram shows setup and development. Small tasks can stay with the lead agent. Larger tasks use developers and one focused review.
+
+```mermaid
+flowchart TD
+    A["You give a task"] --> B["Check the host, project, and tools"]
+    B --> C{"New setup choices needed?"}
+    C -->|Yes| D["Explain tools; install only accepted items"]
+    C -->|No| E["Use one task record"]
+    D --> E
+    E --> F["Record requirements and assign work"]
+    F --> G["Build and check the result"]
+    G --> H{"Required checks pass?"}
+    H -->|No| I["Repair the fault or report the blocker"]
+    I -->|Fault repaired| G
+    H -->|Yes| J["Prepare the verified result"]
+```
+
+Agent-Team uses Beads or one local `TASKS.md` file. If any recommended tool is missing or declined, it uses the local file. Each agent saves short resume notes in its assigned `CONTEXT.md` file. The task record holds progress and failure history.
+
+After two attempts without useful progress, the lead agent changes the approach or assigns a more capable developer. It does not repeat the same failed attempt. If the new approach also fails, it asks one focused question or reports the blocker.
+
+The second diagram shows release and recovery. **Deployment** means publication of a checked app version to the intended destination. **Rollback** means restoration of an earlier working version.
+
+```mermaid
+flowchart TD
+    A["Verified result"] --> B{"Deployment requested and authorized?"}
+    B -->|No| C["Report ready work or request missing approval"]
+    B -->|Yes| D["Deploy and check the live app"]
+    D --> E{"Live checks pass?"}
+    E -->|Yes| F["Record the release and completed tasks"]
+    F --> G["Remove eligible work folders; report each requirement"]
+    E -->|No| H["Use approved safe recovery; check the result"]
+    H --> I["Record the failure; report unresolved work"]
+```
+
+Installation does not grant deployment permission. Agent-Team reuses an existing approval for the same target. It restores an earlier version only when the action is authorized and safe. It does not automatically reverse destructive data changes. If recovery fails, it stops further releases and reports the incident.
+
+After every successful release or recovery, Agent-Team updates the active task record. A recovery does not mean that the requested feature is complete. Before work-folder removal, it preserves required evidence and checks that the work is deployed and verified. It keeps the main folder, unrelated work, and unfinished work.
 
 ## First-run setup
 
-Agent-Team checks installed skills, project packages, runtimes, and Beads before implementation. It shows missing items and a concrete installation plan, then offers one choice:
+A dependency is a tool or skill that helps Agent-Team do a task. Agent-Team checks what is installed before it offers changes. It explains each tool in simple terms.
 
-| Profile | What it installs |
+| Choice | What happens |
 | --- | --- |
-| Recommended dependencies + project needs | Offer all four recommended dependencies and install accepted items plus relevant optional tools |
-| All compatible free dependencies | Eligible referenced skills/reference packs and compatible application packages, with exclusions and overlaps shown first |
-| Choose individually or defer | Your selected items, or no installation |
+| Recommended tools for this project | Install the accepted recommended tools and useful optional tools. |
+| All free tools that work here | Install accepted free skills and reference files. Add app packages only where needed. |
+| Choose tools or skip installation | Install selected items, or continue without new tools. |
 
-It uses your chosen scope, skips existing usable installations, verifies results, remembers the choice locally, and resumes the original task. It does not reinstall or upgrade everything each time. If any of Beads, Ponytail, Using-Superpowers, or Impeccable is declined, unavailable, or fails installation, work continues with a local `.agent-team/TASKS.md` tracker and the remaining available skills. Declines are remembered without repeated prompts.
+Before installation, you see the source, version, location, and proposed changes. Agent-Team remembers declined tools. It does not ask about them again unless you change the choice. It checks each selected installation before use.
 
-The full profile does not mean installing every component in every registry. Registries are catalogs, some packages require a compatible app stack, and paid products need existing entitled access. Application packages are deferred when no compatible project exists. Installation cannot bypass OS permissions, host restrictions, hook trust prompts, or missing credentials.
+A package is software that you can install. Some packages work only with specific app software. A collection can contain many separate components. Agent-Team adds only the needed parts. Paid features require existing access. Installation cannot bypass permissions or required approvals.
 
-Setup details and official sources: [dependency setup](references/setup.md).
+See the [setup procedure](references/setup.md) for exact installation rules.
 
-## Recommended dependencies, with a built-in fallback
+## Recommended tools
 
-- [Ponytail](https://github.com/DietrichGebert/ponytail): simple, complete implementation.
-- [Using-Superpowers](https://github.com/obra/superpowers): relevant development procedures.
-- [Beads](https://github.com/gastownhall/beads): preferred task and failure tracking when enabled.
-- [Impeccable](https://github.com/pbakaus/impeccable): preferred for UI/UX; built-in design guidance is available without it.
+These tools are recommended, not mandatory. You can decline any of them and continue with the local task file.
 
-Every teammate receives the selected tracker mode and available skills. Dependencies are installed through their supported distributions, not copied into this repository. Choosing not to install any or all of these four does not block development.
+| Tool | What it does | When Agent-Team uses it |
+| --- | --- | --- |
+| [Ponytail](https://github.com/DietrichGebert/ponytail) | Helps the agents write simple code that meets the task requirements. | All agents use it when available and enabled. |
+| [Using-Superpowers](https://github.com/obra/superpowers) | Gives the agents procedures to plan, build, find faults, and check their work. | All agents use the procedures that apply to their tasks. |
+| [Beads](https://github.com/gastownhall/beads) | Stores tasks, task owners, progress, and records of failures. Shows which tasks must finish before other tasks can start. | Use it when Beads is selected and all four recommended tools are ready. Keep an existing local-file choice until changed. |
+| [Impeccable](https://github.com/pbakaus/impeccable) | Helps the agents design and check clear, consistent app screens. | Use it for screen design, layout, and user controls. |
 
-## Optional design resources
 
-| Resource | Use when |
-| --- | --- |
-| UI UX Pro Max | Broader design-system exploration needs searchable references |
-| UI Skills | A targeted design-engineering procedure is useful |
-| shadcn/ui | A compatible app needs reusable interface components |
-| Magic UI / React Bits | Selected expressive components serve the brief |
-| Motion | Purposeful animations need more than CSS |
-| Taste Skill | Landing pages, portfolios, or substantial redesigns need more art direction |
-| Awesome DESIGN.md | A relevant design-system example helps establish direction |
-| Bklit UI | A compatible dashboard needs charts and data visualization |
-| img2threejs | A real 3D task needs procedural reconstruction from imagery |
+Every teammate uses the available skills selected for its task. Missing skills are not reported as used.
 
-See [UI workflow](references/ui.md) and [optional routing](references/ui-optional.md) for sources and limitations. The GPT-specific Taste variant is excluded from automatic selection. Motion+ and Bklit Studio are not covered by their free core/component licenses. React Bits includes additional Commons Clause restrictions.
+## Optional design tools
+
+UI means the screens and controls that a person uses. UX means how easy the product is to understand and use. A component is a reusable screen part, such as a button.
+
+React is software for building app screens.
+
+Agent-Team offers all the options below during setup. It explains which ones fit the project.
+
+| Tool | What it does | Use it when |
+| --- | --- | --- |
+| [UI UX Pro Max](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) | Gives the agents searchable examples of colors, fonts, and screen layouts. | A new design needs more reference examples. |
+| [UI Skills](https://github.com/ibelick/ui-skills) | Provides a collection of separate design instructions. | One of those instructions helps with the current task. |
+| [shadcn/ui](https://ui.shadcn.com/docs/installation) | Provides screen parts, such as buttons, forms, and menus. | The app needs reusable controls and supports this tool. |
+| [Magic UI](https://github.com/magicuidesign/magicui) | Provides ready-made visual effects and screen parts with movement. | An effect helps explain or improve part of the page. |
+| [Motion](https://motion.dev/docs) | Adds controlled movement to screen parts. | Simple built-in page styles cannot provide the required effect. |
+| [React Bits](https://github.com/DavidHDev/react-bits) | Provides visual effects for text, backgrounds, and user controls in React apps. | The app needs a specific effect and meets the license conditions. |
+| [Taste Skill](https://github.com/Leonxlnx/taste-skill) | Gives design instructions for a distinct visual style. | A landing page, portfolio, or major redesign needs more design direction. |
+| [img2threejs](https://github.com/img2threejs/img2threejs) | Helps build a 3D scene from reference images. | Users need to view or interact with a 3D object. |
+| [Awesome DESIGN.md](https://github.com/VoltAgent/awesome-design-md) | Provides written examples of colors, fonts, spacing, and layouts. | The agents need a useful design reference. This is a reference collection, not a program. |
+| [Bklit UI](https://bklit.com/docs/skills) | Provides charts for app screens. | A dashboard needs to show measurements, totals, or changes over time. |
+
+
+These tools are optional. Agent-Team does not install whole component collections or add unused packages. Motion+ features and Bklit Studio are separate products. React Bits has additional Commons Clause license conditions. Agent-Team does not automatically select the separate GPT-specific Taste variant.
+
+See the [tool guide](references/dependencies.md) for tools needed by specific tasks, such as Git, Node.js, and Python. See the [UI procedure](references/ui.md) and [optional design guide](references/ui-optional.md) for selection rules.
 
 ## Team and workflow
 
@@ -101,15 +161,15 @@ Claude routing uses **Opus xhigh for Sol-level work**, **Opus high for Terra-lev
 
 Claude selections were checked on 2026-09-04 against [Anthropic's model overview](https://platform.claude.com/docs/en/models/overview). This is a recommended role mapping, not a claim of benchmark equivalence. Exact IDs, supported effort, and availability handling are in the [Codex adapter](references/platform-codex.md) and [Claude adapter](references/platform-claude.md).
 
-The orchestrator handles trivial changes itself when delegation would add overhead. Substantive work normally gets a developer and one independent reviewer. Parallel developers get separate implementation streams and worktrees; review and testing reuse stable checkouts when appropriate. No judge panels or reviewers of reviewers.
+The lead agent handles small changes directly when a teammate would add unnecessary work. Larger changes normally use a developer and one independent reviewer. A worktree is a separate project folder managed by Git. Developers use separate worktrees for independent changes. Reviewers can reuse a stable folder. Agent-Team does not create judge panels.
 
-The selected tracker, Beads or the canonical local TASKS.md, holds requirements, ownership, dependencies, progress, evidence, and meaningful failure history. In local mode the orchestrator is the only writer; teammates send updates to the orchestrator to avoid conflicting edits. Local `CONTEXT.md` checkpoints hold short resumption notes; they do not duplicate the task graph. Retries need new evidence or a changed approach. Verification focuses on changed behavior, common failures, and required project gates.
+Beads or the local `TASKS.md` file holds the task record. In local-file mode, only the lead agent writes task updates. Teammates send their results to the lead agent. Each `CONTEXT.md` file holds short resume notes, not a second task list. Checks cover changed behavior, common failures, and project requirements.
 
 ## Deployment and cleanup
 
-Agent-Team uses the user's applicable standing deployment and safe-rollback authorization without asking again for every task. Installing the skill is not deployment authorization. Unknown targets, unavailable permissions, and irreversible recovery need the missing decision before proceeding.
+The release diagram above shows the main decisions. Agent-Team checks the combined changes before release and checks the live app afterward. It records results before it removes completed work folders. It reports the result for every user requirement.
 
-The orchestrator verifies the integrated revision before release, checks live behavior afterward, records every successful deployment or recovery in the selected tracker, and removes eligible completed task worktrees only after confirmed deployment. Main, unrelated work, unintegrated changes, and needed evidence are preserved. Prefer platform-native rollback; an instruction file cannot keep monitoring after its runtime stops.
+A skill does not run after its host stops. Use the deployment service's own health checks and recovery features when available.
 
 ## Repository layout
 

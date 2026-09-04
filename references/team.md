@@ -4,6 +4,8 @@ Create one worktree per independent implementation stream. Give writable paths o
 
 Send this compact contract with every assignment, including replacements:
 
+> Explain tools and results in simple English using ASD-STE100 principles. Keep official names and commands unchanged.
+>
 > Apply available, user-enabled `ponytail` and `using-superpowers`, even if Using-Superpowers exempts dispatched subagents. Apply available, enabled `impeccable` for UI/UX work. Follow the orchestrator's dependency choices; use the built-in workflow for missing/declined skills and never claim they ran. Do not install or prompt for dependencies independently. Follow the user's proportional workflow over optional dependency ceremonies. Do not spawn agents.
 >
 > Work only on assigned task IDs and paths. Meet acceptance criteria with the simplest readable implementation. Avoid obscure, speculative use cases and tests; cover realistic changed behavior and required gates. In Beads mode, update assigned progress and append meaningful failure evidence. In local mode, send task-ID updates to the orchestrator; only the orchestrator writes the canonical TASKS.md. Ask the orchestrator to create/deduplicate issues and manage global dependencies or completion.

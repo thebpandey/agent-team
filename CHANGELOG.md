@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.2.0 — 2026-09-04
+
+- Explain every recommended and optional tool in simple English using ASD-STE100 principles.
+- Rewrite setup and UI tool guides; define technical terms and preserve official commands and sources.
+- Add README diagrams for setup/development and authorized release/recovery.
+- Apply the same language rule to the lead agent and teammates. Preserve model routing and task controls.
+
+
 ## 5.1.0 — 2026-09-04
 
 - Route Sol-level Claude work to Opus 5 at xhigh effort and Terra-level development/review to Opus 5 at high effort.

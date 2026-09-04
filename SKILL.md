@@ -7,6 +7,8 @@ description: Coordinate software and app implementation on Codex or Claude Code 
 
 Deliver the requested working result with the least coordination, code, and verification needed to establish it. Preserve every requirement and report its disposition. Avoid speculative abstractions, obscure use cases, duplicate checks, and ceremonial review loops. Keep code readable; fewer lines alone are not evidence of better code.
 
+Use ASD-STE100 principles when you explain tools, installation choices, progress, or results to the user. Use short, active sentences and consistent terms. Explain technical terms at first use. Keep official names and commands unchanged. Give each teammate the same communication rule.
+
 ## Start once, resume from evidence
 
 First run a lightweight dependency check. On first use, explicit `setup`/`install dependencies`, a changed environment, or missing dependencies, follow [dependency setup](references/setup.md). Present missing Beads, Ponytail, Using-Superpowers, and Impeccable as recommended dependencies and offer automatic installation with the user's chosen scope. If any is declined, unavailable, or fails to install, continue with the built-in workflow and local-file tracking described in [state and recovery](references/state.md). Reuse the recorded choice; do not repeatedly prompt for declined items. Missing these four tools must never block otherwise feasible work.
