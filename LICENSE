@@ -1,21 +1,176 @@
-MIT License
+LEARNSTACK OS PROPRIETARY SKILL LICENSE
+Agent-Team | License version 1.0
 
-Copyright (c) 2026 Bhaskar Pandey and Almora Technology
+Copyright (c) 2026 Bhaskar Pandey and Almora Technology, LLC.
+All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. SCOPE AND ACCEPTANCE
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+This agreement governs the Agent-Team skill distributed with this license,
+including its instructions, prompts, source files, scripts, agent definitions,
+reference documents, templates, and assets (the "Skill"). The copyright holders
+identified above are the "Licensor." LearnStack OS is the distribution service
+at https://www.learnstackos.com.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+By installing or using this release after being presented with these terms,
+you agree to them. If you do not agree, do not install or use the Skill. Any
+applicable refund rights remain governed by your purchase terms and law.
+
+This is a proprietary license. Access to the source files does not grant an
+open-source license or any rights beyond those expressly stated here.
+
+2. PAID ENTITLEMENT AND AUTHORIZED USERS
+
+You may use the Skill only if you obtained it from LearnStack OS or another
+source expressly authorized by the Licensor and hold a paid entitlement that
+expressly includes access to this Skill.
+
+Your entitlement lasts for the period stated in the purchase or plan terms
+presented to you when you obtain it. Subscription access lasts through the
+paid subscription term, including any prepaid period after cancellation,
+unless terminated for breach. A one-time purchase grants continuing use of
+the purchased release only when the purchase terms expressly provide that
+right. Payment does not otherwise grant perpetual access or future updates.
+
+Unless your purchase expressly includes multiple user seats, the license is
+for one named individual. An organization must obtain a seat for each person
+who uses the Skill. You may not share accounts, seats, or access credentials
+to extend access to unlicensed users.
+
+3. LIMITED PERMITTED USE
+
+Subject to this agreement and your paid entitlement, the Licensor grants you
+a nonexclusive, nontransferable, nonsublicensable right to:
+
+(a) install and run the unmodified Skill on devices and private computing
+environments you control, for your own work, your organization's work, or
+work you perform for clients;
+
+(b) make the copies reasonably necessary for installation, execution, and
+private backup, while preserving this license and copyright notices; and
+
+(c) allow AI coding tools and their automated agents to read and process the
+Skill solely to perform your authorized tasks. Such automated agents do not
+require separate user seats.
+
+You may use ordinary host settings, task inputs, and project configuration
+without altering the Skill itself. Copying bundled agent definitions to the
+installation locations specified by the Skill is permitted. Runtime records
+and project files created through normal operation may be updated as needed.
+
+Processing by a tool provider is permitted only as needed to provide the
+service to you, under settings and terms that do not authorize publication,
+general redistribution, or training general-purpose models on the Skill.
+This permission does not authorize you to offer the Skill as a hosted service
+to other users.
+
+4. RESTRICTIONS
+
+Except as expressly permitted above, separately authorized in writing by the
+Licensor, or required by applicable law, you must not:
+
+(a) modify, adapt, translate, repackage, or create derivative versions of the
+Skill, including altered versions produced with an AI system;
+
+(b) publish, upload for public access, distribute, sell, rent, lend, sublicense,
+transfer, or share the Skill or substantial portions of its protected content,
+whether free of charge or for payment;
+
+(c) place the Skill in public repositories, shared download locations,
+marketplaces, public AI assistants, or products or services that make it
+available to unlicensed users;
+
+(d) provide the Skill to a client, colleague, contractor, or other person who
+does not have a separate entitlement covering that access;
+
+(e) remove or obscure copyright, license, ownership, or access notices;
+
+(f) bypass payment, seat, account, or access restrictions; or
+
+(g) use the Skill as training or fine-tuning material for a model, or reproduce
+its protected content in another distributable skill or agent package.
+
+Keep permitted installations and backups private. Take reasonable steps to
+prevent the Skill from being included in public project commits, client
+source-code deliveries, or shared logs and transcripts.
+
+5. YOUR PROJECTS AND OUTPUTS
+
+This license does not give the Licensor ownership of your inputs, source code,
+applications, documents, or other work created with the Skill. You may use,
+modify, distribute, and sell your resulting work, including client work,
+provided it does not redistribute the Skill or substantial portions of its
+protected content.
+
+You may retain and use that resulting work after your Skill entitlement ends.
+Rights in third-party content and AI-generated outputs remain subject to
+applicable law and the relevant third-party terms. This agreement does not
+guarantee copyright ownership or noninfringement of generated outputs.
+
+6. OWNERSHIP AND SEPARATE RIGHTS
+
+The Licensor retains its rights in the Skill. No trademark or branding rights
+are granted, except displaying notices already included in authorized copies.
+
+Separately licensed third-party materials remain subject to their own terms.
+This agreement does not remove their notices or override rights granted by
+their licenses. It also does not revoke rights previously granted for releases
+distributed under a different license. It governs the proprietary release
+supplied with these terms, to the extent the Licensor may license its content.
+
+7. EXPIRATION AND TERMINATION
+
+Your right to use the Skill ends when your paid entitlement expires. The
+Licensor may terminate this license by written notice if you materially
+breach it. For a breach reasonably capable of correction, you have 14 days
+after notice to correct it. Unauthorized distribution, resale, or deliberate
+circumvention of access restrictions permits immediate termination by notice.
+
+When your rights end, stop using the Skill and remove usable copies from your
+devices and controlled environments. Copies retained solely in inaccessible
+routine backups or as legally required records must not be restored for use
+and must remain protected by this agreement. Preserve your independently
+created project work as permitted by Section 5.
+
+The ownership, restrictions, output rights, separate-rights provisions,
+disclaimers, and other terms that by their nature should continue survive
+expiration or termination.
+
+8. WARRANTIES AND RESPONSIBILITY
+
+To the extent permitted by law, the Skill is supplied without warranties of
+merchantability, suitability for a particular purpose, accuracy, availability,
+or noninfringement. No error-free operation or compatibility with every host,
+model, tool, or future software version is promised.
+
+You are responsible for reviewing generated work, protecting credentials,
+maintaining backups, and authorizing changes, integrations, and deployments.
+The Skill does not replace professional review or required project controls.
+
+9. LIMITATION OF LIABILITY
+
+To the extent permitted by law, the Licensor is not liable for indirect,
+incidental, special, consequential, or punitive losses, including lost profits,
+lost data, or business interruption arising from the Skill. Nothing in this
+agreement excludes liability or statutory rights that cannot lawfully be
+excluded. Any separate written service commitments remain subject to their
+express terms.
+
+10. PURCHASE TERMS, CHANGES, AND CONTACT
+
+Purchase terms identify your entitlement, duration, seats, and any included
+support or updates. A separately executed agreement with the Licensor controls
+if it expressly overrides a provision of this license. Otherwise this license
+controls permitted use and redistribution of the Skill.
+
+A later revision of this license does not automatically rewrite the terms of
+a release already licensed to you. New releases may be offered under revised
+terms presented when those releases are supplied.
+
+If a provision is unenforceable, the remaining provisions continue to apply
+to the extent permitted by law. Failure to enforce a provision on one occasion
+does not waive enforcement on another.
+
+For written permissions, additional seats, or licensing questions:
+support@learnstackos.com
+https://www.learnstackos.com
