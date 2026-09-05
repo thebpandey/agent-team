@@ -63,9 +63,11 @@ These are instructions understood by Agent-Team, not new commands added to the h
 | `$agent-team status` | Report the current team's progress, or the project overview from a project session. Do not interrupt development. |
 | `$agent-team status email-preferences` | Report one team's tasks, progress, blockers, preview, and release state. A team ID such as TEAM-002 also works. |
 | `$agent-team status all` | Report all teams and unassigned work in the current project. |
-| `$agent-team pause` | Safely pause all teams in the current project, including when issued from a feature session. `pause all` is equivalent. |
+| `$agent-team pause` | Show in-progress teams and All; wait for your selection before pausing. |
+| `$agent-team pause all` | Safely pause all in-progress teams in this project without a picker. |
 | `$agent-team pause email-preferences` | Save progress and safely pause that team. Preserve its unfinished files. |
-| `$agent-team resume` | Recover all unfinished teams in this project, including paused teams and incomplete integration, deployment, or cleanup. |
+| `$agent-team resume` | Show paused teams and All; wait for your selection. Interrupted teams are clearly labeled when present. |
+| `$agent-team resume all` | Recover all paused or interrupted unfinished teams in this project without a picker. |
 | `$agent-team resume email-preferences` | Recover only the named team. |
 | `$agent-team approve email-preferences` | Approve the submitted preview version for integration. Existing integration and deployment checks still apply. |
 
@@ -99,7 +101,7 @@ A development preview is not a production deployment. `localhost` refers to the 
 
 ### Recovery and required cleanup
 
-Unqualified `pause` pauses the current project's teams; a name or ID limits it to one team. The lead stops new assignments and integrations, saves checkpoints, and reports each team's result. Operations that cannot safely stop are reported as still stopping or unknown. The harness does not claim a complete pause until the affected writers and release activity have stopped safely. It preserves worktrees, preview approval, and safely running previews with frozen source. Other projects are unaffected.
+Bare `pause` and `resume` first show a team picker with an All option. Pause lists in-progress teams; resume lists paused teams and clearly labels any interrupted work. This applies even from a feature session or when only one team is available. Nothing changes until you choose. Cancelling leaves work unchanged. Explicit `pause all` and `resume all` act directly; an explicit name or ID affects only that team. The lead stops new assignments and integrations, saves checkpoints, and reports each team's result. Operations that cannot safely stop are reported as still stopping or unknown. The harness does not claim a complete pause until the affected writers and release activity have stopped safely. It preserves worktrees, preview approval, and safely running previews with frozen source. Other projects are unaffected.
 
 Each agent saves short checkpoints during meaningful progress and before a requested pause. Resume reads those notes, current files, task evidence, active processes, approval gates, and release records. It checks whether earlier agents are still writing before replacing them. If deployment already succeeded, it records the result and continues remaining verification or cleanup instead of deploying again.
 

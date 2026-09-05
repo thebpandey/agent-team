@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.0.2 - 2026-09-05
+
+- Require a team picker for bare pause and resume, with named teams and an explicit All option.
+- Keep explicit all and named/team-ID commands direct, without another scope prompt.
+- Keep work unchanged until selection; preserve safe recovery of clearly labeled interrupted teams.
+
 ## 6.0.1 - 2026-09-05
 
 - Make unqualified pause and pause all safely pause every team in the current project, even from a feature session.
