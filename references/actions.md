@@ -6,14 +6,14 @@ Treat these as instructions handled by the skill, not new native CLI commands. U
 | --- | --- |
 | `start [name] [with-preview]` | Without a name, claim the next ready unassigned task and create exactly one team. With a name, resolve its feature scope from the request or existing tasks. Follow [project coordination](projects.md). |
 | `status [name-or-ID or all]` | Run the read-only [status procedure](status.md). Never enter setup, recovery, or development from this action. |
-| `pause [name-or-ID]` | Checkpoint and pause only the selected team's work using [recovery](recovery.md). |
+| `pause [name-or-ID or all]` | Without a target, safely pause all teams in the current project. A name/ID targets one team. Follow [recovery](recovery.md). |
 | `resume [name-or-ID or all]` | Without a target, recover all unfinished teams in the current project. A name/ID targets one team. Inspect actual and saved state using recovery. |
 | `approve <name-or-ID>` | Record the user's approval of the current review version for integration using [preview approval](preview.md). |
 | `setup` | Follow the existing dependency setup procedure. |
 
 Names use a short readable form such as `email-preferences`. Resolve exact name or stable team ID within the current project. Reserve action words and `all`; never interpret user text as a shell command or path. No fuzzy selection for actions that change state. Ask one question for an ambiguous project, feature scope, or target; do not invent requirements from a name alone.
 
-For status and pause, a session assigned to one team defaults to that team. Unqualified `status` from a project session shows the project overview. Unqualified `pause` from an ambiguous project session asks which team. Unqualified `resume`, even from a feature session, means all unfinished teams in the resolved current project; `resume <name-or-ID>` targets one. `status all` means all teams in the current project, not every repository.
+For status, a session assigned to one team defaults to that team; a project session shows the project overview. Unqualified `pause` and `pause all`, even from a feature session, pause all teams in the resolved current project. `pause <name-or-ID>` pauses only that team. Unqualified `resume` and `resume all` recover all unfinished teams in that project; `resume <name-or-ID>` targets one. Ask only if the project itself cannot be resolved, not merely because several teams exist. `status all` means all teams in the current project, not every repository.
 
 On `start`, check for an existing matching team and task ownership before creating anything. A duplicate request identifies the existing team; it does not spawn another writer or silently resume a paused team. `with-preview` is a persistent integration gate, not just a request to start a server. Adding that requirement later is allowed before integration; never clear it because a later invocation omits the flag. Tests or standing deployment authority cannot bypass it.
 

@@ -33,7 +33,7 @@ Use one reusable integration worktree owned by the project orchestrator. Merge b
 ## Integrate serially
 
 1. Obtain exclusive project integration ownership. Inspect any in-flight merge or release before starting another.
-2. Confirm feature evidence and required user preview approval. A success report alone is not approval. Do not begin integrating a gated feature before approval.
+2. Honor recorded pause intent: do not begin integration or release for a team marked Pause requested or Paused until its work is explicitly resumed. Confirm feature evidence and required user preview approval. A success report alone is not approval. Do not begin integrating a gated feature before approval.
 3. Read current main and combine the approved feature revision in the integration worktree. Do not reset away unresolved work left by an interrupted integration.
 4. Check the combined result, reusing valid evidence and rerunning only affected checks or required project gates. Return feature defects to their owner. Make integration repairs in the integration worktree. Material changes to an approved feature need a new review version and renewed approval before main is updated.
 5. Update main through the established authorized merge/PR process only if it still matches the tested base. If main advances, incorporate it and repeat affected checks. Never force an update to bypass a race or protection rule.

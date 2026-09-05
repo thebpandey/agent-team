@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.0.1 - 2026-09-05
+
+- Make unqualified pause and pause all safely pause every team in the current project, even from a feature session.
+- Preserve named/team-ID pause for one team. Report partial pauses and pending operations without claiming a complete stop.
+- Hold new assignments, integration, and release for paused teams; preserve worktrees, progress, previews, and approval evidence.
+
 ## 6.0.0 - 2026-09-05
 
 - Add skill actions for automatic start, named start, read-only status, scoped pause, project-wide or named resume, and version-specific approval.

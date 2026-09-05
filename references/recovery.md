@@ -10,7 +10,17 @@ Include pointers to dependency choices, applicable authorization, preview gate a
 
 Use persistent project storage for code and checkpoints. Record the location outside disposable worktrees for shared records and required evidence. If storage is temporary, report that a lost workspace cannot be recovered from notes alone. Do not create commits, upload private data, or install shutdown hooks without existing authority. No checkpoint policy can guarantee notification of a crash.
 
-## Pause a named team
+## Pause scope
+
+Unqualified `pause` and `pause all` target all Agent-Team teams in the current project, even when invoked from a feature session. A name or ID targets one team. Resolve the project before fan-out; never pause another project or unrelated user processes. Preserve completed work and already-paused teams without reopening tasks or restarting agents just to pause them.
+
+The project owner records pause intent for the targeted teams through the canonical tracker before requesting safe checkpoints. Stop new assignments, integrations, and releases for those teams. Include the project orchestrator's active integration or release work in a project-wide pause. Finish only the minimum observation or safe recovery needed for an operation that cannot safely stop immediately; do not begin another release or delete worktrees as part of pause.
+
+Request pauses from the affected team leads through supported controls; each lead applies the procedure below to its members. A lead without cross-session control sends the project owner a request or leaves a durable handoff. Report delivery or access limits, not a successful global pause. Keep the fan-out bounded: do not wait indefinitely on an unavailable session or repeatedly send the same request.
+
+Give one aggregate report with each team's Paused, Pause requested, or activity-unknown result and pending operation identity where relevant. Mark the whole requested scope Paused only when all targeted writers and integration/release activity have stopped safely. A preview server may remain available with frozen source; report it separately. Preserve source files, worktrees, task progress, evidence, and version-specific approval gates. A named pause leaves other teams running. A later explicit start or resume controls its stated scope; do not automatically resume paused teams to keep an old work loop running.
+
+## Pause each selected team
 
 1. Resolve the team and its current owner. Stop assigning new work to that team; leave unrelated teams running.
 2. Request a checkpoint and safe pause from its active members through supported controls. Let an indivisible external operation reach an observable state when stopping it would be unsafe. Do not kill processes blindly.
