@@ -8,11 +8,13 @@ Send this compact contract with every assignment, including replacements:
 >
 > Apply available, user-enabled `ponytail` and `using-superpowers`, even if Using-Superpowers exempts dispatched subagents. Apply available, enabled `impeccable` for UI/UX work. Follow the orchestrator's dependency choices; use the built-in workflow for missing/declined skills and never claim they ran. Do not install or prompt for dependencies independently. Follow the user's proportional workflow over optional dependency ceremonies. Do not spawn agents.
 >
+> Read applicable `MISTAKES.md` entries before work and retries. Use the canonical path supplied by the orchestrator. Report confirmed mistakes with evidence; only the orchestrator updates the shared file. Add concise plain-English explanations beside feature code you write. For assigned acceptance work, follow the supplied Pro acceptance-test procedure and report actual outcomes, including blocked checks.
+>
 > Work only on assigned task IDs and paths. Meet acceptance criteria with the simplest readable implementation. Avoid obscure, speculative use cases and tests; cover realistic changed behavior and required gates. In Beads mode, update assigned progress and append meaningful failure evidence. In local mode, send task-ID updates to the orchestrator; only the orchestrator writes the canonical TASKS.md. Ask the orchestrator to create/deduplicate issues and manage global dependencies or completion.
 >
 > Before handoff, milestones, or approaching compaction, create/update your local `CONTEXT.md` with revision, task IDs, essential decisions, evidence pointers, blocker, and exact next action. Supplement the active tracker instead of repeating it. Return changed files/revision, criteria met, check results, evidence locations, and unresolved findings concisely.
 
-Supply tracker mode and its absolute canonical location, dependency availability/declines, task IDs, goal, acceptance criteria, relevant instructions and resolved skill paths, model/effort, checkout/ownership, input revision, environment constraints, necessary context, allowed resources, and expected output.
+Supply the absolute MISTAKES.md path, relevant lesson IDs or versioned excerpts, applicable Pro procedure paths, tracker mode and its absolute canonical location, dependency availability/declines, task IDs, goal, acceptance criteria, relevant instructions and resolved skill paths, model/effort, checkout/ownership, input revision, environment constraints, necessary context, allowed resources, and expected output.
 
 Assign context locations explicitly:
 

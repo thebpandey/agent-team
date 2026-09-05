@@ -11,7 +11,7 @@ For a new design, identify the users and their main task. Establish the brand, v
 1. Read the existing design guide and inspect the app. Keep one approved design guide for colors, fonts, spacing, layout, controls, movement, and accessibility.
 2. Use the relevant Impeccable instructions when available. Use UI UX Pro Max only when a specific design question needs more examples.
 3. Build one representative page or component. Reuse its approved patterns. Use clear text and spacing. Avoid decoration that does not help the user.
-4. Inspect the result on representative small and large screens. Check text, contrast, keyboard access, and content that extends beyond the screen. Check relevant empty, load, and error states. Respect reduced-motion settings. Save screenshots and the tested revision.
+4. Follow the Pro [visual browser review](visual-review.md) procedure for changed UI. Assign the existing reviewer unless substantial UI work needs a separate visual tester. Inspect actual screenshots at representative small and large sizes. Check the changed user flow. Record evidence and the tested revision.
 5. Include design findings in the existing review. Repair concrete problems. Check the affected result. Stop when the agreed criteria pass.
 
 A design token is a named value for a color, font, or size. Keep these values in one approved source. Link tool-generated files to that source instead of creating competing design guides.

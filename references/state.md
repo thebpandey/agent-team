@@ -10,7 +10,7 @@ Task evidence needs only requirement IDs, acceptance criteria, owner/dependencie
 
 ## Local-file tracking and safe switching
 
-Create `.agent-team/TASKS.md` in the main project checkout, or reuse an existing user-designated task file. Record its absolute path and do not create per-worktree copies. Preserve any existing content and task IDs. Keep the file outside disposable worktrees and out of product commits unless the project intentionally tracks it. the orchestrator alone writes it; teammates report progress with task IDs, revision, evidence, and next action. Serialize updates, preserve concurrent user edits, and use atomic file replacement where supported.
+Create `.agent-team/TASKS.md` in the main project checkout, or reuse an existing user-designated task file. Record its absolute path and do not create per-worktree copies. Preserve any existing content and task IDs. Keep the file outside disposable worktrees and out of product commits unless the project intentionally tracks it. The orchestrator alone writes it; teammates report progress with task IDs, revision, evidence, and next action. Serialize updates, preserve concurrent user edits, and use atomic file replacement where supported.
 
 Use this minimal structure, expanding only for actual work:
 
@@ -48,6 +48,7 @@ Updated: <time>; agent: <owner>
 Location: <checkout/branch/revision>; uncommitted changes: <summary>
 Tasks: <task IDs, tracker mode, and absolute canonical location>
 Decisions: <essential facts; durable doc links>
+Lessons: <absolute MISTAKES.md path; relevant IDs and revision>
 Evidence: <result locations and matching revisions>
 Pending: <running process/deployment identity, blocker or handoff>
 Next: <one executable action>
@@ -57,7 +58,7 @@ Include authorization/target pointers for release resumption. Never store secret
 
 Checkpoint at milestones, before handoff, when context pressure is signaled, and before requested compaction. Exact warnings are not guaranteed. After interruption, read the checkpoint, active tasks, current Git state, and in-flight operation status. Old memory and task labels are not proof of success. Reconstruct missing memory from evidence rather than guessing or repeating deployment.
 
-Store enduring conventions in existing project docs and use one canonical design-system source. Promote solved failures into durable guidance only for actionable lessons likely to recur. Keep task-specific attempts in the active tracker; do not create a global failure diary or duplicate lessons across memories.
+Store enduring conventions in existing project docs and use one canonical design-system source. Use the Pro [shared mistakes procedure](mistakes-memory.md) to record confirmed agent mistakes and prevention actions in the main checkout's `MISTAKES.md`. Keep task-specific attempts in the active tracker. Link each lesson to its issue; do not duplicate failure logs across memories.
 
 ## Evidence-driven failures
 

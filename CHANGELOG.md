@@ -1,5 +1,15 @@
 # Changelog
 
+## 5.3.0 - 2026-09-05
+
+- Add Pro visual browser review with actual screenshot inspection and an optional visual tester.
+- Add focused end-to-end acceptance tests for changed user flows and saved results.
+- Require concise, plain-English explanations beside feature code and useful updates to existing feature guides.
+- Add one shared uppercase `MISTAKES.md` with an orchestrator writer, relevant lessons for all teammates, and linked task evidence.
+- Connect these procedures to Codex dispatch, all Claude role templates, context checkpoints, and release checks.
+- Keep checks within the existing review and repair loop; exclude the new Pro procedures from the planned Lite edition.
+- Publish the completed full package to this repository at the owner's request. Keep its current name, visibility, and MIT license unchanged.
+
 ## 5.2.1 — 2026-09-04
 
 - Replace README Mermaid blocks with styled, rendered flowchart images for consistent display.

@@ -61,6 +61,10 @@ Use the host's supported installation method. Follow the selected platform adapt
 
 An installation in ChatGPT does not install software on the user's computer. If a new skill is not yet visible, give the supported refresh instruction. Do not claim that an unavailable skill ran.
 
+## Pro browser review tools
+
+For Pro UI review, first check the host's available browser controls. If a tool is missing, explain the choices in [visual browser review](visual-review.md). Offer one suitable tool only through the supported installation process. Do not add browser packages solely to complete a catalog. Include the Pro visual tester definition only in Pro installations. Agent Team Lite must not contain these dependency choices or this review feature.
+
 ## 4. Check the result and continue
 
 Check that each selected skill is available by name. Check that its required files exist. Run version or help checks for installed tools. Check that app packages are available in the intended project.

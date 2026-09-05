@@ -73,6 +73,29 @@ Installation does not grant deployment permission. Agent-Team reuses an existing
 
 After every successful release or recovery, Agent-Team updates the active task record. A recovery does not mean that the requested feature is complete. Before work-folder removal, it preserves required evidence and checks that the work is deployed and verified. It keeps the main folder, unrelated work, and unfinished work.
 
+## Pro quality and project memory
+
+This repository currently includes the full package that forms the basis for Pro. Agent Team Lite is planned separately. The features below are excluded from Lite.
+
+| Feature | What it does |
+| --- | --- |
+| [Visual browser review](references/visual-review.md) | A reviewer opens the app and inspects desktop and mobile screenshots. It checks the changed screens against the agreed design. |
+| [End-to-end acceptance tests](references/acceptance-tests.md) | Checks that a main user task works through the connected app, including the saved result when needed. |
+| [Explanations beside code](references/code-explanations.md) | Adds short, plain-English explanations of a feature's purpose and important rules. Updates a feature guide when several files or setup steps need explanation. |
+| [Shared mistake lessons](references/mistakes-memory.md) | Keeps confirmed agent mistakes, corrections, and prevention steps in one project `MISTAKES.md` file. |
+
+These checks use the existing review and repair loop. A separate visual tester is optional for substantial screen changes. Browser review uses supported host tools or a suitable available tool such as Playwright or Agent Browser. Capturing screenshots without inspecting them does not complete visual review. Simulated tests do not prove that the real app integration works. Unavailable checks are reported as blocked.
+
+For each feature, the developer adds or updates the nearby explanation and reports its location in the task record. The existing reviewer checks that it matches the code. Small changes do not require a separate feature guide or documentation review pass.
+
+All teammates read relevant mistake lessons before work and retries. Only the lead agent updates the shared file. Repeated mistakes update an existing lesson. Old advice is corrected or marked as superseded. This file supplies project context; it does not train the model.
+
+| Record | Purpose |
+| --- | --- |
+| Beads or `.agent-team/TASKS.md` | Requirements, ownership, task status, attempts, and verification evidence. |
+| Each agent's `CONTEXT.md` | Short resume notes and the next action. |
+| Main project `MISTAKES.md` | Confirmed mistakes and actions that help prevent repeats. |
+
 ## First-run setup
 
 A dependency is a tool or skill that helps Agent-Team do a task. Agent-Team checks what is installed before it offers changes. It explains each tool in simple terms.
@@ -136,6 +159,7 @@ See the [tool guide](references/dependencies.md) for tools needed by specific ta
 | Orchestrator; trivial direct work | GPT-6 Astra, high | Fable 5.1, high |
 | Standard developer | GPT-5.6 Terra, medium/high | Opus 5, high |
 | Independent reviewer | GPT-5.6 Terra, medium/high | Opus 5, high |
+| Pro visual and acceptance judgment | GPT-5.6 Terra, high | Opus 5, high |
 | Complex developer | GPT-5.6 Sol, high; xhigh when warranted | Opus 5, xhigh |
 | Routine developer and defined checks | GPT-5.6 Luna, low/medium | Sonnet 5, high |
 | Optional simple text rewrite/paraphrase | Usually direct or Luna | Haiku 4.5, no effort override |
@@ -158,7 +182,7 @@ A skill does not run after its host stops. Use the deployment service's own heal
 
 - `SKILL.md`: shared entrypoint; selects the adapter for the actual host.
 - `agents/openai.yaml`: OpenAI display metadata; ignored by Claude.
-- `assets/claude-agents/`: installable Opus developer/reviewer and complex developer, Sonnet routine developer, and restricted Haiku text assistant definitions.
+- `assets/claude-agents/`: installable Opus developer/reviewer and complex developer, Sonnet routine developer, restricted Haiku text assistant, and Pro visual tester definitions.
 - `references/`: platform adapters and conditional setup, dependency, team, state, UI, and release instructions.
 - `legacy/claude-v3/`: preserved previous Claude workflow, inactive and not part of the current installation instructions.
 - `CHANGELOG.md`: release history.

@@ -12,6 +12,7 @@ These are workflow choices, not benchmark equivalence claims. Verified against A
 | Complex developer: Sol-level work | `claude-opus-5` | xhigh |
 | Standard developer: Terra-level work | `claude-opus-5` | high |
 | Independent reviewer: Terra-level work | `claude-opus-5` | high |
+| Pro visual reviewer | `claude-opus-5` | high |
 | Routine developer: Luna-level work only | `claude-sonnet-5` | high |
 | Optional text assistant: simple rewrite/paraphrase only | `claude-haiku-4-5-20251001` | omit effort override |
 
@@ -30,6 +31,8 @@ claude --model claude-fable-5-1 --effort high
 ```
 
 Fable 5.1 needs Claude Code v2.1.255+. Confirm installed version and account/provider access. If Fable is unavailable or its usage-credit choice is declined, disclose the fallback to Opus 5 high; the user/runtime must actually select it. Never claim the skill changed its own parent. Do not buy access or bypass a consent prompt. Third-party provider identifiers and aliases differ; resolve supported equivalents before dispatch and record the actual model. See [model configuration](https://code.claude.com/docs/en/model-config).
+
+For substantial UI work, the Pro-only `agent-team-visual-tester` definition is available. The existing reviewer owns smaller visual tasks. Apply the shared visual-review procedure to either assignment. Never include this template in Lite.
 
 ## Native dispatch
 

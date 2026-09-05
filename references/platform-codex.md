@@ -5,7 +5,8 @@ Use only in a Codex runtime. Invoke `$agent-team`; resolve dependency skills wit
 | Role | Model | Effort |
 | --- | --- | --- |
 | Orchestrator; trivial direct work | `gpt-6-astra` | high |
-| Standard developer; independent reviewer | `gpt-5.6-terra` | medium or high |
+| Standard developer; code reviewer | `gpt-5.6-terra` | medium or high |
+| Pro visual reviewer | `gpt-5.6-terra` | high |
 | Complex developer | `gpt-5.6-sol` | high; xhigh for a concrete need |
 | Routine developer | `gpt-5.6-luna` | low or medium |
 
