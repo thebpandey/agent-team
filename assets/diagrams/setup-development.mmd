@@ -1,12 +1,15 @@
 flowchart TD
-    A["You give a task"] --> B["Check the host, project, and tools"]
-    B --> C{"New setup choices needed?"}
-    C -->|Yes| D["Explain tools; install only accepted items"]
-    C -->|No| E["Use one task record"]
-    D --> E
-    E --> F["Record requirements and assign work"]
-    F --> G["Build and check the result"]
-    G --> H{"Required checks pass?"}
-    H -->|No| I["Repair the fault or report the blocker"]
-    I -->|Fault repaired| G
-    H -->|Yes| J["Prepare the verified result"]
+    A["Agent-Team invoked"] --> B{"Status request?"}
+    B -->|Yes| C["Read counts and freshness; leave work running"]
+    B -->|No| D["Start one ready task or recover unfinished teams"]
+    D --> E["Verify ownership; work in feature worktree"]
+    E --> F{"Feature checks pass?"}
+    F -->|No| G["Repair or report blocker"]
+    G -->|Repair| E
+    F -->|Yes| H{"with-preview required?"}
+    H -->|No| L["Submit exact branch revision for integration"]
+    H -->|Yes| I["Submit a stable preview version"]
+    I --> J{"User approved this version?"}
+    J -->|No| K["Hold integration; address feedback"]
+    K -->|New review version| I
+    J -->|Yes| L

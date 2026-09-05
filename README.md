@@ -51,9 +51,64 @@ In ChatGPT, select Agent-Team from available skills or use its supported mention
 
 Both platforms use the same main instructions and tool list. Agent-Team loads the instructions for the current host. Claude agent definitions are included. Codex uses its available agent controls.
 
+## Start, status, pause, resume, and approve
+
+These are instructions understood by Agent-Team, not new commands added to the host's terminal. Codex uses `$agent-team`; Claude Code uses `/agent-team`. Clear plain-language requests such as “agent team start” also work.
+
+| Command in Codex | What happens |
+| --- | --- |
+| `$agent-team start` | Select the next ready, unassigned task from Beads or the configured local task file. Start one team, assign its team number and readable name, and preserve its task ID. |
+| `$agent-team start with-preview` | Select the next ready task and require your preview approval before integration. |
+| `$agent-team start email-preferences with-preview` | Start the named feature, provide a local preview, and wait for your approval before integration. |
+| `$agent-team status` | Report the current team's progress, or the project overview from a project session. Do not interrupt development. |
+| `$agent-team status email-preferences` | Report one team's tasks, progress, blockers, preview, and release state. A team ID such as TEAM-002 also works. |
+| `$agent-team status all` | Report all teams and unassigned work in the current project. |
+| `$agent-team pause email-preferences` | Save progress and safely pause that team. Preserve its unfinished files. |
+| `$agent-team resume` | Recover all unfinished teams in this project, including paused teams and incomplete integration, deployment, or cleanup. |
+| `$agent-team resume email-preferences` | Recover only the named team. |
+| `$agent-team approve email-preferences` | Approve the submitted preview version for integration. Existing integration and deployment checks still apply. |
+
+`start` creates new work; it does not resume other teams. Each start creates at most one feature team. It does not drain the entire task list. If no task is ready, Agent-Team explains why and creates no team. `resume` retains team identities, checks for surviving agents, and continues from the actual unfinished stage. It does not restart completed work or bypass approval.
+
+### Named teams and work folders
+
+A team has a stable number such as `TEAM-001` and a readable name such as `lesson-progress`. Session replacement does not change its team number. The project keeps one directory of team identities and one authoritative task tracker. Each task has one implementation owner. Independent team sessions depend on host support; otherwise, one orchestrator can manage named developer groups without claiming independent sessions.
+
+The main checkout is used for project initialization, planning, and shared records. All later feature changes use separate worktrees. The project orchestrator combines branches one at a time in a separate integration worktree, checks the combined result, then updates main through the established merge process. It does not merge just because a feature team reports success.
+
+### Status without interruption
+
+Status reads recorded progress. It does not ask agents for fresh reports, run tests, change tasks, or pause work. It shows the source and age of the information. Active work continues where the host supports it; the orchestrator may briefly use a turn to answer.
+
+| Team | Total | Completed | In progress | Not started | Blocked | Remaining | Complete |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| TEAM-001 / lesson-progress | 10 | 6 | 2 | 1 | 1 | 4 | 60% |
+| TEAM-002 / email-preferences | 8 | 2 | 3 | 3 | 0 | 6 | 25% |
+| Project total | 18 | 8 | 5 | 4 | 1 | 10 | 44% |
+
+This is an example. Completion is completed tasks divided by included tasks. Remaining includes active and blocked tasks. Count actionable tasks once; exclude summary groups, cancelled tasks, and approved deferrals. Show unassigned and unknown work when present. Zero tasks means N/A. This measures tasks, not time or effort. Approval and production status are reported separately.
+
+### Preview before integration
+
+`with-preview` creates a required approval gate. The team uses the project's existing development or preview command and its own available port. It checks the page and gives you the address, review version, and feature summary. The source remains stable while you review it.
+
+Passing tests does not replace your approval. If the preview fails, integration stays blocked. Feedback produces a new review version. Material changes after approval require renewed approval. Pause and resume preserve this requirement. Approval permits integration of that version, not an unchecked production deployment.
+
+A development preview is not a production deployment. `localhost` refers to the machine running the server. Viewing a server preview from another device needs an approved private address or tunnel. The harness does not expose ports publicly without authorization.
+
+### Recovery and required cleanup
+
+Each agent saves short checkpoints during meaningful progress and before a requested pause. Resume reads those notes, current files, task evidence, active processes, approval gates, and release records. It checks whether earlier agents are still writing before replacing them. If deployment already succeeded, it records the result and continues remaining verification or cleanup instead of deploying again.
+
+After successful production verification, cleanup is required. Stop task-owned previews and processes, preserve needed evidence, and remove all eligible feature and child worktrees, including their disposable build files and local dependency folders. Reuse at most one integration worktree while it is needed; remove it when idle and eligible. Preserve main, unfinished work, user files, and shared resources. Record retained worktrees and failed cleanup so resume can finish it. Report recovered disk space only when measured.
+
+A skill cannot guarantee a final checkpoint after a crash or recover code from a lost temporary workspace. It also cannot keep servers or agents running after the host stops unless the host provides that capability.
+
+See the [action rules](references/actions.md), [team coordination](references/projects.md), [recovery procedure](references/recovery.md), [status rules](references/status.md), and [preview gate](references/preview.md).
+
 ## How Agent-Team works
 
-The first flowchart shows setup, development, and the review-remediate loop. Remediate means to repair a problem found during review. Small tasks can stay with the lead agent. Larger tasks use developers and one focused review.
+The first flowchart shows named-team development, read-only status, and preview approval. Remediate means to repair a problem found during review. A lead can handle small feature work in its assigned feature worktree. Larger tasks use developers and one focused review.
 
 [![Setup and development flowchart, including the review and repair loop](assets/diagrams/setup-development.png)](assets/diagrams/setup-development.svg)
 
@@ -63,7 +118,7 @@ Agent-Team uses Beads or one local `TASKS.md` file. If any recommended tool is m
 
 After two attempts without useful progress, the lead agent changes the approach or assigns a more capable developer. It does not repeat the same failed attempt. If the new approach also fails, it asks one focused question or reports the blocker.
 
-The second diagram shows release and recovery. **Deployment** means publication of a checked app version to the intended destination. **Rollback** means restoration of an earlier working version.
+The second diagram shows serial integration, release, recovery, and required cleanup. **Deployment** means publication of a checked app version to the intended destination. **Rollback** means restoration of an earlier working version.
 
 [![Release and recovery flowchart, including authorization and live checks](assets/diagrams/release-recovery.png)](assets/diagrams/release-recovery.svg)
 
@@ -156,7 +211,7 @@ See the [tool guide](references/dependencies.md) for tools needed by specific ta
 
 | Role | Codex | Claude Code |
 | --- | --- | --- |
-| Orchestrator; trivial direct work | GPT-6 Astra, high | Fable 5.1, high |
+| Project/team orchestrator; small work in feature worktree | GPT-6 Astra, high | Fable 5.1, high |
 | Standard developer | GPT-5.6 Terra, medium/high | Opus 5, high |
 | Independent reviewer | GPT-5.6 Terra, medium/high | Opus 5, high |
 | Pro visual and acceptance judgment | GPT-5.6 Terra, high | Opus 5, high |
@@ -168,7 +223,7 @@ Claude routing uses **Opus xhigh for Sol-level work**, **Opus high for Terra-lev
 
 Claude selections were checked on 2026-09-04 against [Anthropic's model overview](https://platform.claude.com/docs/en/models/overview). This is a recommended role mapping, not a claim of benchmark equivalence. Exact IDs, supported effort, and availability handling are in the [Codex adapter](references/platform-codex.md) and [Claude adapter](references/platform-claude.md).
 
-The lead agent handles small changes directly when a teammate would add unnecessary work. Larger changes normally use a developer and one independent reviewer. A worktree is a separate project folder managed by Git. Developers use separate worktrees for independent changes. Reviewers can reuse a stable folder. Agent-Team does not create judge panels.
+The lead handles small feature changes in a feature worktree when a teammate would add unnecessary work. Larger changes normally use a developer and one independent reviewer. A worktree is a separate project folder managed by Git. Developers use separate worktrees for independent changes. Reviewers can reuse a stable folder. Agent-Team does not create judge panels.
 
 Beads or the local `TASKS.md` file holds the task record. In local-file mode, only the lead agent writes task updates. Teammates send their results to the lead agent. Each `CONTEXT.md` file holds short resume notes, not a second task list. Checks cover changed behavior, common failures, and project requirements.
 
@@ -183,7 +238,7 @@ A skill does not run after its host stops. Use the deployment service's own heal
 - `SKILL.md`: shared entrypoint; selects the adapter for the actual host.
 - `agents/openai.yaml`: OpenAI display metadata; ignored by Claude.
 - `assets/claude-agents/`: installable Opus developer/reviewer and complex developer, Sonnet routine developer, restricted Haiku text assistant, and Pro visual tester definitions.
-- `references/`: platform adapters and conditional setup, dependency, team, state, UI, and release instructions.
+- `references/`: platform adapters and conditional setup, dependency, team, state, UI, release, named-team, recovery, status, and preview-approval instructions.
 - `legacy/claude-v3/`: preserved previous Claude workflow, inactive and not part of the current installation instructions.
 - `CHANGELOG.md`: release history.
 

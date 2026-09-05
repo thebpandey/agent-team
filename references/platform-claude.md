@@ -8,7 +8,7 @@ These are workflow choices, not benchmark equivalence claims. Verified against A
 
 | Role | Anthropic model ID | Effort |
 | --- | --- | --- |
-| Orchestrator; trivial direct work | `claude-fable-5-1` | high |
+| Project/team orchestrator; trivial work in feature worktree | `claude-fable-5-1` | high |
 | Complex developer: Sol-level work | `claude-opus-5` | xhigh |
 | Standard developer: Terra-level work | `claude-opus-5` | high |
 | Independent reviewer: Terra-level work | `claude-opus-5` | high |
@@ -40,6 +40,10 @@ Bundled definitions are in `assets/claude-agents/` relative to the skill root. D
 
 Dispatch using Claude's native Agent tool and registered role names. Supply the shared team contract, resolved skill paths, ownership, tracker mode, and context location each time. Verify effective model/effort, including environment overrides or provider caps; never select a generic built-in agent that silently routes to Haiku. If definitions are not registered, use supported per-call configuration only when it can enforce the required role; otherwise report the dispatch blocker. See [subagent configuration](https://code.claude.com/docs/en/sub-agents).
 
-Create persistent implementation worktrees under orchestrator ownership and pass their absolute paths. Do not rely on an ephemeral agent checkout surviving return until deployment. The shared release policy controls removal. Reviewers may use a stable checkout and write only their assigned context/evidence. Only the orchestrator spawns; no experimental agent-team mode or background monitor is required.
+Create persistent implementation worktrees under orchestrator ownership and pass their absolute paths. Do not rely on an ephemeral agent checkout surviving return until deployment. The shared release policy controls removal. Reviewers may use a stable checkout and write only their assigned context/evidence. Only full project/team orchestrators spawn their own members; no experimental agent-team mode or background monitor is required.
 
 Install the root skill under the host's skill directory; the native role templates are supporting assets, not additional skills. See [Claude skill discovery](https://code.claude.com/docs/en/skills).
+
+## Named teams and lifecycle actions
+
+Use shared [session actions](actions.md), [project coordination](projects.md), [recovery](recovery.md), [status](status.md), and [preview approval](preview.md). These are skill instructions, not added native CLI subcommands. Both project and full team orchestrators use this adapter’s orchestrator tier. A second invocation is not automatically a new full session. Use supported independent sessions, or disclose one parent coordinating named groups when separate orchestrators cannot be created. Do not enable forbidden nested spawning. Keep status read-only and leave other sessions running. Main is for coordination; all feature changes use feature worktrees and serial integration uses the project-owned integration worktree.

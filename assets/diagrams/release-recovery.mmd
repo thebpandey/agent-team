@@ -1,9 +1,13 @@
 flowchart TD
-    A["Verified result"] --> B{"Deployment requested and authorized?"}
-    B -->|No| C["Report ready work or request missing approval"]
-    B -->|Yes| D["Deploy and check the live app"]
-    D --> E{"Live checks pass?"}
-    E -->|Yes| F["Record the release and completed tasks"]
-    F --> G["Remove eligible work folders; report each requirement"]
-    E -->|No| H["Use approved safe recovery; check the result"]
-    H --> I["Record the failure; report unresolved work"]
+    A["Feature branch and evidence"] --> B{"Required approval and evidence valid?"}
+    B -->|No| C["Hold this feature; other teams continue"]
+    B -->|Yes| D["Integrate serially against latest main"]
+    D --> E{"Combined checks pass?"}
+    E -->|No| F["Repair affected work; renew approval if material"]
+    F --> D
+    E -->|Yes| G["Update main and deploy through authorized process"]
+    G --> H{"Production checks pass?"}
+    H -->|No| I["Use safe recovery; record unresolved work"]
+    H -->|Yes| J["Record deployment and task outcomes"]
+    J --> K["Stop previews; remove eligible worktrees and temporary files"]
+    K --> L["Verify cleanup; record retained resources and failures"]

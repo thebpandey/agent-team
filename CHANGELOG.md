@@ -1,5 +1,18 @@
 # Changelog
 
+## 6.0.0 - 2026-09-05
+
+- Add skill actions for automatic start, named start, read-only status, scoped pause, project-wide or named resume, and version-specific approval.
+- Make unqualified start select one ready unassigned task and assign a team number/name without replacing existing task IDs. Keep start separate from resume.
+- Add stable project/team identity, one shared record owner, safe cross-session handoffs, and duplicate-writer prevention.
+- Reserve main for initialization/planning; require feature worktrees and one serial integration worktree.
+- Add a persistent with-preview gate, dedicated development previews, and explicit user approval before integration.
+- Add task-count percentages with deduplication, scope, exclusions, freshness, and separate approval/production state.
+- Recover unfinished work by its actual stage, including paused teams and incomplete release cleanup, without replaying successful external actions.
+- Require preview/process shutdown and eligible worktree/disk cleanup after production verification.
+- Update both platform adapters, all native Claude role templates, README examples, and rendered workflow diagrams.
+- Keep the current package name and license. New procedures remain Pro-only and excluded from the planned Lite edition.
+
 ## 5.3.0 - 2026-09-05
 
 - Add Pro visual browser review with actual screenshot inspection and an optional visual tester.

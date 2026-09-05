@@ -4,7 +4,7 @@ Use only in a Codex runtime. Invoke `$agent-team`; resolve dependency skills wit
 
 | Role | Model | Effort |
 | --- | --- | --- |
-| Orchestrator; trivial direct work | `gpt-6-astra` | high |
+| Project/team orchestrator; trivial work in feature worktree | `gpt-6-astra` | high |
 | Standard developer; code reviewer | `gpt-5.6-terra` | medium or high |
 | Pro visual reviewer | `gpt-5.6-terra` | high |
 | Complex developer | `gpt-5.6-sol` | high; xhigh for a concrete need |
@@ -15,3 +15,7 @@ Verify the parent is Astra using exposed runtime metadata. If unavailable or mis
 Use exposed Codex spawning, messaging, resume, and stop tools, not assumed shell commands. Pass supported model/effort settings explicitly. Where controls match `spawn_agent`, use `fork_turns="none"` or supported limited context for model overrides; send the compact dispatch contract and relevant evidence. Adapt to the actual schema rather than assuming identical APIs on every surface. Reuse an appropriate idle agent instead of duplicating it. Only the orchestrator dispatches.
 
 Apply shared worktree ownership, CONTEXT.md, tracking, verification, release, and cleanup rules unchanged. A missing teammate model is a reported routing constraint: reassign only to an available suitable model under the user's policy, never label a substitute as the requested model.
+
+## Named teams and lifecycle actions
+
+Use shared [session actions](actions.md), [project coordination](projects.md), [recovery](recovery.md), [status](status.md), and [preview approval](preview.md). These are skill instructions, not added native CLI subcommands. Both project and full team orchestrators use this adapter’s orchestrator tier. A second invocation is not automatically a new full session. Use supported independent sessions, or disclose one parent coordinating named groups when separate orchestrators cannot be created. Do not enable forbidden nested spawning. Keep status read-only and leave other sessions running. Main is for coordination; all feature changes use feature worktrees and serial integration uses the project-owned integration worktree.

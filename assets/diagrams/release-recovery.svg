@@ -1,69 +1,88 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1340" viewBox="0 0 1120 1340" role="img" aria-labelledby="title desc"><title id="title">02  Release, verify, and recover</title><desc id="desc">Publish only with authorization. Check the live result.</desc><rect width="1120" height="1340" fill="#F5F8FC"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1650" viewBox="0 0 1120 1650" role="img" aria-labelledby="title desc"><title id="title">02  Integrate, release, and clean up</title><desc id="desc">One project owner. One integration worktree. Verified production.</desc><rect width="1120" height="1650" fill="#F5F8FC"/>
 <rect x="0" y="0" width="1120" height="142" rx="0" fill="#13263F" stroke="#13263F" stroke-width="2"/>
 <text x="48" y="34" font-family="DejaVu Sans,Arial,sans-serif" font-size="16" font-weight="700" fill="#8EDACC" text-anchor="start" dominant-baseline="central">AGENT-TEAM  /  CODEX + CLAUDE CODE</text>
-<text x="48" y="76" font-family="DejaVu Sans,Arial,sans-serif" font-size="36" font-weight="700" fill="#FFFFFF" text-anchor="start" dominant-baseline="central">02  Release, verify, and recover</text>
-<text x="48" y="118" font-family="DejaVu Sans,Arial,sans-serif" font-size="18" font-weight="400" fill="#C7D5E6" text-anchor="start" dominant-baseline="central">Publish only with authorization. Check the live result.</text>
-<polyline points="400,270 400,325" fill="none" stroke="#7C91AC" stroke-width="3" stroke-linejoin="round"/>
-<polygon points="400,325 394.78041359066526,314.1946347717679 405.21958640933474,314.1946347717679" fill="#7C91AC"/>
-<polyline points="570,400 750,400" fill="none" stroke="#AA7623" stroke-width="3" stroke-linejoin="round"/>
-<polygon points="750,400 739.1946347717678,405.21958640933474 739.1946347717678,394.78041359066526" fill="#AA7623"/>
-<rect x="635.046875" y="364" width="41.90625" height="28" rx="5" fill="#F5F8FC" stroke="#F5F8FC" stroke-width="2"/>
-<text x="656" y="378" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="700" fill="#AA7623" text-anchor="middle" dominant-baseline="central">No</text>
-<polyline points="400,475 400,530" fill="none" stroke="#7C91AC" stroke-width="3" stroke-linejoin="round"/>
-<polygon points="400,530 394.78041359066526,519.1946347717678 405.21958640933474,519.1946347717678" fill="#7C91AC"/>
-<rect x="405.796875" y="491" width="48.40625" height="28" rx="5" fill="#F5F8FC" stroke="#F5F8FC" stroke-width="2"/>
-<text x="430" y="505" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="700" fill="#7C91AC" text-anchor="middle" dominant-baseline="central">Yes</text>
-<polyline points="400,630 400,700" fill="none" stroke="#7C91AC" stroke-width="3" stroke-linejoin="round"/>
-<polygon points="400,700 394.78041359066526,689.1946347717678 405.21958640933474,689.1946347717678" fill="#7C91AC"/>
-<polyline points="400,820 400,925" fill="none" stroke="#137D68" stroke-width="3" stroke-linejoin="round"/>
-<polygon points="400,925 394.78041359066526,914.1946347717678 405.21958640933474,914.1946347717678" fill="#137D68"/>
-<rect x="405.140625" y="856" width="59.71875" height="28" rx="5" fill="#F5F8FC" stroke="#F5F8FC" stroke-width="2"/>
-<text x="435" y="870" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="700" fill="#137D68" text-anchor="middle" dominant-baseline="central">Pass</text>
-<polyline points="570,760 750,760" fill="none" stroke="#AA7623" stroke-width="3" stroke-linejoin="round"/>
-<polygon points="750,760 739.1946347717678,765.2195864093347 739.1946347717678,754.7804135906653" fill="#AA7623"/>
-<rect x="628.1328125" y="723" width="49.734375" height="28" rx="5" fill="#F5F8FC" stroke="#F5F8FC" stroke-width="2"/>
-<text x="653" y="737" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="700" fill="#AA7623" text-anchor="middle" dominant-baseline="central">Fail</text>
-<polyline points="900,810 900,925" fill="none" stroke="#AA7623" stroke-width="3" stroke-linejoin="round"/>
-<polygon points="900,925 894.7804135906653,914.1946347717678 905.2195864093347,914.1946347717678" fill="#AA7623"/>
-<polyline points="400,1025 400,1110" fill="none" stroke="#137D68" stroke-width="3" stroke-linejoin="round"/>
-<polygon points="400,1110 394.78041359066526,1099.1946347717678 405.21958640933474,1099.1946347717678" fill="#137D68"/>
-<polyline points="900,1025 900,1110" fill="none" stroke="#AA7623" stroke-width="3" stroke-linejoin="round"/>
-<polygon points="900,1110 894.7804135906653,1099.1946347717678 905.2195864093347,1099.1946347717678" fill="#AA7623"/>
-<rect x="160" y="185" width="480" height="85" rx="18" fill="#13263F" stroke="#13263F" stroke-width="2"/>
-<text x="400.0" y="212.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#FFFFFF" text-anchor="middle" dominant-baseline="central">Verified result</text>
-<text x="400.0" y="246.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#D7E3EF" text-anchor="middle" dominant-baseline="central">Combined changes meet the requirements.</text>
-<polygon points="400,325.0 570.0,400 400,475.0 230.0,400" fill="#EAF1FF" stroke="#648DC8" stroke-width="2"/>
-<text x="400" y="385.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="22" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Release requested</text>
-<text x="400" y="414.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="22" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">and authorized?</text>
-<rect x="750" y="350" width="300" height="100" rx="18" fill="#FFF6E7" stroke="#E9C88D" stroke-width="2"/>
-<rect x="751" y="368" width="5" height="64" rx="2" fill="#946515" stroke="#946515" stroke-width="2"/>
-<text x="900.0" y="385.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Report ready work</text>
-<text x="900.0" y="419.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Ask only for missing approval.</text>
-<rect x="160" y="530" width="480" height="100" rx="18" fill="#FFFFFF" stroke="#CBD8E8" stroke-width="2"/>
-<rect x="161" y="548" width="5" height="64" rx="2" fill="#2467BC" stroke="#2467BC" stroke-width="2"/>
-<text x="400.0" y="565.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Deploy the checked version</text>
-<text x="400.0" y="599.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Use the approved destination.</text>
-<polygon points="400,700.0 570.0,760 400,820.0 230.0,760" fill="#EAF1FF" stroke="#648DC8" stroke-width="2"/>
-<text x="400" y="760.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="22" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Live checks pass?</text>
-<rect x="750" y="710" width="300" height="100" rx="18" fill="#FFF6E7" stroke="#E9C88D" stroke-width="2"/>
-<rect x="751" y="728" width="5" height="64" rx="2" fill="#946515" stroke="#946515" stroke-width="2"/>
-<text x="900.0" y="745.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Use safe recovery</text>
-<text x="900.0" y="779.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Preserve or restore safe service.</text>
-<rect x="160" y="925" width="480" height="100" rx="18" fill="#E9F8F4" stroke="#A3D9CB" stroke-width="2"/>
-<rect x="161" y="943" width="5" height="64" rx="2" fill="#137D68" stroke="#137D68" stroke-width="2"/>
-<text x="400.0" y="960.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Record the successful release</text>
-<text x="400.0" y="994.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Update Beads or the local task file.</text>
-<rect x="750" y="925" width="300" height="100" rx="18" fill="#FFF6E7" stroke="#E9C88D" stroke-width="2"/>
-<rect x="751" y="943" width="5" height="64" rx="2" fill="#946515" stroke="#946515" stroke-width="2"/>
-<text x="900.0" y="960.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Check recovery</text>
-<text x="900.0" y="994.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Record the result and evidence.</text>
-<rect x="160" y="1110" width="480" height="112" rx="18" fill="#E9F8F4" stroke="#A3D9CB" stroke-width="2"/>
-<rect x="161" y="1128" width="5" height="76" rx="2" fill="#137D68" stroke="#137D68" stroke-width="2"/>
-<text x="400.0" y="1151.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Clean up and report</text>
-<text x="400.0" y="1185.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Remove only eligible task work folders.</text>
-<rect x="750" y="1110" width="300" height="112" rx="18" fill="#FFF6E7" stroke="#E9C88D" stroke-width="2"/>
-<rect x="751" y="1128" width="5" height="76" rx="2" fill="#946515" stroke="#946515" stroke-width="2"/>
-<text x="900.0" y="1151.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Report open tasks</text>
-<text x="900.0" y="1185.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Stop releases if recovery fails.</text>
-<text x="560" y="1275" font-family="DejaVu Sans,Arial,sans-serif" font-size="18" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Keep main, unfinished work, and evidence. Recovery does not complete the feature.</text>
+<text x="48" y="76" font-family="DejaVu Sans,Arial,sans-serif" font-size="36" font-weight="700" fill="#FFFFFF" text-anchor="start" dominant-baseline="central">02  Integrate, release, and clean up</text>
+<text x="48" y="118" font-family="DejaVu Sans,Arial,sans-serif" font-size="18" font-weight="400" fill="#C7D5E6" text-anchor="start" dominant-baseline="central">One project owner. One integration worktree. Verified production.</text>
+<polyline points="400,270 400,320" fill="none" stroke="#7C91AC" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="400,320 394.78041359066526,309.1946347717679 405.21958640933474,309.1946347717679" fill="#7C91AC"/>
+<polyline points="560,380 750,380" fill="none" stroke="#AA7623" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="750,380 739.1946347717678,385.21958640933474 739.1946347717678,374.78041359066526" fill="#AA7623"/>
+<rect x="629.046875" y="344" width="41.90625" height="28" rx="5" fill="#F5F8FC" stroke="#F5F8FC" stroke-width="2"/>
+<text x="650" y="358" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="700" fill="#AA7623" text-anchor="middle" dominant-baseline="central">No</text>
+<polyline points="400,440 400,500" fill="none" stroke="#7C91AC" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="400,500 394.78041359066526,489.1946347717679 405.21958640933474,489.1946347717679" fill="#7C91AC"/>
+<rect x="404.796875" y="456" width="48.40625" height="28" rx="5" fill="#F5F8FC" stroke="#F5F8FC" stroke-width="2"/>
+<text x="429" y="470" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="700" fill="#7C91AC" text-anchor="middle" dominant-baseline="central">Yes</text>
+<polyline points="400,610 400,680" fill="none" stroke="#7C91AC" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="400,680 394.78041359066526,669.1946347717678 405.21958640933474,669.1946347717678" fill="#7C91AC"/>
+<polyline points="560,740 750,740" fill="none" stroke="#AA7623" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="750,740 739.1946347717678,745.2195864093347 739.1946347717678,734.7804135906653" fill="#AA7623"/>
+<rect x="630.046875" y="704" width="41.90625" height="28" rx="5" fill="#F5F8FC" stroke="#F5F8FC" stroke-width="2"/>
+<text x="651" y="718" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="700" fill="#AA7623" text-anchor="middle" dominant-baseline="central">No</text>
+<polyline points="1050,740 1080,740 1080,555 640,555" fill="none" stroke="#AA7623" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="640,555 650.8053652282322,549.7804135906653 650.8053652282322,560.2195864093347" fill="#AA7623"/>
+<polyline points="400,800 400,870" fill="none" stroke="#7C91AC" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="400,870 394.78041359066526,859.1946347717678 405.21958640933474,859.1946347717678" fill="#7C91AC"/>
+<rect x="405.796875" y="821" width="48.40625" height="28" rx="5" fill="#F5F8FC" stroke="#F5F8FC" stroke-width="2"/>
+<text x="430" y="835" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="700" fill="#7C91AC" text-anchor="middle" dominant-baseline="central">Yes</text>
+<polyline points="400,980 400,1040" fill="none" stroke="#7C91AC" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="400,1040 394.78041359066526,1029.1946347717678 405.21958640933474,1029.1946347717678" fill="#7C91AC"/>
+<polyline points="560,1100 750,1100" fill="none" stroke="#AA7623" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="750,1100 739.1946347717678,1105.2195864093349 739.1946347717678,1094.7804135906651" fill="#AA7623"/>
+<rect x="625.1328125" y="1064" width="49.734375" height="28" rx="5" fill="#F5F8FC" stroke="#F5F8FC" stroke-width="2"/>
+<text x="650" y="1078" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="700" fill="#AA7623" text-anchor="middle" dominant-baseline="central">Fail</text>
+<polyline points="900,1150 900,1250" fill="none" stroke="#AA7623" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="900,1250 894.7804135906653,1239.1946347717678 905.2195864093347,1239.1946347717678" fill="#AA7623"/>
+<polyline points="400,1160 400,1240" fill="none" stroke="#137D68" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="400,1240 394.78041359066526,1229.1946347717678 405.21958640933474,1229.1946347717678" fill="#137D68"/>
+<rect x="405.140625" y="1186" width="59.71875" height="28" rx="5" fill="#F5F8FC" stroke="#F5F8FC" stroke-width="2"/>
+<text x="435" y="1200" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="700" fill="#137D68" text-anchor="middle" dominant-baseline="central">Pass</text>
+<polyline points="400,1340 400,1420" fill="none" stroke="#137D68" stroke-width="3" stroke-linejoin="round"/>
+<polygon points="400,1420 394.78041359066526,1409.1946347717678 405.21958640933474,1409.1946347717678" fill="#137D68"/>
+<rect x="160" y="180" width="480" height="90" rx="18" fill="#13263F" stroke="#13263F" stroke-width="2"/>
+<text x="400.0" y="210.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#FFFFFF" text-anchor="middle" dominant-baseline="central">Feature handoff received</text>
+<text x="400.0" y="244.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#D7E3EF" text-anchor="middle" dominant-baseline="central">Exact revision, evidence, and approval pointer.</text>
+<polygon points="400,320.0 560.0,380 400,440.0 240.0,380" fill="#EAF1FF" stroke="#648DC8" stroke-width="2"/>
+<text x="400" y="365.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="22" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Required approval</text>
+<text x="400" y="394.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="22" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">and evidence valid?</text>
+<rect x="750" y="330" width="300" height="100" rx="18" fill="#FFF6E7" stroke="#E9C88D" stroke-width="2"/>
+<rect x="751" y="348" width="5" height="64" rx="2" fill="#946515" stroke="#946515" stroke-width="2"/>
+<text x="900.0" y="365.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Hold this feature</text>
+<text x="900.0" y="399.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Keep other teams working.</text>
+<rect x="160" y="500" width="480" height="110" rx="18" fill="#FFFFFF" stroke="#CBD8E8" stroke-width="2"/>
+<rect x="161" y="518" width="5" height="74" rx="2" fill="#2467BC" stroke="#2467BC" stroke-width="2"/>
+<text x="400.0" y="540.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Integrate branches serially</text>
+<text x="400.0" y="574.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Use the latest main in one integration tree.</text>
+<polygon points="400,680.0 560.0,740 400,800.0 240.0,740" fill="#EAF1FF" stroke="#648DC8" stroke-width="2"/>
+<text x="400" y="725.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="22" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Combined checks</text>
+<text x="400" y="754.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="22" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">pass?</text>
+<rect x="750" y="690" width="300" height="100" rx="18" fill="#FFF6E7" stroke="#E9C88D" stroke-width="2"/>
+<rect x="751" y="708" width="5" height="64" rx="2" fill="#946515" stroke="#946515" stroke-width="2"/>
+<text x="900.0" y="725.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Repair affected work</text>
+<text x="900.0" y="759.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Renew approval if material.</text>
+<rect x="160" y="870" width="480" height="110" rx="18" fill="#FFFFFF" stroke="#CBD8E8" stroke-width="2"/>
+<rect x="161" y="888" width="5" height="74" rx="2" fill="#2467BC" stroke="#2467BC" stroke-width="2"/>
+<text x="400.0" y="910.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Update main and deploy</text>
+<text x="400.0" y="944.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Use the authorized merge and release process.</text>
+<polygon points="400,1040.0 560.0,1100 400,1160.0 240.0,1100" fill="#EAF1FF" stroke="#648DC8" stroke-width="2"/>
+<text x="400" y="1085.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="22" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Production checks</text>
+<text x="400" y="1114.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="22" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">pass?</text>
+<rect x="750" y="1050" width="300" height="100" rx="18" fill="#FFF6E7" stroke="#E9C88D" stroke-width="2"/>
+<rect x="751" y="1068" width="5" height="64" rx="2" fill="#946515" stroke="#946515" stroke-width="2"/>
+<text x="900.0" y="1085.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Use safe recovery</text>
+<text x="900.0" y="1119.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Inspect uncertain outcomes.</text>
+<rect x="750" y="1250" width="300" height="100" rx="18" fill="#FFF6E7" stroke="#E9C88D" stroke-width="2"/>
+<rect x="751" y="1268" width="5" height="64" rx="2" fill="#946515" stroke="#946515" stroke-width="2"/>
+<text x="900.0" y="1285.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Record open work</text>
+<text x="900.0" y="1319.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">No claim of feature delivery.</text>
+<rect x="160" y="1240" width="480" height="100" rx="18" fill="#E9F8F4" stroke="#A3D9CB" stroke-width="2"/>
+<rect x="161" y="1258" width="5" height="64" rx="2" fill="#137D68" stroke="#137D68" stroke-width="2"/>
+<text x="400.0" y="1275.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Record the successful release</text>
+<text x="400.0" y="1309.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Update Beads or the canonical task file.</text>
+<rect x="160" y="1420" width="480" height="125" rx="18" fill="#E9F8F4" stroke="#A3D9CB" stroke-width="2"/>
+<rect x="161" y="1438" width="5" height="89" rx="2" fill="#137D68" stroke="#137D68" stroke-width="2"/>
+<text x="400.0" y="1467.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="23" font-weight="700" fill="#13263F" text-anchor="middle" dominant-baseline="central">Stop previews and clean up</text>
+<text x="400.0" y="1501.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Remove eligible worktrees and disposable files.</text>
+<text x="560" y="1585" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Preserve main, unfinished work, and evidence. Record retained resources and failures.</text>
+<text x="560" y="1620" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" font-weight="400" fill="#51647B" text-anchor="middle" dominant-baseline="central">Reuse one integration tree while needed; remove it when idle and eligible.</text>
 </svg>

@@ -6,7 +6,7 @@ Run this procedure on first use or when the user requests setup. Also check it w
 
 Check the operating system, project software, installed skills, and required tools. Check Beads with its `bd` command. Find each installed skill's name and required files. A folder alone does not prove that the skill works.
 
-Read `.agent-team/setup.json` if it exists. This local file records setup choices, not task progress. Keep it out of app releases and project commits. Preserve unrelated data. Do not store passwords or access tokens.
+Resolve the canonical main checkout from the project record and Git metadata before setup. Read its `.agent-team/setup.json` if it exists; do not create a separate receipt or tracker in each feature worktree. Only the project owner updates the shared receipt or changes tracking mode. Team leads reuse the recorded choices and route new setup needs to that owner. This local file records setup choices, not task progress. Keep it out of app releases and project commits. Preserve unrelated data. Do not store passwords or access tokens.
 
 Record the host, project, task file location, installation scope, tool sources, versions, and status. Also record declined items and the scope of approved installation. A saved record does not grant new permission. Check actual access when the host changes.
 
