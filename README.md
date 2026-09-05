@@ -247,10 +247,10 @@ A skill does not run after its host stops. Use the deployment service's own heal
 - `legacy/claude-v3/`: preserved previous Claude workflow, inactive and not part of the current installation instructions.
 - `CHANGELOG.md`: release history.
 
-The former `astra-dev-harness` personal skill is renamed `agent-team`; avoid keeping two active copies. The public repository is the distribution source. Updates to an installed personal copy are explicit, not automatic two-way synchronization.
+The former `astra-dev-harness` personal skill is renamed `agent-team`; avoid keeping two active copies. This private repository is the source for authorized LearnStack OS distribution. Updates to an installed personal copy are explicit, not automatic two-way synchronization.
 
 ## Validation and license
 
 This is an instruction-based skill. Structure, native agent frontmatter, internal links, and workflow consistency are checked; model routing, third-party installers, and production recovery still depend on the actual host/project and must be verified there. No universal cross-platform installation guarantee is made.
 
-[MIT License](LICENSE). Third-party dependencies retain their own licenses.
+[LearnStack OS Proprietary Skill License](LICENSE). This release is available to users with a qualifying paid LearnStack OS entitlement. Modification, redistribution, sharing, and resale of the skill are restricted by that license. Third-party materials retain their separate licenses.
