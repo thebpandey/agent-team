@@ -76,15 +76,16 @@ export async function runNormalizedHook(event) {
     }
   }
 
-  let activation;
+  let identity = { role: "unregistered" };
   if (project.active) {
     try {
       const canonical = await loadCanonicalState(project);
-      activation = activationRecordFor(event, project, identityFor(canonical.registry, event.sessionId));
+      identity = identityFor(canonical.registry, event.sessionId);
     } catch {
-      activation = activationRecordFor(event, project, { role: "unknown" });
+      identity = { role: "unknown" };
     }
   }
+  const activation = activationRecordFor(event, project, identity);
   if (activation) {
     try {
       const result = await appendActivationLog(path.join(os.homedir(), ".agent-team-hooks", "logs"), activation);

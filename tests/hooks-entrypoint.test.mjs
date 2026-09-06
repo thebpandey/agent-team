@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { readActivationLogs } from "../hooks/lib/telemetry.mjs";
 import { policyFixture } from "./hook-test-helpers.mjs";
 
 const hook = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-hook.mjs");
@@ -19,6 +20,15 @@ async function fixture() {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-entry-home-"));
   temporary.push(root, `${root}-feature`, `${root}-remote`, home);
   return { ...(await policyFixture(root)), home };
+}
+
+async function inactiveFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-entry-inactive-"));
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-entry-home-"));
+  temporary.push(root, home);
+  const initialized = spawnSync("git", ["init", "-q", "-b", "main", root]);
+  assert.equal(initialized.status, 0);
+  return { root, home };
 }
 
 function invoke(runtime, event, payload, home) {
@@ -383,6 +393,52 @@ test("entrypoint activation log records registered team provenance", async () =>
   assert.equal(record.projectId, "project-1");
   assert.equal(record.teamId, "TEAM-001");
   assert.equal(record.identityKind, "team");
+});
+
+test("direct Claude slash activation logs outside initialized Agent-Team projects", async () => {
+  // This test catches global slash activation logging being coupled to project-scoped policy state.
+  const value = await inactiveFixture();
+  const result = invoke("claude", "UserPromptExpansion", {
+    cwd: value.root,
+    session_id: "global-slash-session",
+    event_id: "global-slash-event",
+    command_name: "agent-team",
+    prompt: "/agent-team help with private context",
+  }, value.home);
+  const { records } = await readActivationLogs(path.join(value.home, ".agent-team-hooks", "logs"));
+
+  assert.equal(result.status, 0);
+  assert.equal(output(result).hookSpecificOutput.permissionDecision, undefined);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].runtime, "claude");
+  assert.equal(records[0].eventKind, "UserPromptExpansion");
+  assert.equal(records[0].identityKind, "unregistered");
+  assert.equal(records[0].projectId, undefined);
+  assert.equal(records[0].teamId, undefined);
+  assert.equal(JSON.stringify(records[0]).includes("private context"), false);
+});
+
+test("Claude Skill activation logs outside initialized Agent-Team projects", async () => {
+  // This test catches global model-invoked activation logging being coupled to project state.
+  const value = await inactiveFixture();
+  const result = invoke("claude", "PreToolUse", {
+    cwd: value.root,
+    session_id: "global-skill-session",
+    tool_name: "Skill",
+    tool_input: { skill: "agent-team", prompt: "private skill input" },
+    tool_use_id: "global-skill-event",
+  }, value.home);
+  const { records } = await readActivationLogs(path.join(value.home, ".agent-team-hooks", "logs"));
+
+  assert.equal(result.status, 0);
+  assert.equal(output(result).hookSpecificOutput.permissionDecision, undefined);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].runtime, "claude");
+  assert.equal(records[0].eventKind, "PreToolUse");
+  assert.equal(records[0].identityKind, "unregistered");
+  assert.equal(records[0].projectId, undefined);
+  assert.equal(records[0].teamId, undefined);
+  assert.equal(JSON.stringify(records[0]).includes("private skill input"), false);
 });
 
 test("Claude PostToolBatch runs one changed-file check and writes one factual checkpoint", async () => {
