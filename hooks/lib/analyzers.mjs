@@ -47,10 +47,10 @@ function recurringCost(file, context) {
   const schedule = /\b(cron|schedule|every[_ -]?(?:minute|hour|day)|rate\s*\()/i;
   if (!schedule.test(added) || added.trim() === removed.trim()) return [];
   const estimatedCost = context.pricing?.estimatedCost ?? "unknown";
-  return [finding("recurring_cost_change", file, "A recurring schedule was added or materially changed. Confirm frequency and operating cost.", { estimatedCost })];
+  return [finding("recurring_cost_change", file, "Changed content contains a recurring schedule. Confirm whether its frequency changed and check operating cost.", { estimatedCost })];
 }
 
-/** Inspect only added or materially changed content and deduplicate one batch of advice. */
+/** Run bounded changed-content heuristics and deduplicate one batch of advice. */
 export function analyzeChangedFiles(files, context = {}) {
   const seen = new Set();
   const output = [];

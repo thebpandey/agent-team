@@ -28,7 +28,7 @@ For each skill release, update `metadata.version`, this README, and the changelo
 
 Agent-Team includes optional cross-runtime lifecycle hooks for Codex and Claude Code. They normalize host events, check deterministic ownership and release prerequisites, add focused warnings, save small recovery checkpoints, and validate the package. They do not replace agent judgment or independent review. See the [lifecycle hook guide](references/hooks.md) for behavior, limits, commands, installation paths, trust, tests, and rollback.
 
-The hooks use Node.js 24 standard-library modules only. The installer preserves unrelated host settings and keeps one authoritative Codex skill at `~/.agents/skills/agent-team`. Run installation only with the user's authority. Health reports installation, registration, trust, runtime support, and observed exercise separately.
+The hooks use Node.js 24 standard-library modules only. The transactional installer preserves unrelated host settings, keeps one authoritative Codex skill at `~/.agents/skills/agent-team`, and manages unchanged current Claude role definitions under `~/.claude/agents` without overwriting customized files. Run installation only with the user's authority. Health reports installation, registration, trust, runtime support, and observed exercise separately.
 
 ## Install
 

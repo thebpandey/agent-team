@@ -1,8 +1,8 @@
-import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { withDirectoryLock } from "./lock.mjs";
 
-const activationFields = ["runtime", "skill", "sessionId", "eventKind", "projectId", "teamId", "correlationId"];
+const activationFields = ["runtime", "skill", "sessionId", "eventKind", "projectId", "teamId", "identityKind", "correlationId"];
 
 function activationRecord(input, now) {
   const output = { timestamp: now.toISOString() };
@@ -97,7 +97,7 @@ export function activationCapability(runtime) {
   };
 }
 
-export function activationRecordFor(event, project) {
+export function activationRecordFor(event, project, identity = { role: "unregistered" }) {
   const skill = event.operation.kind === "skill" ? event.operation.skill.toLowerCase().replace(/^\//, "") : "";
   if (event.runtime !== "claude" || skill !== "agent-team" || !["PreToolUse", "UserPromptExpansion"].includes(event.event)) return undefined;
   return {
@@ -106,15 +106,61 @@ export function activationRecordFor(event, project) {
     sessionId: event.sessionId,
     eventKind: event.event,
     projectId: project.projectId,
+    identityKind: identity.role === "unknown" ? "unregistered" : identity.role,
+    ...(identity.role === "team" ? { teamId: identity.team["team id"] } : {}),
     correlationId: event.eventId || `${event.sessionId}:${event.event}`,
   };
 }
 
-/** Summarize bounded activation evidence and point to, but do not duplicate, project records. */
+async function boundedSource(file, maxBytes = 64 * 1024) {
+  if (!file) return { status: "unavailable", reason: "path_missing", text: "", truncated: false };
+  let handle;
+  try {
+    handle = await open(file, "r");
+    const buffer = Buffer.alloc(maxBytes + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return { status: "current", text: buffer.subarray(0, Math.min(bytesRead, maxBytes)).toString("utf8"), truncated: bytesRead > maxBytes };
+  } catch (error) {
+    return { status: "unavailable", reason: error.code ?? "read_failed", text: "", truncated: false };
+  } finally {
+    await handle?.close();
+  }
+}
+
+function trackerSource(source) {
+  const lines = source.text.split(/\r?\n/);
+  const header = lines.findIndex((line) => /^\s*\|/.test(line) && /\bID\b/i.test(line) && /\bOwner\b/i.test(line));
+  if (source.status !== "current") return { status: source.status, reason: source.reason, taskIds: [], rows: [], truncated: source.truncated };
+  if (header === -1) return { status: "malformed", taskIds: [], rows: [], truncated: source.truncated };
+  const headings = lines[header].trim().replace(/^\||\|$/g, "").split("|").map((value) => value.trim().toLowerCase());
+  const idIndex = headings.indexOf("id");
+  const ownerIndex = headings.indexOf("owner");
+  const rows = [];
+  for (const line of lines.slice(header + 2)) {
+    if (!/^\s*\|/.test(line)) break;
+    const cells = line.trim().replace(/^\||\|$/g, "").split("|").map((value) => value.trim());
+    if (cells[idIndex]) rows.push({ id: cells[idIndex], owner: cells[ownerIndex] ?? "" });
+  }
+  return { status: rows.length ? "current" : "malformed", taskIds: rows.map(({ id }) => id), rows, truncated: source.truncated };
+}
+
+function mistakesSource(source, taskIds) {
+  if (source.status !== "current") return { status: source.status, reason: source.reason, lessonIds: [], taskIds: [], truncated: source.truncated };
+  if (!/^#\s+Agent-Team Mistakes\b/im.test(source.text)) return { status: "malformed", lessonIds: [], taskIds: [], truncated: source.truncated };
+  const lessonIds = [...source.text.matchAll(/^##\s+(M-\d+)\b/gim)].map((match) => match[1]);
+  const referencedTaskIds = taskIds.filter((id) => source.text.includes(id));
+  return { status: "current", lessonIds, taskIds: referencedTaskIds, truncated: source.truncated };
+}
+
+/** Correlate bounded stable identifiers without claiming policy effectiveness. */
 export async function auditEffectiveness({ logDirectory, trackerPath, mistakesPath, maxRecords = 1000 }) {
   const logs = await readActivationLogs(logDirectory, { maxRecords });
   const byRuntime = Object.create(null);
   for (const record of logs.records) byRuntime[record.runtime] = (byRuntime[record.runtime] ?? 0) + 1;
+  const tracker = trackerSource(await boundedSource(trackerPath));
+  const mistakes = mistakesSource(await boundedSource(mistakesPath), tracker.taskIds);
+  const activatedTeams = new Set(logs.records.map(({ teamId }) => teamId).filter(Boolean));
+  const activatedTaskIds = tracker.rows.filter(({ owner }) => activatedTeams.has(owner)).map(({ id }) => id);
   return {
     status: "completed",
     recordsProcessed: logs.records.length,
@@ -123,6 +169,11 @@ export async function auditEffectiveness({ logDirectory, trackerPath, mistakesPa
     activations: byRuntime,
     coverage: { codex: activationCapability("codex"), claude: activationCapability("claude") },
     references: { tracker: trackerPath, mistakes: mistakesPath },
-    limitation: "Activation counts show hook-visible use. They do not prove task quality or policy effectiveness.",
+    sources: {
+      tracker: { status: tracker.status, taskIds: tracker.taskIds, truncated: tracker.truncated, ...(tracker.reason ? { reason: tracker.reason } : {}) },
+      mistakes: { status: mistakes.status, lessonIds: mistakes.lessonIds, taskIds: mistakes.taskIds, truncated: mistakes.truncated, ...(mistakes.reason ? { reason: mistakes.reason } : {}) },
+    },
+    correlations: { activatedTaskIds, mistakeTaskIds: mistakes.taskIds },
+    limitation: "This is a factual identifier correlation. Activation counts do not prove task quality or policy effectiveness.",
   };
 }

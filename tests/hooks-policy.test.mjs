@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { classifyOperation } from "../hooks/lib/operation.mjs";
 import { resolveProject } from "../hooks/lib/project.mjs";
 import { evaluatePolicy } from "../hooks/lib/policy.mjs";
 import { hookEvent, policyFixture, saveState } from "./hook-test-helpers.mjs";
@@ -15,6 +17,7 @@ async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-policy-"));
   temporary.push(root, `${root}-feature`);
   const value = await policyFixture(root);
+  temporary.push(value.remote);
   return { ...value, project: await resolveProject(value.feature) };
 }
 
@@ -74,6 +77,27 @@ test("moving a file checks both its source and destination ownership", async () 
   }), value.project);
 
   assert.equal(decision.allow, false);
+});
+
+test("shell mv retains every source path and rejects ambiguous operand forms", async () => {
+  // This test catches a shell move that checks only its destination path.
+  const single = classifyOperation({ operation: { kind: "shell", command: "mv README.md src/README.md" } });
+  const multiple = classifyOperation({ operation: { kind: "shell", command: "mv src/a.js README.md src/archive/" } });
+  const separator = classifyOperation({ operation: { kind: "shell", command: "mv -- src/a.js src/b.js" } });
+  const ambiguous = classifyOperation({ operation: { kind: "shell", command: "mv --target-directory=src README.md" } });
+
+  assert.deepEqual(single.files, [{ action: "move", previousPath: "README.md", path: "src/README.md", changedContent: "" }]);
+  assert.deepEqual(multiple.files.map(({ previousPath }) => previousPath), ["src/a.js", "README.md"]);
+  assert.equal(separator.files[0].previousPath, "src/a.js");
+  assert.equal(ambiguous.parserFailed, true);
+
+  const value = await fixture();
+  const unownedSource = await evaluatePolicy(hookEvent(value, { operation: { kind: "shell", command: "mv README.md src/README.md" } }), value.project);
+  const unownedDestination = await evaluatePolicy(hookEvent(value, { operation: { kind: "shell", command: "mv src/owned.js README.md" } }), value.project);
+  const allowed = await evaluatePolicy(hookEvent(value, { operation: { kind: "shell", command: "mv -- src/owned.js src/moved.js" } }), value.project);
+  assert.equal(unownedSource.allow, false);
+  assert.equal(unownedDestination.allow, false);
+  assert.equal(allowed.allow, true);
 });
 
 test("adding a file under new owned directories resolves against the nearest existing parent", async () => {
@@ -176,6 +200,61 @@ test("integration blocks wrong owner, revision, base, remote, stale evidence, ga
   }
 });
 
+test("integration compares bounded current remote and base refs instead of stale local tracking refs", async () => {
+  // This test catches remote validation that only resolves local refs.
+  const value = await fixture();
+  const tree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd: value.feature, encoding: "utf8" }).trim();
+  const remoteRevision = execFileSync("git", ["commit-tree", tree, "-p", "HEAD", "-m", "remote drift"], { cwd: value.feature, encoding: "utf8" }).trim();
+  execFileSync("git", ["push", "-q", "origin", `${remoteRevision}:refs/heads/feature`], { cwd: value.feature });
+  const drifted = await evaluatePolicy(hookEvent(value, {
+    sessionId: "owner-session",
+    operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:feature` },
+  }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+
+  await rm(value.remote, { recursive: true, force: true });
+  const unavailable = await evaluatePolicy(hookEvent(value, {
+    sessionId: "owner-session",
+    operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:feature` },
+  }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+
+  assert.equal(drifted.allow, false);
+  assert.match(drifted.messages.join("\n"), /remote/i);
+  assert.equal(unavailable.allow, false);
+  assert.match(unavailable.messages.join("\n"), /unavailable/i);
+});
+
+test("release gate binds authorization, run, batch, artifact, evidence, pause, delta, and recovery records", async (context) => {
+  // This test catches a release decision based only on owner, target, and revision.
+  const cases = [
+    ["authorization provenance", (state) => { delete state.release.authorization.source; }],
+    ["process scope", (state) => { state.release.authorization.process = "vercel"; }],
+    ["run mode", (state) => { state.release.runMode = "auto_deploy"; state.release.autoDeploy = false; }],
+    ["manual mode", (state) => { state.release.runMode = "manual"; state.release.autoDeploy = true; }],
+    ["batch membership", (state) => { state.release.taskIds = ["AT-404"]; }],
+    ["artifact revision", (state) => { state.release.artifact.revision = "deadbeef"; }],
+    ["integration record", (state) => { state.release.integration.status = "pending"; }],
+    ["verification record", (state) => { state.release.verification.revision = "deadbeef"; }],
+    ["preview record", (state) => { state.release.preview = { required: true, status: "pending", revision: state.release.expectedRevision }; }],
+    ["project pause", (state) => { state.release.projectPaused = true; }],
+    ["deployment delta", (state) => { state.release.delta.taskIds = []; }],
+    ["known recovery", (state) => { delete state.release.recovery.action; }],
+  ];
+
+  for (const [name, mutate] of cases) {
+    await context.test(name, async () => {
+      const value = await fixture();
+      const state = structuredClone(value.state);
+      mutate(state);
+      await saveState(value, state);
+      const result = await evaluatePolicy(hookEvent(value, {
+        sessionId: "owner-session",
+        operation: { kind: "shell", command: "npm publish" },
+      }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+      assert.equal(result.allow, false);
+    });
+  }
+});
+
 test("recognized destructive database operations require authorization, inventory, recovery, dry run, and cascade evidence", async () => {
   // This test catches a destructive client command that proceeds on partial evidence.
   const value = await fixture();
@@ -189,7 +268,7 @@ test("recognized destructive database operations require authorization, inventor
     { authorized: false },
     { inventoryAt: undefined },
     { recovery: undefined },
-    { dryRunAt: undefined },
+    { dryRun: undefined },
     { allowCascade: false },
     { environment: "production", productionApproved: false },
   ]) {
@@ -202,6 +281,31 @@ test("recognized destructive database operations require authorization, inventor
     assert.equal(denied.allow, false);
     assert.equal(denied.messages.join("\n").includes("customers"), false);
   }
+});
+
+test("database gates accept an explicit unsupported dry-run capability only with fresh alternative evidence", async () => {
+  // This test catches a database gate that treats every operation as transaction-dry-run capable.
+  const value = await fixture();
+  const state = structuredClone(value.state);
+  state.database.dryRun = {
+    capability: "unsupported",
+    reason: "The provider has no transaction preview.",
+    alternative: { kind: "disposable-clone", verifiedAt: "2026-09-06T12:00:00.000Z" },
+  };
+  await saveState(value, state);
+  const allowed = await evaluatePolicy(hookEvent(value, {
+    sessionId: "owner-session",
+    operation: { kind: "shell", command: "psql -c 'DROP TABLE fixture CASCADE'" },
+  }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+  delete state.database.dryRun.alternative;
+  await saveState(value, state);
+  const blocked = await evaluatePolicy(hookEvent(value, {
+    sessionId: "owner-session",
+    operation: { kind: "shell", command: "psql -c 'DROP TABLE fixture CASCADE'" },
+  }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+
+  assert.equal(allowed.allow, true);
+  assert.equal(blocked.allow, false);
 });
 
 test("explicit provider and app-script mappings gate destructive database paths and label blind spots", async () => {
@@ -247,6 +351,37 @@ test("explicit completion checks evidence while Stop and interruption events do 
   }
   assert.equal(complete.allow, true);
   assert.equal(blocked.allow, false);
+});
+
+test("completion checks deployment and cleanup only when scoped and permits honest non-final outcomes", async () => {
+  // This test catches final-only evidence being applied to blocked or out-of-scope completion states.
+  const value = await fixture();
+  const baseline = structuredClone(value.state);
+  baseline.completion.scope = { deployment: true, cleanup: true };
+  await saveState(value, baseline);
+  const missingScoped = await evaluatePolicy(hookEvent(value, {
+    event: "TaskCompleted",
+    operation: { kind: "completion", taskId: "AT-001", outcome: "verified" },
+  }), value.project);
+
+  baseline.completion.deployment = { status: "passed", taskId: "AT-001", revision: value.revision };
+  baseline.completion.cleanup = { status: "passed", taskId: "AT-001", revision: value.revision };
+  await saveState(value, baseline);
+  const complete = await evaluatePolicy(hookEvent(value, {
+    event: "TaskCompleted",
+    operation: { kind: "completion", taskId: "AT-001", outcome: "verified" },
+  }), value.project);
+
+  baseline.completion.checks = [];
+  await saveState(value, baseline);
+  const blocked = await evaluatePolicy(hookEvent(value, {
+    event: "TaskCompleted",
+    operation: { kind: "completion", taskId: "AT-001", outcome: "blocked" },
+  }), value.project);
+
+  assert.equal(missingScoped.allow, false);
+  assert.equal(complete.allow, true);
+  assert.equal(blocked.allow, true);
 });
 
 test("Codex canonical tracker status transitions use the explicit completion gate", async () => {

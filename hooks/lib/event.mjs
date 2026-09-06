@@ -62,13 +62,22 @@ function fileOperation(runtime, tool, input) {
   return undefined;
 }
 
+function batchFileOperation(runtime, event, payload) {
+  if (runtime !== "claude" || event !== "PostToolBatch" || !Array.isArray(payload.tool_calls)) return undefined;
+  const files = payload.tool_calls.flatMap((call) => {
+    const operation = fileOperation(runtime, String(call.tool_name ?? ""), call.tool_input ?? {});
+    return operation?.files ?? [];
+  });
+  return files.length ? { kind: "file_change", tool: "PostToolBatch", files } : { kind: "lifecycle" };
+}
+
 /** Normalize host payloads once so every policy sees the same operation shape. */
 export function normalizeEvent(runtime, event, payload = {}) {
   if (!new Set(["codex", "claude"]).has(runtime)) throw new Error(`Unsupported runtime: ${runtime}`);
   const tool = String(payload.tool_name ?? payload.toolName ?? "");
   const input = payload.tool_input ?? payload.toolInput ?? {};
   const files = fileOperation(runtime, tool, input);
-  let operation = files;
+  let operation = files ?? batchFileOperation(runtime, event, payload);
 
   if (!operation && event === "UserPromptExpansion") {
     operation = { kind: "skill", skill: String(payload.skill_name ?? payload.skillName ?? payload.command_name ?? "") };
@@ -79,17 +88,24 @@ export function normalizeEvent(runtime, event, payload = {}) {
   } else if (!operation && tool) {
     operation = { kind: "provider", tool, input };
   } else if (!operation && event === "TaskCompleted") {
-    operation = { kind: "completion" };
+    operation = {
+      kind: "completion",
+      ...(payload.task_id ?? payload.taskId ? { taskId: String(payload.task_id ?? payload.taskId) } : {}),
+      ...(payload.status ?? payload.outcome ? { outcome: String(payload.status ?? payload.outcome).toLowerCase() } : {}),
+    };
   } else if (!operation) {
     operation = { kind: "lifecycle" };
   }
 
+  const batchId = event === "PostToolBatch" && Array.isArray(payload.tool_calls)
+    ? `batch:${payload.tool_calls.map((call) => call.tool_use_id ?? call.toolUseId).filter(Boolean).slice(0, 20).join(",")}`
+    : "";
   return {
     runtime,
     event,
     cwd: payload.cwd ?? process.cwd(),
     sessionId: String(payload.session_id ?? payload.sessionId ?? "unknown"),
-    eventId: String(payload.event_id ?? payload.eventId ?? payload.tool_use_id ?? payload.toolUseId ?? ""),
+    eventId: String(payload.event_id ?? payload.eventId ?? payload.tool_use_id ?? payload.toolUseId ?? batchId),
     operation,
   };
 }

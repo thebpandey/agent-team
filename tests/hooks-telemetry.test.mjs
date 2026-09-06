@@ -76,22 +76,59 @@ test("effectiveness audit is bounded and states activation coverage limits", asy
   const root = await directory();
   const tracker = path.join(root, "TASKS.md");
   const mistakes = path.join(root, "MISTAKES.md");
-  await writeFile(tracker, "# tasks\n");
-  await writeFile(mistakes, "# mistakes\n");
+  await writeFile(tracker, `# Agent-Team Tasks
+| ID | Owner | Status |
+| --- | --- | --- |
+| AT-001 | TEAM-001 | verified |
+| AT-002 | TEAM-002 | in_progress |
+`);
+  await writeFile(mistakes, `# Agent-Team Mistakes
+## M-001: Keep hook failures visible
+Source: AT-001, review evidence
+`);
   for (let index = 0; index < 5; index += 1) await appendActivationLog(root, record(`audit-${index}`));
   const audit = await auditEffectiveness({ logDirectory: root, trackerPath: tracker, mistakesPath: mistakes, maxRecords: 2 });
 
   assert.equal(audit.recordsProcessed, 2);
   assert.equal(audit.truncated, true);
   assert.equal(audit.references.tracker, tracker);
+  assert.deepEqual(audit.sources.tracker.taskIds, ["AT-001", "AT-002"]);
+  assert.deepEqual(audit.sources.mistakes.lessonIds, ["M-001"]);
+  assert.deepEqual(audit.correlations.activatedTaskIds, ["AT-001"]);
+  assert.deepEqual(audit.correlations.mistakeTaskIds, ["AT-001"]);
   assert.equal(activationCapability("codex").status, "unsupported");
   assert.equal(activationCapability("claude").status, "supported");
+});
+
+test("effectiveness audit distinguishes unavailable and malformed canonical sources", async () => {
+  // This test catches an audit that echoes paths without reading bounded canonical evidence.
+  const root = await directory();
+  const malformed = path.join(root, "MISTAKES.md");
+  await writeFile(malformed, "not a canonical mistakes record\n");
+  const audit = await auditEffectiveness({
+    logDirectory: root,
+    trackerPath: path.join(root, "missing-TASKS.md"),
+    mistakesPath: malformed,
+    maxRecords: 2,
+  });
+
+  assert.equal(audit.sources.tracker.status, "unavailable");
+  assert.equal(audit.sources.mistakes.status, "malformed");
+  assert.deepEqual(audit.correlations.activatedTaskIds, []);
 });
 
 test("only reliable Claude Skill and slash-expansion paths create activation records", () => {
   // This test catches inferred Codex activation and unrelated Claude tool events.
   const base = { sessionId: "s", eventId: "e", operation: { kind: "skill", skill: "agent-team" } };
-  assert.equal(activationRecordFor({ ...base, runtime: "claude", event: "PreToolUse" }, { projectId: "p" }).runtime, "claude");
+  const team = activationRecordFor({ ...base, runtime: "claude", event: "PreToolUse" }, { projectId: "p" }, {
+    role: "team", team: { "team id": "TEAM-001" },
+  });
+  const owner = activationRecordFor({ ...base, runtime: "claude", event: "PreToolUse" }, { projectId: "p" }, { role: "project_owner" });
+  assert.equal(team.runtime, "claude");
+  assert.equal(team.teamId, "TEAM-001");
+  assert.equal(team.identityKind, "team");
+  assert.equal(owner.identityKind, "project_owner");
+  assert.equal(owner.teamId, undefined);
   assert.equal(activationRecordFor({ ...base, runtime: "claude", event: "UserPromptExpansion" }, { projectId: "p" }).eventKind, "UserPromptExpansion");
   assert.equal(activationRecordFor({ ...base, runtime: "codex", event: "PreToolUse" }, { projectId: "p" }), undefined);
   assert.equal(activationRecordFor({ ...base, runtime: "claude", event: "PostToolUse" }, { projectId: "p" }), undefined);

@@ -62,7 +62,7 @@ function destructiveSql(sql) {
 
 /** Recognize only explicit critical operation forms; unmatched paths remain documented blind spots. */
 export function classifyOperation(event, mappings = {}) {
-  if (event.operation.kind === "completion") return { kind: "completion", taskId: event.operation.taskId };
+  if (event.operation.kind === "completion") return { kind: "completion", taskId: event.operation.taskId, outcome: event.operation.outcome };
   if (event.operation.kind === "file_change") {
     const transition = event.operation.files.find((file) => path.basename(file.path) === "TASKS.md"
       && /\|\s*(verified|deployed)\s*\|/i.test(file.changedContent ?? "")
@@ -86,7 +86,13 @@ export function classifyOperation(event, mappings = {}) {
       };
     }
     const sql = mapping.sqlField ? event.operation.input?.[mapping.sqlField] : "";
-    return { kind: mapping.kind, sql, cascade: /\bcascade\b/i.test(sql ?? ""), parserFailed: mapping.sqlField && typeof sql !== "string" };
+    return {
+      kind: mapping.kind,
+      sql,
+      cascade: /\bcascade\b/i.test(sql ?? ""),
+      parserFailed: mapping.sqlField && typeof sql !== "string",
+      ...(mapping.process ? { process: mapping.process } : {}),
+    };
   }
   if (event.operation.kind !== "shell") return event.operation;
 
@@ -96,16 +102,17 @@ export function classifyOperation(event, mappings = {}) {
   if (git?.command === "push") return { kind: "integration", repository: git.repository };
   const gh = tokens.findIndex((token) => executable(token) === "gh");
   if (gh !== -1 && tokens[gh + 1] === "pr" && ["create", "merge"].includes(tokens[gh + 2])) return { kind: "integration" };
-  if (gh !== -1 && tokens[gh + 1] === "release" && tokens[gh + 2] === "create") return { kind: "release" };
-  if (tokens.some((token) => ["npm", "pnpm"].includes(executable(token))) && tokens.includes("publish")) return { kind: "release" };
-  if (tokens.some((token) => executable(token) === "vercel") && tokens.includes("--prod")) return { kind: "release" };
+  if (gh !== -1 && tokens[gh + 1] === "release" && tokens[gh + 2] === "create") return { kind: "release", process: "gh-release" };
+  const packageManager = tokens.find((token) => ["npm", "pnpm"].includes(executable(token)));
+  if (packageManager && tokens.includes("publish")) return { kind: "release", process: executable(packageManager) };
+  if (tokens.some((token) => executable(token) === "vercel") && tokens.includes("--prod")) return { kind: "release", process: "vercel" };
 
   const database = sqlClient(tokens);
   if (database && destructiveSql(database.sql)) {
     return { kind: "database_destructive", sql: database.sql, cascade: /\bcascade\b/i.test(database.sql), parserFailed: !database.sql };
   }
   const mapped = mappings.shell?.find(({ prefix }) => command.trim().startsWith(prefix));
-  if (mapped) return { kind: mapped.kind, cascade: false };
+  if (mapped) return { kind: mapped.kind, cascade: false, ...(mapped.process ? { process: mapped.process } : {}) };
   const writeCommand = executable(tokens[0]);
   if (writeCommand === "rm") {
     return {
@@ -113,7 +120,35 @@ export function classifyOperation(event, mappings = {}) {
       files: tokens.slice(1).filter((token) => !token.startsWith("-")).map((file) => ({ action: "delete", path: file, changedContent: "" })),
     };
   }
-  if (["mv", "cp"].includes(writeCommand)) {
+  if (writeCommand === "mv") {
+    const arguments_ = tokens.slice(1);
+    const operands = [];
+    let optionsEnded = false;
+    let parserFailed = false;
+    for (const argument of arguments_) {
+      if ([";", "|", "&"].includes(argument)) {
+        parserFailed = true;
+        break;
+      }
+      if (!optionsEnded && argument === "--") {
+        optionsEnded = true;
+        continue;
+      }
+      if (!optionsEnded && argument.startsWith("-")) {
+        const safeLong = new Set(["--force", "--interactive", "--no-clobber", "--verbose", "--no-target-directory", "--strip-trailing-slashes"]);
+        if (!safeLong.has(argument) && !/^-([finvT]+)$/.test(argument)) parserFailed = true;
+        continue;
+      }
+      operands.push(argument);
+    }
+    if (parserFailed || operands.length < 2) return { kind: "file_change", files: [], parserFailed: true };
+    const destination = operands.at(-1);
+    return {
+      kind: "file_change",
+      files: operands.slice(0, -1).map((source) => ({ action: "move", previousPath: source, path: destination, changedContent: "" })),
+    };
+  }
+  if (writeCommand === "cp") {
     const targets = tokens.slice(1).filter((token) => !token.startsWith("-"));
     const destination = targets.at(-1);
     return destination ? { kind: "file_change", files: [{ action: writeCommand === "mv" ? "move" : "add_or_edit", path: destination, changedContent: "" }] } : { kind: "ordinary" };

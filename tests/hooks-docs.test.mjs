@@ -28,10 +28,30 @@ test("hook guide documents runtime, safety, install, audit, and archive contract
   // This test catches removal of a required operator contract from the shared guide.
   const guide = await read("references/hooks.md");
   for (const required of [
-    "PreToolUse", "TaskCompleted", "UserPromptExpansion", ".agents/skills/agent-team", ".claude/skills/agent-team",
+    "PreToolUse", "PostToolBatch", "TaskCompleted", "UserPromptExpansion", ".agents/skills/agent-team", ".claude/skills/agent-team",
     "health", "audit", "install", "uninstall", "check-package", "check-artifacts", "unsupported", "trusted",
     "Node.js 24", "standard library", "legacy/claude-v3", "6c4e5ad39220f50f1059f2cde77f046a61158f6a", "Apache-2.0",
   ]) assert.ok(guide.includes(required), `Missing hook guide term: ${required}`);
+});
+
+test("Claude declaration batches post-tool checks without a duplicate per-edit hook", async () => {
+  // This test catches Claude lint registration on both per-tool and batch events.
+  const declaration = JSON.parse(await read("hooks/claude-hooks.json"));
+  assert.equal(declaration.hooks.PostToolBatch.length, 1);
+  assert.equal(declaration.hooks.PostToolUse, undefined);
+});
+
+test("hook guide states factual coverage and installed Claude role behavior", async () => {
+  // This test catches claims that heuristic advice or explicit mappings form a complete safety boundary.
+  const guide = await read("references/hooks.md");
+  for (const pattern of [
+    /heuristic.*not proof/i,
+    /explicit.*mapping.*not.*universal security boundary/i,
+    /mapping evidence.*unavailable.*block/i,
+    /read-only.*recovery snapshot/i,
+    /\.claude\/agents/i,
+    /factual correlation.*does not prove.*effectiveness/i,
+  ]) assert.match(guide, pattern);
 });
 
 test("feature requests and start actions keep distinct task-creation rules", async () => {

@@ -71,6 +71,7 @@ export async function resolveProject(cwd) {
       tasks: path.join(stateRoot, "TASKS.md"),
       teams: path.join(stateRoot, "TEAMS.md"),
       checkpoints: path.join(stateRoot, "checkpoints"),
+      handoffs: path.join(stateRoot, "handoffs"),
       locks: path.join(stateRoot, ".locks"),
     },
   };

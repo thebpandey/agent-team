@@ -94,7 +94,7 @@
   },
   "requiredEvents": {
     "codex": ["SessionStart", "PreToolUse", "PostToolUse", "PreCompact", "Interrupt"],
-    "claude": ["SessionStart", "PreToolUse", "PostToolUse", "PreCompact", "TaskCompleted", "UserPromptExpansion"]
+    "claude": ["SessionStart", "PreToolUse", "PostToolBatch", "PreCompact", "TaskCompleted", "UserPromptExpansion"]
   },
   "policies": [
     { "id": "req-01", "module": "hooks/lib/recovery.mjs", "platforms": ["codex", "claude"] },

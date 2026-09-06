@@ -37,15 +37,14 @@
         ]
       }
     ],
-    "PostToolUse": [
+    "PostToolBatch": [
       {
-        "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$HOME/.claude/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime claude --event PostToolUse",
+            "command": "node \"$HOME/.claude/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime claude --event PostToolBatch",
             "timeout": 5,
-            "statusMessage": "Checking changed files"
+            "statusMessage": "Checking changed files and saving a checkpoint"
           }
         ]
       }

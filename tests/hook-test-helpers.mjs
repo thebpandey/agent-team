@@ -12,8 +12,13 @@ export async function policyFixture(root, { now = "2026-09-06T12:00:00.000Z" } =
   await writeFile(path.join(root, "src", "owned.js"), "export {};\n");
   execFileSync("git", ["add", "."], { cwd: root });
   execFileSync("git", ["commit", "-q", "-m", "fixture"], { cwd: root });
+  const remote = `${root}-remote`;
+  execFileSync("git", ["init", "-q", "--bare", remote]);
+  execFileSync("git", ["remote", "add", "origin", remote], { cwd: root });
+  execFileSync("git", ["push", "-q", "-u", "origin", "main"], { cwd: root });
   const feature = `${root}-feature`;
   execFileSync("git", ["worktree", "add", "-q", "-b", "feature", feature], { cwd: root });
+  execFileSync("git", ["push", "-q", "-u", "origin", "feature"], { cwd: feature });
   const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: feature, encoding: "utf8" }).trim();
 
   await mkdir(path.join(root, ".agent-team"));
@@ -43,9 +48,11 @@ Integration owner: owner-session
       ownerSessionId: "owner-session",
       authorized: true,
       expectedRevision: revision,
-      baseRef: "HEAD",
+      baseRef: "main",
+      remoteName: "origin",
+      baseRemoteRef: "refs/heads/main",
       baseRevision: revision,
-      remoteRef: "HEAD",
+      remoteRef: "refs/heads/feature",
       remoteRevision: revision,
       evidenceAt: now,
       preview: { required: false },
@@ -62,6 +69,24 @@ Integration owner: owner-session
       expectedRevision: revision,
       evidenceAt: now,
       target: "test-registry",
+      process: "npm",
+      authorization: {
+        source: "user-request",
+        target: "test-registry",
+        process: "npm",
+        scope: "batch-1",
+        grantedAt: now,
+      },
+      runMode: "auto_deploy",
+      batchId: "batch-1",
+      taskIds: ["AT-001"],
+      batch: { id: "batch-1", taskIds: ["AT-001"] },
+      artifact: { id: "artifact-1", revision, taskIds: ["AT-001"] },
+      integration: { status: "passed", revision, taskIds: ["AT-001"] },
+      verification: { status: "passed", revision, taskIds: ["AT-001"] },
+      preview: { required: false, status: "not_required", revision },
+      delta: { status: "clean", revision, taskIds: ["AT-001"] },
+      recovery: { status: "verified", artifactId: "artifact-0", action: "rollback" },
       recoveryReady: true,
       autoDeploy: true,
       hold: false,
@@ -74,7 +99,7 @@ Integration owner: owner-session
       fixtureTarget: false,
       inventoryAt: now,
       recovery: { verifiedAt: now, kind: "backup" },
-      dryRunAt: now,
+      dryRun: { capability: "supported", verifiedAt: now },
       allowCascade: true,
     },
     completion: {
@@ -83,6 +108,7 @@ Integration owner: owner-session
       requirementsReconciled: true,
       review: { status: "passed", revision },
       checks: [{ name: "unit", status: "passed", revision }],
+      scope: { deployment: false, cleanup: false },
     },
     operationMappings: {
       providers: {
@@ -95,7 +121,7 @@ Integration owner: owner-session
     },
   };
   await writeFile(path.join(root, ".agent-team", "state.json"), JSON.stringify(state, null, 2));
-  return { root, feature, revision, state };
+  return { root, feature, remote, revision, state };
 }
 
 export async function saveState(fixture, state) {

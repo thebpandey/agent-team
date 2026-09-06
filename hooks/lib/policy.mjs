@@ -18,6 +18,17 @@ function deny(message, context = {}) {
   return decision({ allow: false, mode: "enforce", messages: [message], context });
 }
 
+/** Select the safe native fallback when canonical/runtime evidence cannot be read. */
+export function unavailableDecision(event) {
+  const operation = classifyOperation(event);
+  const critical = ["file_change", "integration", "release", "database_destructive", "completion"].includes(operation.kind)
+    || (event.event === "PreToolUse" && ["provider", "shell"].includes(event.operation.kind));
+  return critical ? deny("Agent-Team evidence is unavailable for this potentially critical operation.") : decision({
+    messages: ["Agent-Team advisory checks are unavailable for this event."],
+    capabilities: { policy: "unavailable" },
+  });
+}
+
 function fresh(value, now, maximumAgeMs = 5 * 60_000) {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && now.getTime() - timestamp >= 0 && now.getTime() - timestamp <= maximumAgeMs;
@@ -76,12 +87,23 @@ async function gitValue(cwd, args) {
   return stdout.trim();
 }
 
+async function remoteRevision(cwd, remote, ref) {
+  if (!remote || !ref) throw new Error("Remote evidence fields are missing.");
+  const output = await gitValue(cwd, ["ls-remote", "--exit-code", remote, ref]);
+  const matches = output.split(/\r?\n/).filter(Boolean).map((line) => line.split(/\s+/)).filter(([, name]) => name === ref);
+  if (matches.length !== 1 || !/^[0-9a-f]{40,64}$/i.test(matches[0][0])) throw new Error("Remote evidence is ambiguous.");
+  return matches[0][0];
+}
+
 async function gitEvidence(project, state) {
   const head = await gitValue(project.worktreeRoot, ["rev-parse", "HEAD"]);
   const base = await gitValue(project.worktreeRoot, ["rev-parse", state.baseRef]);
-  const remote = await gitValue(project.worktreeRoot, ["rev-parse", state.remoteRef]);
   const delta = await gitValue(project.worktreeRoot, ["status", "--porcelain", "--untracked-files=no"]);
-  return { head, base, remote, clean: delta === "" };
+  const [baseRemote, remote] = await Promise.all([
+    remoteRevision(project.worktreeRoot, state.remoteName, state.baseRemoteRef),
+    remoteRevision(project.worktreeRoot, state.remoteName, state.remoteRef),
+  ]);
+  return { head, base, baseRemote, remote, clean: delta === "" };
 }
 
 async function integrationGate(event, project, canonical, operation, now) {
@@ -108,19 +130,56 @@ async function integrationGate(event, project, canonical, operation, now) {
   }
   if (evidence.head !== gate.expectedRevision) return deny("The integration revision does not match current HEAD.");
   if (evidence.base !== gate.baseRevision) return deny("The integration base does not match current Git evidence.");
+  if (evidence.baseRemote !== gate.baseRevision) return deny("The integration base does not match the current remote base.");
   if (evidence.remote !== gate.remoteRevision) return deny("The integration remote revision does not match current Git evidence.");
   if (!evidence.clean) return deny("The current integration delta is not clean.");
   return undefined;
 }
 
-async function releaseGate(event, project, canonical, now) {
+function sameIds(left, right) {
+  return Array.isArray(left) && Array.isArray(right)
+    && left.length === right.length
+    && [...left].sort().every((value, index) => value === [...right].sort()[index]);
+}
+
+function releaseRecord(record, revision, taskIds) {
+  return record?.status === "passed" && record.revision === revision && sameIds(record.taskIds, taskIds);
+}
+
+async function releaseGate(event, project, canonical, operation, now) {
   const gate = canonical.state.release ?? {};
   if (event.sessionId !== gate.ownerSessionId || event.sessionId !== canonical.registry.integrationOwner) return deny("The registered release owner must run this operation.");
   if (!gate.authorized) return deny("Release authorization is missing.");
   if (!gate.target) return deny("The release target is unknown.");
-  if (!gate.recoveryReady) return deny("Release recovery evidence is missing.");
+  const authorization = gate.authorization ?? {};
+  if (!authorization.source || !authorization.scope || !authorization.grantedAt) return deny("Release authorization provenance is missing.");
+  if (authorization.target !== gate.target || authorization.process !== gate.process || operation.process !== gate.process) {
+    return deny("Release target or process authorization does not match this operation.");
+  }
+  if (!gate.batchId || authorization.scope !== gate.batchId || gate.batch?.id !== gate.batchId || !sameIds(gate.batch?.taskIds, gate.taskIds)) {
+    return deny("Release batch membership is missing or inconsistent.");
+  }
+  if (!Array.isArray(gate.taskIds) || !gate.taskIds.length || gate.taskIds.some((id) => !canonical.tasks.some((task) => task.id === id))) {
+    return deny("Release task IDs do not match the canonical tracker.");
+  }
+  if ((gate.runMode === "auto_deploy" && gate.autoDeploy !== true)
+    || (gate.runMode === "manual" && gate.autoDeploy !== false)
+    || !["auto_deploy", "manual"].includes(gate.runMode)) return deny("Release run mode is missing or inconsistent.");
+  if (canonical.state.run?.paused || gate.projectPaused) return deny("The project run is paused.");
   if (gate.hold) return deny("A release hold is active.");
   if (!fresh(gate.evidenceAt, now)) return deny("Release evidence is stale or unavailable.");
+  if (!gate.artifact?.id || gate.artifact.revision !== gate.expectedRevision || !sameIds(gate.artifact.taskIds, gate.taskIds)) {
+    return deny("Release artifact evidence does not match the exact revision and task IDs.");
+  }
+  if (!releaseRecord(gate.integration, gate.expectedRevision, gate.taskIds)) return deny("Required integration evidence is missing or stale.");
+  if (!releaseRecord(gate.verification, gate.expectedRevision, gate.taskIds)) return deny("Required release verification is missing or stale.");
+  if (gate.preview?.required
+    ? gate.preview.status !== "passed" || gate.preview.revision !== gate.expectedRevision
+    : !["not_required", "passed"].includes(gate.preview?.status)) return deny("Required preview evidence is missing or stale.");
+  if (gate.delta?.status !== "clean" || gate.delta.revision !== gate.expectedRevision || !sameIds(gate.delta.taskIds, gate.taskIds)) {
+    return deny("The deployment delta is not limited to the recorded release scope.");
+  }
+  if (gate.recovery?.status !== "verified" || !gate.recovery.artifactId || !gate.recovery.action) return deny("Release recovery evidence is missing.");
   let head;
   try {
     head = await gitValue(project.worktreeRoot, ["rev-parse", "HEAD"]);
@@ -141,7 +200,15 @@ function databaseGate(event, canonical, operation, now) {
   if (!gate.fixtureTarget) {
     if (!fresh(gate.inventoryAt, now)) return deny("Database inventory evidence is stale or unavailable.");
     if (!fresh(gate.recovery?.verifiedAt, now)) return deny("Database recovery evidence is stale or unavailable.");
-    if (!fresh(gate.dryRunAt, now)) return deny("Database dry-run evidence is stale or unavailable.");
+    if (gate.dryRun?.capability === "supported") {
+      if (!fresh(gate.dryRun.verifiedAt, now)) return deny("Database dry-run evidence is stale or unavailable.");
+    } else if (gate.dryRun?.capability === "unsupported") {
+      if (!gate.dryRun.reason || !gate.dryRun.alternative?.kind || !fresh(gate.dryRun.alternative.verifiedAt, now)) {
+        return deny("Database alternative safety evidence is stale or unavailable for an operation without dry-run support.");
+      }
+    } else {
+      return deny("Database dry-run capability is unknown.");
+    }
   }
   if (operation.cascade && !gate.allowCascade) return deny("Cascade authorization is missing for this database operation.");
   return undefined;
@@ -154,6 +221,7 @@ async function completionGate(event, project, canonical, operation) {
   const taskId = operation.taskId ?? gate.taskId;
   const task = canonical.tasks.find((entry) => entry.id === taskId);
   if (!task || (identity.role === "team" && task.owner !== identity.team["team id"])) return deny("The canonical task owner does not match this completion.");
+  if (["partial", "blocked", "deferred"].includes(operation.outcome)) return undefined;
   let head;
   try {
     head = await gitValue(project.worktreeRoot, ["rev-parse", "HEAD"]);
@@ -165,6 +233,13 @@ async function completionGate(event, project, canonical, operation) {
   if (gate.review?.status !== "passed" || gate.review.revision !== head) return deny("Completion review evidence is missing or stale.");
   if (!gate.checks?.length || gate.checks.some((check) => check.status !== "passed" || check.revision !== head)) {
     return deny("Completion check evidence is missing or stale.");
+  }
+  for (const field of ["deployment", "cleanup"]) {
+    if (!gate.scope?.[field]) continue;
+    const record = gate[field];
+    if (record?.status !== "passed" || record.taskId !== taskId || record.revision !== head) {
+      return deny(`Completion ${field} evidence is missing or stale for this task and revision.`);
+    }
   }
   return undefined;
 }
@@ -178,11 +253,7 @@ export async function evaluatePolicy(event, project, { now = new Date() } = {}) 
     canonical = await loadCanonicalState(project);
     operation = classifyOperation(event, canonical.state.operationMappings);
   } catch {
-    const recognized = ["integration", "release", "database_destructive", "completion"].includes(classifyOperation(event).kind);
-    return recognized ? deny("Canonical Agent-Team state is unavailable for this critical operation.") : decision({
-      messages: ["Agent-Team advisory checks are unavailable because canonical state could not be read."],
-      capabilities: { policy: "unavailable" },
-    });
+    return unavailableDecision(event);
   }
 
   const identity = identityFor(canonical.registry, event.sessionId);
@@ -199,7 +270,7 @@ export async function evaluatePolicy(event, project, { now = new Date() } = {}) 
   }
   if (ownershipDecision) return ownershipDecision;
   if (operation.kind === "integration") return (await integrationGate(event, project, canonical, operation, now)) ?? decision();
-  if (operation.kind === "release") return (await releaseGate(event, project, canonical, now)) ?? decision();
+  if (operation.kind === "release") return (await releaseGate(event, project, canonical, operation, now)) ?? decision();
   if (operation.kind === "database_destructive") return databaseGate(event, canonical, operation, now) ?? decision();
   if (operation.kind === "completion") return (await completionGate(event, project, canonical, operation)) ?? decision();
   if (operation.kind === "database_blind_spot") return decision({
@@ -211,7 +282,7 @@ export async function evaluatePolicy(event, project, { now = new Date() } = {}) 
     const findings = analyzeChangedFiles(policyEvent.operation.files, canonical.state.advisories ?? {});
     const messages = findings.map(({ message, path: file }) => `${file}: ${message}`);
     const capabilities = {};
-    if (event.event === "PostToolUse") {
+    if (["PostToolUse", "PostToolBatch"].includes(event.event)) {
       const lint = await runLintChecks(project.worktreeRoot, policyEvent.operation.files.map(({ path: file }) => file));
       capabilities.lint = lint;
       if (lint.status === "failed" || lint.status === "timeout") messages.push(`Changed-file lint ${lint.status}.`);

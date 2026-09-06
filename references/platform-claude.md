@@ -46,7 +46,7 @@ Install the root skill under the host's skill directory; the native role templat
 
 ## Lifecycle hooks
 
-The current edition can register the shared [lifecycle hook system](hooks.md) in the `hooks` object of `~/.claude/settings.json`. The installed skill path is `~/.claude/skills/agent-team`. Local activation logging covers `PreToolUse` for model-invoked `Skill` use and `UserPromptExpansion` for a direct slash command. It does not replace the separate OpenTelemetry `skill_activated` signal.
+The current edition can register the shared [lifecycle hook system](hooks.md) in the `hooks` object of `~/.claude/settings.json`. The installed skill path is `~/.claude/skills/agent-team`. The managed installer also provisions unchanged current role definitions under `~/.claude/agents` and reports customized-file conflicts. Claude uses `PostToolBatch` once for changed-file lint and factual checkpoint work after parallel tool calls; it does not also register the per-edit hook. Local activation logging covers `PreToolUse` for model-invoked `Skill` use and `UserPromptExpansion` for a direct slash command. It does not replace the separate OpenTelemetry `skill_activated` signal.
 
 ## Named teams and lifecycle actions
 

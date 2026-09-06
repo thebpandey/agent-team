@@ -88,6 +88,26 @@ test("Claude Write and Edit payloads normalize to the shared file model", () => 
   assert.deepEqual(edit.operation.files, [{ action: "edit", path: "old.txt", changedContent: "after", previousContent: "before" }]);
 });
 
+test("Claude PostToolBatch normalizes all changed files once", () => {
+  // This test catches per-edit lint wiring and a batch parser that keeps only one tool call.
+  const event = normalizeEvent("claude", "PostToolBatch", {
+    cwd: "/repo",
+    session_id: "claude-session",
+    tool_calls: [
+      { tool_name: "Write", tool_input: { file_path: "one.js", content: "one" }, tool_use_id: "tool-1" },
+      { tool_name: "Read", tool_input: { file_path: "ignored.js" }, tool_use_id: "tool-2" },
+      { tool_name: "Edit", tool_input: { file_path: "two.js", old_string: "old", new_string: "new" }, tool_use_id: "tool-3" },
+    ],
+  });
+
+  assert.equal(event.operation.kind, "file_change");
+  assert.deepEqual(event.operation.files, [
+    { action: "add_or_edit", path: "one.js", changedContent: "one" },
+    { action: "edit", path: "two.js", changedContent: "new", previousContent: "old" },
+  ]);
+  assert.equal(event.eventId, "batch:tool-1,tool-2,tool-3");
+});
+
 test("project resolution finds canonical Agent-Team state from nested and symlink paths", async () => {
   // This test catches a resolver that assumes the current directory is the repository root.
   const root = await projectFixture();
@@ -159,8 +179,55 @@ test("startup recovery reports bounded Git and GitHub probe availability", async
     },
   });
 
-  assert.deepEqual(calls.sort(), ["gh", "git"]);
+  assert.equal(calls.includes("gh"), true);
+  assert.equal(calls.filter((entry) => entry === "git").length >= 1, true);
   assert.deepEqual(recovery.probes, { git: "available", github: "unavailable" });
+});
+
+test("startup recovery returns a bounded factual project and handoff snapshot", async () => {
+  // This test catches recovery output that reports only a checkpoint timestamp.
+  const root = await projectFixture();
+  execFileSync("git", ["config", "user.name", "Hook Test"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "hook@example.test"], { cwd: root });
+  await writeFile(path.join(root, "tracked.txt"), "tracked\n");
+  execFileSync("git", ["add", "tracked.txt"], { cwd: root });
+  execFileSync("git", ["commit", "-q", "-m", "fixture"], { cwd: root });
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  const branch = execFileSync("git", ["branch", "--show-current"], { cwd: root, encoding: "utf8" }).trim();
+  await writeFile(path.join(root, "tracked.txt"), "dirty\n");
+  await writeFile(path.join(root, ".agent-team", "TEAMS.md"), `Project: project-1
+Project owner: owner-session
+Integration owner: owner-session
+| Team ID | Name | Session | Worktree | Branch | Owned paths | Tasks | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| TEAM-001 | hooks | session-1 | ${root} | ${branch} | src/** | AT-001 | in_progress |
+`);
+  await writeFile(path.join(root, ".agent-team", "TASKS.md"), "| ID | Owner | Status |\n| --- | --- | --- |\n| AT-001 | TEAM-001 | in_progress |\n");
+  await writeFile(path.join(root, ".agent-team", "state.json"), JSON.stringify({
+    run: { paused: true },
+    integration: { hold: true, expectedRevision: revision, operationId: "integration-1" },
+    release: { hold: false, expectedRevision: revision, batchId: "batch-1", artifact: { id: "artifact-1" } },
+  }));
+  await mkdir(path.join(root, ".agent-team", "handoffs", "TEAM-001"), { recursive: true });
+  await writeFile(path.join(root, ".agent-team", "handoffs", "TEAM-001", "ready.json"), "{}\n");
+  await mkdir(path.join(root, ".agent-team", "checkpoints"));
+  await writeFile(path.join(root, ".agent-team", "checkpoints", "session-1.json"), JSON.stringify({ updatedAt: "2026-09-06T12:00:00.000Z" }));
+  const project = await resolveProject(root);
+  const recovery = await inspectRecovery(project, { sessionId: "session-1", now: new Date("2026-09-06T12:01:00.000Z"), includeProbes: true });
+
+  assert.equal(recovery.status, "current");
+  assert.deepEqual(recovery.identity, { status: "current", projectId: "project-1", sessionId: "session-1", kind: "team", teamId: "TEAM-001", taskIds: ["AT-001"] });
+  assert.equal(recovery.worktree, project.worktreeRoot);
+  assert.deepEqual(recovery.git.branch, { status: "current", value: branch });
+  assert.deepEqual(recovery.git.revision, { status: "current", value: revision });
+  assert.equal(recovery.git.dirty.status, "current");
+  assert.equal(recovery.git.dirty.entries.length, 1);
+  assert.equal(recovery.tracker.path, project.paths.tasks);
+  assert.equal(recovery.handoffs.count, 1);
+  assert.deepEqual(recovery.controls, { projectPaused: true, integrationPaused: false, integrationHold: true, releaseHold: false });
+  assert.equal(recovery.operations.integration.operationId, "integration-1");
+  assert.equal(recovery.operations.release.artifactId, "artifact-1");
+  assert.equal(JSON.stringify(recovery).includes("dirty\n"), false);
 });
 
 test("checkpoint writes are atomic, idempotent, and preserve authored notes", async () => {

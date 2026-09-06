@@ -3,11 +3,12 @@ import process from "node:process";
 import os from "node:os";
 import path from "node:path";
 import { normalizeEvent } from "./lib/event.mjs";
+import { identityFor, loadCanonicalState } from "./lib/canonical-state.mjs";
 import { resolveProject } from "./lib/project.mjs";
 import { inspectRecovery } from "./lib/recovery.mjs";
 import { writeCheckpoint } from "./lib/checkpoint.mjs";
 import { adaptOutput, adaptTransport } from "./lib/output.mjs";
-import { evaluatePolicy } from "./lib/policy.mjs";
+import { evaluatePolicy, unavailableDecision } from "./lib/policy.mjs";
 import { activationRecordFor, appendActivationLog } from "./lib/telemetry.mjs";
 
 function argument(name) {
@@ -26,15 +27,47 @@ async function stdin() {
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
 
-/** Run the shared hook policy for one host event and emit only native JSON. */
-export async function runHook(runtime, eventName, payload) {
-  const event = normalizeEvent(runtime, eventName, payload);
+async function checkpointFacts(event, project) {
+  const snapshot = await inspectRecovery(project, { includeProbes: true, sessionId: event.sessionId });
+  return {
+    eventId: event.eventId || `${event.event}:${event.sessionId}`,
+    sessionId: event.sessionId,
+    eventKind: event.event,
+    projectId: project.projectId,
+    worktree: project.worktreeRoot,
+    trackerPath: project.paths.tasks,
+    mistakesPath: path.join(project.root, "MISTAKES.md"),
+    ...(snapshot.git?.branch?.status === "current" ? { branch: snapshot.git.branch.value } : {}),
+    ...(snapshot.git?.revision?.status === "current" ? { revision: snapshot.git.revision.value } : {}),
+    ...(snapshot.identity?.teamId ? { teamId: snapshot.identity.teamId } : {}),
+    taskIds: snapshot.identity?.taskIds ?? [],
+    evidence: {
+      git: snapshot.probes?.git === "available" ? "current" : "unavailable",
+      tracker: snapshot.tracker?.status ?? "unavailable",
+      recovery: snapshot.status,
+    },
+    pendingOperations: Object.entries(snapshot.operations ?? {})
+      .filter(([, value]) => Object.keys(value).length)
+      .map(([kind, value]) => ({ kind, ...value })),
+  };
+}
+
+/** Run one normalized event through shared policy and bounded factual mutations. */
+export async function runNormalizedHook(event) {
   const project = await resolveProject(event.cwd);
   const decision = await evaluatePolicy(event, project);
   decision.context.active = project.active;
   decision.context.projectId = project.projectId;
 
-  const activation = activationRecordFor(event, project);
+  let activation;
+  if (project.active) {
+    try {
+      const canonical = await loadCanonicalState(project);
+      activation = activationRecordFor(event, project, identityFor(canonical.registry, event.sessionId));
+    } catch {
+      activation = activationRecordFor(event, project, { role: "unknown" });
+    }
+  }
   if (activation) {
     try {
       const result = await appendActivationLog(path.join(os.homedir(), ".agent-team-hooks", "logs"), activation);
@@ -45,36 +78,53 @@ export async function runHook(runtime, eventName, payload) {
     }
   }
 
-  if (project.active && ["SessionStart", "UserPromptSubmit"].includes(eventName)) {
-    const recovery = await inspectRecovery(project, { includeProbes: true });
+  if (project.active && ["SessionStart", "UserPromptSubmit"].includes(event.event)) {
+    const recovery = await inspectRecovery(project, { includeProbes: true, sessionId: event.sessionId });
     decision.context.recovery = recovery;
     decision.messages.push(`Agent-Team recovery evidence: ${recovery.status}.`);
   }
-  if (project.active && ["PreCompact", "PostCompact", "Interrupt", "SessionEnd"].includes(eventName)) {
-    const result = await writeCheckpoint(project, {
-      eventId: event.eventId || `${eventName}:${event.sessionId}`,
-      sessionId: event.sessionId,
-      eventKind: eventName,
-      projectId: project.projectId,
-      worktree: project.worktreeRoot,
-      trackerPath: project.paths.tasks,
-    });
-    decision.mutations.push({ kind: "checkpoint", created: result.created });
+  const checkpointEvent = ["PreCompact", "PostCompact", "Interrupt", "SessionEnd"].includes(event.event)
+    || (event.runtime === "claude" && event.event === "PostToolBatch" && event.operation.kind === "file_change");
+  if (project.active && checkpointEvent) {
+    try {
+      const result = await writeCheckpoint(project, await checkpointFacts(event, project));
+      decision.mutations.push({ kind: "checkpoint", created: result.created });
+    } catch {
+      decision.messages.push("Agent-Team checkpoint is unavailable for this event.");
+      decision.capabilities.checkpoint = "unavailable";
+    }
   }
-  return { decision, output: adaptOutput(runtime, eventName, decision) };
+  return { decision, output: adaptOutput(event.runtime, event.event, decision) };
+}
+
+/** Normalize one native payload before running the shared entrypoint. */
+export async function runHook(runtime, eventName, payload) {
+  return runNormalizedHook(normalizeEvent(runtime, eventName, payload));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  let event;
   try {
     const runtime = argument("runtime");
     const eventName = argument("event");
     const payload = await stdin();
-    const { decision } = await runHook(runtime, eventName, payload);
-    const transport = adaptTransport(runtime, eventName, decision);
+    event = normalizeEvent(runtime, eventName, payload);
+    const { decision } = await runNormalizedHook(event);
+    const transport = adaptTransport(event.runtime, event.event, decision);
     if (transport.stdout) process.stdout.write(transport.stdout);
     if (transport.stderr) process.stderr.write(transport.stderr);
     process.exitCode = transport.exitCode;
   } catch (error) {
-    process.stderr.write(`Agent-Team hook unavailable: ${error.message}\n`);
+    if (!event) {
+      process.stderr.write(`Agent-Team hook unavailable: ${error.message}\n`);
+      process.exitCode = 1;
+    } else {
+      const decision = unavailableDecision(event);
+      decision.messages.push(`Agent-Team hook unavailable: ${error.message}`);
+      const transport = adaptTransport(event.runtime, event.event, decision);
+      if (transport.stdout) process.stdout.write(transport.stdout);
+      if (transport.stderr) process.stderr.write(transport.stderr);
+      process.exitCode = transport.exitCode;
+    }
   }
 }

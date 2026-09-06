@@ -105,4 +105,121 @@ test("installer can run from an authoritative Codex source already at its target
   assert.equal(result.status, "installed");
   assert.equal(await readFile(path.join(codexTarget, "SKILL.md"), "utf8").then(Boolean), true);
   assert.equal(await readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md"), "utf8").then(Boolean), true);
+
+  await uninstallPackage({ home });
+  assert.equal(await readFile(path.join(codexTarget, "SKILL.md"), "utf8").then(Boolean), true);
+});
+
+test("uninstall preserves a copied package that the user changed after installation", async () => {
+  // This test catches recursive removal based only on a receipt target path.
+  const home = await homeFixture();
+  await installPackage({ sourceRoot, home, now: new Date("2026-09-06T12:00:00.000Z") });
+  const target = path.join(home, ".agents", "skills", "agent-team");
+  await writeFile(path.join(target, "LOCAL-NOTE.md"), "keep this user change\n");
+
+  const result = await uninstallPackage({ home });
+
+  assert.equal(await readFile(path.join(target, "LOCAL-NOTE.md"), "utf8"), "keep this user change\n");
+  assert.equal(result.conflicts.some(({ target: name }) => name === target), true);
+});
+
+test("installer rolls back its package and config mutations after a later failure", async () => {
+  // This test catches a multi-file install that leaves partial state after invalid input.
+  const home = await homeFixture();
+  const brokenSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-broken-source-"));
+  temporary.push(brokenSource);
+  await cp(sourceRoot, brokenSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await writeFile(path.join(brokenSource, "hooks", "claude-hooks.json"), "{bad json\n");
+  const originalCodex = await readFile(path.join(home, ".codex", "hooks.json"), "utf8");
+
+  await assert.rejects(installPackage({ sourceRoot: brokenSource, home, now: new Date("2026-09-06T12:00:00.000Z") }));
+
+  assert.equal(await readFile(path.join(home, ".agents", "skills", "agent-team", "old.txt"), "utf8"), "old\n");
+  assert.equal(await readFile(path.join(home, ".codex", "hooks.json"), "utf8"), originalCodex);
+  await assert.rejects(readFile(path.join(home, ".agent-team-hooks", "install.json")), { code: "ENOENT" });
+});
+
+test("parallel installer calls serialize one transaction and keep one registration set", async () => {
+  // This test catches concurrent read-merge-write operations without a user-level lock.
+  const home = await homeFixture();
+  const results = await Promise.all([
+    installPackage({ sourceRoot, home, now: new Date("2026-09-06T12:00:00.000Z") }),
+    installPackage({ sourceRoot, home, now: new Date("2026-09-06T12:00:01.000Z") }),
+  ]);
+  const codex = JSON.parse(await readFile(path.join(home, ".codex", "hooks.json"), "utf8"));
+  const claude = JSON.parse(await readFile(path.join(home, ".claude", "settings.json"), "utf8"));
+
+  assert.equal(results.filter(({ changed }) => changed).length, 1);
+  assert.equal(agentTeamGroups(codex).length, Object.keys(JSON.parse(await readFile(path.join(sourceRoot, "hooks", "codex-hooks.json"), "utf8")).hooks).length);
+  assert.equal(agentTeamGroups(claude).length, Object.keys(JSON.parse(await readFile(path.join(sourceRoot, "hooks", "claude-hooks.json"), "utf8")).hooks).length);
+});
+
+test("parallel uninstall calls serialize and preserve later unrelated config entries", async () => {
+  // This test checks that install and uninstall use the same user-level transaction lock.
+  const home = await homeFixture();
+  await installPackage({ sourceRoot, home, now: new Date("2026-09-06T12:00:00.000Z") });
+  const configPath = path.join(home, ".codex", "hooks.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  config.hooks.SessionEnd = [{ hooks: [{ type: "command", command: "unrelated-session-end" }] }];
+  await writeFile(configPath, JSON.stringify(config));
+
+  const results = await Promise.all([uninstallPackage({ home }), uninstallPackage({ home })]);
+  const stored = JSON.parse(await readFile(configPath, "utf8"));
+
+  assert.equal(results.some(({ status }) => status === "uninstalled"), true);
+  assert.equal(results.some(({ status }) => status === "not_installed"), true);
+  assert.equal(stored.hooks.SessionEnd[0].hooks[0].command, "unrelated-session-end");
+});
+
+test("uninstall rolls back earlier config changes when a later config is malformed", async () => {
+  // This test checks rollback of an incomplete uninstall transaction.
+  const home = await homeFixture();
+  await installPackage({ sourceRoot, home, now: new Date("2026-09-06T12:00:00.000Z") });
+  const codexPath = path.join(home, ".codex", "hooks.json");
+  const before = await readFile(codexPath, "utf8");
+  await writeFile(path.join(home, ".claude", "settings.json"), "{bad json\n");
+
+  await assert.rejects(uninstallPackage({ home }));
+
+  assert.equal(await readFile(codexPath, "utf8"), before);
+  assert.equal(await readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md"), "utf8").then(Boolean), true);
+  assert.equal(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8").then(Boolean), true);
+});
+
+test("installer manages current Claude roles, leaves unchanged roles, and reports custom conflicts", async () => {
+  // This test catches an install that copies role sources only inside the skill directory.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-role-home-"));
+  temporary.push(home);
+  const agents = path.join(home, ".claude", "agents");
+  await mkdir(agents, { recursive: true });
+  const custom = path.join(agents, "agent-team-reviewer.md");
+  await writeFile(custom, "custom reviewer\n");
+
+  const first = await installPackage({ sourceRoot, home, now: new Date("2026-09-06T12:00:00.000Z") });
+  const developer = path.join(agents, "agent-team-developer.md");
+  const original = await readFile(developer, "utf8");
+  const second = await installPackage({ sourceRoot, home, now: new Date("2026-09-06T12:01:00.000Z") });
+
+  assert.match(original, /name: agent-team-developer/);
+  assert.equal(await readFile(custom, "utf8"), "custom reviewer\n");
+  assert.equal(first.conflicts.some(({ target }) => target === custom), true);
+  assert.equal(second.changed, false);
+  assert.equal(await readFile(developer, "utf8"), original);
+});
+
+test("installer updates a previously managed Claude role and backs up its prior version", async () => {
+  // This test catches managed role updates being mistaken for user customization.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-role-update-home-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-role-source-"));
+  temporary.push(home, changedSource);
+  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await installPackage({ sourceRoot, home, now: new Date("2026-09-06T12:00:00.000Z") });
+  const roleSource = path.join(changedSource, "assets", "claude-agents", "agent-team-developer.md");
+  await writeFile(roleSource, `${await readFile(roleSource, "utf8")}\nManaged update marker.\n`);
+
+  const result = await installPackage({ sourceRoot: changedSource, home, now: new Date("2026-09-06T12:01:00.000Z") });
+  const installed = await readFile(path.join(home, ".claude", "agents", "agent-team-developer.md"), "utf8");
+
+  assert.match(installed, /Managed update marker/);
+  assert.equal(result.backups.some(({ kind }) => kind === "claude_agent"), true);
 });

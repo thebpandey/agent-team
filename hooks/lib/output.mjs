@@ -6,7 +6,7 @@ function message(decision) {
 export function adaptOutput(runtime, event, decision) {
   const text = message(decision);
   if (runtime === "claude" && event === "TaskCompleted") return {};
-  if (runtime === "claude" && event === "PostToolUse") return text ? { additionalContext: text } : {};
+  if (runtime === "claude" && ["PostToolUse", "PostToolBatch"].includes(event)) return text ? { additionalContext: text } : {};
   if (runtime === "claude" && ["UserPromptExpansion", "PreCompact"].includes(event) && !decision.allow) {
     return { decision: "block", reason: text || "Agent-Team policy denied this operation." };
   }
