@@ -6,7 +6,7 @@ function patchSections(source) {
     const header = line.match(/^\*\*\* (Add|Update|Delete) File: (.+)$/);
     if (header) {
       if (current) sections.push(current);
-      current = { action: header[1].toLowerCase(), path: header[2], additions: [] };
+      current = { action: header[1].toLowerCase(), path: header[2], additions: [], deletions: [] };
       continue;
     }
     if (!current) continue;
@@ -16,6 +16,8 @@ function patchSections(source) {
       current.action = "move";
     } else if (line.startsWith("+") && !line.startsWith("+++")) {
       current.additions.push(line.slice(1));
+    } else if (line.startsWith("-") && !line.startsWith("---")) {
+      current.deletions.push(line.slice(1));
     }
   }
   if (current) sections.push(current);
@@ -23,11 +25,12 @@ function patchSections(source) {
 }
 
 function codexFiles(command) {
-  return patchSections(command).map(({ action, path, previousPath, additions }) => ({
+  return patchSections(command).map(({ action, path, previousPath, additions, deletions }) => ({
     action: action === "update" ? "edit" : action,
     path,
     ...(previousPath ? { previousPath } : {}),
     changedContent: additions.join("\n"),
+    ...(deletions.length ? { previousContent: deletions.join("\n") } : {}),
   }));
 }
 
@@ -48,7 +51,12 @@ function fileOperation(runtime, tool, input) {
     return {
       kind: "file_change",
       tool,
-      files: [{ action: "edit", path: input.file_path ?? input.path, changedContent: input.new_string ?? input.content ?? "" }],
+      files: [{
+        action: "edit",
+        path: input.file_path ?? input.path,
+        changedContent: input.new_string ?? input.content ?? "",
+        previousContent: input.old_string ?? "",
+      }],
     };
   }
   return undefined;

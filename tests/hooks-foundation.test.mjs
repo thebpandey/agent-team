@@ -61,9 +61,9 @@ test("Codex apply_patch normalization keeps every add, edit, delete, and move", 
 
   assert.deepEqual(event.operation.files, [
     { action: "add", path: "added.txt", changedContent: "alpha" },
-    { action: "edit", path: "edited.txt", changedContent: "new" },
+    { action: "edit", path: "edited.txt", changedContent: "new", previousContent: "old" },
     { action: "delete", path: "deleted.txt", changedContent: "" },
-    { action: "move", path: "after.txt", previousPath: "before.txt", changedContent: "after" },
+    { action: "move", path: "after.txt", previousPath: "before.txt", changedContent: "after", previousContent: "before" },
   ]);
   assert.equal(event.operation.kind, "file_change");
   assert.equal(event.cwd, "/repo/nested");
@@ -85,7 +85,7 @@ test("Claude Write and Edit payloads normalize to the shared file model", () => 
   });
 
   assert.deepEqual(write.operation.files, [{ action: "add_or_edit", path: "new.txt", changedContent: "new file" }]);
-  assert.deepEqual(edit.operation.files, [{ action: "edit", path: "old.txt", changedContent: "after" }]);
+  assert.deepEqual(edit.operation.files, [{ action: "edit", path: "old.txt", changedContent: "after", previousContent: "before" }]);
 });
 
 test("project resolution finds canonical Agent-Team state from nested and symlink paths", async () => {
@@ -159,6 +159,28 @@ test("checkpoint writes are atomic, idempotent, and preserve authored notes", as
   assert.equal(stored.nextAction, "Run the focused test.");
   assert.equal(stored.decisionNotes, "Use the standard library.");
   assert.deepEqual(directoryEntries, ["session-1.json"]);
+});
+
+test("checkpoint allowlists fields and redacts common secret values", async () => {
+  // This test catches credentials, raw SQL, and native payload data leaking into recovery files.
+  const root = await projectFixture();
+  const project = await resolveProject(root);
+  const result = await writeCheckpoint(project, {
+    eventId: "compact-secret",
+    sessionId: "secret-session",
+    eventKind: "PreCompact",
+    projectId: "project-1",
+    nextAction: "Use token sk-test-secret to continue.",
+    evidence: { status: "pending", rawSql: "DELETE FROM customer_records", credential: "private-value" },
+    prompt: "customer private content",
+  });
+  const stored = await readFile(result.path, "utf8");
+
+  assert.equal(stored.includes("sk-test-secret"), false);
+  assert.equal(stored.includes("DELETE FROM"), false);
+  assert.equal(stored.includes("private-value"), false);
+  assert.equal(stored.includes("customer private content"), false);
+  assert.match(stored, /\[REDACTED\]/);
 });
 
 test("runtime output adapters emit native advisory and deny contracts without ask", () => {

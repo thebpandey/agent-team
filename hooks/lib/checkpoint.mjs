@@ -12,12 +12,27 @@ function safeId(value) {
   return String(value || "unknown").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 120);
 }
 
+function redact(value, key = "") {
+  if (/password|secret|token|credential|connection|string|raw.?sql|prompt|argument|content/i.test(key)) return "[REDACTED]";
+  if (Array.isArray(value)) return value.map((entry) => redact(entry));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, redact(entry, name)]));
+  }
+  if (typeof value === "string") {
+    return value
+      .replace(/\b(?:sk|ghp|github_pat|xox[baprs])-[a-zA-Z0-9_-]+\b/g, "[REDACTED]")
+      .replace(/\bBearer\s+[^\s]+/gi, "Bearer [REDACTED]")
+      .replace(/:\/\/[^/@\s]+:[^/@\s]+@/g, "://[REDACTED]@");
+  }
+  return value;
+}
+
 function checkpointData(input, previous, now) {
   const output = { schemaVersion: 1 };
   for (const field of fields) {
     const value = input[field];
-    if (value !== undefined && value !== "") output[field] = value;
-    else if ((field === "nextAction" || field === "decisionNotes") && previous?.[field]) output[field] = previous[field];
+    if (value !== undefined && value !== "") output[field] = redact(value, field);
+    else if ((field === "nextAction" || field === "decisionNotes") && previous?.[field]) output[field] = redact(previous[field], field);
   }
   output.updatedAt = now.toISOString();
   return output;

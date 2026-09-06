@@ -5,6 +5,7 @@ import { resolveProject } from "./lib/project.mjs";
 import { inspectRecovery } from "./lib/recovery.mjs";
 import { writeCheckpoint } from "./lib/checkpoint.mjs";
 import { adaptOutput } from "./lib/output.mjs";
+import { evaluatePolicy } from "./lib/policy.mjs";
 
 function argument(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -26,14 +27,9 @@ async function stdin() {
 export async function runHook(runtime, eventName, payload) {
   const event = normalizeEvent(runtime, eventName, payload);
   const project = await resolveProject(event.cwd);
-  const decision = {
-    mode: "advisory",
-    allow: true,
-    messages: [],
-    context: { active: project.active, projectId: project.projectId },
-    capabilities: {},
-    mutations: [],
-  };
+  const decision = await evaluatePolicy(event, project);
+  decision.context.active = project.active;
+  decision.context.projectId = project.projectId;
 
   if (project.active && ["SessionStart", "UserPromptSubmit"].includes(eventName)) {
     const recovery = await inspectRecovery(project);
