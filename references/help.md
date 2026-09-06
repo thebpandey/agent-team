@@ -1,6 +1,6 @@
 # Agent-Team command help
 
-For `help`, show the table below with the current host's prefix: `$agent-team` in Codex or `/agent-team` in Claude Code. Plain-language “agent-team …” is also accepted. These are skill instructions, not installed shell commands. Show help without setup, model checks, agents, task writes, or release actions. During active work, answer and continue that work. A standalone help request ends after the answer.
+For `help`, display the [AGENT-TEAM wordmark](wordmark.md) once inside the first message frame, before the identity header and command table. Show the table below with the current host's prefix: `$agent-team` in Codex or `/agent-team` in Claude Code. Plain-language “agent-team …” is also accepted. These are skill instructions, not installed shell commands. Show help without setup, model checks, agents, task writes, or release actions. During active work, answer and continue that work. A standalone help request ends after the answer.
 
 | Command after the prefix | What it does | Example |
 | --- | --- | --- |
@@ -36,4 +36,4 @@ Explain these rules below the table:
 
 Exact rules: [actions](actions.md), [settings](settings.md), [runs](runs.md), [release](release.md).
 
-`auto-agent start` accepts the same options as the plain-language `agent-team start`. Start, resume, settings, setup, and status show the [AGENT-TEAM wordmark](wordmark.md) once per user invocation.
+`auto-agent start` accepts the same options as the plain-language `agent-team start`. Help, start, resume, settings, setup, and status show the [AGENT-TEAM wordmark](wordmark.md) once per user invocation.

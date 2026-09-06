@@ -101,7 +101,7 @@ Both platforms use the same main instructions and tool list. Agent-Team loads th
 
 These are instructions understood by Agent-Team, not new commands added to the host's terminal. Codex uses `$agent-team`; Claude Code uses `/agent-team`. Clear plain-language requests such as “agent team start” also work.
 
-Run `$agent-team help` for the full command list and examples. `auto-agent start` is also accepted as a plain-language alias for `agent-team start`. Start, resume, settings, setup, and status display the [solid AGENT-TEAM wordmark](references/wordmark.md) once per user invocation; continuous refills do not repeat it. Every message uses `================================================================================` top and bottom borders and a team ID/name/role or Project Orchestrator header; see [message formatting](references/output.md).
+Run `$agent-team help` for the full command list and examples. `auto-agent start` is also accepted as a plain-language alias for `agent-team start`. Help, start, resume, settings, setup, and status display the [solid AGENT-TEAM wordmark](references/wordmark.md) once per user invocation; continuous refills do not repeat it. Every message uses `================================================================================` top and bottom borders and a team ID/name/role or Project Orchestrator header; see [message formatting](references/output.md).
 
 | Command in Codex | What happens |
 | --- | --- |

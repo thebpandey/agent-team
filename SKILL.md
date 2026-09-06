@@ -17,7 +17,7 @@ This full package is the basis for Pro. Visual browser review, end-to-end accept
 
 ## Route the action first
 
-Display the [AGENT-TEAM wordmark](references/wordmark.md) once for each user-invoked start, resume, settings, setup, or status action, including combined commands. Accept `auto-agent start` as an alias for `agent-team start`. The wordmark adds no checks or mutations to read-only commands.
+Display the [AGENT-TEAM wordmark](references/wordmark.md) once for each user-invoked help, start, resume, settings, setup, or status action, including combined commands. Accept `auto-agent start` as an alias for `agent-team start`. The wordmark adds no checks or mutations to read-only commands.
 
 Read [session actions](references/actions.md) before setup or dispatch. Accept `$agent-team` in Codex, `/agent-team` in Claude Code, and clear plain-language equivalents. `help` shows the [command list](references/help.md) without setup or mutations. `settings` edits [project-only defaults](references/settings.md). For `start [N or name] [continuous] [with-preview] [auto-deploy [B]]`, resolve those defaults and explicit run-only overrides, then use [run scheduling](references/runs.md). Built-in defaults start one task, without continuous mode or auto-deploy. N allows up to six occupied teams; continuous mode refills after each verified integration into main. Blocked, paused, and approval-waiting teams retain their slots. Saved auto-deploy requires a keep/disable choice before starting; an explicit auto-deploy modifier does not. Standalone `auto-deploy [B]` enables current-run batches without starting teams (default B=1). B counts completed top-level tasks, never commits or subtasks.
 
