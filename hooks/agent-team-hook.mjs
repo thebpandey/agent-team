@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import process from "node:process";
+import os from "node:os";
+import path from "node:path";
 import { normalizeEvent } from "./lib/event.mjs";
 import { resolveProject } from "./lib/project.mjs";
 import { inspectRecovery } from "./lib/recovery.mjs";
 import { writeCheckpoint } from "./lib/checkpoint.mjs";
 import { adaptOutput } from "./lib/output.mjs";
 import { evaluatePolicy } from "./lib/policy.mjs";
+import { activationRecordFor, appendActivationLog } from "./lib/telemetry.mjs";
 
 function argument(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -30,6 +33,17 @@ export async function runHook(runtime, eventName, payload) {
   const decision = await evaluatePolicy(event, project);
   decision.context.active = project.active;
   decision.context.projectId = project.projectId;
+
+  const activation = activationRecordFor(event, project);
+  if (activation) {
+    try {
+      const result = await appendActivationLog(path.join(os.homedir(), ".agent-team-hooks", "logs"), activation);
+      decision.mutations.push({ kind: "activation_log", recorded: result.recorded });
+    } catch {
+      decision.messages.push("Agent-Team activation logging is unavailable for this event.");
+      decision.capabilities.activationLogging = "unavailable";
+    }
+  }
 
   if (project.active && ["SessionStart", "UserPromptSubmit"].includes(eventName)) {
     const recovery = await inspectRecovery(project);

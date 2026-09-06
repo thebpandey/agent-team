@@ -48,6 +48,19 @@
           }
         ]
       }
+    ],
+    "UserPromptExpansion": [
+      {
+        "matcher": "agent-team",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime claude --event UserPromptExpansion",
+            "timeout": 3,
+            "statusMessage": "Recording Agent-Team activation"
+          }
+        ]
+      }
     ]
   }
 }

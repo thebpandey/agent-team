@@ -70,7 +70,9 @@ export function normalizeEvent(runtime, event, payload = {}) {
   const files = fileOperation(runtime, tool, input);
   let operation = files;
 
-  if (!operation && ["bash", "shell", "unified_exec", "exec_command"].includes(tool.toLowerCase())) {
+  if (!operation && event === "UserPromptExpansion") {
+    operation = { kind: "skill", skill: String(payload.skill_name ?? payload.skillName ?? payload.command_name ?? "") };
+  } else if (!operation && ["bash", "shell", "unified_exec", "exec_command"].includes(tool.toLowerCase())) {
     operation = { kind: "shell", tool, command: String(input.command ?? input.cmd ?? "") };
   } else if (!operation && tool.toLowerCase() === "skill") {
     operation = { kind: "skill", tool, skill: String(input.skill ?? input.name ?? "") };
