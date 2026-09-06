@@ -16,6 +16,48 @@ For an authorized ZIP installation, extract the package and place its `agent-tea
 
 Build distribution ZIPs from an identified committed revision with an `agent-team/` archive prefix. Include that revision's current license and record its full commit ID and archive checksum with the package. Keep packages private and distribute only through authorized LearnStack OS channels. A repository update does not update existing extracted installations automatically.
 
+### Installation package
+
+The installable package contains:
+
+```text
+agent-team/
+  SKILL.md
+  README.md
+  LICENSE
+  CHANGELOG.md
+  agents/openai.yaml
+  references/
+  assets/
+```
+
+This includes the command rules, project settings, continuous runs, deployment batches, solid wordmark, 80-character message borders, platform adapters, Claude agent definitions, and workflow diagrams. External dependencies and model access are not bundled. The installation ZIP excludes the inactive `legacy/` directory and maintenance `tests/` directory.
+
+Maintainers can build a package from a clean source checkout with these Bash commands:
+
+```bash
+package_revision=$(git rev-parse --verify HEAD)
+package_archive="../agent-team-${package_revision}.zip"
+git archive --format=zip --prefix=agent-team/ \
+  --output="$package_archive" "$package_revision" \
+  SKILL.md README.md LICENSE CHANGELOG.md agents references assets
+sha256sum "$package_archive"
+```
+
+On macOS, use `shasum -a 256 "$package_archive"` for the checksum. Save the full revision and checksum with the archive. Verify archive integrity, required files, and relative links before distribution. A local package is not automatically a GitHub Release asset; do not advertise a download until it exists at an authorized destination.
+
+### Update an existing installation
+
+First determine whether the installed directory is a Git clone, a symlink, or an extracted copy. Preserve custom changes and keep one active installation per host and scope.
+
+- **Git clone:** confirm its remote is this private repository and inspect its branch and local changes. For a clean installation on `main`, fetch and fast-forward from `origin/main`. Do not reset away local edits.
+- **Symlink:** update its identified source checkout. Do not create a second writable copy beside it.
+- **Extracted ZIP:** compare the existing files with the new package, preserve custom changes, and replace the intended installation with the complete package, including its current `LICENSE`.
+
+Refresh or restart the host, then run `$agent-team help` in Codex or `/agent-team help` in Claude Code to check discovery. Run `setup` when dependencies or native Claude definitions need updating. Preserve customized Claude definitions and verify their registration before dispatch. Updating the source repository or creating a ZIP does not update installed copies or the separate ChatGPT-managed installation.
+
+### Codex and Claude Code installation
+
 For Codex CLI on macOS/Linux, a manual user-wide installation is:
 
 ```bash
