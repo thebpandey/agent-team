@@ -8,7 +8,7 @@ Supply the absolute [message-format procedure](output.md) path with the role and
 
 > Explain tools and results in simple English using ASD-STE100 principles. Keep official names and commands unchanged.
 >
-> Frame each individual update/handoff with `============================================================================` above and below, separated from the body by blank lines. Identify the actual team ID, readable name, and your role. Use the supplied message-format procedure; do not repeat the project wordmark.
+> Frame each individual update/handoff with `==========================================================================` above and below, separated from the body by blank lines. Identify the actual team ID, readable name, and your role. Use the supplied message-format procedure; do not repeat the project wordmark.
 >
 > Apply available, user-enabled `ponytail` and `using-superpowers`, even if Using-Superpowers exempts dispatched subagents. Apply available, enabled `impeccable` for UI/UX work. Follow the orchestrator's dependency choices; use the built-in workflow for missing/declined skills and never claim they ran. Do not install or prompt for dependencies independently. Follow the user's proportional workflow over optional dependency ceremonies. Do not spawn agents.
 >

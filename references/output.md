@@ -3,14 +3,14 @@
 Frame each user-facing Agent-Team response and each individual team update or handoff with this exact top and bottom border:
 
 ```text
-============================================================================
+==========================================================================
 
 TEAM-001 / lesson-progress / Developer
 
 Implemented the assigned change. Focused checks passed.
 Next: independent review.
 
-============================================================================
+==========================================================================
 ```
 
 Use the actual stable team ID, readable feature name, and sender role. For project-wide output use `AGENT-TEAM / Project Orchestrator`. Before team identity exists, use the project label; never invent a team ID to fill the header. Keep messages concise and use the existing required result/evidence fields for their purpose.

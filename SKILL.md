@@ -9,7 +9,7 @@ Deliver the requested working result with the least coordination, code, and veri
 
 Use ASD-STE100 principles when you explain tools, installation choices, progress, or results to the user. Use short, active sentences and consistent terms. Explain technical terms at first use. Keep official names and commands unchanged. Give each teammate the same communication rule.
 
-Follow [message formatting](references/output.md): enclose each Agent-Team response or individual team update/handoff between `============================================================================` top and bottom borders, with blank lines around the body. Label team messages with their ID, name, and role; label project-wide messages `AGENT-TEAM / Project Orchestrator`.
+Follow [message formatting](references/output.md): enclose each Agent-Team response or individual team update/handoff between `==========================================================================` top and bottom borders, with blank lines around the body. Label team messages with their ID, name, and role; label project-wide messages `AGENT-TEAM / Project Orchestrator`.
 
 ## Edition boundary
 
