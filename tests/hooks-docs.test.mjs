@@ -47,7 +47,8 @@ test("hook guide states factual coverage and installed Claude role behavior", as
   for (const pattern of [
     /heuristic.*not proof/i,
     /explicit.*mapping.*not.*universal security boundary/i,
-    /mapping evidence.*unavailable.*block/i,
+    /validated separate mapping inventory.*fails closed/i,
+    /unmapped read-only provider.*continue.*unavailable advice/i,
     /read-only.*recovery snapshot/i,
     /\.claude\/agents/i,
     /factual correlation.*does not prove.*effectiveness/i,
@@ -61,4 +62,11 @@ test("feature requests and start actions keep distinct task-creation rules", asy
   assert.match(actions, /start <name>.*already-defined.*tracker/i);
   assert.match(actions, /bare `start`.*existing ready/i);
   assert.match(actions, /hooks.*do not create task records.*arbitrary prompts/i);
+});
+
+test("README gives a complete macOS checksum command", async () => {
+  // This test catches a checksum example that refers to an undefined shell variable.
+  const readme = await read("README.md");
+  assert.match(readme, /On macOS, use `shasum -a 256 \.\.\/agent-team-artifacts\/\*\.zip`/);
+  assert.doesNotMatch(readme, /\$package_archive/);
 });

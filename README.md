@@ -70,7 +70,7 @@ node hooks/agent-team-cli.mjs check-artifacts --revision "$package_revision" \
 sha256sum ../agent-team-artifacts/*.zip
 ```
 
-On macOS, use `shasum -a 256 "$package_archive"` for the checksum. Save the full revision and checksum with the archive. Verify archive integrity, required files, and relative links before distribution. A local package is not automatically a GitHub Release asset; do not advertise a download until it exists at an authorized destination.
+On macOS, use `shasum -a 256 ../agent-team-artifacts/*.zip` for the checksum. Save the full revision and checksum with the archive. Verify archive integrity, required files, and relative links before distribution. A local package is not automatically a GitHub Release asset; do not advertise a download until it exists at an authorized destination.
 
 ### Update an existing installation
 

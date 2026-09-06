@@ -49,10 +49,26 @@ test("migration advice covers guards, environment, disposable execution, catalog
 
 test("new or materially changed schedules warn with unknown pricing while unrelated edits do not", () => {
   // This test catches cost claims based on an existing unchanged schedule line.
-  const added = analyzeChangedFiles([{ action: "edit", path: "jobs.yml", previousContent: "cron: daily", changedContent: "cron: every_minute" }]);
+  const changed = analyzeChangedFiles([{ action: "edit", path: "jobs.yml", previousContent: "cron: daily", changedContent: "cron: every_minute" }]);
+  const added = analyzeChangedFiles([{ action: "edit", path: "jobs.yml", previousContent: "name: cleanup", changedContent: "name: cleanup\ncron: daily" }]);
+  const retained = analyzeChangedFiles([{
+    action: "edit",
+    path: "jobs.yml",
+    previousContent: "name: cleanup\n  cron: 0 0 * * *\ntimeout: 5",
+    changedContent: "name: cleanup records\ncron:   0 0 * * *\ntimeout: 10",
+  }]);
+  const retainedJson = analyzeChangedFiles([{
+    action: "edit",
+    path: "jobs.json",
+    previousContent: '{"name":"cleanup","schedule":"0 0 * * *","timeout":5}',
+    changedContent: '{"name":"cleanup records","schedule":"0 0 * * *","timeout":10}',
+  }]);
   const unrelated = analyzeChangedFiles([{ action: "edit", path: "jobs.yml", previousContent: "name: old", changedContent: "name: clearer" }]);
 
+  assert.equal(changed.some(({ id }) => id === "recurring_cost_change"), true);
   assert.equal(added.some(({ id }) => id === "recurring_cost_change"), true);
   assert.equal(added.find(({ id }) => id === "recurring_cost_change").details.estimatedCost, "unknown");
+  assert.equal(retained.some(({ id }) => id === "recurring_cost_change"), false);
+  assert.equal(retainedJson.some(({ id }) => id === "recurring_cost_change"), false);
   assert.equal(unrelated.some(({ id }) => id === "recurring_cost_change"), false);
 });

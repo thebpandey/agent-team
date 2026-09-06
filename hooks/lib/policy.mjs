@@ -3,7 +3,12 @@ import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { analyzeChangedFiles } from "./analyzers.mjs";
-import { identityFor, loadCanonicalState } from "./canonical-state.mjs";
+import {
+  identityFor,
+  loadCanonicalState,
+  loadOperationMappingInventory,
+  validateOperationMappings,
+} from "./canonical-state.mjs";
 import { runLintChecks } from "./lint.mjs";
 import { classifyOperation } from "./operation.mjs";
 import { resolveProject } from "./project.mjs";
@@ -19,10 +24,9 @@ function deny(message, context = {}) {
 }
 
 /** Select the safe native fallback when canonical/runtime evidence cannot be read. */
-export function unavailableDecision(event) {
-  const operation = classifyOperation(event);
-  const critical = ["file_change", "integration", "release", "database_destructive", "completion"].includes(operation.kind)
-    || (event.event === "PreToolUse" && ["provider", "shell"].includes(event.operation.kind));
+export function unavailableDecision(event, mappings = {}) {
+  const operation = classifyOperation(event, mappings);
+  const critical = ["file_change", "integration", "release", "database_destructive", "completion"].includes(operation.kind);
   return critical ? deny("Agent-Team evidence is unavailable for this potentially critical operation.") : decision({
     messages: ["Agent-Team advisory checks are unavailable for this event."],
     capabilities: { policy: "unavailable" },
@@ -247,13 +251,19 @@ async function completionGate(event, project, canonical, operation) {
 /** Apply deterministic gates first, then return bounded advice for changed content. */
 export async function evaluatePolicy(event, project, { now = new Date() } = {}) {
   if (!project.active) return decision({ capabilities: { activation: "inactive" } });
+  let inventory = {};
+  try {
+    inventory = await loadOperationMappingInventory(project);
+  } catch {
+    // A bad inventory cannot expand the set of operations that fail closed.
+  }
   let canonical;
   let operation;
   try {
     canonical = await loadCanonicalState(project);
-    operation = classifyOperation(event, canonical.state.operationMappings);
+    operation = classifyOperation(event, validateOperationMappings(canonical.state.operationMappings ?? inventory));
   } catch {
-    return unavailableDecision(event);
+    return unavailableDecision(event, inventory);
   }
 
   const identity = identityFor(canonical.registry, event.sessionId);

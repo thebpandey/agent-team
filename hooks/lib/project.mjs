@@ -68,6 +68,7 @@ export async function resolveProject(cwd) {
       stateRoot,
       setup: setupPath,
       state: path.join(stateRoot, "state.json"),
+      operationMappings: path.join(stateRoot, "operation-mappings.json"),
       tasks: path.join(stateRoot, "TASKS.md"),
       teams: path.join(stateRoot, "TEAMS.md"),
       checkpoints: path.join(stateRoot, "checkpoints"),

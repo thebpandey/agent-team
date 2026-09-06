@@ -42,6 +42,15 @@ Integration owner: owner-session
 | AT-001 | Complete fixture work | TEAM-001 | none | in_progress | ${revision} | Verify. |
 `);
 
+  const operationMappings = {
+    providers: {
+      mcp__database__execute: { kind: "database_destructive", sqlField: "query" },
+      mcp__filesystem__write: { kind: "file_change", pathField: "path", contentField: "content", action: "edit" },
+    },
+    shell: [
+      { prefix: "node scripts/reset-data.mjs", kind: "database_destructive" },
+    ],
+  };
   const state = {
     schemaVersion: 1,
     integration: {
@@ -110,18 +119,14 @@ Integration owner: owner-session
       checks: [{ name: "unit", status: "passed", revision }],
       scope: { deployment: false, cleanup: false },
     },
-    operationMappings: {
-      providers: {
-        mcp__database__execute: { kind: "database_destructive", sqlField: "query" },
-        mcp__filesystem__write: { kind: "file_change", pathField: "path", contentField: "content", action: "edit" },
-      },
-      shell: [
-        { prefix: "node scripts/reset-data.mjs", kind: "database_destructive" },
-      ],
-    },
+    operationMappings,
   };
   await writeFile(path.join(root, ".agent-team", "state.json"), JSON.stringify(state, null, 2));
-  return { root, feature, remote, revision, state };
+  await writeFile(path.join(root, ".agent-team", "operation-mappings.json"), JSON.stringify({
+    schemaVersion: 1,
+    operationMappings,
+  }, null, 2));
+  return { root, feature, remote, revision, state, operationMappings };
 }
 
 export async function saveState(fixture, state) {

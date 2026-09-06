@@ -45,7 +45,25 @@ function recurringCost(file, context) {
   const added = file.changedContent ?? "";
   const removed = file.previousContent ?? "";
   const schedule = /\b(cron|schedule|every[_ -]?(?:minute|hour|day)|rate\s*\()/i;
-  if (!schedule.test(added) || added.trim() === removed.trim()) return [];
+  const normalized = (value) => value.trim().replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, "$1$2").toLowerCase().replace(/\s+/g, " ");
+  const declarations = (source) => {
+    const output = [];
+    const assignment = /["']?\b(cron|schedule|every[_ -]?(?:minute|hour|day))\b["']?[ \t]*[:=][ \t]*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^,}\]\r\n#]+))/gi;
+    for (const match of source.matchAll(assignment)) {
+      const key = match[1].toLowerCase().replace(/[_ -]+/g, "_");
+      output.push(`${key}:${normalized(match[2] ?? match[3] ?? match[4] ?? "")}`);
+    }
+    for (const match of source.matchAll(/\brate[ \t]*\(([^)\r\n]*)\)/gi)) output.push(`rate:${normalized(match[1])}`);
+    if (!output.length && schedule.test(source)) {
+      output.push(...source.split(/\r?\n/)
+        .filter((line) => schedule.test(line))
+        .map((line) => normalized(line.replace(/\s+#.*$/, ""))));
+    }
+    return output.sort();
+  };
+  const current = declarations(added);
+  const previous = declarations(removed);
+  if (!current.length || (current.length === previous.length && current.every((value, index) => value === previous[index]))) return [];
   const estimatedCost = context.pricing?.estimatedCost ?? "unknown";
   return [finding("recurring_cost_change", file, "Changed content contains a recurring schedule. Confirm whether its frequency changed and check operating cost.", { estimatedCost })];
 }

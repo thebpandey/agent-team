@@ -48,8 +48,8 @@ test("entrypoint emits native denial when project resolution fails for a critica
   assert.match(output(result).hookSpecificOutput.permissionDecisionReason, /unavailable/i);
 });
 
-test("entrypoint denies provider and app commands when configured mapping state is malformed", async () => {
-  // This test catches fallback classification that forgets configured critical mappings.
+test("entrypoint uses the separate mapping inventory when operational state is malformed", async () => {
+  // This test catches fallback classification that forgets separately readable critical mappings.
   const value = await fixture();
   await writeFile(path.join(value.root, ".agent-team", "state.json"), "{bad json}\n");
   const provider = invoke("claude", "PreToolUse", {
@@ -67,6 +67,38 @@ test("entrypoint denies provider and app commands when configured mapping state 
 
   assert.equal(output(provider).hookSpecificOutput.permissionDecision, "deny");
   assert.equal(output(app).hookSpecificOutput.permissionDecision, "deny");
+});
+
+test("entrypoint leaves ordinary and unmapped read-only operations available when state is malformed", async () => {
+  // This test catches an unavailable-state fallback that treats every shell or provider call as critical.
+  const value = await fixture();
+  await writeFile(path.join(value.root, ".agent-team", "state.json"), "{bad json}\n");
+  const events = [
+    invoke("codex", "PreToolUse", {
+      cwd: value.feature,
+      session_id: "owner-session",
+      tool_name: "exec_command",
+      tool_input: { cmd: "git status --short" },
+    }, value.home),
+    invoke("codex", "PreToolUse", {
+      cwd: value.feature,
+      session_id: "owner-session",
+      tool_name: "exec_command",
+      tool_input: { cmd: "echo ready" },
+    }, value.home),
+    invoke("claude", "PreToolUse", {
+      cwd: value.feature,
+      session_id: "owner-session",
+      tool_name: "mcp__catalog__list_records",
+      tool_input: { limit: 5 },
+    }, value.home),
+  ];
+
+  for (const result of events) {
+    assert.equal(result.status, 0);
+    assert.equal(output(result).hookSpecificOutput.permissionDecision, undefined);
+    assert.match(output(result).hookSpecificOutput.additionalContext, /advisory checks.*unavailable/i);
+  }
 });
 
 test("entrypoint keeps checkpoint and telemetry failures visible and non-blocking", async () => {

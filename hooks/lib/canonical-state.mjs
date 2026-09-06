@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 
+const criticalMappingKinds = new Set(["file_change", "integration", "release", "database_destructive", "completion"]);
+
 async function text(file) {
   try {
     return await readFile(file, "utf8");
@@ -54,6 +56,53 @@ export async function loadCanonicalState(project) {
     },
     tasks: tables(tasksText).flat().filter((row) => row.id),
   };
+}
+
+function mapping(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !criticalMappingKinds.has(value.kind)) {
+    throw new Error(`${label} is not a recognized critical operation mapping.`);
+  }
+  for (const field of ["pathField", "contentField", "sqlField", "process"]) {
+    if (value[field] !== undefined && (typeof value[field] !== "string" || !value[field])) {
+      throw new Error(`${label}.${field} must be a non-empty string.`);
+    }
+  }
+  if (value.action !== undefined && !["add", "add_or_edit", "edit", "delete", "move"].includes(value.action)) {
+    throw new Error(`${label}.action is invalid.`);
+  }
+  return { ...value };
+}
+
+/** Validate the small mapping surface before it can affect unavailable-state enforcement. */
+export function validateOperationMappings(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Operation mappings must be an object.");
+  const providers = value.providers ?? {};
+  const shell = value.shell ?? [];
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) throw new Error("Provider mappings must be an object.");
+  if (!Array.isArray(shell)) throw new Error("Shell mappings must be an array.");
+  return {
+    providers: Object.fromEntries(Object.entries(providers).map(([tool, value_]) => {
+      if (!tool || tool.length > 256) throw new Error("A provider mapping tool name is invalid.");
+      return [tool, mapping(value_, `Provider mapping ${tool}`)];
+    })),
+    shell: shell.map((value_, index) => {
+      const checked = mapping(value_, `Shell mapping ${index}`);
+      if (typeof checked.prefix !== "string" || !checked.prefix.trim() || checked.prefix.length > 512) {
+        throw new Error(`Shell mapping ${index}.prefix is invalid.`);
+      }
+      return checked;
+    }),
+  };
+}
+
+/** Read the independent mapping inventory used when operational state cannot be parsed. */
+export async function loadOperationMappingInventory(project) {
+  const source = await text(project.paths.operationMappings);
+  if (!source) return validateOperationMappings();
+  if (Buffer.byteLength(source) > 256 * 1024) throw new Error("Operation mapping inventory exceeds 256 KiB.");
+  const inventory = JSON.parse(source);
+  if (inventory?.schemaVersion !== 1) throw new Error("Operation mapping inventory schema is unsupported.");
+  return validateOperationMappings(inventory.operationMappings);
 }
 
 export function identityFor(registry, sessionId) {
