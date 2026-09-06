@@ -121,7 +121,12 @@ async function releaseGate(event, project, canonical, now) {
   if (!gate.recoveryReady) return deny("Release recovery evidence is missing.");
   if (gate.hold) return deny("A release hold is active.");
   if (!fresh(gate.evidenceAt, now)) return deny("Release evidence is stale or unavailable.");
-  const head = await gitValue(project.worktreeRoot, ["rev-parse", "HEAD"]);
+  let head;
+  try {
+    head = await gitValue(project.worktreeRoot, ["rev-parse", "HEAD"]);
+  } catch {
+    return deny("Current release Git evidence is unavailable.");
+  }
   if (head !== gate.expectedRevision) return deny("The release revision does not match current HEAD.");
   return undefined;
 }
@@ -149,7 +154,12 @@ async function completionGate(event, project, canonical, operation) {
   const taskId = operation.taskId ?? gate.taskId;
   const task = canonical.tasks.find((entry) => entry.id === taskId);
   if (!task || (identity.role === "team" && task.owner !== identity.team["team id"])) return deny("The canonical task owner does not match this completion.");
-  const head = await gitValue(project.worktreeRoot, ["rev-parse", "HEAD"]);
+  let head;
+  try {
+    head = await gitValue(project.worktreeRoot, ["rev-parse", "HEAD"]);
+  } catch {
+    return deny("Current completion Git evidence is unavailable.");
+  }
   if (gate.evidenceRevision !== head) return deny("Completion evidence does not match the current revision.");
   if (!gate.requirementsReconciled) return deny("Completion requirements are not reconciled.");
   if (gate.review?.status !== "passed" || gate.review.revision !== head) return deny("Completion review evidence is missing or stale.");
@@ -178,7 +188,15 @@ export async function evaluatePolicy(event, project, { now = new Date() } = {}) 
   const identity = identityFor(canonical.registry, event.sessionId);
   const policyEvent = operation.kind === "file_change" ? { ...event, operation } : event;
   if (operation.kind === "file_change" && operation.parserFailed) return deny("The recognized file operation could not be resolved to a path.");
-  const ownershipDecision = await ownership(policyEvent, project, canonical, identity);
+  let ownershipDecision;
+  try {
+    ownershipDecision = await ownership(policyEvent, project, canonical, identity);
+  } catch {
+    if (event.event === "PreToolUse" && policyEvent.operation.kind === "file_change") {
+      return deny("Canonical ownership evidence is unavailable for this file operation.");
+    }
+    return decision({ messages: ["Agent-Team ownership advice is unavailable for this event."], capabilities: { ownership: "unavailable" } });
+  }
   if (ownershipDecision) return ownershipDecision;
   if (operation.kind === "integration") return (await integrationGate(event, project, canonical, operation, now)) ?? decision();
   if (operation.kind === "release") return (await releaseGate(event, project, canonical, now)) ?? decision();

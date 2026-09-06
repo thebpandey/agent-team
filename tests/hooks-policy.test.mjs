@@ -129,6 +129,19 @@ test("authorized integration and release operations pass without an approval pro
   assert.equal(JSON.stringify([push, publish]).includes('"ask"'), false);
 });
 
+test("recognized critical operations fail closed when runtime evidence is unavailable", async () => {
+  // This test catches a runtime probe error escaping to the non-blocking hook fallback.
+  const value = await fixture();
+  const unavailableProject = { ...value.project, worktreeRoot: path.join(value.root, "missing-worktree") };
+  const release = await evaluatePolicy(hookEvent(value, {
+    sessionId: "owner-session",
+    operation: { kind: "shell", command: "npm publish" },
+  }), unavailableProject, { now: new Date("2026-09-06T12:01:00.000Z") });
+
+  assert.equal(release.allow, false);
+  assert.equal(release.mode, "enforce");
+});
+
 test("integration blocks wrong owner, revision, base, remote, stale evidence, gates, delta, recovery, and deployment triggers", async (context) => {
   // This table catches each deterministic prerequisite being accidentally skipped.
   const cases = [
