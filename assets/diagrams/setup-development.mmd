@@ -1,15 +1,18 @@
 flowchart TD
-    A["Agent-Team invoked"] --> B{"Status request?"}
-    B -->|Yes| C["Read counts and freshness; leave work running"]
-    B -->|No| D["Start one ready task or recover unfinished teams"]
-    D --> E["Verify ownership; work in feature worktree"]
-    E --> F{"Feature checks pass?"}
-    F -->|No| G["Repair or report blocker"]
-    G -->|Repair| E
-    F -->|Yes| H{"with-preview required?"}
-    H -->|No| L["Submit exact branch revision for integration"]
-    H -->|Yes| I["Submit a stable preview version"]
-    I --> J{"User approved this version?"}
-    J -->|No| K["Hold integration; address feedback"]
-    K -->|New review version| I
-    J -->|Yes| L
+    A["Resolve action; show wordmark for start/resume/settings/setup/status"] --> B{"Requested action"}
+    B -->|Help or status| C["Read and report only; leave active work running"]
+    B -->|Settings or setup| D["Handle project choices only; no team start"]
+    B -->|Pause or resume| E["Bare action: picker first; All controls run and offered teams"]
+    E -->|Project resume after evidence checks| F
+    B -->|Start| F["Resolve run choices; confirm inherited auto-deploy before claims"]
+    F --> G["Admit safe ready tasks within 1-6 team limit and host capacity"]
+    G --> H["Develop, review, repair in feature worktrees"]
+    H --> I{"Checks and required version approval pass?"}
+    I -->|No| J["Repair or hold; blocked/paused/approval-waiting teams retain slots"]
+    J -->|Repair or explicit resume/approval| H
+    I -->|Yes| K["Integrate serially; verify combined result; update main"]
+    K --> L["Record delivery ID and boundary; free development slot"]
+    L --> M{"Continuous, not held, and safe work ready?"}
+    M -->|Yes| G
+    M -->|No| N["Continue active work; finish fixed set or report exhaustion/blockers"]
+    L -.-> O["Deployment batches proceed separately; no batch wait before refill"]

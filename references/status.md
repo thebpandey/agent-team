@@ -2,6 +2,8 @@
 
 A status request reads recorded state. It does not change execution. Run this path before setup, dependency/model checks, recovery, or dispatch. Use the [action](actions.md) target rules. The project overview includes all project tasks and names unassigned work; a team view includes only its mapped tasks.
 
+Display the [wordmark](wordmark.md) once before the report. This is static output, not a tool action or a reason to refresh records.
+
 Read the canonical team directory, active tracker, and already available evidence through a supported read-only query. In Beads, discover installed help only if needed and use a read-only listing of the complete requested scope, including completed tasks and all pages. Never run a command that initializes, migrates, syncs, claims, or repairs the store merely to report status. If read access is unavailable, use an existing timestamped snapshot or report unavailable data; do not create a fallback tracker during status.
 
 Do not interrupt, message, poll for fresh replies from, or wait on agents. Do not start tests, servers, installs, recovery, cleanup, integration, or deployment. Do not write task records or refresh checkpoints. Do not acquire a lock that blocks writers. Use a coherent tracker snapshot where available; if records change during reading, label the report approximate and keep it bounded rather than repeatedly polling.
@@ -33,6 +35,8 @@ Required preview approval, integration, and release work must be represented in 
 ## Compact report
 
 For one team, show its ID/name, recorded execution phase, total, completed, in progress, not started, blocked, remaining, and task completion percentage in a table. Add Unknown when nonzero. For `status all`, use one row per team plus an unassigned row where needed and a deduplicated project total. Also show preview URL and last-known availability, approval state, deployment state, blockers, and the next milestone when known. Link large evidence instead of loading it.
+
+When a run is recorded, also show its ID/state, occupied development slots versus limit, continuous on/off, effective auto-deploy mode and batch size, number of integrated top-level tasks awaiting deployment, in-flight batch, and any scheduling/release hold. Distinguish these top-level batch counts from the actionable-task completion percentage above. Read effective run values; do not substitute newly saved defaults. Unknown run data stays unknown. Status never fills an empty slot, flushes a batch, asks for inherited auto-deploy confirmation, or changes settings.
 
 Example with complete current data:
 

@@ -1,13 +1,19 @@
 flowchart TD
-    A["Feature branch and evidence"] --> B{"Required approval and evidence valid?"}
-    B -->|No| C["Hold this feature; other teams continue"]
-    B -->|Yes| D["Integrate serially against latest main"]
-    D --> E{"Combined checks pass?"}
-    E -->|No| F["Repair affected work; renew approval if material"]
-    F --> D
-    E -->|Yes| G["Update main and deploy through authorized process"]
-    G --> H{"Production checks pass?"}
-    H -->|No| I["Use safe recovery; record unresolved work"]
-    H -->|Yes| J["Record deployment and task outcomes"]
-    J --> K["Stop previews; remove eligible worktrees and temporary files"]
-    K --> L["Verify cleanup; record retained resources and failures"]
+    A["Verified tasks integrated into main; record exact boundaries"] --> B{"Run auto-deploy enabled?"}
+    B -->|No| C["Report integration; ask whether to deploy"]
+    B -->|Yes| D{"Project pause or release-failure hold?"}
+    D -->|Yes| E["Preserve pending tasks; no automatic release"]
+    D -->|No| F{"Full batch or final smaller batch ready?"}
+    F -->|No| G["Wait for task progress; continuous development may refill"]
+    G --> F
+    F -->|Yes| H["Freeze oldest completed task IDs and exact release boundary"]
+    C -->|User approves reported release| H
+    H --> I{"Target authority, preview gates, and artifact checks pass?"}
+    I -->|No| J["Report missing gate; do not submit"]
+    I -->|Yes| K["Submit one batch; record provider operation identity"]
+    K --> L{"Provider and live checks pass?"}
+    L -->|No or unknown| M["Hold automatic releases; inspect outcome; recover when authorized"]
+    M --> N["Continue only unaffected development; require resolution evidence before retry"]
+    L -->|Yes| O["Record deployed task IDs once; repair tracking without redeploying"]
+    O --> P["Stop owned previews; remove eligible worktrees; verify cleanup"]
+    P -->|More pending work| D

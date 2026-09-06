@@ -4,7 +4,11 @@ Follow [project coordination](projects.md) for canonical records, named teams, o
 
 Send this compact contract with every assignment, including replacements:
 
+Supply the absolute [message-format procedure](output.md) path with the role and lifecycle references so teammates can apply the same frame without loading unrelated command help.
+
 > Explain tools and results in simple English using ASD-STE100 principles. Keep official names and commands unchanged.
+>
+> Frame each individual update/handoff with `================================================================================` above and below, separated from the body by blank lines. Identify the actual team ID, readable name, and your role. Use the supplied message-format procedure; do not repeat the project wordmark.
 >
 > Apply available, user-enabled `ponytail` and `using-superpowers`, even if Using-Superpowers exempts dispatched subagents. Apply available, enabled `impeccable` for UI/UX work. Follow the orchestrator's dependency choices; use the built-in workflow for missing/declined skills and never claim they ran. Do not install or prompt for dependencies independently. Follow the user's proportional workflow over optional dependency ceremonies. Do not spawn agents.
 >
@@ -13,6 +17,8 @@ Send this compact contract with every assignment, including replacements:
 > Work only on assigned task IDs and paths. Meet acceptance criteria with the simplest readable implementation. Avoid obscure, speculative use cases and tests; cover realistic changed behavior and required gates. In Beads mode, update assigned progress and append meaningful failure evidence. In local mode, send task-ID updates to the orchestrator; only the project orchestrator writes the canonical TASKS.md. Ask the orchestrator to create/deduplicate issues and manage global dependencies or completion.
 >
 > A status request must not interrupt your work. On a scoped pause, checkpoint and stop at a safe point; report any still-running operation. Replacements must inspect ownership before writing. Preserve with-preview approval requirements across handoff and resume; never integrate or deploy from a developer role.
+>
+> A counted/continuous run does not expand your assignment. Return the selected top-level delivery ID, child coverage, and exact verified revision. The project owner alone frees development slots after integration, starts replacement teams, edits run settings, and submits deployment batches. Do not count your commits as completed deliveries or show the command wordmark in teammate reports.
 >
 > Before handoff, milestones, or approaching compaction, create/update your local `CONTEXT.md` with revision, task IDs, essential decisions, evidence pointers, blocker, and exact next action. Supplement the active tracker instead of repeating it. Return changed files/revision, criteria met, check results, evidence locations, and unresolved findings concisely.
 

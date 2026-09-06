@@ -2,6 +2,8 @@
 
 Run this procedure on first use or when the user requests setup. Also check it when the environment changes or a selected tool is missing. A skill contains instructions. It cannot install software without tools supplied by the host. The host is the app that runs the agent, such as Codex or Claude Code.
 
+An explicit setup action displays the [wordmark](wordmark.md) once. Preserve `run_defaults` in an existing receipt. The separate [settings](settings.md) action edits those project defaults without installing tools or starting work; dependency setup must not silently enable continuous mode or auto-deploy.
+
 ## 1. Check what is available
 
 Check the operating system, project software, installed skills, and required tools. Check Beads with its `bd` command. Find each installed skill's name and required files. A folder alone does not prove that the skill works.

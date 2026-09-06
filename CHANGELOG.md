@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Add counted starts with a maximum of six occupied development teams and continuous refill after each verified integration into main.
+- Preserve blocked, paused, interrupted, and preview-waiting teams in the slot count; project-wide pause also holds refill and automatic releases.
+- Add task-based auto-deploy batches, exact integration boundaries, final smaller batches, and deployment-failure holds with evidence-based recovery.
+- Add project-only settings with run-only command overrides and confirmation when auto-deploy is inherited from saved settings.
+- Add help with all commands and combined examples; preserve named feature scope and existing version-specific preview gates.
+- Display a solid block-letter AGENT-TEAM wordmark for start, resume, settings, setup, and status; recognize `auto-agent start` as a plain-language alias.
+- Frame individual messages with equals-sign borders and team identity or a Project Orchestrator header.
+- Update platform adapters, native role instructions, workflow diagrams, and recovery/status records without changing model policies or the proprietary license.
+
 ## 6.0.2 - 2026-09-05
 
 - Require a team picker for bare pause and resume, with named teams and an explicit All option.

@@ -2,6 +2,8 @@
 
 `start <name> with-preview` requires a user-reviewed preview before integration. This gate survives pauses, crashes, handoffs, new sessions, missing tools, and successful automated checks. The absence of the flag on a later invocation does not remove it. Only an explicit user change to that requirement can waive it; record the change and its scope.
 
+On counted and continuous starts, apply `with-preview` separately to every admitted top-level task, including later replacements. Each team needs its own submitted version and explicit approval. Waiting for approval retains a development slot; another team's approval or an auto-deploy batch does not cover it. A slot is freed only after that task is verified and integrated into main, as [runs](runs.md) specifies.
+
 ## Record the gate before starting work
 
 Store the gate in the team's parent task or equivalent canonical tracker record: required, Awaiting preview / Awaiting approval / Approved / Changes requested; review version; preview environment identity; approval author/message reference and time; approved version. Use the installed tracker's supported notes/fields instead of assuming a custom schema. CONTEXT.md and the team directory point to this record.

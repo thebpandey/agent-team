@@ -12,6 +12,10 @@ Tool descriptions use short sentences and consistent terms based on [ASD-STE100 
 
 Install this repository as the `agent-team` skill using your host's supported skill installer. The repository root contains `SKILL.md` and its supporting references.
 
+For an authorized ZIP installation, extract the package and place its `agent-team` folder in the selected host's skill directory. The final path must be `agent-team/SKILL.md`, not an extra nested archive folder. Include `references/`, `agents/`, `assets/`, and `LICENSE`; do not copy only SKILL.md. Inspect an existing installation before replacing files and preserve user changes. Restart or refresh the host as required for discovery. Claude's native role definitions still need the setup step described below.
+
+Build distribution ZIPs from an identified committed revision with an `agent-team/` archive prefix. Include that revision's current license and record its full commit ID and archive checksum with the package. Keep packages private and distribute only through authorized LearnStack OS channels. A repository update does not update existing extracted installations automatically.
+
 For Codex CLI on macOS/Linux, a manual user-wide installation is:
 
 ```bash
@@ -51,14 +55,29 @@ In ChatGPT, select Agent-Team from available skills or use its supported mention
 
 Both platforms use the same main instructions and tool list. Agent-Team loads the instructions for the current host. Claude agent definitions are included. Codex uses its available agent controls.
 
-## Start, status, pause, resume, and approve
+## Commands
 
 These are instructions understood by Agent-Team, not new commands added to the host's terminal. Codex uses `$agent-team`; Claude Code uses `/agent-team`. Clear plain-language requests such as “agent team start” also work.
 
+Run `$agent-team help` for the full command list and examples. `auto-agent start` is also accepted as a plain-language alias for `agent-team start`. Start, resume, settings, setup, and status display the [solid AGENT-TEAM wordmark](references/wordmark.md) once per user invocation; continuous refills do not repeat it. Every message uses `================================================================================` top and bottom borders and a team ID/name/role or Project Orchestrator header; see [message formatting](references/output.md).
+
 | Command in Codex | What happens |
 | --- | --- |
-| `$agent-team start` | Select the next ready, unassigned task from Beads or the configured local task file. Start one team, assign its team number and readable name, and preserve its task ID. |
-| `$agent-team start with-preview` | Select the next ready task and require your preview approval before integration. |
+| `$agent-team help` | Show available commands, their meaning, and examples without starting work. |
+| `$agent-team settings` | View or change this project's defaults for team count, continuous mode, auto-deploy, and deployment batch size. |
+| `$agent-team setup` | Check dependencies and offer installation choices. |
+| `$agent-team start` | Use project defaults. Without saved settings, select one ready, unassigned task; preserve its task ID and assign a stable team ID/name. |
+| `$agent-team start 3` | Start up to three safe independent tasks. Without continuous mode, finish only the admitted set, integrate it, and ask whether to deploy when auto-deploy is off. |
+| `$agent-team start continuous` | Refill a slot after successful verified integration into main. The default team limit is one. |
+| `$agent-team start 3 continuous` | Keep up to three occupied development teams, refilling after each successful integration. |
+| `$agent-team start 3 auto-deploy` | Start up to three tasks and deploy the three completed tasks together. |
+| `$agent-team start 3 continuous auto-deploy` | Refill up to three teams while deploying batches of three completed top-level tasks. |
+| `$agent-team start 3 continuous auto-deploy 2` | Keep up to three teams; deploy every two completed top-level tasks. |
+| `$agent-team start 3 no-continuous no-auto-deploy` | Override saved defaults for this run: one fixed set, then ask before deployment. |
+| `$agent-team auto-deploy` | Enable current-run deployment of each integrated task, one at a time; start no new teams. |
+| `$agent-team auto-deploy 3` | Enable current-run batches of three, including eligible tasks already integrated but not deployed. |
+| `$agent-team auto-deploy off` | Stop future automatic batches without changing saved defaults. |
+| `$agent-team start with-preview` | Use project run defaults and require your preview approval for each admitted task before integration. |
 | `$agent-team start email-preferences with-preview` | Start the named feature, provide a local preview, and wait for your approval before integration. |
 | `$agent-team status` | Report the current team's progress, or the project overview from a project session. Do not interrupt development. |
 | `$agent-team status email-preferences` | Report one team's tasks, progress, blockers, preview, and release state. A team ID such as TEAM-002 also works. |
@@ -71,7 +90,19 @@ These are instructions understood by Agent-Team, not new commands added to the h
 | `$agent-team resume email-preferences` | Recover only the named team. |
 | `$agent-team approve email-preferences` | Approve the submitted preview version for integration. Existing integration and deployment checks still apply. |
 
-`start` creates new work; it does not resume other teams. Each start creates at most one feature team. It does not drain the entire task list. If no task is ready, Agent-Team explains why and creates no team. `resume` retains team identities, checks for surviving agents, and continues from the actual unfinished stage. It does not restart completed work or bypass approval.
+`start` creates new work; it does not resume other teams. Team limits are integers from 1 to 6. A fixed run admits up to that many safe tasks and does not replace completed teams. Continuous mode refills each slot only after its whole selected task is verified and successfully integrated into main. Waiting for preview approval, blocked, paused, or interrupted teams still occupy slots. Host capacity and dependencies may reduce the actual parallel count. No ready tasks means no invented work. A named start remains limited to that feature regardless of saved count/continuous settings. `resume` preserves team identities, run choices, and gates and checks for surviving writers.
+
+### Project defaults and deployment batches
+
+Built-in defaults are one team, continuous off, and auto-deploy off. `settings` saves defaults only for the current project in the existing local setup receipt. Explicit command values override those defaults for one run. Settings changes do not alter an active run. If a start inherits auto-deploy from saved settings, Agent-Team tells you the setting and asks whether to keep it or use no auto-deploy for this run before starting. An explicit `auto-deploy` modifier skips that settings question. Existing target and release gates still apply.
+
+Deployment batches count completed top-level tasks, regardless of their commit or subtask count. Standalone `auto-deploy` uses a batch size of one. On a start, `auto-deploy` without a number uses the effective team limit. An explicit batch size overrides that value. Continuous refill does not wait for deployment: a newly integrated task frees its slot while it waits for its release batch.
+
+Each batch uses an exact verified integration boundary so later changes on main cannot enter an earlier batch. A final smaller batch deploys when the admitted work finishes or only blocked work remains, provided auto-deploy is enabled and release gates pass. A project pause or deployment-failure hold prevents that final flush. Without auto-deploy, Agent-Team reports the integrated result and asks whether to deploy.
+
+After a deployment failure, automatic releases stop while authorized recovery runs. Independent development can continue if the failure is confined to the deployment service; affected work pauses if code or shared integration is implicated. Another automatic release requires evidence that the cause is resolved and release checks pass. A successful external action is never repeated merely to repair a missing tracker update.
+
+See [run scheduling](references/runs.md), [project settings](references/settings.md), [command help](references/help.md), and [release batches](references/release.md).
 
 ### Named teams and work folders
 
@@ -103,6 +134,8 @@ A development preview is not a production deployment. `localhost` refers to the 
 
 Bare `pause` and `resume` first show a team picker with an All option. Pause lists in-progress teams; resume lists paused teams and clearly labels any interrupted work. This applies even from a feature session or when only one team is available. Nothing changes until you choose. Cancelling leaves work unchanged. Explicit `pause all` and `resume all` act directly; an explicit name or ID affects only that team. The lead stops new assignments and integrations, saves checkpoints, and reports each team's result. Operations that cannot safely stop are reported as still stopping or unknown. The harness does not claim a complete pause until the affected writers and release activity have stopped safely. It preserves worktrees, preview approval, and safely running previews with frozen source. Other projects are unaffected.
 
+`pause all` also stops continuous refill and new automatic batches until project resume, including between tasks. A bare picker includes an eligible run when no teams are eligible. All selected there controls that run and the offered teams. A named resume does not clear a project-wide hold. Resume restores effective run settings and pending deployment batches from evidence; it does not reload changed defaults or repeat an already answered settings confirmation.
+
 Each agent saves short checkpoints during meaningful progress and before a requested pause. Resume reads those notes, current files, task evidence, active processes, approval gates, and release records. It checks whether earlier agents are still writing before replacing them. If deployment already succeeded, it records the result and continues remaining verification or cleanup instead of deploying again.
 
 After successful production verification, cleanup is required. Stop task-owned previews and processes, preserve needed evidence, and remove all eligible feature and child worktrees, including their disposable build files and local dependency folders. Reuse at most one integration worktree while it is needed; remove it when idle and eligible. Preserve main, unfinished work, user files, and shared resources. Record retained worktrees and failed cleanup so resume can finish it. Report recovered disk space only when measured.
@@ -113,7 +146,7 @@ See the [action rules](references/actions.md), [team coordination](references/pr
 
 ## How Agent-Team works
 
-The first flowchart shows named-team development, read-only status, and preview approval. Remediate means to repair a problem found during review. A lead can handle small feature work in its assigned feature worktree. Larger tasks use developers and one focused review.
+The first flowchart shows command routing, counted/continuous development, and preview approval. Remediate means to repair a problem found during review. A lead can handle small feature work in its assigned feature worktree. Larger tasks use developers and one focused review.
 
 [![Setup and development flowchart, including the review and repair loop](assets/diagrams/setup-development.png)](assets/diagrams/setup-development.svg)
 
@@ -129,13 +162,13 @@ The second diagram shows serial integration, release, recovery, and required cle
 
 [Open the full-size flowchart](assets/diagrams/release-recovery.svg) · [Mermaid source](assets/diagrams/release-recovery.mmd)
 
-Installation does not grant deployment permission. Agent-Team reuses an existing approval for the same target. It restores an earlier version only when the action is authorized and safe. It does not automatically reverse destructive data changes. If recovery fails, it stops further releases and reports the incident.
+Installation does not grant deployment permission. Auto-deploy uses the run's explicit command or confirmed saved preference and established target authority. With auto-deploy off, Agent-Team asks before deploying the integrated result. It restores an earlier version only when authorized and safe. It does not automatically reverse destructive data changes. If recovery fails, it stops further releases and reports the incident.
 
 After every successful release or recovery, Agent-Team updates the active task record. A recovery does not mean that the requested feature is complete. Before work-folder removal, it preserves required evidence and checks that the work is deployed and verified. It keeps the main folder, unrelated work, and unfinished work.
 
 ## Pro quality and project memory
 
-This repository currently includes the full package that forms the basis for Pro. Agent Team Lite is planned separately. The features below are excluded from Lite.
+This repository includes the full package that forms the basis for Pro. Agent Team Lite is a separate edition. Counted/continuous runs, task-based auto-deploy, project run settings, and the Pro features below are excluded from Lite.
 
 | Feature | What it does |
 | --- | --- |
@@ -243,7 +276,8 @@ A skill does not run after its host stops. Use the deployment service's own heal
 - `SKILL.md`: shared entrypoint; selects the adapter for the actual host.
 - `agents/openai.yaml`: OpenAI display metadata; ignored by Claude.
 - `assets/claude-agents/`: installable Opus developer/reviewer and complex developer, Sonnet routine developer, restricted Haiku text assistant, and Pro visual tester definitions.
-- `references/`: platform adapters and conditional setup, dependency, team, state, UI, release, named-team, recovery, status, and preview-approval instructions.
+- `references/`: platform adapters and conditional setup, dependency, team, state, UI, release, run scheduling, settings, help, message formatting, wordmark, recovery, status, and preview-approval instructions.
+- `tests/command-scenarios.md`: command interpretation scenarios for instruction validation; not live host or deployment tests.
 - `legacy/claude-v3/`: preserved previous Claude workflow, inactive and not part of the current installation instructions.
 - `CHANGELOG.md`: release history.
 
