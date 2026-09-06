@@ -98,6 +98,13 @@ export function validateOperationMappings(value = {}) {
   };
 }
 
+function canonicalOperationMappings(state) {
+  if (state?.schemaVersion !== 1 || !Object.hasOwn(state, "operationMappings")) {
+    throw new Error("Canonical operation mapping state is invalid.");
+  }
+  return validateOperationMappings(state.operationMappings);
+}
+
 /** Read the independent mapping inventory used when operational state cannot be parsed. */
 export async function loadOperationMappingInventory(project) {
   const source = await readFile(project.paths.operationMappings, "utf8");
@@ -105,6 +112,7 @@ export async function loadOperationMappingInventory(project) {
   const inventory = JSON.parse(source);
   if (inventory?.schemaVersion !== 1) throw new Error("Operation mapping inventory schema is unsupported.");
   if (inventory.kind !== "agent-team-operation-mapping-cache"
+    || inventory.authoritative !== false
     || inventory.projectId !== project.projectId
     || inventory.sourcePath !== ".agent-team/state.json") throw new Error("Operation mapping inventory identity is invalid.");
   return validateOperationMappings(inventory.operationMappings);
@@ -125,26 +133,19 @@ async function atomicWrite(file, source) {
   }
 }
 
-/** Write the validated mapping cache as a project-owner policy receipt under one canonical lock. */
-export async function syncOperationMappingInventory(project, event) {
+/** Rebuild the non-authoritative mapping cache only from validated canonical state. */
+export async function syncOperationMappingInventory(project) {
   if (!project.active) throw new Error("An active Agent-Team project is required.");
-  if (!event || !["codex", "claude"].includes(event.runtime)
-    || !["SessionStart", "PostToolUse", "PostToolBatch"].includes(event.event)) {
-    throw new Error("A supported runtime hook event is required to update the operation mapping cache.");
-  }
   return withDirectoryLock(path.join(project.paths.locks, "operation-mappings.lock"), {
     kind: "operation_mapping_cache",
     projectId: project.projectId,
-    sessionId: event.sessionId,
   }, async () => {
     const canonical = await loadCanonicalState(project);
-    if (identityFor(canonical.registry, event.sessionId).role !== "project_owner") {
-      throw new Error("Only the canonical project owner can update the operation mapping cache.");
-    }
-    const operationMappings = validateOperationMappings(canonical.state.operationMappings);
+    const operationMappings = canonicalOperationMappings(canonical.state);
     const receipt = {
       schemaVersion: 1,
       kind: "agent-team-operation-mapping-cache",
+      authoritative: false,
       projectId: project.projectId,
       sourcePath: ".agent-team/state.json",
       operationMappings,
@@ -162,6 +163,12 @@ export async function syncOperationMappingInventory(project, event) {
   });
 }
 
+const operationMappingThreatModel = {
+  authoritative: false,
+  source: "validated_canonical_state",
+  purpose: "classification_fallback",
+};
+
 /** Report whether the fallback cache exists, validates, and matches healthy operational state. */
 export async function operationMappingHealth(project) {
   let cached;
@@ -169,18 +176,19 @@ export async function operationMappingHealth(project) {
     cached = await loadOperationMappingInventory(project);
   } catch (error) {
     return {
+      ...operationMappingThreatModel,
       status: error.code === "ENOENT" ? "missing" : "invalid",
       fallbackProtection: "unavailable",
     };
   }
   try {
     const canonical = await loadCanonicalState(project);
-    const current = validateOperationMappings(canonical.state.operationMappings);
+    const current = canonicalOperationMappings(canonical.state);
     return sameMappings(cached, current)
-      ? { status: "current", fallbackProtection: "available" }
-      : { status: "stale", fallbackProtection: "stale" };
+      ? { ...operationMappingThreatModel, status: "current", fallbackProtection: "available" }
+      : { ...operationMappingThreatModel, status: "stale", fallbackProtection: "stale" };
   } catch {
-    return { status: "available", fallbackProtection: "available" };
+    return { ...operationMappingThreatModel, status: "available", fallbackProtection: "available" };
   }
 }
 

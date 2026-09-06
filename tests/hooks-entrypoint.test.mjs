@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +32,10 @@ function invoke(runtime, event, payload, home) {
 
 function output(result) {
   return JSON.parse(result.stdout);
+}
+
+function mappingDigest(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function invokeCli(command, options) {
@@ -149,14 +154,13 @@ test("entrypoint reports an invalid cache without treating its mappings as prote
   assert.match(output(mapped).hookSpecificOutput.additionalContext, /mapping cache.*invalid.*protection.*unavailable/i);
 });
 
-test("standalone CLI cannot write the mapping cache with a spoofed owner session string", async () => {
-  // This test catches a caller-controlled owner ID being treated as authenticated authority.
+test("standalone CLI does not expose a mapping cache write command", async () => {
+  // This test catches a status or setup command becoming a second cache-content input.
   const value = await fixture();
   const cache = path.join(value.root, ".agent-team", "operation-mappings.json");
   await rm(cache);
   const migration = invokeCli("migrate-mappings", {
     project: value.feature,
-    session: "owner-session",
   });
 
   assert.equal(migration.status, 1);
@@ -165,44 +169,91 @@ test("standalone CLI cannot write the mapping cache with a spoofed owner session
   await assert.rejects(readFile(cache), { code: "ENOENT" });
 });
 
-test("only the host owner lifecycle event migrates mappings for an existing project", async () => {
-  // This test catches lifecycle migration that ignores canonical host-session identity.
+test("caller-controlled hook fields cannot inject or alter mapping cache content", async () => {
+  // This test catches runtime, event, session, or payload fields becoming mapping input or authority.
+  const value = await fixture();
+  const cache = path.join(value.root, ".agent-team", "operation-mappings.json");
+  const state = structuredClone(value.state);
+  state.operationMappings.providers.mcp__canonical__purge = { kind: "database_destructive", sqlField: "query" };
+  await writeFile(path.join(value.root, ".agent-team", "state.json"), JSON.stringify(state, null, 2));
+  const forged = invoke("claude", "SessionStart", {
+    cwd: value.feature,
+    runtime: "codex",
+    event: "PostToolUse",
+    session_id: "forged-owner-session",
+    event_id: "forged-cache-write",
+    operationMappings: {
+      providers: { mcp__injected__destroy: { kind: "database_destructive", sqlField: "query" } },
+      shell: [],
+    },
+  }, value.home);
+
+  assert.equal(forged.status, 0);
+  const receipt = JSON.parse(await readFile(cache, "utf8"));
+  assert.equal(mappingDigest(receipt.operationMappings), mappingDigest(state.operationMappings));
+  assert.equal(receipt.operationMappings.providers.mcp__canonical__purge.kind, "database_destructive");
+  assert.equal(receipt.operationMappings.providers.mcp__injected__destroy, undefined);
+});
+
+test("a non-owner lifecycle event reproduces the exact canonical mapping digest", async () => {
+  // This test catches cache refresh being gated by an unsigned session ID or changing canonical mappings.
   const value = await fixture();
   const cache = path.join(value.root, ".agent-team", "operation-mappings.json");
   await rm(cache);
-  const nonOwner = invoke("codex", "SessionStart", {
+  const first = invoke("codex", "SessionStart", {
     cwd: value.feature,
     session_id: "developer-session",
-    event_id: "non-owner-start",
+    event_id: "team-start",
   }, value.home);
-  await assert.rejects(readFile(cache), { code: "ENOENT" });
-  const owner = invoke("codex", "SessionStart", {
+  const firstSource = await readFile(cache, "utf8");
+  const second = invoke("claude", "SessionStart", {
     cwd: value.feature,
-    session_id: "owner-session",
-    event_id: "owner-start",
+    session_id: "unknown-session",
+    event_id: "unknown-start",
   }, value.home);
 
-  assert.equal(nonOwner.status, 0);
-  assert.match(output(nonOwner).hookSpecificOutput.additionalContext, /canonical project owner/i);
-  assert.equal(owner.status, 0);
-  assert.match(output(owner).hookSpecificOutput.additionalContext, /mapping cache.*updated/i);
+  assert.equal(first.status, 0);
+  assert.match(output(first).hookSpecificOutput.additionalContext, /mapping cache.*updated/i);
+  assert.equal(second.status, 0);
+  assert.match(output(second).hookSpecificOutput.additionalContext, /mapping cache.*current/i);
+  assert.equal(await readFile(cache, "utf8"), firstSource);
   const receipt = JSON.parse(await readFile(cache, "utf8"));
   assert.equal(receipt.schemaVersion, 1);
   assert.equal(receipt.kind, "agent-team-operation-mapping-cache");
+  assert.equal(receipt.authoritative, false);
   assert.equal(receipt.projectId, "project-1");
   assert.equal(receipt.sourcePath, ".agent-team/state.json");
-  assert.equal(receipt.operationMappings.providers.mcp__database__execute.kind, "database_destructive");
+  assert.equal(mappingDigest(receipt.operationMappings), mappingDigest(value.operationMappings));
 });
 
-test("mapped provider and app operations deny after host owner lifecycle migration", async () => {
-  // This test catches an owner lifecycle migration that writes a cache the fallback cannot consume.
+test("malformed canonical state cannot update an existing mapping cache", async () => {
+  // This test catches unvalidated state or unsigned payload content replacing the last valid cache.
+  const value = await fixture();
+  const cache = path.join(value.root, ".agent-team", "operation-mappings.json");
+  const before = await readFile(cache, "utf8");
+  await writeFile(path.join(value.root, ".agent-team", "state.json"), "{}\n");
+  const result = invoke("codex", "SessionStart", {
+    cwd: value.feature,
+    session_id: "forged-owner-session",
+    event_id: "malformed-state-start",
+    operationMappings: { providers: {}, shell: [] },
+  }, value.home);
+
+  assert.equal(result.status, 0);
+  assert.equal(await readFile(cache, "utf8"), before);
+  assert.match(output(result).hookSpecificOutput.additionalContext, /mapping cache refresh.*unavailable.*unchanged/i);
+  assert.doesNotMatch(output(result).hookSpecificOutput.additionalContext, /project owner/i);
+});
+
+test("mapped provider and app operations deny after lifecycle cache refresh", async () => {
+  // This test catches a lifecycle cache refresh that writes mappings the fallback cannot consume.
   const value = await fixture();
   const cache = path.join(value.root, ".agent-team", "operation-mappings.json");
   await rm(cache);
   const migration = invoke("claude", "SessionStart", {
     cwd: value.feature,
-    session_id: "owner-session",
-    event_id: "owner-migration",
+    session_id: "developer-session",
+    event_id: "cache-refresh",
   }, value.home);
   assert.equal(migration.status, 0);
   assert.match(String(output(migration).hookSpecificOutput.additionalContext ?? ""), /mapping cache/i);
@@ -224,22 +275,22 @@ test("mapped provider and app operations deny after host owner lifecycle migrati
   assert.equal(output(app).hookSpecificOutput.permissionDecision, "deny");
 });
 
-test("only owner post-tool state changes update the cache while read-only tools do not create it", async () => {
-  // This test catches automatic cache writes on status events, non-owner writes, or unlocked owner refresh.
+test("state-file lifecycle events update the cache while read-only tools do not create it", async () => {
+  // This test catches automatic cache writes on status events or stale cache after a canonical state change.
   const value = await fixture();
   const cache = path.join(value.root, ".agent-team", "operation-mappings.json");
   await rm(cache);
   const status = invoke("codex", "PreToolUse", {
     cwd: value.root,
-    session_id: "owner-session",
+    session_id: "developer-session",
     tool_name: "exec_command",
     tool_input: { cmd: "git status --short" },
   }, value.home);
   await assert.rejects(readFile(cache), { code: "ENOENT" });
   const initialMigration = invoke("codex", "SessionStart", {
     cwd: value.feature,
-    session_id: "owner-session",
-    event_id: "owner-start-before-update",
+    session_id: "developer-session",
+    event_id: "team-start-before-update",
   }, value.home);
   assert.equal(initialMigration.status, 0);
   assert.match(String(output(initialMigration).hookSpecificOutput.additionalContext ?? ""), /mapping cache/i);
@@ -247,23 +298,13 @@ test("only owner post-tool state changes update the cache while read-only tools 
   const state = structuredClone(value.state);
   state.operationMappings.providers.mcp__records__purge = { kind: "database_destructive", sqlField: "query" };
   await writeFile(path.join(value.root, ".agent-team", "state.json"), JSON.stringify(state, null, 2));
-  const nonOwner = invoke("codex", "PostToolUse", {
+  const refresh = invoke("codex", "PostToolUse", {
     cwd: value.root,
     session_id: "developer-session",
     tool_name: "apply_patch",
     tool_input: { command: "*** Begin Patch\n*** Update File: .agent-team/state.json\n+ mapping changed\n*** End Patch" },
   }, value.home);
-  const beforeOwner = JSON.parse(await readFile(cache, "utf8"));
-  const refresh = invoke("codex", "PostToolUse", {
-    cwd: value.root,
-    session_id: "owner-session",
-    tool_name: "apply_patch",
-    tool_input: { command: "*** Begin Patch\n*** Update File: .agent-team/state.json\n+ mapping changed\n*** End Patch" },
-  }, value.home);
-
   assert.equal(status.status, 0);
-  assert.match(String(output(nonOwner).hookSpecificOutput.additionalContext ?? ""), /canonical project owner/i);
-  assert.equal(beforeOwner.operationMappings.providers.mcp__records__purge, undefined);
   assert.equal(refresh.status, 0);
   assert.match(String(output(refresh).hookSpecificOutput.additionalContext ?? ""), /mapping cache/i);
   const receipt = JSON.parse(await readFile(cache, "utf8"));

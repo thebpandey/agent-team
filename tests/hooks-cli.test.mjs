@@ -41,15 +41,21 @@ test("CLI health reports missing, invalid, and current project mapping caches", 
     await writeFile(cache, JSON.stringify({
       schemaVersion: 1,
       kind: "agent-team-operation-mapping-cache",
+      authoritative: false,
       projectId: "project-1",
       sourcePath: ".agent-team/state.json",
       operationMappings: value.operationMappings,
     }));
     const current = JSON.parse((await run(process.execPath, [cli, "health", "--home", home, "--project", value.feature])).stdout);
 
-    assert.deepEqual(missing.operationMappings, { status: "missing", fallbackProtection: "unavailable" });
-    assert.deepEqual(invalid.operationMappings, { status: "invalid", fallbackProtection: "unavailable" });
-    assert.deepEqual(current.operationMappings, { status: "current", fallbackProtection: "available" });
+    const threatModel = {
+      authoritative: false,
+      source: "validated_canonical_state",
+      purpose: "classification_fallback",
+    };
+    assert.deepEqual(missing.operationMappings, { ...threatModel, status: "missing", fallbackProtection: "unavailable" });
+    assert.deepEqual(invalid.operationMappings, { ...threatModel, status: "invalid", fallbackProtection: "unavailable" });
+    assert.deepEqual(current.operationMappings, { ...threatModel, status: "current", fallbackProtection: "available" });
   } finally {
     await rm(root, { force: true, recursive: true });
     await rm(`${root}-feature`, { force: true, recursive: true });

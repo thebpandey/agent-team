@@ -71,14 +71,16 @@ test("README gives a complete macOS checksum command", async () => {
   assert.doesNotMatch(readme, /\$package_archive/);
 });
 
-test("mapping cache guidance uses host owner lifecycle migration and visible health", async () => {
-  // This test catches documentation that directs callers to assert an owner identity string.
+test("mapping cache guidance states its non-authoritative threat model and visible health", async () => {
+  // This test catches documentation that presents unsigned hook identity as cache authority.
   const [guide, setup] = await Promise.all([read("references/hooks.md"), read("references/setup.md")]);
   assert.doesNotMatch(guide, /migrate-mappings|--session/i);
   assert.match(guide, /health --project/i);
   assert.match(guide, /missing or invalid.*fallback protection.*unavailable/i);
   assert.match(guide, /cache.*not.*task ledger/i);
-  assert.match(guide, /canonical project owner.*SessionStart/i);
-  assert.match(setup, /canonical project owner.*SessionStart/i);
+  assert.match(guide, /non-authoritative.*validated canonical state/i);
+  assert.match(guide, /unsigned.*runtime.*event.*session/i);
+  assert.match(guide, /never grants authority/i);
+  assert.match(setup, /any session identity.*SessionStart.*healthy canonical state/i);
   assert.match(setup, /read-only.*status.*do not.*cache/i);
 });

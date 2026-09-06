@@ -52,7 +52,7 @@ async function checkpointFacts(event, project) {
   };
 }
 
-function changedOperationalMappings(event, project) {
+function shouldRefreshOperationMappings(event, project) {
   if (event.event === "SessionStart") return true;
   if (!["PostToolUse", "PostToolBatch"].includes(event.event) || event.operation.kind !== "file_change") return false;
   return event.operation.files.some((file) => path.resolve(event.cwd, file.path) === project.paths.state);
@@ -65,14 +65,14 @@ export async function runNormalizedHook(event) {
   decision.context.active = project.active;
   decision.context.projectId = project.projectId;
 
-  if (project.active && decision.allow && changedOperationalMappings(event, project)) {
+  if (project.active && decision.allow && shouldRefreshOperationMappings(event, project)) {
     try {
-      const result = await syncOperationMappingInventory(project, event);
+      const result = await syncOperationMappingInventory(project);
       decision.mutations.push({ kind: "operation_mapping_cache", changed: result.changed });
       decision.messages.push(`Agent-Team mapping cache is ${result.changed ? "updated" : "current"}.`);
     } catch {
-      decision.messages.push("Agent-Team mapping cache refresh is unavailable. Only the canonical project owner can refresh healthy state mappings.");
-      decision.capabilities.operationMappings = "unavailable";
+      decision.messages.push("Agent-Team mapping cache refresh is unavailable; the previous cache, if any, is unchanged.");
+      decision.capabilities.operationMappingRefresh = "unavailable";
     }
   }
 
