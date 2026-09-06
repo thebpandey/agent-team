@@ -1,5 +1,7 @@
 ---
 name: agent-team
+metadata:
+  version: "6.1.0"
 description: Use for Agent-Team development on Codex or Claude Code, coordinated implementation streams, continued work tracked through this harness, or agent-team start, continuous runs, auto-deploy, settings, help, status, pause, resume, approve, and setup requests.
 ---
 
@@ -17,7 +19,7 @@ This full package is the basis for Pro. Visual browser review, end-to-end accept
 
 ## Route the action first
 
-Display the [AGENT-TEAM wordmark](references/wordmark.md) once for each user-invoked help, start, resume, settings, setup, or status action, including combined commands. Accept `auto-agent start` as an alias for `agent-team start`. Include the creator credit below the wordmark and the GitHub source beside the credit for help and setup, following the wordmark reference. The wordmark adds no checks or mutations to read-only commands.
+Display the [AGENT-TEAM wordmark](references/wordmark.md) once for each user-invoked help, start, resume, settings, setup, or status action, including combined commands. Accept `auto-agent start` as an alias for `agent-team start`. Display `Agent-Team v<metadata.version>` from this installed SKILL.md below the wordmark. Include the creator credit below the version and the GitHub source beside the credit for help and setup, following the wordmark reference. The wordmark adds no checks or mutations to read-only commands.
 
 Read [session actions](references/actions.md) before setup or dispatch. Accept `$agent-team` in Codex, `/agent-team` in Claude Code, and clear plain-language equivalents. `help` shows the [command list](references/help.md) without setup or mutations. `settings` edits [project-only defaults](references/settings.md). Explicit `setup` automatically includes that settings flow after dependency checks, so the user can keep or edit defaults without a separate command. For `start [N or name] [continuous] [with-preview] [auto-deploy [B]]`, resolve those defaults and explicit run-only overrides, then use [run scheduling](references/runs.md). Built-in defaults start one task, without continuous mode or auto-deploy. N allows up to six occupied teams; continuous mode refills after each verified integration into main. Blocked, paused, and approval-waiting teams retain their slots. Saved auto-deploy requires a keep/disable choice before starting; an explicit auto-deploy modifier does not. Standalone `auto-deploy [B]` enables current-run batches without starting teams (default B=1). B counts completed top-level tasks, never commits or subtasks.
 

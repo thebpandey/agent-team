@@ -1,6 +1,6 @@
 # Agent-Team command help
 
-For `help`, display the [AGENT-TEAM wordmark](wordmark.md) once inside the first message frame, with the creator credit and GitHub source directly below it, before the identity header and command table. Show the table below with the current host's prefix: `$agent-team` in Codex or `/agent-team` in Claude Code. Plain-language “agent-team …” is also accepted. These are skill instructions, not installed shell commands. Show help without setup, model checks, agents, task writes, or release actions. During active work, answer and continue that work. A standalone help request ends after the answer.
+For `help`, display the [AGENT-TEAM wordmark](wordmark.md) once inside the first message frame, with the installed skill version, then the creator credit and GitHub source below it, before the identity header and command table. Show the table below with the current host's prefix: `$agent-team` in Codex or `/agent-team` in Claude Code. Plain-language “agent-team …” is also accepted. These are skill instructions, not installed shell commands. Show help without setup, model checks, agents, task writes, or release actions. During active work, answer and continue that work. A standalone help request ends after the answer.
 
 | Command after the prefix | What it does | Example |
 | --- | --- | --- |

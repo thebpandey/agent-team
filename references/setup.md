@@ -2,7 +2,7 @@
 
 Run this procedure on first use or when the user requests setup. Also check it when the environment changes or a selected tool is missing. A skill contains instructions. It cannot install software without tools supplied by the host. The host is the app that runs the agent, such as Codex or Claude Code.
 
-An explicit setup action displays the [wordmark](wordmark.md) once, with the creator credit and GitHub source directly below it. Preserve `run_defaults` in an existing receipt. Explicit `setup` includes the project settings step below. The standalone [settings](settings.md) action remains available without installing tools or starting work; dependency setup must not silently enable continuous mode or auto-deploy.
+An explicit setup action displays the [wordmark](wordmark.md) once, with the installed skill version, then the creator credit and GitHub source below it. Preserve `run_defaults` in an existing receipt. Explicit `setup` includes the project settings step below. The standalone [settings](settings.md) action remains available without installing tools or starting work; dependency setup must not silently enable continuous mode or auto-deploy.
 
 ## 1. Check what is available
 

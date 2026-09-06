@@ -16,6 +16,14 @@ The official source for this skill is [thebpandey/agent-team on GitHub](https://
 
 When instructed to change the skill, use a checkout of this repository and preserve existing user changes. Follow the user's instructions for commits, pushes, and installation updates. An installed copy can differ from the source; compare it before replacing files. Changes to the repository do not automatically update installed Codex or Claude Code copies.
 
+## Skill version
+
+The current skill version is **6.1.0**. The authoritative value is `metadata.version` in `SKILL.md`; the [changelog](CHANGELOG.md) records release changes. Run `$agent-team help` in Codex or `/agent-team help` in Claude Code on each machine to display that installed copy's version. Setup and status also display it.
+
+To check whether a copy is current, ask the agent to compare its installed version with `SKILL.md` on this repository's `main` branch. This requires GitHub access. A displayed version alone is not a remote update check. Local modifications can differ even when version numbers match; compare package files or the Git revision when exact equality matters. Refresh the host after updating so it loads the new instructions.
+
+For each skill release, update `metadata.version`, this README, and the changelog together before publishing. Use MAJOR.MINOR.PATCH: increase PATCH for fixes and wording changes, MINOR for compatible new capabilities, and MAJOR for incompatible workflow changes. Never publish changed skill contents under an existing released version. Install the complete package on each machine; editing the version number alone does not update the skill.
+
 ## Install
 
 Running `agent-team setup` checks dependencies and then shows project settings. Keep the current defaults or edit parallel teams, continuous mode, auto-deploy, and deployment batch size in the same flow. Settings changes apply to future starts.

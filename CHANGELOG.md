@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 6.1.0 - 2026-09-06
+
+- Add installed version metadata and display it below the wordmark, with guidance for comparing copies across machines.
+- Include project settings in explicit setup and add creator attribution and the GitHub source.
+- Show the wordmark for help and standardize message borders at 74 characters.
 
 - Add counted starts with a maximum of six occupied development teams and continuous refill after each verified integration into main.
 - Preserve blocked, paused, interrupted, and preview-waiting teams in the slot count; project-wide pause also holds refill and automatic releases.
