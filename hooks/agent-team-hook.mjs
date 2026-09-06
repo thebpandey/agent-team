@@ -46,7 +46,7 @@ export async function runHook(runtime, eventName, payload) {
   }
 
   if (project.active && ["SessionStart", "UserPromptSubmit"].includes(eventName)) {
-    const recovery = await inspectRecovery(project);
+    const recovery = await inspectRecovery(project, { includeProbes: true });
     decision.context.recovery = recovery;
     decision.messages.push(`Agent-Team recovery evidence: ${recovery.status}.`);
   }

@@ -18,14 +18,27 @@ export async function runBoundedProbe(executable, args, { cwd, timeoutMs = 1000,
 }
 
 /** Report recovery evidence freshness. This advisory never resumes or edits work. */
-export async function inspectRecovery(project, { now = new Date(), staleAfterMs = 15 * 60_000 } = {}) {
+export async function inspectRecovery(project, {
+  now = new Date(),
+  staleAfterMs = 15 * 60_000,
+  includeProbes = false,
+  probe = runBoundedProbe,
+} = {}) {
   if (!project.active) return { status: "unavailable", reason: project.reason };
+  const finish = async (snapshot) => {
+    if (!includeProbes) return snapshot;
+    const [git, github] = await Promise.all([
+      probe("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: project.worktreeRoot, timeoutMs: 500, maxOutputBytes: 512 }),
+      probe("gh", ["pr", "status"], { cwd: project.worktreeRoot, timeoutMs: 1000, maxOutputBytes: 512 }),
+    ]);
+    return { ...snapshot, probes: { git: git.status, github: github.status } };
+  };
   let names;
   try {
     names = await readdir(project.paths.checkpoints);
   } catch (error) {
-    if (error.code === "ENOENT") return { status: "unavailable", reason: "checkpoint_missing" };
-    return { status: "unavailable", reason: "checkpoint_unreadable" };
+    if (error.code === "ENOENT") return finish({ status: "unavailable", reason: "checkpoint_missing" });
+    return finish({ status: "unavailable", reason: "checkpoint_unreadable" });
   }
 
   const records = [];
@@ -40,11 +53,11 @@ export async function inspectRecovery(project, { now = new Date(), staleAfterMs 
   }
   records.sort((left, right) => right.timestamp - left.timestamp);
   const latest = records[0];
-  if (!latest) return { status: "unavailable", reason: "checkpoint_invalid" };
-  return {
+  if (!latest) return finish({ status: "unavailable", reason: "checkpoint_invalid" });
+  return finish({
     status: now.getTime() - latest.timestamp <= staleAfterMs ? "current" : "stale",
     updatedAt: latest.updatedAt,
     sessionId: latest.sessionId,
     nextAction: latest.nextAction,
-  };
+  });
 }

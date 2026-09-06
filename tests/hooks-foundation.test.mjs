@@ -143,6 +143,26 @@ test("recovery probes bound execution time and returned output", async () => {
   assert.equal(missing.status, "unavailable");
 });
 
+test("startup recovery reports bounded Git and GitHub probe availability", async () => {
+  // This test catches a startup recovery path that omits one external evidence source.
+  const root = await projectFixture();
+  const project = await resolveProject(root);
+  await mkdir(project.paths.checkpoints);
+  await writeFile(path.join(project.paths.checkpoints, "session.json"), JSON.stringify({ updatedAt: "2026-09-06T12:00:00.000Z" }));
+  const calls = [];
+  const recovery = await inspectRecovery(project, {
+    now: new Date("2026-09-06T12:01:00.000Z"),
+    includeProbes: true,
+    probe: async (executable) => {
+      calls.push(executable);
+      return { status: executable === "git" ? "available" : "unavailable", output: "ignored" };
+    },
+  });
+
+  assert.deepEqual(calls.sort(), ["gh", "git"]);
+  assert.deepEqual(recovery.probes, { git: "available", github: "unavailable" });
+});
+
 test("checkpoint writes are atomic, idempotent, and preserve authored notes", async () => {
   // This test catches duplicate event writes, partial files, and lost recovery notes.
   const root = await projectFixture();
