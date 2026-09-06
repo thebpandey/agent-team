@@ -9,7 +9,7 @@ import { normalizeEvent } from "../hooks/lib/event.mjs";
 import { resolveProject } from "../hooks/lib/project.mjs";
 import { inspectRecovery, runBoundedProbe } from "../hooks/lib/recovery.mjs";
 import { writeCheckpoint } from "../hooks/lib/checkpoint.mjs";
-import { adaptOutput } from "../hooks/lib/output.mjs";
+import { adaptOutput, adaptTransport } from "../hooks/lib/output.mjs";
 
 const temporary = [];
 
@@ -253,4 +253,23 @@ test("runtime output adapters emit native advisory and deny contracts without as
   assert.equal(claude.hookSpecificOutput.permissionDecision, "deny");
   assert.equal(JSON.stringify(codex).includes('"ask"'), false);
   assert.match(codexAdvice.hookSpecificOutput.additionalContext, /integration evidence/);
+});
+
+test("Claude TaskCompleted blocks by exit 2 while PostToolUse advice uses its JSON contract", () => {
+  // This test catches a TaskCompleted denial printed as JSON that Claude ignores on exit 0.
+  const denied = {
+    mode: "enforce",
+    allow: false,
+    messages: ["Completion evidence is missing."],
+    context: {},
+    capabilities: {},
+    mutations: [],
+  };
+  const advisory = { ...denied, mode: "advisory", allow: true, messages: ["Lint was unavailable."] };
+  const completion = adaptTransport("claude", "TaskCompleted", denied);
+  const postTool = adaptOutput("claude", "PostToolUse", advisory);
+
+  assert.deepEqual(completion, { exitCode: 2, stdout: "", stderr: "Completion evidence is missing.\n" });
+  assert.equal(postTool.additionalContext, "Lint was unavailable.");
+  assert.equal(postTool.hookSpecificOutput, undefined);
 });

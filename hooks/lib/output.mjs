@@ -5,6 +5,11 @@ function message(decision) {
 /** Convert one shared decision to the selected host's documented hook response. */
 export function adaptOutput(runtime, event, decision) {
   const text = message(decision);
+  if (runtime === "claude" && event === "TaskCompleted") return {};
+  if (runtime === "claude" && event === "PostToolUse") return text ? { additionalContext: text } : {};
+  if (runtime === "claude" && ["UserPromptExpansion", "PreCompact"].includes(event) && !decision.allow) {
+    return { decision: "block", reason: text || "Agent-Team policy denied this operation." };
+  }
   const hookSpecificOutput = { hookEventName: event };
   if (!decision.allow) {
     hookSpecificOutput.permissionDecision = "deny";
@@ -13,4 +18,12 @@ export function adaptOutput(runtime, event, decision) {
     hookSpecificOutput.additionalContext = text;
   }
   return { hookSpecificOutput };
+}
+
+export function adaptTransport(runtime, event, decision) {
+  const text = message(decision) || "Agent-Team policy denied this operation.";
+  if (runtime === "claude" && event === "TaskCompleted" && !decision.allow) {
+    return { exitCode: 2, stdout: "", stderr: `${text}\n` };
+  }
+  return { exitCode: 0, stdout: `${JSON.stringify(adaptOutput(runtime, event, decision))}\n`, stderr: "" };
 }

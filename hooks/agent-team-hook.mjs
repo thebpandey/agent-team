@@ -6,7 +6,7 @@ import { normalizeEvent } from "./lib/event.mjs";
 import { resolveProject } from "./lib/project.mjs";
 import { inspectRecovery } from "./lib/recovery.mjs";
 import { writeCheckpoint } from "./lib/checkpoint.mjs";
-import { adaptOutput } from "./lib/output.mjs";
+import { adaptOutput, adaptTransport } from "./lib/output.mjs";
 import { evaluatePolicy } from "./lib/policy.mjs";
 import { activationRecordFor, appendActivationLog } from "./lib/telemetry.mjs";
 
@@ -69,8 +69,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const runtime = argument("runtime");
     const eventName = argument("event");
     const payload = await stdin();
-    const { output } = await runHook(runtime, eventName, payload);
-    process.stdout.write(`${JSON.stringify(output)}\n`);
+    const { decision } = await runHook(runtime, eventName, payload);
+    const transport = adaptTransport(runtime, eventName, decision);
+    if (transport.stdout) process.stdout.write(transport.stdout);
+    if (transport.stderr) process.stderr.write(transport.stderr);
+    process.exitCode = transport.exitCode;
   } catch (error) {
     process.stderr.write(`Agent-Team hook unavailable: ${error.message}\n`);
   }
