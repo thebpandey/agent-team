@@ -10,8 +10,6 @@ import { buildArtifacts, checkArtifacts } from "./lib/artifacts.mjs";
 import { getHealth } from "./lib/health.mjs";
 import { installPackage, uninstallPackage } from "./lib/install.mjs";
 import { checkPackage } from "./lib/package-validator.mjs";
-import { syncOperationMappingInventory } from "./lib/canonical-state.mjs";
-import { resolveProject } from "./lib/project.mjs";
 
 const run = promisify(execFile);
 
@@ -47,11 +45,6 @@ export async function runCommand(command, options) {
     maxRecords: Number(options.limit ?? 1000),
   });
   if (command === "install") return installPackage({ sourceRoot, home });
-  if (command === "migrate-mappings") {
-    if (!options.project || !options.session) throw new Error("migrate-mappings requires --project and --session.");
-    const project = await resolveProject(path.resolve(options.project));
-    return syncOperationMappingInventory(project, options.session);
-  }
   if (["uninstall", "rollback"].includes(command)) return uninstallPackage({ home });
   if (command === "check-package") return checkPackage(sourceRoot);
   if (command === "check-artifacts") return checkArtifacts({

@@ -126,15 +126,19 @@ async function atomicWrite(file, source) {
 }
 
 /** Write the validated mapping cache as a project-owner policy receipt under one canonical lock. */
-export async function syncOperationMappingInventory(project, sessionId) {
+export async function syncOperationMappingInventory(project, event) {
   if (!project.active) throw new Error("An active Agent-Team project is required.");
+  if (!event || !["codex", "claude"].includes(event.runtime)
+    || !["SessionStart", "PostToolUse", "PostToolBatch"].includes(event.event)) {
+    throw new Error("A supported runtime hook event is required to update the operation mapping cache.");
+  }
   return withDirectoryLock(path.join(project.paths.locks, "operation-mappings.lock"), {
     kind: "operation_mapping_cache",
     projectId: project.projectId,
-    sessionId,
+    sessionId: event.sessionId,
   }, async () => {
     const canonical = await loadCanonicalState(project);
-    if (identityFor(canonical.registry, sessionId).role !== "project_owner") {
+    if (identityFor(canonical.registry, event.sessionId).role !== "project_owner") {
       throw new Error("Only the canonical project owner can update the operation mapping cache.");
     }
     const operationMappings = validateOperationMappings(canonical.state.operationMappings);

@@ -48,7 +48,7 @@ Shell recognition tokenizes documented command forms, including `git -C <repo> p
 
 Advisory parser or tool failures stay visible and do not block work. A statically recognized in-scope critical operation, or an operation identified by the validated separate mapping cache, fails closed when its required state or parser result is unavailable. A missing or invalid mapping cache makes mapped-operation fallback protection unavailable; health and unavailable advice state that fact. Ordinary shell commands and unmapped read-only provider calls continue with visible unavailable advice. Both `PreToolUse` adapters use the native structured `deny` result. Claude `TaskCompleted` uses exit code 2 and stderr because that event does not accept a JSON permission decision. Codex never emits `permissionDecision: "ask"`. Existing scoped authorization proceeds without a new prompt.
 
-Only the canonical project owner writes this cache. A supported post-tool state-file change refreshes it under the project lock after healthy state validation. Read-only and status events do not write it. Existing projects can create or update it explicitly with `migrate-mappings`. The command validates healthy canonical state again while it holds the lock, then uses an atomic rename.
+Only a runtime hook event for the canonical project owner writes this cache. `SessionStart` creates or updates it for an existing project after healthy state validation. A successful supported post-tool owner state-file change also refreshes it. Both paths validate canonical state again while holding the project lock, then use an atomic rename. A standalone CLI caller cannot assert a session identity to write the cache. Read-only and status events do not write it.
 
 Checkpoints cannot guarantee a final write after abrupt termination. A timestamp never proves that a lock owner stopped. Activation logs store only time, runtime, skill/session/event identity, project/team identity, and a non-sensitive correlation ID. They do not store prompts, arguments, credentials, file contents, connection strings, customer data, or raw SQL. Logs use user-only permissions, append locking, deduplication, and bounded rotation.
 
@@ -64,7 +64,6 @@ Run these commands from an inspected source checkout:
 node hooks/agent-team-cli.mjs check-package
 node hooks/agent-team-cli.mjs install
 node hooks/agent-team-cli.mjs health --project /path/to/project
-node hooks/agent-team-cli.mjs migrate-mappings --project /path/to/project --session <project-owner-session>
 node hooks/agent-team-cli.mjs audit --tracker /path/to/.agent-team/TASKS.md --mistakes /path/to/MISTAKES.md
 node hooks/agent-team-cli.mjs build-artifacts --output /safe/output
 node hooks/agent-team-cli.mjs check-artifacts --archive /safe/codex.zip --archive /safe/claude.zip

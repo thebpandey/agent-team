@@ -149,8 +149,8 @@ test("entrypoint reports an invalid cache without treating its mappings as prote
   assert.match(output(mapped).hookSpecificOutput.additionalContext, /mapping cache.*invalid.*protection.*unavailable/i);
 });
 
-test("CLI migrates healthy state mappings and the entrypoint enforces them after state corruption", async () => {
-  // This test catches a migration command that writes no usable fallback policy receipt.
+test("standalone CLI cannot write the mapping cache with a spoofed owner session string", async () => {
+  // This test catches a caller-controlled owner ID being treated as authenticated authority.
   const value = await fixture();
   const cache = path.join(value.root, ".agent-team", "operation-mappings.json");
   await rm(cache);
@@ -158,15 +158,55 @@ test("CLI migrates healthy state mappings and the entrypoint enforces them after
     project: value.feature,
     session: "owner-session",
   });
-  assert.equal(migration.status, 0);
-  assert.equal(migration.output.status, "completed");
-  assert.equal(migration.output.changed, true);
+
+  assert.equal(migration.status, 1);
+  assert.equal(migration.output.status, "failed");
+  assert.match(migration.output.error, /unknown command/i);
+  await assert.rejects(readFile(cache), { code: "ENOENT" });
+});
+
+test("only the host owner lifecycle event migrates mappings for an existing project", async () => {
+  // This test catches lifecycle migration that ignores canonical host-session identity.
+  const value = await fixture();
+  const cache = path.join(value.root, ".agent-team", "operation-mappings.json");
+  await rm(cache);
+  const nonOwner = invoke("codex", "SessionStart", {
+    cwd: value.feature,
+    session_id: "developer-session",
+    event_id: "non-owner-start",
+  }, value.home);
+  await assert.rejects(readFile(cache), { code: "ENOENT" });
+  const owner = invoke("codex", "SessionStart", {
+    cwd: value.feature,
+    session_id: "owner-session",
+    event_id: "owner-start",
+  }, value.home);
+
+  assert.equal(nonOwner.status, 0);
+  assert.match(output(nonOwner).hookSpecificOutput.additionalContext, /canonical project owner/i);
+  assert.equal(owner.status, 0);
+  assert.match(output(owner).hookSpecificOutput.additionalContext, /mapping cache.*updated/i);
   const receipt = JSON.parse(await readFile(cache, "utf8"));
   assert.equal(receipt.schemaVersion, 1);
   assert.equal(receipt.kind, "agent-team-operation-mapping-cache");
   assert.equal(receipt.projectId, "project-1");
   assert.equal(receipt.sourcePath, ".agent-team/state.json");
   assert.equal(receipt.operationMappings.providers.mcp__database__execute.kind, "database_destructive");
+});
+
+test("mapped provider and app operations deny after host owner lifecycle migration", async () => {
+  // This test catches an owner lifecycle migration that writes a cache the fallback cannot consume.
+  const value = await fixture();
+  const cache = path.join(value.root, ".agent-team", "operation-mappings.json");
+  await rm(cache);
+  const migration = invoke("claude", "SessionStart", {
+    cwd: value.feature,
+    session_id: "owner-session",
+    event_id: "owner-migration",
+  }, value.home);
+  assert.equal(migration.status, 0);
+  assert.match(String(output(migration).hookSpecificOutput.additionalContext ?? ""), /mapping cache/i);
+  assert.equal(JSON.parse(await readFile(cache, "utf8")).projectId, "project-1");
   await writeFile(path.join(value.root, ".agent-team", "state.json"), "{bad json}\n");
   const provider = invoke("claude", "PreToolUse", {
     cwd: value.feature,
@@ -196,7 +236,13 @@ test("only owner post-tool state changes update the cache while read-only tools 
     tool_input: { cmd: "git status --short" },
   }, value.home);
   await assert.rejects(readFile(cache), { code: "ENOENT" });
-  assert.equal(invokeCli("migrate-mappings", { project: value.feature, session: "owner-session" }).status, 0);
+  const initialMigration = invoke("codex", "SessionStart", {
+    cwd: value.feature,
+    session_id: "owner-session",
+    event_id: "owner-start-before-update",
+  }, value.home);
+  assert.equal(initialMigration.status, 0);
+  assert.match(String(output(initialMigration).hookSpecificOutput.additionalContext ?? ""), /mapping cache/i);
 
   const state = structuredClone(value.state);
   state.operationMappings.providers.mcp__records__purge = { kind: "database_destructive", sqlField: "query" };

@@ -53,6 +53,7 @@ async function checkpointFacts(event, project) {
 }
 
 function changedOperationalMappings(event, project) {
+  if (event.event === "SessionStart") return true;
   if (!["PostToolUse", "PostToolBatch"].includes(event.event) || event.operation.kind !== "file_change") return false;
   return event.operation.files.some((file) => path.resolve(event.cwd, file.path) === project.paths.state);
 }
@@ -66,7 +67,7 @@ export async function runNormalizedHook(event) {
 
   if (project.active && decision.allow && changedOperationalMappings(event, project)) {
     try {
-      const result = await syncOperationMappingInventory(project, event.sessionId);
+      const result = await syncOperationMappingInventory(project, event);
       decision.mutations.push({ kind: "operation_mapping_cache", changed: result.changed });
       decision.messages.push(`Agent-Team mapping cache is ${result.changed ? "updated" : "current"}.`);
     } catch {

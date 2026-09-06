@@ -71,13 +71,14 @@ test("README gives a complete macOS checksum command", async () => {
   assert.doesNotMatch(readme, /\$package_archive/);
 });
 
-test("mapping cache guidance includes owner migration and visible health", async () => {
-  // This test catches documentation that assumes the fallback cache appears without a production path.
+test("mapping cache guidance uses host owner lifecycle migration and visible health", async () => {
+  // This test catches documentation that directs callers to assert an owner identity string.
   const [guide, setup] = await Promise.all([read("references/hooks.md"), read("references/setup.md")]);
-  assert.match(guide, /migrate-mappings --project .* --session/i);
+  assert.doesNotMatch(guide, /migrate-mappings|--session/i);
   assert.match(guide, /health --project/i);
   assert.match(guide, /missing or invalid.*fallback protection.*unavailable/i);
   assert.match(guide, /cache.*not.*task ledger/i);
-  assert.match(setup, /project owner.*migrate-mappings/i);
+  assert.match(guide, /canonical project owner.*SessionStart/i);
+  assert.match(setup, /canonical project owner.*SessionStart/i);
   assert.match(setup, /read-only.*status.*do not.*cache/i);
 });
