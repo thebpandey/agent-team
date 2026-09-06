@@ -10,6 +10,8 @@ Check the operating system, project software, installed skills, and required too
 
 Resolve the canonical main checkout from the project record and Git metadata before setup. Read its `.agent-team/setup.json` if it exists; do not create a separate receipt or tracker in each feature worktree. Only the project owner updates the shared receipt or changes tracking mode. Team leads reuse the recorded choices and route new setup needs to that owner. This local file records setup choices, not task progress. Keep it out of app releases and project commits. Preserve unrelated data. Do not store passwords or access tokens.
 
+During explicit setup for an active project, the project owner runs `node hooks/agent-team-cli.mjs migrate-mappings --project /path/to/project --session <project-owner-session>` after canonical state validation. This creates or updates the locked `.agent-team/operation-mappings.json` policy cache for existing projects. Report missing, invalid, or stale cache health. Read-only checks and status actions do not create or refresh the cache. The cache stores validated operation mappings, not tasks or progress.
+
 Record the host, project, task file location, installation scope, tool sources, versions, and status. Also record declined items and the scope of approved installation. A saved record does not grant new permission. Check actual access when the host changes.
 
 ## 2. Explain the choices

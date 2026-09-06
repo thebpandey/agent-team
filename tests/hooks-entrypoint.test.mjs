@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import test from "node:test";
 import { policyFixture } from "./hook-test-helpers.mjs";
 
 const hook = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-hook.mjs");
+const cli = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-cli.mjs");
 const temporary = [];
 
 test.afterEach(async () => Promise.all(temporary.splice(0).map((item) => rm(item, { force: true, recursive: true }))));
@@ -30,6 +31,13 @@ function invoke(runtime, event, payload, home) {
 
 function output(result) {
   return JSON.parse(result.stdout);
+}
+
+function invokeCli(command, options) {
+  const args = [cli, command];
+  for (const [name, value] of Object.entries(options)) args.push(`--${name}`, value);
+  const result = spawnSync(process.execPath, args, { encoding: "utf8" });
+  return { status: result.status, output: JSON.parse(result.stdout), stderr: result.stderr };
 }
 
 test("entrypoint emits native denial when project resolution fails for a critical command", async () => {
@@ -99,6 +107,123 @@ test("entrypoint leaves ordinary and unmapped read-only operations available whe
     assert.equal(output(result).hookSpecificOutput.permissionDecision, undefined);
     assert.match(output(result).hookSpecificOutput.additionalContext, /advisory checks.*unavailable/i);
   }
+});
+
+test("entrypoint reports a missing cache and denies only static critical operations when state is malformed", async () => {
+  // This test catches a missing fallback cache being described as mapped-operation protection.
+  const value = await fixture();
+  await rm(path.join(value.root, ".agent-team", "operation-mappings.json"));
+  await writeFile(path.join(value.root, ".agent-team", "state.json"), "{bad json}\n");
+  const mapped = invoke("claude", "PreToolUse", {
+    cwd: value.feature,
+    session_id: "owner-session",
+    tool_name: "mcp__database__execute",
+    tool_input: { query: "DROP TABLE records" },
+  }, value.home);
+  const staticCritical = invoke("codex", "PreToolUse", {
+    cwd: value.feature,
+    session_id: "owner-session",
+    tool_name: "exec_command",
+    tool_input: { cmd: "git push origin feature" },
+  }, value.home);
+
+  assert.equal(output(mapped).hookSpecificOutput.permissionDecision, undefined);
+  assert.match(output(mapped).hookSpecificOutput.additionalContext, /mapping cache.*missing.*protection.*unavailable/i);
+  assert.equal(output(staticCritical).hookSpecificOutput.permissionDecision, "deny");
+  assert.match(output(staticCritical).hookSpecificOutput.permissionDecisionReason, /mapping cache.*missing/i);
+});
+
+test("entrypoint reports an invalid cache without treating its mappings as protected", async () => {
+  // This test catches malformed cache bytes being accepted as critical mapping evidence.
+  const value = await fixture();
+  await writeFile(path.join(value.root, ".agent-team", "operation-mappings.json"), "{bad json}\n");
+  await writeFile(path.join(value.root, ".agent-team", "state.json"), "{bad json}\n");
+  const mapped = invoke("codex", "PreToolUse", {
+    cwd: value.feature,
+    session_id: "owner-session",
+    tool_name: "exec_command",
+    tool_input: { cmd: "node scripts/reset-data.mjs" },
+  }, value.home);
+
+  assert.equal(output(mapped).hookSpecificOutput.permissionDecision, undefined);
+  assert.match(output(mapped).hookSpecificOutput.additionalContext, /mapping cache.*invalid.*protection.*unavailable/i);
+});
+
+test("CLI migrates healthy state mappings and the entrypoint enforces them after state corruption", async () => {
+  // This test catches a migration command that writes no usable fallback policy receipt.
+  const value = await fixture();
+  const cache = path.join(value.root, ".agent-team", "operation-mappings.json");
+  await rm(cache);
+  const migration = invokeCli("migrate-mappings", {
+    project: value.feature,
+    session: "owner-session",
+  });
+  assert.equal(migration.status, 0);
+  assert.equal(migration.output.status, "completed");
+  assert.equal(migration.output.changed, true);
+  const receipt = JSON.parse(await readFile(cache, "utf8"));
+  assert.equal(receipt.schemaVersion, 1);
+  assert.equal(receipt.kind, "agent-team-operation-mapping-cache");
+  assert.equal(receipt.projectId, "project-1");
+  assert.equal(receipt.sourcePath, ".agent-team/state.json");
+  assert.equal(receipt.operationMappings.providers.mcp__database__execute.kind, "database_destructive");
+  await writeFile(path.join(value.root, ".agent-team", "state.json"), "{bad json}\n");
+  const provider = invoke("claude", "PreToolUse", {
+    cwd: value.feature,
+    session_id: "owner-session",
+    tool_name: "mcp__database__execute",
+    tool_input: { query: "DROP TABLE records" },
+  }, value.home);
+  const app = invoke("codex", "PreToolUse", {
+    cwd: value.feature,
+    session_id: "owner-session",
+    tool_name: "exec_command",
+    tool_input: { cmd: "node scripts/reset-data.mjs" },
+  }, value.home);
+  assert.equal(output(provider).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(output(app).hookSpecificOutput.permissionDecision, "deny");
+});
+
+test("only owner post-tool state changes update the cache while read-only tools do not create it", async () => {
+  // This test catches automatic cache writes on status events, non-owner writes, or unlocked owner refresh.
+  const value = await fixture();
+  const cache = path.join(value.root, ".agent-team", "operation-mappings.json");
+  await rm(cache);
+  const status = invoke("codex", "PreToolUse", {
+    cwd: value.root,
+    session_id: "owner-session",
+    tool_name: "exec_command",
+    tool_input: { cmd: "git status --short" },
+  }, value.home);
+  await assert.rejects(readFile(cache), { code: "ENOENT" });
+  assert.equal(invokeCli("migrate-mappings", { project: value.feature, session: "owner-session" }).status, 0);
+
+  const state = structuredClone(value.state);
+  state.operationMappings.providers.mcp__records__purge = { kind: "database_destructive", sqlField: "query" };
+  await writeFile(path.join(value.root, ".agent-team", "state.json"), JSON.stringify(state, null, 2));
+  const nonOwner = invoke("codex", "PostToolUse", {
+    cwd: value.root,
+    session_id: "developer-session",
+    tool_name: "apply_patch",
+    tool_input: { command: "*** Begin Patch\n*** Update File: .agent-team/state.json\n+ mapping changed\n*** End Patch" },
+  }, value.home);
+  const beforeOwner = JSON.parse(await readFile(cache, "utf8"));
+  const refresh = invoke("codex", "PostToolUse", {
+    cwd: value.root,
+    session_id: "owner-session",
+    tool_name: "apply_patch",
+    tool_input: { command: "*** Begin Patch\n*** Update File: .agent-team/state.json\n+ mapping changed\n*** End Patch" },
+  }, value.home);
+
+  assert.equal(status.status, 0);
+  assert.match(String(output(nonOwner).hookSpecificOutput.additionalContext ?? ""), /canonical project owner/i);
+  assert.equal(beforeOwner.operationMappings.providers.mcp__records__purge, undefined);
+  assert.equal(refresh.status, 0);
+  assert.match(String(output(refresh).hookSpecificOutput.additionalContext ?? ""), /mapping cache/i);
+  const receipt = JSON.parse(await readFile(cache, "utf8"));
+  assert.equal(receipt.operationMappings.providers.mcp__records__purge.kind, "database_destructive");
+  assert.equal((await readdir(path.join(value.root, ".agent-team", ".locks"))).includes("operation-mappings.lock"), false);
+  assert.equal((await readdir(path.join(value.root, ".agent-team"))).some((name) => name.endsWith(".tmp")), false);
 });
 
 test("entrypoint keeps checkpoint and telemetry failures visible and non-blocking", async () => {

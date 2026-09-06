@@ -42,11 +42,13 @@ Codex loads managed groups from `~/.codex/hooks.json`. Claude Code loads them fr
 
 ## Policy state and limits
 
-Policy activates only when Git metadata resolves a canonical project whose `.agent-team/setup.json` identifies Agent-Team. `.agent-team/TEAMS.md` and the canonical task tracker own identity and task status. `.agent-team/state.json` carries only machine-readable gate evidence and pointers that Markdown cannot safely express. It is not a second task ledger. `.agent-team/operation-mappings.json` is a separate schema-versioned inventory of explicit critical provider and shell mappings. This inventory remains readable when operational state is unavailable.
+Policy activates only when Git metadata resolves a canonical project whose `.agent-team/setup.json` identifies Agent-Team. `.agent-team/TEAMS.md` and the canonical task tracker own identity and task status. `.agent-team/state.json` carries only machine-readable gate evidence and pointers that Markdown cannot safely express. It is not a second task ledger. `.agent-team/operation-mappings.json` is a schema-validated cache and policy receipt for explicit critical provider and shell mappings. The cache is not a task ledger. It contains a project identity, a source path, and validated mappings only.
 
 Shell recognition tokenizes documented command forms, including `git -C <repo> push` and unambiguous `mv` operands. Provider and Model Context Protocol (MCP) tools require an explicit operation mapping in operational state or the validated separate inventory. This explicit mapping coverage is not a universal security boundary. MCP means a configured external tool connection. Missing mappings, hosted tools that do not emit a hook, continued `write_stdin` input, shell aliases, generated commands, and a host process that is killed before its hook runs are blind spots.
 
-Advisory parser or tool failures stay visible and do not block work. A statically recognized in-scope critical operation, or an operation identified by the validated separate mapping inventory, fails closed when its required state or parser result is unavailable. Ordinary shell commands and unmapped read-only provider calls continue with visible unavailable advice. Both `PreToolUse` adapters use the native structured `deny` result. Claude `TaskCompleted` uses exit code 2 and stderr because that event does not accept a JSON permission decision. Codex never emits `permissionDecision: "ask"`. Existing scoped authorization proceeds without a new prompt.
+Advisory parser or tool failures stay visible and do not block work. A statically recognized in-scope critical operation, or an operation identified by the validated separate mapping cache, fails closed when its required state or parser result is unavailable. A missing or invalid mapping cache makes mapped-operation fallback protection unavailable; health and unavailable advice state that fact. Ordinary shell commands and unmapped read-only provider calls continue with visible unavailable advice. Both `PreToolUse` adapters use the native structured `deny` result. Claude `TaskCompleted` uses exit code 2 and stderr because that event does not accept a JSON permission decision. Codex never emits `permissionDecision: "ask"`. Existing scoped authorization proceeds without a new prompt.
+
+Only the canonical project owner writes this cache. A supported post-tool state-file change refreshes it under the project lock after healthy state validation. Read-only and status events do not write it. Existing projects can create or update it explicitly with `migrate-mappings`. The command validates healthy canonical state again while it holds the lock, then uses an atomic rename.
 
 Checkpoints cannot guarantee a final write after abrupt termination. A timestamp never proves that a lock owner stopped. Activation logs store only time, runtime, skill/session/event identity, project/team identity, and a non-sensitive correlation ID. They do not store prompts, arguments, credentials, file contents, connection strings, customer data, or raw SQL. Logs use user-only permissions, append locking, deduplication, and bounded rotation.
 
@@ -61,14 +63,15 @@ Run these commands from an inspected source checkout:
 ```bash
 node hooks/agent-team-cli.mjs check-package
 node hooks/agent-team-cli.mjs install
-node hooks/agent-team-cli.mjs health
+node hooks/agent-team-cli.mjs health --project /path/to/project
+node hooks/agent-team-cli.mjs migrate-mappings --project /path/to/project --session <project-owner-session>
 node hooks/agent-team-cli.mjs audit --tracker /path/to/.agent-team/TASKS.md --mistakes /path/to/MISTAKES.md
 node hooks/agent-team-cli.mjs build-artifacts --output /safe/output
 node hooks/agent-team-cli.mjs check-artifacts --archive /safe/codex.zip --archive /safe/claude.zip
 node hooks/agent-team-cli.mjs uninstall
 ```
 
-`uninstall` is the rollback command for the managed installation. It removes Agent-Team hook groups and unchanged files owned by its receipt. It restores saved prior skill copies. It preserves changed managed targets and reports them as conflicts. Installation does not grant trust. `health` reports installed, registered, trusted, supported, and exercised as separate values. It leaves `trusted` unknown until the host supplies evidence. Complete any native `/hooks` trust step yourself, then refresh the host if it requires a new session.
+`uninstall` is the rollback command for the managed installation. It removes Agent-Team hook groups and unchanged files owned by its receipt. It restores saved prior skill copies. It preserves changed managed targets and reports them as conflicts. Installation does not grant trust. `health` reports installed, registered, trusted, supported, and exercised as separate values. With `--project`, it also reports a current, stale, missing, invalid, or unavailable-state mapping cache. It leaves `trusted` unknown until the host supplies evidence. Complete any native `/hooks` trust step yourself, then refresh the host if it requires a new session.
 
 Run unit and regression tests with:
 

@@ -47,7 +47,7 @@ test("hook guide states factual coverage and installed Claude role behavior", as
   for (const pattern of [
     /heuristic.*not proof/i,
     /explicit.*mapping.*not.*universal security boundary/i,
-    /validated separate mapping inventory.*fails closed/i,
+    /validated separate mapping cache.*fails closed/i,
     /unmapped read-only provider.*continue.*unavailable advice/i,
     /read-only.*recovery snapshot/i,
     /\.claude\/agents/i,
@@ -69,4 +69,15 @@ test("README gives a complete macOS checksum command", async () => {
   const readme = await read("README.md");
   assert.match(readme, /On macOS, use `shasum -a 256 \.\.\/agent-team-artifacts\/\*\.zip`/);
   assert.doesNotMatch(readme, /\$package_archive/);
+});
+
+test("mapping cache guidance includes owner migration and visible health", async () => {
+  // This test catches documentation that assumes the fallback cache appears without a production path.
+  const [guide, setup] = await Promise.all([read("references/hooks.md"), read("references/setup.md")]);
+  assert.match(guide, /migrate-mappings --project .* --session/i);
+  assert.match(guide, /health --project/i);
+  assert.match(guide, /missing or invalid.*fallback protection.*unavailable/i);
+  assert.match(guide, /cache.*not.*task ledger/i);
+  assert.match(setup, /project owner.*migrate-mappings/i);
+  assert.match(setup, /read-only.*status.*do not.*cache/i);
 });

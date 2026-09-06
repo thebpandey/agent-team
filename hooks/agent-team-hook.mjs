@@ -3,7 +3,7 @@ import process from "node:process";
 import os from "node:os";
 import path from "node:path";
 import { normalizeEvent } from "./lib/event.mjs";
-import { identityFor, loadCanonicalState } from "./lib/canonical-state.mjs";
+import { identityFor, loadCanonicalState, syncOperationMappingInventory } from "./lib/canonical-state.mjs";
 import { resolveProject } from "./lib/project.mjs";
 import { inspectRecovery } from "./lib/recovery.mjs";
 import { writeCheckpoint } from "./lib/checkpoint.mjs";
@@ -52,12 +52,28 @@ async function checkpointFacts(event, project) {
   };
 }
 
+function changedOperationalMappings(event, project) {
+  if (!["PostToolUse", "PostToolBatch"].includes(event.event) || event.operation.kind !== "file_change") return false;
+  return event.operation.files.some((file) => path.resolve(event.cwd, file.path) === project.paths.state);
+}
+
 /** Run one normalized event through shared policy and bounded factual mutations. */
 export async function runNormalizedHook(event) {
   const project = await resolveProject(event.cwd);
   const decision = await evaluatePolicy(event, project);
   decision.context.active = project.active;
   decision.context.projectId = project.projectId;
+
+  if (project.active && decision.allow && changedOperationalMappings(event, project)) {
+    try {
+      const result = await syncOperationMappingInventory(project, event.sessionId);
+      decision.mutations.push({ kind: "operation_mapping_cache", changed: result.changed });
+      decision.messages.push(`Agent-Team mapping cache is ${result.changed ? "updated" : "current"}.`);
+    } catch {
+      decision.messages.push("Agent-Team mapping cache refresh is unavailable. Only the canonical project owner can refresh healthy state mappings.");
+      decision.capabilities.operationMappings = "unavailable";
+    }
+  }
 
   let activation;
   if (project.active) {

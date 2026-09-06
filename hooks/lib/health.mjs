@@ -1,5 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
+import { operationMappingHealth } from "./canonical-state.mjs";
+import { resolveProject } from "./project.mjs";
 import { activationCapability, readActivationLogs } from "./telemetry.mjs";
 
 async function present(file) {
@@ -24,11 +26,11 @@ function registered(config) {
 }
 
 /** Report each installation dimension separately. Trust stays unknown without native evidence. */
-export async function getHealth({ home }) {
+export async function getHealth({ home, projectPath }) {
   const logs = await readActivationLogs(path.join(home, ".agent-team-hooks", "logs"));
   const codexConfig = await json(path.join(home, ".codex", "hooks.json"));
   const claudeConfig = await json(path.join(home, ".claude", "settings.json"));
-  return {
+  const health = {
     status: "completed",
     runtimes: {
       codex: {
@@ -48,4 +50,11 @@ export async function getHealth({ home }) {
     },
     legacyCodexCopy: await present(path.join(home, ".codex", "skills", "agent-team", "SKILL.md")),
   };
+  if (projectPath) {
+    const project = await resolveProject(projectPath);
+    health.operationMappings = project.active
+      ? await operationMappingHealth(project)
+      : { status: "inactive", fallbackProtection: "unavailable" };
+  }
+  return health;
 }

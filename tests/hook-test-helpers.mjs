@@ -124,6 +124,9 @@ Integration owner: owner-session
   await writeFile(path.join(root, ".agent-team", "state.json"), JSON.stringify(state, null, 2));
   await writeFile(path.join(root, ".agent-team", "operation-mappings.json"), JSON.stringify({
     schemaVersion: 1,
+    kind: "agent-team-operation-mapping-cache",
+    projectId: "project-1",
+    sourcePath: ".agent-team/state.json",
     operationMappings,
   }, null, 2));
   return { root, feature, remote, revision, state, operationMappings };

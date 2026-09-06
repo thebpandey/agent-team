@@ -10,6 +10,8 @@ import { buildArtifacts, checkArtifacts } from "./lib/artifacts.mjs";
 import { getHealth } from "./lib/health.mjs";
 import { installPackage, uninstallPackage } from "./lib/install.mjs";
 import { checkPackage } from "./lib/package-validator.mjs";
+import { syncOperationMappingInventory } from "./lib/canonical-state.mjs";
+import { resolveProject } from "./lib/project.mjs";
 
 const run = promisify(execFile);
 
@@ -34,7 +36,10 @@ async function gitRevision(sourceRoot) {
 export async function runCommand(command, options) {
   const sourceRoot = path.resolve(options.source ?? path.join(import.meta.dirname, ".."));
   const home = path.resolve(options.home ?? os.homedir());
-  if (command === "health") return getHealth({ home });
+  if (command === "health") return getHealth({
+    home,
+    ...(options.project ? { projectPath: path.resolve(options.project) } : {}),
+  });
   if (command === "audit") return auditEffectiveness({
     logDirectory: path.resolve(options.log ?? path.join(home, ".agent-team-hooks", "logs")),
     trackerPath: options.tracker,
@@ -42,6 +47,11 @@ export async function runCommand(command, options) {
     maxRecords: Number(options.limit ?? 1000),
   });
   if (command === "install") return installPackage({ sourceRoot, home });
+  if (command === "migrate-mappings") {
+    if (!options.project || !options.session) throw new Error("migrate-mappings requires --project and --session.");
+    const project = await resolveProject(path.resolve(options.project));
+    return syncOperationMappingInventory(project, options.session);
+  }
   if (["uninstall", "rollback"].includes(command)) return uninstallPackage({ home });
   if (command === "check-package") return checkPackage(sourceRoot);
   if (command === "check-artifacts") return checkArtifacts({

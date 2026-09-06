@@ -1,4 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { withDirectoryLock } from "./lock.mjs";
 
 const criticalMappingKinds = new Set(["file_change", "integration", "release", "database_destructive", "completion"]);
 
@@ -97,12 +100,84 @@ export function validateOperationMappings(value = {}) {
 
 /** Read the independent mapping inventory used when operational state cannot be parsed. */
 export async function loadOperationMappingInventory(project) {
-  const source = await text(project.paths.operationMappings);
-  if (!source) return validateOperationMappings();
+  const source = await readFile(project.paths.operationMappings, "utf8");
   if (Buffer.byteLength(source) > 256 * 1024) throw new Error("Operation mapping inventory exceeds 256 KiB.");
   const inventory = JSON.parse(source);
   if (inventory?.schemaVersion !== 1) throw new Error("Operation mapping inventory schema is unsupported.");
+  if (inventory.kind !== "agent-team-operation-mapping-cache"
+    || inventory.projectId !== project.projectId
+    || inventory.sourcePath !== ".agent-team/state.json") throw new Error("Operation mapping inventory identity is invalid.");
   return validateOperationMappings(inventory.operationMappings);
+}
+
+function sameMappings(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function atomicWrite(file, source) {
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, source, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await rename(temporary, file);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
+/** Write the validated mapping cache as a project-owner policy receipt under one canonical lock. */
+export async function syncOperationMappingInventory(project, sessionId) {
+  if (!project.active) throw new Error("An active Agent-Team project is required.");
+  return withDirectoryLock(path.join(project.paths.locks, "operation-mappings.lock"), {
+    kind: "operation_mapping_cache",
+    projectId: project.projectId,
+    sessionId,
+  }, async () => {
+    const canonical = await loadCanonicalState(project);
+    if (identityFor(canonical.registry, sessionId).role !== "project_owner") {
+      throw new Error("Only the canonical project owner can update the operation mapping cache.");
+    }
+    const operationMappings = validateOperationMappings(canonical.state.operationMappings);
+    const receipt = {
+      schemaVersion: 1,
+      kind: "agent-team-operation-mapping-cache",
+      projectId: project.projectId,
+      sourcePath: ".agent-team/state.json",
+      operationMappings,
+    };
+    const source = `${JSON.stringify(receipt, null, 2)}\n`;
+    let previous = "";
+    try {
+      previous = await readFile(project.paths.operationMappings, "utf8");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (previous === source) return { status: "completed", changed: false };
+    await atomicWrite(project.paths.operationMappings, source);
+    return { status: "completed", changed: true };
+  });
+}
+
+/** Report whether the fallback cache exists, validates, and matches healthy operational state. */
+export async function operationMappingHealth(project) {
+  let cached;
+  try {
+    cached = await loadOperationMappingInventory(project);
+  } catch (error) {
+    return {
+      status: error.code === "ENOENT" ? "missing" : "invalid",
+      fallbackProtection: "unavailable",
+    };
+  }
+  try {
+    const canonical = await loadCanonicalState(project);
+    const current = validateOperationMappings(canonical.state.operationMappings);
+    return sameMappings(cached, current)
+      ? { status: "current", fallbackProtection: "available" }
+      : { status: "stale", fallbackProtection: "stale" };
+  } catch {
+    return { status: "available", fallbackProtection: "available" };
+  }
 }
 
 export function identityFor(registry, sessionId) {

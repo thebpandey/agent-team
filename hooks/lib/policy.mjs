@@ -24,12 +24,15 @@ function deny(message, context = {}) {
 }
 
 /** Select the safe native fallback when canonical/runtime evidence cannot be read. */
-export function unavailableDecision(event, mappings = {}) {
+export function unavailableDecision(event, mappings = {}, { inventoryStatus = "unavailable" } = {}) {
   const operation = classifyOperation(event, mappings);
   const critical = ["file_change", "integration", "release", "database_destructive", "completion"].includes(operation.kind);
-  return critical ? deny("Agent-Team evidence is unavailable for this potentially critical operation.") : decision({
-    messages: ["Agent-Team advisory checks are unavailable for this event."],
-    capabilities: { policy: "unavailable" },
+  const cache = ["missing", "invalid"].includes(inventoryStatus)
+    ? ` Agent-Team mapping cache is ${inventoryStatus}; mapped critical protection is unavailable.`
+    : "";
+  return critical ? deny(`Agent-Team evidence is unavailable for this potentially critical operation.${cache}`) : decision({
+    messages: [`Agent-Team advisory checks are unavailable for this event.${cache}`],
+    capabilities: { policy: "unavailable", operationMappings: inventoryStatus },
   });
 }
 
@@ -252,10 +255,12 @@ async function completionGate(event, project, canonical, operation) {
 export async function evaluatePolicy(event, project, { now = new Date() } = {}) {
   if (!project.active) return decision({ capabilities: { activation: "inactive" } });
   let inventory = {};
+  let inventoryStatus = "current";
   try {
     inventory = await loadOperationMappingInventory(project);
-  } catch {
+  } catch (error) {
     // A bad inventory cannot expand the set of operations that fail closed.
+    inventoryStatus = error.code === "ENOENT" ? "missing" : "invalid";
   }
   let canonical;
   let operation;
@@ -263,7 +268,7 @@ export async function evaluatePolicy(event, project, { now = new Date() } = {}) 
     canonical = await loadCanonicalState(project);
     operation = classifyOperation(event, validateOperationMappings(canonical.state.operationMappings ?? inventory));
   } catch {
-    return unavailableDecision(event, inventory);
+    return unavailableDecision(event, inventory, { inventoryStatus });
   }
 
   const identity = identityFor(canonical.registry, event.sessionId);
