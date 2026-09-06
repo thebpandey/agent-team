@@ -1,0 +1,78 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime claude --event SessionStart",
+            "timeout": 3,
+            "statusMessage": "Checking Agent-Team recovery state"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|Skill|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime claude --event PreToolUse",
+            "timeout": 5,
+            "statusMessage": "Checking Agent-Team policy"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime claude --event PreCompact",
+            "timeout": 3,
+            "statusMessage": "Saving Agent-Team checkpoint"
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime claude --event PostToolBatch",
+            "timeout": 5,
+            "statusMessage": "Checking changed files and saving a checkpoint"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime claude --event TaskCompleted",
+            "timeout": 5,
+            "statusMessage": "Checking Agent-Team completion evidence"
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
+        "matcher": "agent-team",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime claude --event UserPromptExpansion",
+            "timeout": 3,
+            "statusMessage": "Recording Agent-Team activation"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.agents/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime codex --event SessionStart",
+            "timeout": 3,
+            "statusMessage": "Checking Agent-Team recovery state"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.agents/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime codex --event PreToolUse",
+            "timeout": 5,
+            "statusMessage": "Checking Agent-Team policy"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.agents/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime codex --event PreCompact",
+            "timeout": 3,
+            "statusMessage": "Saving Agent-Team checkpoint"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.agents/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime codex --event PostToolUse",
+            "timeout": 5,
+            "statusMessage": "Checking changed files"
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.agents/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime codex --event Interrupt",
+            "timeout": 3,
+            "statusMessage": "Saving Agent-Team checkpoint"
+          }
+        ]
+      }
+    ]
+  }
+}

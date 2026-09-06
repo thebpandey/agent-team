@@ -44,6 +44,10 @@ Create persistent implementation worktrees under orchestrator ownership and pass
 
 Install the root skill under the host's skill directory; the native role templates are supporting assets, not additional skills. See [Claude skill discovery](https://code.claude.com/docs/en/skills).
 
+## Lifecycle hooks
+
+The current edition can register the shared [lifecycle hook system](hooks.md) in the `hooks` object of `~/.claude/settings.json`. The installed skill path is `~/.claude/skills/agent-team`. The managed installer also provisions unchanged current role definitions under `~/.claude/agents` and reports customized-file conflicts. Claude uses `PostToolBatch` once for changed-file lint and factual checkpoint work after parallel tool calls; it does not also register the per-edit hook. Local activation logging covers `PreToolUse` for model-invoked `Skill` use and `UserPromptExpansion` for a direct slash command. It does not replace the separate OpenTelemetry `skill_activated` signal.
+
 ## Named teams and lifecycle actions
 
 Use shared [runs](runs.md), [settings](settings.md), and [help](help.md) for counted starts (1–6 teams), continuous refill, project defaults, and task-based auto-deploy. The project owner alone schedules and releases. Measure actual host capacity for complete developer/reviewer assignments; do not map six teams to six tool slots or change model tiers to fit. Preserve the shared-orchestrator disclosure when full independent sessions are unavailable. Display the [wordmark](wordmark.md) once for user help, start, resume, settings, setup, and status commands; no shell banner tool or background scheduler is required.

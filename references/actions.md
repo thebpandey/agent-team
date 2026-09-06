@@ -2,6 +2,8 @@
 
 Treat these as instructions handled by the skill, not new native CLI commands. Use `$agent-team` in Codex and `/agent-team` in Claude Code. Accept natural-language equivalents. Interpret the action before setup, model checks, spawning, or implementation. Read only the references needed for that action.
 
+A full natural-language `$agent-team` or `/agent-team` feature request can create a new canonical Beads or `TASKS.md` task after scope is sufficient and duplicate work is excluded. It can then register and start the assigned team. `start <name>` selects an already-defined tracker item; it must not invent requirements from the name. Bare `start` selects existing ready work. Lifecycle hooks validate later ownership and completion, but the hooks do not create task records from arbitrary prompts. This rule adds no prompt-parsing hook or new command.
+
 Accept `auto-agent start` with the same modifiers as a plain-language alias for `agent-team start`; it does not install or invoke a separate program. For resolved help, start, resume, settings, setup, or status actions, display the [AGENT-TEAM wordmark](wordmark.md) once before user-facing command output. Internal refills do not count as new user invocations.
 
 | Action | Behavior |

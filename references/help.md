@@ -7,10 +7,10 @@ For `help`, display the [AGENT-TEAM wordmark](wordmark.md) once inside the first
 | `help` | Show commands and examples. | `$agent-team help` |
 | `settings` | View or change defaults for this project only. | `$agent-team settings` |
 | `setup` | Check dependencies, offer installation choices, and let the user keep or edit project defaults. | `$agent-team setup` |
-| `start` | Start ready work using project defaults; built-in default is one task. | `$agent-team start` |
+| `start` | Select existing ready tracker work using project defaults; built-in default is one task. | `$agent-team start` |
 | `start N` | Start up to N safe tasks; N is 1–6. Without continuous mode, finish only that set. | `$agent-team start 3` |
 | `start [N] continuous` | Refill each slot after verified integration into main. | `$agent-team start 3 continuous` |
-| `start <feature-name>` | Start only the resolved feature. | `$agent-team start email-preferences` |
+| `start <feature-name>` | Start only the already-defined tracker item with this resolved name. | `$agent-team start email-preferences` |
 | `start [N or name] with-preview` | Require approval of each admitted feature's submitted version before integration. | `$agent-team start 3 with-preview` |
 | `start [N] [continuous] auto-deploy [B]` | Run teams and deploy batches of B completed top-level tasks. Without B, use the effective team limit. | `$agent-team start 3 continuous auto-deploy` |
 | `start … no-continuous` | Disable saved continuous mode for this run. | `$agent-team start 3 no-continuous` |

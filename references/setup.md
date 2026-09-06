@@ -10,6 +10,8 @@ Check the operating system, project software, installed skills, and required too
 
 Resolve the canonical main checkout from the project record and Git metadata before setup. Read its `.agent-team/setup.json` if it exists; do not create a separate receipt or tracker in each feature worktree. Only the project owner updates the shared receipt or changes tracking mode. Team leads reuse the recorded choices and route new setup needs to that owner. This local file records setup choices, not task progress. Keep it out of app releases and project commits. Preserve unrelated data. Do not store passwords or access tokens.
 
+During explicit setup for an active project, any session identity can use a normal `SessionStart` event to rebuild `.agent-team/operation-mappings.json` from healthy canonical state. A supported post-tool state-file event also refreshes it. Hook JSON is unsigned, so runtime, event, and session fields do not authenticate the caller and cannot supply cache mappings. Report missing, invalid, or stale cache health as unavailable fallback evidence where applicable. Read-only checks and status actions do not create or refresh the cache. The cache is non-authoritative. It stores validated operation mappings for fallback classification, not tasks, progress, or permission.
+
 Record the host, project, task file location, installation scope, tool sources, versions, and status. Also record declined items and the scope of approved installation. A saved record does not grant new permission. Check actual access when the host changes.
 
 ## 2. Explain the choices
@@ -60,6 +62,8 @@ Use the project's package manager. Preserve the lockfile, which records package 
 Install Git, Node.js, Python, package managers, and browser tools only when the selected work requires them. Explain any step that needs administrator access. Do not change global machine settings only to complete the list.
 
 Use the host's supported installation method. Follow the selected platform adapter. In Claude Code, also update managed agent definitions as that adapter specifies. Preserve user changes. Check that the host can find those definitions before you assign work.
+
+For the built-in Agent-Team hook package, follow the [lifecycle hook guide](hooks.md). The managed installer puts Codex at `~/.agents/skills/agent-team`, puts Claude Code at `~/.claude/skills/agent-team`, and provisions unchanged current role definitions under `~/.claude/agents`. It reports customized-role conflicts instead of overwriting them. One user-level transaction lock covers both skill copies, native roles, host configurations, backups, and the receipt. A failed transaction restores its own earlier changes. The installer backs up and removes the old `~/.codex/skills/agent-team` duplicate. Do not run this user-wide install without explicit authority. Do not claim native hook trust; report the required `/hooks` action when the host requires it.
 
 An installation in ChatGPT does not install software on the user's computer. If a new skill is not yet visible, give the supported refresh instruction. Do not claim that an unavailable skill ran.
 

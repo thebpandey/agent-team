@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "name": "agent-team",
+  "version": "6.2.0",
+  "rootFiles": [
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "SKILL.md"
+  ],
+  "includeRoots": [
+    "agents",
+    "assets",
+    "hooks",
+    "references"
+  ],
+  "files": [
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "SKILL.md",
+    "agents/openai.yaml",
+    "assets/banner.svg",
+    "assets/claude-agents/agent-team-complex.md",
+    "assets/claude-agents/agent-team-developer.md",
+    "assets/claude-agents/agent-team-reviewer.md",
+    "assets/claude-agents/agent-team-routine.md",
+    "assets/claude-agents/agent-team-text.md",
+    "assets/claude-agents/agent-team-visual-tester.md",
+    "assets/diagrams/release-recovery.mmd",
+    "assets/diagrams/release-recovery.png",
+    "assets/diagrams/release-recovery.svg",
+    "assets/diagrams/setup-development.mmd",
+    "assets/diagrams/setup-development.png",
+    "assets/diagrams/setup-development.svg",
+    "assets/icon.svg",
+    "hooks/agent-team-cli.mjs",
+    "hooks/agent-team-hook.mjs",
+    "hooks/claude-hooks.json",
+    "hooks/codex-hooks.json",
+    "hooks/manifest.json",
+    "hooks/lib/analyzers.mjs",
+    "hooks/lib/artifacts.mjs",
+    "hooks/lib/canonical-state.mjs",
+    "hooks/lib/checkpoint.mjs",
+    "hooks/lib/event.mjs",
+    "hooks/lib/health.mjs",
+    "hooks/lib/install.mjs",
+    "hooks/lib/lint.mjs",
+    "hooks/lib/lock.mjs",
+    "hooks/lib/operation.mjs",
+    "hooks/lib/output.mjs",
+    "hooks/lib/package-validator.mjs",
+    "hooks/lib/policy.mjs",
+    "hooks/lib/project.mjs",
+    "hooks/lib/recovery.mjs",
+    "hooks/lib/telemetry.mjs",
+    "references/acceptance-tests.md",
+    "references/actions.md",
+    "references/code-explanations.md",
+    "references/dependencies.md",
+    "references/help.md",
+    "references/hooks.md",
+    "references/mistakes-memory.md",
+    "references/output.md",
+    "references/platform-claude.md",
+    "references/platform-codex.md",
+    "references/preview.md",
+    "references/projects.md",
+    "references/recovery.md",
+    "references/release.md",
+    "references/runs.md",
+    "references/settings.md",
+    "references/setup.md",
+    "references/state.md",
+    "references/status.md",
+    "references/team.md",
+    "references/ui-optional.md",
+    "references/ui.md",
+    "references/visual-review.md",
+    "references/wordmark.md"
+  ],
+  "entrypoints": [
+    "hooks/agent-team-hook.mjs",
+    "hooks/agent-team-cli.mjs"
+  ],
+  "runtimeDeclarations": {
+    "codex": "hooks/codex-hooks.json",
+    "claude": "hooks/claude-hooks.json"
+  },
+  "registrationTargets": {
+    "codex": ".codex/hooks.json",
+    "claude": ".claude/settings.json"
+  },
+  "requiredEvents": {
+    "codex": ["SessionStart", "PreToolUse", "PostToolUse", "PreCompact", "Interrupt"],
+    "claude": ["SessionStart", "PreToolUse", "PostToolBatch", "PreCompact", "TaskCompleted", "UserPromptExpansion"]
+  },
+  "policies": [
+    { "id": "req-01", "module": "hooks/lib/recovery.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-02", "module": "hooks/lib/policy.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-03", "module": "hooks/lib/policy.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-04", "module": "hooks/lib/analyzers.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-05", "module": "hooks/lib/analyzers.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-06", "module": "hooks/lib/policy.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-07", "module": "hooks/lib/lint.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-08", "module": "hooks/lib/recovery.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-09", "module": "hooks/lib/checkpoint.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-10", "module": "hooks/lib/policy.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-11", "module": "hooks/lib/analyzers.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-12", "module": "hooks/lib/telemetry.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-13", "module": "hooks/lib/telemetry.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-14", "module": "hooks/lib/package-validator.mjs", "platforms": ["codex", "claude"] },
+    { "id": "req-15", "module": "hooks/lib/artifacts.mjs", "platforms": ["codex", "claude"] }
+  ],
+  "activationSupport": {
+    "codex": "unsupported",
+    "claude": "supported"
+  },
+  "artifacts": {
+    "prefix": "agent-team/",
+    "metadata": "agent-team/.agent-team-source.json",
+    "codex": { "exclude": ["hooks/claude-hooks.json"] },
+    "claude": { "exclude": ["hooks/codex-hooks.json"] }
+  },
+  "legacy": {
+    "path": "legacy/claude-v3",
+    "included": false,
+    "marker": "legacy/claude-v3/ARCHIVED.md"
+  }
+}

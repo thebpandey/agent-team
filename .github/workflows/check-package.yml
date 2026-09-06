@@ -1,0 +1,16 @@
+name: Check package
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node --test tests/hooks-*.test.mjs
+      - run: node hooks/agent-team-cli.mjs check-package

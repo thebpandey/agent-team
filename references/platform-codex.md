@@ -16,6 +16,10 @@ Use exposed Codex spawning, messaging, resume, and stop tools, not assumed shell
 
 Apply shared worktree ownership, CONTEXT.md, tracking, verification, release, and cleanup rules unchanged. A missing teammate model is a reported routing constraint: reassign only to an available suitable model under the user's policy, never label a substitute as the requested model.
 
+## Lifecycle hooks
+
+The current edition can register the shared [lifecycle hook system](hooks.md) in `~/.codex/hooks.json`. The authoritative Codex skill path is `~/.agents/skills/agent-team`. Codex has no reliable local skill-activation event, so health reports that dimension as unsupported. Do not infer activation from reading `SKILL.md`. Use the native `/hooks` trust flow when Codex requires it; the installer never fabricates trust.
+
 ## Named teams and lifecycle actions
 
 Use shared [runs](runs.md), [settings](settings.md), and [help](help.md) for counted starts (1–6 teams), continuous refill, project defaults, and task-based auto-deploy. The project owner alone schedules and releases. Measure actual host capacity for complete developer/reviewer assignments; do not map six teams to six tool slots or change model tiers to fit. Preserve the shared-orchestrator disclosure when full independent sessions are unavailable. Display the [wordmark](wordmark.md) once for user help, start, resume, settings, setup, and status commands; no shell banner tool or background scheduler is required.

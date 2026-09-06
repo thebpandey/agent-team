@@ -18,11 +18,17 @@ When instructed to change the skill, use a checkout of this repository and prese
 
 ## Skill version
 
-The current skill version is **6.1.0**. The authoritative value is `metadata.version` in `SKILL.md`; the [changelog](CHANGELOG.md) records release changes. Run `$agent-team help` in Codex or `/agent-team help` in Claude Code on each machine to display that installed copy's version. Setup and status also display it.
+The current skill version is **6.2.0**. The authoritative value is `metadata.version` in `SKILL.md`; the [changelog](CHANGELOG.md) records release changes. Run `$agent-team help` in Codex or `/agent-team help` in Claude Code on each machine to display that installed copy's version. Setup and status also display it.
 
 To check whether a copy is current, ask the agent to compare its installed version with `SKILL.md` on this repository's `main` branch. This requires GitHub access. A displayed version alone is not a remote update check. Local modifications can differ even when version numbers match; compare package files or the Git revision when exact equality matters. Refresh the host after updating so it loads the new instructions.
 
 For each skill release, update `metadata.version`, this README, and the changelog together before publishing. Use MAJOR.MINOR.PATCH: increase PATCH for fixes and wording changes, MINOR for compatible new capabilities, and MAJOR for incompatible workflow changes. Never publish changed skill contents under an existing released version. Install the complete package on each machine; editing the version number alone does not update the skill.
+
+## Lifecycle hooks
+
+Agent-Team includes optional cross-runtime lifecycle hooks for Codex and Claude Code. They normalize host events, check deterministic ownership and release prerequisites, add focused warnings, save small recovery checkpoints, and validate the package. They do not replace agent judgment or independent review. See the [lifecycle hook guide](references/hooks.md) for behavior, limits, commands, installation paths, trust, tests, and rollback.
+
+The hooks use Node.js 24 standard-library modules only. The transactional installer preserves unrelated host settings, keeps one authoritative Codex skill at `~/.agents/skills/agent-team`, and manages unchanged current Claude role definitions under `~/.claude/agents` without overwriting customized files. Run installation only with the user's authority. Health reports installation, registration, trust, runtime support, and observed exercise separately. Project health also reports the non-authoritative mapping cache used only for fallback classification. A lifecycle event can rebuild it from healthy canonical state. Unsigned hook identity fields do not authenticate the caller or grant authority.
 
 ## Install
 
@@ -47,22 +53,24 @@ agent-team/
   agents/openai.yaml
   references/
   assets/
+  hooks/
 ```
 
-This includes the command rules, project settings, continuous runs, deployment batches, solid wordmark, 74-character message borders, platform adapters, Claude agent definitions, and workflow diagrams. External dependencies and model access are not bundled. The installation ZIP excludes the inactive `legacy/` directory and maintenance `tests/` directory.
+This includes the command rules, project settings, continuous runs, deployment batches, lifecycle hooks, solid wordmark, 74-character message borders, platform adapters, Claude agent definitions, and workflow diagrams. External dependencies and model access are not bundled. The installation ZIP excludes the inactive `legacy/` directory and maintenance `tests/` directory.
 
-Maintainers can build a package from a clean source checkout with these Bash commands:
+Maintainers can build and verify both runtime packages from a clean source checkout with these commands:
 
 ```bash
 package_revision=$(git rev-parse --verify HEAD)
-package_archive="../agent-team-${package_revision}.zip"
-git archive --format=zip --prefix=agent-team/ \
-  --output="$package_archive" "$package_revision" \
-  SKILL.md README.md LICENSE CHANGELOG.md agents references assets
-sha256sum "$package_archive"
+node hooks/agent-team-cli.mjs check-package
+node hooks/agent-team-cli.mjs build-artifacts --revision "$package_revision" --output ../agent-team-artifacts
+node hooks/agent-team-cli.mjs check-artifacts --revision "$package_revision" \
+  --archive ../agent-team-artifacts/agent-team-codex-6.2.0.zip \
+  --archive ../agent-team-artifacts/agent-team-claude-6.2.0.zip
+sha256sum ../agent-team-artifacts/*.zip
 ```
 
-On macOS, use `shasum -a 256 "$package_archive"` for the checksum. Save the full revision and checksum with the archive. Verify archive integrity, required files, and relative links before distribution. A local package is not automatically a GitHub Release asset; do not advertise a download until it exists at an authorized destination.
+On macOS, use `shasum -a 256 ../agent-team-artifacts/*.zip` for the checksum. Save the full revision and checksum with the archive. Verify archive integrity, required files, and relative links before distribution. A local package is not automatically a GitHub Release asset; do not advertise a download until it exists at an authorized destination.
 
 ### Update an existing installation
 
@@ -85,6 +93,16 @@ git clone https://github.com/thebpandey/agent-team.git ~/.agents/skills/agent-te
 
 If that destination already exists, inspect and update your existing installation instead of cloning over it. Use the current host documentation for other installation locations or operating systems. ChatGPT-managed skill installation is separate from installing into your own laptop/server.
 
+With explicit user-wide installation authority, register the lifecycle hooks and copy the Claude package from this inspected source:
+
+```bash
+node ~/.agents/skills/agent-team/hooks/agent-team-cli.mjs install \
+  --source ~/.agents/skills/agent-team
+node ~/.agents/skills/agent-team/hooks/agent-team-cli.mjs health
+```
+
+The installer preserves unrelated host settings. It reports trust separately. Complete the host's native `/hooks` trust action when required.
+
 Select GPT-6 Astra with high reasoning in Codex, then invoke:
 
 ```text
@@ -92,11 +110,9 @@ $agent-team setup
 $agent-team Add the requested feature, verify it, and reconcile every requirement.
 ```
 
-For **Claude Code** on macOS/Linux, install the same repository in Claude's user skill directory:
+For **Claude Code** on macOS/Linux, the managed installer above creates `~/.claude/skills/agent-team`. To use a separate manual installation instead, inspect the destination before you clone or copy the same repository there. Then start Claude Code with the selected model:
 
 ```bash
-mkdir -p ~/.claude/skills
-git clone https://github.com/thebpandey/agent-team.git ~/.claude/skills/agent-team
 claude --model claude-fable-5-1 --effort high
 ```
 
