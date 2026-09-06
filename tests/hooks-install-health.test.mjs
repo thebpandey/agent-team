@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -90,4 +90,19 @@ test("health separates installed, registered, trusted, supported, and exercised"
   health = await getHealth({ home });
   assert.equal(health.runtimes.claude.activation.status, "supported");
   assert.equal(health.runtimes.claude.exercised, true);
+});
+
+test("installer can run from an authoritative Codex source already at its target path", async () => {
+  // This test catches an installer that moves its own source before it copies the Claude package.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-source-home-"));
+  temporary.push(home);
+  const codexTarget = path.join(home, ".agents", "skills", "agent-team");
+  await mkdir(path.dirname(codexTarget), { recursive: true });
+  await cp(sourceRoot, codexTarget, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+
+  const result = await installPackage({ sourceRoot: codexTarget, home, now: new Date("2026-09-06T12:00:00.000Z") });
+
+  assert.equal(result.status, "installed");
+  assert.equal(await readFile(path.join(codexTarget, "SKILL.md"), "utf8").then(Boolean), true);
+  assert.equal(await readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md"), "utf8").then(Boolean), true);
 });

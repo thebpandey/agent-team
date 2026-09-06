@@ -63,6 +63,13 @@ function destructiveSql(sql) {
 /** Recognize only explicit critical operation forms; unmatched paths remain documented blind spots. */
 export function classifyOperation(event, mappings = {}) {
   if (event.operation.kind === "completion") return { kind: "completion", taskId: event.operation.taskId };
+  if (event.operation.kind === "file_change") {
+    const transition = event.operation.files.find((file) => path.basename(file.path) === "TASKS.md"
+      && /\|\s*(verified|deployed)\s*\|/i.test(file.changedContent ?? "")
+      && !/\|\s*(verified|deployed)\s*\|/i.test(file.previousContent ?? ""));
+    if (transition) return { kind: "completion", taskId: transition.changedContent.match(/^\s*\|\s*([^|]+)\|/)?.[1].trim() };
+    return event.operation;
+  }
   if (event.operation.kind === "provider") {
     const mapping = mappings.providers?.[event.operation.tool];
     if (!mapping) return { kind: "unknown_provider" };

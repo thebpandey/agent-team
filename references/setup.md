@@ -61,6 +61,8 @@ Install Git, Node.js, Python, package managers, and browser tools only when the 
 
 Use the host's supported installation method. Follow the selected platform adapter. In Claude Code, also update managed agent definitions as that adapter specifies. Preserve user changes. Check that the host can find those definitions before you assign work.
 
+For the built-in Agent-Team hook package, follow the [lifecycle hook guide](hooks.md). The managed installer puts Codex at `~/.agents/skills/agent-team`, puts Claude Code at `~/.claude/skills/agent-team`, and merges only Agent-Team hook groups. It creates backups before it replaces a skill or changes a host configuration. It backs up and removes the old `~/.codex/skills/agent-team` duplicate. Do not run this user-wide install without explicit authority. Do not claim native hook trust; report the required `/hooks` action when the host requires it.
+
 An installation in ChatGPT does not install software on the user's computer. If a new skill is not yet visible, give the supported refresh instruction. Do not claim that an unavailable skill ran.
 
 ## Pro browser review tools

@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { normalizeEvent } from "../hooks/lib/event.mjs";
 import { resolveProject } from "../hooks/lib/project.mjs";
-import { inspectRecovery } from "../hooks/lib/recovery.mjs";
+import { inspectRecovery, runBoundedProbe } from "../hooks/lib/recovery.mjs";
 import { writeCheckpoint } from "../hooks/lib/checkpoint.mjs";
 import { adaptOutput } from "../hooks/lib/output.mjs";
 
@@ -130,6 +130,19 @@ test("recovery labels checkpoint evidence as current, stale, or unavailable with
   assert.deepEqual(after, before.filter((entry) => entry !== "checkpoints/session.json"));
 });
 
+test("recovery probes bound execution time and returned output", async () => {
+  // This test catches startup Git or GitHub probes that can hang or return unbounded data.
+  const timed = await runBoundedProbe(process.execPath, ["-e", "process.stdout.write('x'.repeat(1000)); setTimeout(() => {}, 5000)"], {
+    timeoutMs: 30,
+    maxOutputBytes: 32,
+  });
+  const missing = await runBoundedProbe("agent-team-command-that-does-not-exist", []);
+
+  assert.equal(timed.status, "timeout");
+  assert.ok(timed.output.length <= 32);
+  assert.equal(missing.status, "unavailable");
+});
+
 test("checkpoint writes are atomic, idempotent, and preserve authored notes", async () => {
   // This test catches duplicate event writes, partial files, and lost recovery notes.
   const root = await projectFixture();
@@ -181,6 +194,24 @@ test("checkpoint allowlists fields and redacts common secret values", async () =
   assert.equal(stored.includes("private-value"), false);
   assert.equal(stored.includes("customer private content"), false);
   assert.match(stored, /\[REDACTED\]/);
+});
+
+test("concurrent checkpoint writers leave one complete record and no lock debris", async () => {
+  // This test catches partial JSON and stale temporary files under concurrent hook events.
+  const root = await projectFixture();
+  const project = await resolveProject(root);
+  const eventIds = Array.from({ length: 12 }, (_, index) => `event-${index}`);
+  await Promise.all(eventIds.map((eventId) => writeCheckpoint(project, {
+    eventId,
+    sessionId: "concurrent-session",
+    eventKind: "PreCompact",
+    projectId: "project-1",
+  })));
+  const names = await readdir(project.paths.checkpoints);
+  const stored = JSON.parse(await readFile(path.join(project.paths.checkpoints, "concurrent-session.json"), "utf8"));
+
+  assert.deepEqual(names, ["concurrent-session.json"]);
+  assert.ok(eventIds.includes(stored.eventId));
 });
 
 test("runtime output adapters emit native advisory and deny contracts without ask", () => {

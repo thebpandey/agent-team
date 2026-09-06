@@ -1,5 +1,21 @@
+import { execFile } from "node:child_process";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
+
+const run = promisify(execFile);
+
+export async function runBoundedProbe(executable, args, { cwd, timeoutMs = 1000, maxOutputBytes = 4096 } = {}) {
+  try {
+    const { stdout, stderr } = await run(executable, args, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024, encoding: "utf8" });
+    return { status: "available", output: `${stdout}${stderr}`.slice(0, maxOutputBytes) };
+  } catch (error) {
+    const output = `${error.stdout ?? ""}${error.stderr ?? ""}`.slice(0, maxOutputBytes);
+    if (error.killed || error.signal || error.code === "ETIMEDOUT") return { status: "timeout", output };
+    if (error.code === "ENOENT") return { status: "unavailable", output: "" };
+    return { status: "failed", output };
+  }
+}
 
 /** Report recovery evidence freshness. This advisory never resumes or edits work. */
 export async function inspectRecovery(project, { now = new Date(), staleAfterMs = 15 * 60_000 } = {}) {

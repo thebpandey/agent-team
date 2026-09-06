@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "agent-team",
-  "version": "6.1.0",
+  "version": "6.2.0",
   "rootFiles": [
     "CHANGELOG.md",
     "LICENSE",
@@ -60,6 +60,7 @@
     "references/code-explanations.md",
     "references/dependencies.md",
     "references/help.md",
+    "references/hooks.md",
     "references/mistakes-memory.md",
     "references/output.md",
     "references/platform-claude.md",
@@ -92,8 +93,8 @@
     "claude": ".claude/settings.json"
   },
   "requiredEvents": {
-    "codex": ["SessionStart", "PreToolUse", "PreCompact", "Interrupt"],
-    "claude": ["SessionStart", "PreToolUse", "PreCompact", "TaskCompleted", "UserPromptExpansion"]
+    "codex": ["SessionStart", "PreToolUse", "PostToolUse", "PreCompact", "Interrupt"],
+    "claude": ["SessionStart", "PreToolUse", "PostToolUse", "PreCompact", "TaskCompleted", "UserPromptExpansion"]
   },
   "policies": [
     { "id": "req-01", "module": "hooks/lib/recovery.mjs", "platforms": ["codex", "claude"] },

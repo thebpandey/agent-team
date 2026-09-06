@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 async function present(file) {
@@ -68,7 +68,7 @@ async function copyPackage(sourceRoot, target, files) {
     await mkdir(path.dirname(destination), { recursive: true });
     await copyFile(source, destination);
     const mode = (await stat(source)).mode & 0o777;
-    if (mode & 0o111) await import("node:fs/promises").then(({ chmod }) => chmod(destination, mode));
+    if (mode & 0o111) await chmod(destination, mode);
   }
   await rename(staging, target);
 }
@@ -92,18 +92,21 @@ export async function installPackage({ sourceRoot, home, now = new Date() }) {
     path.join(home, ".agents", "skills", "agent-team"),
     path.join(home, ".claude", "skills", "agent-team"),
   ];
-  if (previousReceipt?.digest !== digest || !(await Promise.all(targets.map((target) => present(path.join(target, "SKILL.md"))))).every(Boolean)) {
-    for (const [index, target] of targets.entries()) {
-      await mkdir(path.dirname(target), { recursive: true });
-      if (await present(target)) {
-        const backup = path.join(backupRoot, "skills", index === 0 ? "agents-agent-team" : "claude-agent-team");
-        await mkdir(path.dirname(backup), { recursive: true });
-        await rename(target, backup);
-        backups.push({ kind: "skill", target, backup });
-      }
-      await copyPackage(sourceRoot, target, manifest.files);
-      changed = true;
+  const sourceIdentity = await realpath(sourceRoot);
+  for (const [index, target] of targets.entries()) {
+    const targetPresent = await present(target);
+    const sourceIsTarget = targetPresent && await realpath(target) === sourceIdentity;
+    const current = previousReceipt?.digest === digest && await present(path.join(target, "SKILL.md"));
+    if (sourceIsTarget || current) continue;
+    await mkdir(path.dirname(target), { recursive: true });
+    if (targetPresent) {
+      const backup = path.join(backupRoot, "skills", index === 0 ? "agents-agent-team" : "claude-agent-team");
+      await mkdir(path.dirname(backup), { recursive: true });
+      await rename(target, backup);
+      backups.push({ kind: "skill", target, backup });
     }
+    await copyPackage(sourceRoot, target, manifest.files);
+    changed = true;
   }
 
   const legacy = path.join(home, ".codex", "skills", "agent-team");

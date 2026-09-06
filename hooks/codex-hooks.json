@@ -36,6 +36,19 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.agents/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime codex --event PostToolUse",
+            "timeout": 5,
+            "statusMessage": "Checking changed files"
+          }
+        ]
+      }
+    ],
     "Interrupt": [
       {
         "hooks": [

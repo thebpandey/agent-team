@@ -1,5 +1,13 @@
 # Changelog
 
+## 6.2.0 - 2026-09-06
+
+- Add dependency-free lifecycle hooks for current Codex and Claude Code with shared normalization, canonical project resolution, ownership and completion gates, bounded advisories, and atomic recovery checkpoints.
+- Add narrow integration, release, and destructive database enforcement. Preserve scoped authorization and report unsupported tool paths without using an approval prompt.
+- Add Claude activation logging, bounded effectiveness audit, explicit Codex activation limits, health dimensions, safe install/rollback, package validation, reproducible archives, and defect regression tests.
+- Keep `legacy/claude-v3` archived. Record the upstream inspiration revision and Apache-2.0 license without copying upstream source.
+- Clarify that a full feature request can create a deduplicated canonical task, while `start` selects already-defined tracker work.
+
 ## 6.1.0 - 2026-09-06
 
 - Add installed version metadata and display it below the wordmark, with guidance for comparing copies across machines.

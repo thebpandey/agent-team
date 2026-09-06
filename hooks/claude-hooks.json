@@ -37,6 +37,19 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/skills/agent-team/hooks/agent-team-hook.mjs\" --runtime claude --event PostToolUse",
+            "timeout": 5,
+            "statusMessage": "Checking changed files"
+          }
+        ]
+      }
+    ],
     "TaskCompleted": [
       {
         "hooks": [

@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { analyzeChangedFiles } from "./analyzers.mjs";
 import { identityFor, loadCanonicalState } from "./canonical-state.mjs";
+import { runLintChecks } from "./lint.mjs";
 import { classifyOperation } from "./operation.mjs";
 import { resolveProject } from "./project.mjs";
 
@@ -48,7 +49,7 @@ function owns(patterns, relative) {
 }
 
 async function ownership(event, project, canonical, identity) {
-  if (event.operation.kind !== "file_change") return undefined;
+  if (event.event !== "PreToolUse" || event.operation.kind !== "file_change") return undefined;
   if (identity.role === "unknown") return deny("Registered Agent-Team ownership is missing for this session.");
   if (identity.role === "project_owner") return undefined;
   const registeredWorktree = await realpath(identity.team.worktree);
@@ -141,11 +142,11 @@ function databaseGate(event, canonical, operation, now) {
   return undefined;
 }
 
-async function completionGate(event, project, canonical) {
+async function completionGate(event, project, canonical, operation) {
   const identity = identityFor(canonical.registry, event.sessionId);
   if (identity.role === "unknown") return deny("Registered task ownership is missing for completion.");
   const gate = canonical.state.completion ?? {};
-  const taskId = event.operation.taskId ?? gate.taskId;
+  const taskId = operation.taskId ?? gate.taskId;
   const task = canonical.tasks.find((entry) => entry.id === taskId);
   if (!task || (identity.role === "team" && task.owner !== identity.team["team id"])) return deny("The canonical task owner does not match this completion.");
   const head = await gitValue(project.worktreeRoot, ["rev-parse", "HEAD"]);
@@ -182,7 +183,7 @@ export async function evaluatePolicy(event, project, { now = new Date() } = {}) 
   if (operation.kind === "integration") return (await integrationGate(event, project, canonical, operation, now)) ?? decision();
   if (operation.kind === "release") return (await releaseGate(event, project, canonical, now)) ?? decision();
   if (operation.kind === "database_destructive") return databaseGate(event, canonical, operation, now) ?? decision();
-  if (operation.kind === "completion") return (await completionGate(event, project, canonical)) ?? decision();
+  if (operation.kind === "completion") return (await completionGate(event, project, canonical, operation)) ?? decision();
   if (operation.kind === "database_blind_spot") return decision({
     messages: ["This database-like shell path is not mapped, so enforcement coverage is unavailable."],
     capabilities: { database: "unsupported_path" },
@@ -190,7 +191,15 @@ export async function evaluatePolicy(event, project, { now = new Date() } = {}) 
 
   if (policyEvent.operation.kind === "file_change") {
     const findings = analyzeChangedFiles(policyEvent.operation.files, canonical.state.advisories ?? {});
-    return decision({ messages: findings.map(({ message, path: file }) => `${file}: ${message}`), context: { findings } });
+    const messages = findings.map(({ message, path: file }) => `${file}: ${message}`);
+    const capabilities = {};
+    if (event.event === "PostToolUse") {
+      const lint = await runLintChecks(project.worktreeRoot, policyEvent.operation.files.map(({ path: file }) => file));
+      capabilities.lint = lint;
+      if (lint.status === "failed" || lint.status === "timeout") messages.push(`Changed-file lint ${lint.status}.`);
+      else if (lint.status === "skipped" && lint.reason === "missing_executable") messages.push("Changed-file lint skipped because no installed executable was found.");
+    }
+    return decision({ messages, context: { findings }, capabilities });
   }
   return decision();
 }

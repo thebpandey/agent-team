@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -234,4 +234,48 @@ test("explicit completion checks evidence while Stop and interruption events do 
   }
   assert.equal(complete.allow, true);
   assert.equal(blocked.allow, false);
+});
+
+test("Codex canonical tracker status transitions use the explicit completion gate", async () => {
+  // This test catches Codex completion enforcement being limited to Claude TaskCompleted.
+  const value = await fixture();
+  const project = await resolveProject(value.root);
+  const operation = { kind: "file_change", files: [{
+    action: "edit",
+    path: ".agent-team/TASKS.md",
+    previousContent: "| AT-001 | Complete fixture work | TEAM-001 | none | in_progress | rev | Verify. |",
+    changedContent: "| AT-001 | Complete fixture work | TEAM-001 | none | verified | rev | Done. |",
+  }] };
+  const initialState = structuredClone(value.state);
+  delete initialState.completion.taskId;
+  await saveState(value, initialState);
+  const allowed = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation }), project);
+  const state = structuredClone(initialState);
+  state.completion.checks = [];
+  await saveState(value, state);
+  const blocked = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation }), project);
+
+  assert.equal(allowed.allow, true);
+  assert.equal(blocked.allow, false);
+});
+
+test("post-tool file events run one changed-file lint batch with an installed executable", async () => {
+  // This test catches a lint module that is never connected to the hook policy.
+  const value = await fixture();
+  const binary = path.join(value.feature, "node_modules", ".bin", "eslint");
+  await mkdir(path.dirname(binary), { recursive: true });
+  await writeFile(path.join(value.feature, "eslint.config.js"), "export default [];\n");
+  await writeFile(binary, "#!/usr/bin/env node\nprocess.stdout.write('checked');\n");
+  await chmod(binary, 0o755);
+  const result = await evaluatePolicy(hookEvent(value, {
+    event: "PostToolUse",
+    operation: { kind: "file_change", files: [
+      { action: "edit", path: "src/owned.js", changedContent: "export {};" },
+      { action: "edit", path: "src/owned.js", changedContent: "export {};" },
+    ] },
+  }), value.project);
+
+  assert.equal(result.allow, true);
+  assert.equal(result.capabilities.lint.status, "checked");
+  assert.equal(result.capabilities.lint.batches.length, 1);
 });

@@ -30,7 +30,7 @@ test("package validator detects missing files, version drift, broken links, miss
   // Each mutation names a realistic packaging defect that CI must reject.
   const cases = [
     ["missing file", async (root) => rm(path.join(root, "hooks", "agent-team-hook.mjs"))],
-    ["version drift", async (root) => writeFile(path.join(root, "SKILL.md"), (await readFile(path.join(root, "SKILL.md"), "utf8")).replace('version: "6.1.0"', 'version: "9.9.9"'))],
+    ["version drift", async (root) => writeFile(path.join(root, "SKILL.md"), (await readFile(path.join(root, "SKILL.md"), "utf8")).replace(/version: "[^"]+"/, 'version: "9.9.9"'))],
     ["broken link", async (root) => writeFile(path.join(root, "README.md"), `${await readFile(path.join(root, "README.md"), "utf8")}\n[broken](references/not-present.md)\n`)],
     ["missing adapter", async (root) => rm(path.join(root, "hooks", "claude-hooks.json"))],
     ["registration", async (root) => {
