@@ -13,6 +13,10 @@ Show each effective value, whether it is saved or built-in, and its meaning. Ask
 
 Only the project owner writes these fields under shared-record ownership. Preserve existing receipt fields and concurrent user changes. A team session routes a change through that owner. Keep the receipt local under the existing setup policy. A malformed file or invalid saved value must be reported before a new run starts; do not silently overwrite it or interpret a string such as `"false"` as enabled. Enabling auto-deploy here saves a preference, not a release destination or permission to bypass project gates.
 
+## Settings during setup
+
+Explicit `setup` automatically includes this settings flow after dependency checks, including when installation is skipped or all tools are ready. Show effective values and let the user keep or edit them without a separate command. Reuse the validation, ownership, and save rules above. Automatic dependency checks do not prompt for settings. See [setup](setup.md).
+
 ## Resolve a new start
 
 Resolve [command syntax](actions.md) before setup or claims. Explicit command values override saved settings for this run only. Unspecified values use project defaults, then built-in defaults. Save the effective values and their sources in the canonical run record, not back into settings.

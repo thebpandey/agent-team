@@ -1,5 +1,7 @@
 # Agent-Team
 
+Created by [thebpandey](https://github.com/thebpandey).
+
 Codex and Claude Code spin up a team of agents to get the job done faster and more efficiently. Agents work in a review-remediate loop to ensure clean, efficient code.
 
 Agent-Team is a development skill for **Codex and Claude Code**. A skill is a set of instructions for an AI agent. The host is the app that runs the agent.
@@ -8,7 +10,15 @@ Give Agent-Team a task. It selects a suitable team, records progress, checks the
 
 Tool descriptions use short sentences and consistent terms based on [ASD-STE100 principles](https://www.asd-ste100.org/STE_faq.html). Official tool names and commands keep their original form.
 
+## Source repository
+
+The official source for this skill is [thebpandey/agent-team on GitHub](https://github.com/thebpandey/agent-team). Use its `main` branch when instructed to download, install, or update Agent-Team, unless the user specifies another revision. This private repository requires authorized GitHub access.
+
+When instructed to change the skill, use a checkout of this repository and preserve existing user changes. Follow the user's instructions for commits, pushes, and installation updates. An installed copy can differ from the source; compare it before replacing files. Changes to the repository do not automatically update installed Codex or Claude Code copies.
+
 ## Install
+
+Running `agent-team setup` checks dependencies and then shows project settings. Keep the current defaults or edit parallel teams, continuous mode, auto-deploy, and deployment batch size in the same flow. Settings changes apply to future starts.
 
 Install this repository as the `agent-team` skill using your host's supported skill installer. The repository root contains `SKILL.md` and its supporting references.
 

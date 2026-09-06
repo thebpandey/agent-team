@@ -1,12 +1,12 @@
 # Agent-Team command help
 
-For `help`, display the [AGENT-TEAM wordmark](wordmark.md) once inside the first message frame, before the identity header and command table. Show the table below with the current host's prefix: `$agent-team` in Codex or `/agent-team` in Claude Code. Plain-language “agent-team …” is also accepted. These are skill instructions, not installed shell commands. Show help without setup, model checks, agents, task writes, or release actions. During active work, answer and continue that work. A standalone help request ends after the answer.
+For `help`, display the [AGENT-TEAM wordmark](wordmark.md) once inside the first message frame, with the creator credit and GitHub source directly below it, before the identity header and command table. Show the table below with the current host's prefix: `$agent-team` in Codex or `/agent-team` in Claude Code. Plain-language “agent-team …” is also accepted. These are skill instructions, not installed shell commands. Show help without setup, model checks, agents, task writes, or release actions. During active work, answer and continue that work. A standalone help request ends after the answer.
 
 | Command after the prefix | What it does | Example |
 | --- | --- | --- |
 | `help` | Show commands and examples. | `$agent-team help` |
 | `settings` | View or change defaults for this project only. | `$agent-team settings` |
-| `setup` | Check dependencies and offer installation choices. | `$agent-team setup` |
+| `setup` | Check dependencies, offer installation choices, and let the user keep or edit project defaults. | `$agent-team setup` |
 | `start` | Start ready work using project defaults; built-in default is one task. | `$agent-team start` |
 | `start N` | Start up to N safe tasks; N is 1–6. Without continuous mode, finish only that set. | `$agent-team start 3` |
 | `start [N] continuous` | Refill each slot after verified integration into main. | `$agent-team start 3 continuous` |

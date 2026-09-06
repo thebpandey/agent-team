@@ -2,7 +2,7 @@
 
 Run this procedure on first use or when the user requests setup. Also check it when the environment changes or a selected tool is missing. A skill contains instructions. It cannot install software without tools supplied by the host. The host is the app that runs the agent, such as Codex or Claude Code.
 
-An explicit setup action displays the [wordmark](wordmark.md) once. Preserve `run_defaults` in an existing receipt. The separate [settings](settings.md) action edits those project defaults without installing tools or starting work; dependency setup must not silently enable continuous mode or auto-deploy.
+An explicit setup action displays the [wordmark](wordmark.md) once, with the creator credit and GitHub source directly below it. Preserve `run_defaults` in an existing receipt. Explicit `setup` includes the project settings step below. The standalone [settings](settings.md) action remains available without installing tools or starting work; dependency setup must not silently enable continuous mode or auto-deploy.
 
 ## 1. Check what is available
 
@@ -77,4 +77,15 @@ Record each result: Ready, Failed, Deferred, Cannot use, or Excluded. Link meani
 
 If any recommended tool is declined or unusable, select local-file mode and continue the original task. Use `.agent-team/TASKS.md` in the main checkout. Keep the other available skills enabled. Optional tool failures do not stop feasible work. Report a blocker only when the actual task cannot proceed.
 
+For explicit `setup`, complete the project settings step below before the final status, even when tools are already ready or installation is skipped. Automatic dependency checks during start, resume, or recovery do not open the settings flow.
+
 After setup, give a short status and continue the task. A setup-only request ends with that status. Reuse saved choices on later runs. Do not repeatedly ask about declined tools. Do not upgrade tools on every run. A later move to Beads needs the user's selection and the safe transfer procedure in [state and recovery](state.md).
+
+
+## 5. Set project defaults
+
+On every explicit `setup`, automatically show the effective project defaults from [settings](settings.md): parallel teams, continuous mode, auto-deploy, and deployment batch size. Show whether each value is saved or built-in. Offer to keep these values or change them within setup; the user does not need to invoke `settings` separately. Apply clear settings choices already supplied with the setup request without asking again.
+
+Use the existing settings procedure to validate and save only the user's chosen changes in the canonical project's `run_defaults`. Keep or skip leaves existing defaults unchanged. An unanswered offer does not authorize a change. Preserve dependency results and all other receipt fields. Settings affect future starts only; setup does not start teams, change an active run, or deploy. Show the wordmark only once for the whole setup invocation.
+
+If no project is available, explain that defaults are project-only and defer this step until the user identifies a project. Do not create user-wide defaults. Include the saved, unchanged, or deferred settings result in the final setup status.

@@ -14,7 +14,7 @@ Accept `auto-agent start` with the same modifiers as a plain-language alias for 
 | `pause [name-or-ID or all]` | Without a target, show the in-progress team picker plus All and wait for selection. Explicit all acts on all eligible teams; a name/ID targets one. Follow [recovery](recovery.md). |
 | `resume [name-or-ID or all]` | Without a target, show the paused team picker plus All and wait for selection. Explicit all acts on all eligible teams; a name/ID targets one. Inspect actual and saved state using recovery. |
 | `approve <name-or-ID>` | Record the user's approval of the current review version for integration using [preview approval](preview.md). |
-| `setup` | Follow the existing dependency setup procedure. |
+| `setup` | Follow [dependency setup](setup.md), then offer to keep or edit project defaults through [settings](settings.md) in the same flow. |
 
 Names use a short readable form such as `email-preferences`. Resolve exact name or stable team ID within the current project. Reserve action words, modifier words, `all`, and numeric selectors; never interpret user text as a shell command or path. No fuzzy selection for actions that change state. Ask one question for an ambiguous project, feature scope, or target; do not invent requirements from a name alone.
 

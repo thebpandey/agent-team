@@ -11,6 +11,12 @@ For user-invoked `help`, `start`, `resume`, `settings`, `setup`, and `status`, p
 ██ ██  █████  █████  ██  ██    ██            ██    █████  ██ ██  ██   ██
 ```
 
+Immediately below the wordmark's closing code fence, show `Created by thebpandey.` as ordinary text, before the identity header. For resolved `help` or `setup` actions (including combined commands), use this single line instead, with the GitHub source beside the credit:
+
+Created by [thebpandey](https://github.com/thebpandey) · [GitHub source](https://github.com/thebpandey/agent-team)
+
+Show the attribution once with the wordmark. In a plain-text host, use `Created by thebpandey · GitHub source: https://github.com/thebpandey/agent-team` for help and setup. These are static links; displaying them requires no network request.
+
 The filled letters use the Unicode full-block character. If the output surface cannot display it, replace each block with `#` and preserve spacing. No font package or image is needed.
 
 Place it inside the first [message frame](output.md) for the invocation, before the identity header and body. Later progress messages retain borders but do not repeat the wordmark.
