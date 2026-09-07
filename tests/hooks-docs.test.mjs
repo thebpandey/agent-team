@@ -16,11 +16,11 @@ test("release version and guide links stay consistent", async () => {
     read("references/hooks.md"),
   ]);
 
-  assert.equal(manifest.version, "6.4.0");
+  assert.equal(manifest.version, "6.5.0");
   assert.equal(manifest.repository, "https://github.com/thebpandey/agent-team");
-  assert.match(skill, /version: "6\.4\.0"/);
-  assert.match(readme, /current skill version is \*\*6\.4\.0\*\*/i);
-  assert.match(changelog, /^## 6\.4\.0 - 2026-09-07/m);
+  assert.match(skill, /version: "6\.5\.0"/);
+  assert.match(readme, /current skill version is \*\*6\.5\.0\*\*/i);
+  assert.match(changelog, /^## 6\.5\.0 - 2026-09-07/m);
   for (const source of [skill, readme]) assert.match(source, /\(references\/hooks\.md\)/);
   assert.match(guide, /Requirements 1.?15/i);
 });
@@ -39,23 +39,24 @@ test("GitHub releases are tag-driven, validated, and publish both runtime archiv
 
 test("installation guidance uses the canonical pinned release and update source", async () => {
   const readme = await read("README.md");
-  assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/tag\/v6\.4\.0/);
+  assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/tag\/v6\.5\.0/);
   assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/latest/);
   assert.match(readme, /\.agent-team-source\.json/);
 });
 
-test("LeanCTX stays supplemental and reaches every orchestrator and teammate", async () => {
+test("LeanCTX stays supplemental and reaches every orchestrator, teammate, and run record", async () => {
   // This catches a dispatch contract that omits LeanCTX or lets its memory replace Agent-Team records.
   const rolePaths = [
     "complex", "developer", "reviewer", "routine", "text", "visual-tester",
   ].map((role) => `assets/claude-agents/agent-team-${role}.md`);
-  const [skill, dependencies, setup, team, projects, state, codex, claude, leanctx, ...roles] = await Promise.all([
+  const [skill, dependencies, setup, team, projects, state, runs, codex, claude, leanctx, ...roles] = await Promise.all([
     read("SKILL.md"),
     read("references/dependencies.md"),
     read("references/setup.md"),
     read("references/team.md"),
     read("references/projects.md"),
     read("references/state.md"),
+    read("references/runs.md"),
     read("references/platform-codex.md"),
     read("references/platform-claude.md"),
     read("references/lean-ctx.md"),
@@ -71,6 +72,7 @@ test("LeanCTX stays supplemental and reaches every orchestrator and teammate", a
   assert.match(projects, /supplemental/i);
   assert.match(projects, /CONTEXT\.md/);
   assert.match(state, /Default to local mode when any of Beads, Ponytail, Using-Superpowers, or Impeccable is skipped\/unusable/);
+  assert.match(runs, /Ponytail.*Using-Superpowers.*Impeccable.*LeanCTX/is);
   assert.match(codex, /init --agent codex/);
   assert.match(claude, /init --agent claude/);
   for (const [index, role] of roles.entries()) {
@@ -180,4 +182,92 @@ test("mapping cache guidance states its non-authoritative threat model and visib
   assert.match(guide, /never grants authority/i);
   assert.match(setup, /any session identity.*SessionStart.*healthy canonical state/i);
   assert.match(setup, /read-only.*status.*do not.*cache/i);
+});
+
+test("settings migrate role routing only between recognized runtime harnesses", async () => {
+  // This catches a host change retaining incompatible model routing or erasing host-independent run preferences.
+  const [skill, settings, setup, codex, claude, readme] = await Promise.all([
+    read("SKILL.md"),
+    read("references/settings.md"),
+    read("references/setup.md"),
+    read("references/platform-codex.md"),
+    read("references/platform-claude.md"),
+    read("README.md"),
+  ]);
+
+  assert.match(settings, /trusted runtime.*metadata/i);
+  assert.match(settings, /saved `harness`.*does not match.*detected/i);
+  assert.match(settings, /remove.*`role_routing`.*adapter defaults/i);
+  assert.match(settings, /preserve.*`run_defaults`/i);
+  assert.match(settings, /record.*detected harness/i);
+  assert.match(settings, /Codex.*Claude Code/is);
+  assert.match(settings, /neither `codex` nor `claude-code`.*report.*do not.*`role_routing`/is);
+  assert.match(skill, /harness change.*role.*routing.*preserv.*run defaults/is);
+  assert.match(codex, /saved harness.*Codex.*role routing/is);
+  assert.match(claude, /saved harness.*Claude Code.*role routing/is);
+  assert.match(setup, /recognized opposite harness.*automatic.*migration.*unknown.*repair/is);
+  assert.match(codex, /saved harness is `claude-code`.*record Codex.*role routing/is);
+  assert.match(codex, /unknown.*settings.*repair/i);
+  assert.match(claude, /saved harness is `codex`.*record Claude Code.*role routing/is);
+  assert.match(claude, /unknown.*settings.*repair/i);
+  assert.match(readme, /recognized.*Codex.*Claude Code.*reset.*role routing.*unknown.*preserv/is);
+});
+
+test("settings wizard walks every run setting and each role model then effort", async () => {
+  // This catches a return to open-ended manual value entry or a partial wizard that skips role routing.
+  const [settings, setup, actions, readme] = await Promise.all([
+    read("references/settings.md"),
+    read("references/setup.md"),
+    read("references/actions.md"),
+    read("README.md"),
+  ]);
+
+  assert.match(settings, /numbered (?:choice|option)/i);
+  assert.match(settings, /parallel teams.*continuous.*auto-deploy.*deployment batch/is);
+  assert.match(settings, /for each.*role.*model.*then.*effort/is);
+  assert.match(settings, /one prompt at a time/i);
+  assert.match(settings, /keep current/i);
+  assert.match(settings, /back/i);
+  assert.match(settings, /cancel.*without saving/is);
+  assert.match(settings, /review.*save/is);
+  assert.match(settings, /single atomic write/i);
+  assert.match(setup, /complete settings wizard/i);
+  assert.match(actions, /sequential.*numbered.*wizard/i);
+  assert.match(readme, /numbered settings wizard/i);
+});
+
+test("setup offers per-dependency installation and start honors saved auto-deploy", async () => {
+  // This catches silent dependency installation and the obsolete run-specific auto-deploy confirmation gate.
+  const [skill, settings, setup, actions, scenarios, release, diagram, renderedDiagram, readme] = await Promise.all([
+    read("SKILL.md"),
+    read("references/settings.md"),
+    read("references/setup.md"),
+    read("references/actions.md"),
+    read("tests/command-scenarios.md"),
+    read("references/release.md"),
+    read("assets/diagrams/setup-development.mmd"),
+    read("assets/diagrams/setup-development.svg"),
+    read("README.md"),
+  ]);
+
+  assert.match(setup, /each missing dependency.*one at a time.*numbered/is);
+  assert.match(setup, /install.*skip and remember/is);
+  assert.match(setup, /never install.*without.*selection/i);
+  assert.match(skill, /saved auto-deploy.*continue.*without.*confirmation/i);
+  assert.match(settings, /saved auto-deploy.*proceed.*without.*prompt/i);
+  assert.match(actions, /saved auto-deploy.*does not prompt/i);
+  assert.match(scenarios, /saved auto-deploy=true.*proceed.*without.*confirmation/is);
+  assert.match(readme, /saved auto-deploy.*without.*confirmation/i);
+  assert.match(readme, /each missing dependency.*install now.*skip and remember/is);
+  assert.doesNotMatch(readme, /Recommended tools for this project.*All free tools that work here.*Choose tools or skip installation/is);
+  assert.match(diagram, /reconcile.*harness.*numbered/is);
+  assert.match(renderedDiagram, /reconcile.*harness.*numbered/is);
+
+  for (const source of [skill, settings, actions, scenarios, release, diagram, renderedDiagram, readme]) {
+    assert.doesNotMatch(source, /saved auto-deploy requires a keep\/disable choice/i);
+    assert.doesNotMatch(source, /ask whether to keep auto-deploy or use no auto-deploy/i);
+    assert.doesNotMatch(source, /notify saved preference and ask keep\/disable/i);
+    assert.doesNotMatch(source, /confirm inherited auto-deploy/i);
+    assert.doesNotMatch(source, /confirmed saved preference/i);
+  }
 });

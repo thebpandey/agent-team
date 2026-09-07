@@ -2,6 +2,8 @@
 
 Use only in a Codex runtime. Invoke `$agent-team`; resolve dependency skills with `$name` or the host's supported skill selector. Keep ChatGPT-managed installation separate from CLI installation.
 
+Confirm Codex from trusted runtime/tool metadata before loading this adapter. Reconcile the saved harness through [settings](settings.md): when the saved harness is `claude-code`, record Codex, remove project role routing (`role_routing`), and use the Codex defaults below while preserving `run_defaults`. If it is unknown or malformed, use the settings repair path and preserve routing until the user selects that repair. Do not infer Codex from `$agent-team` text alone.
+
 | Role | Model | Effort |
 | --- | --- | --- |
 | Project/team orchestrator; trivial work in feature worktree | `gpt-6-astra` | high |

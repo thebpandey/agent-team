@@ -1,10 +1,10 @@
 flowchart TD
     A["Resolve action; show wordmark for start/resume/settings/setup/status"] --> B{"Requested action"}
     B -->|Help or status| C["Read and report only; leave active work running"]
-    B -->|Settings or setup| D["Handle project choices only; no team start"]
+    B -->|Settings or setup| D["Reconcile harness; use numbered dependency/settings choices; no team start"]
     B -->|Pause or resume| E["Bare action: picker first; All controls run and offered teams"]
     E -->|Project resume after evidence checks| F
-    B -->|Start| F["Resolve run choices; confirm inherited auto-deploy before claims"]
+    B -->|Start| F["Resolve run choices; use saved auto-deploy without another prompt"]
     F --> G["Admit safe ready tasks within 1-6 team limit and host capacity"]
     G --> H["Develop, review, repair in feature worktrees"]
     H --> I{"Checks and required version approval pass?"}

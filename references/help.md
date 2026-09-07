@@ -9,8 +9,8 @@ For `help`, display the [AGENT-TEAM wordmark](wordmark.md) once inside the first
 | Command after the prefix | What it does | Example |
 | --- | --- | --- |
 | `help` | Show commands and examples. | `$agent-team help` |
-| `settings` | View or change defaults for this project only. | `$agent-team settings` |
-| `setup` | Check dependencies, offer installation choices, and let the user keep or edit project defaults. | `$agent-team setup` |
+| `settings` | Change every project default through a one-question-at-a-time numbered wizard. | `$agent-team settings` |
+| `setup` | Check dependencies, offer automatic installation for each missing item, then run the settings wizard. | `$agent-team setup` |
 | `start` | Select existing ready tracker work using project defaults; built-in default is one task. | `$agent-team start` |
 | `start N` | Start up to N safe tasks; N is 1–6. Without continuous mode, finish only that set. | `$agent-team start 3` |
 | `start [N] continuous` | Refill each slot after verified integration into main. | `$agent-team start 3 continuous` |
@@ -33,7 +33,7 @@ For `help`, display the [AGENT-TEAM wordmark](wordmark.md) once inside the first
 
 Explain these rules below the table:
 
-- Explicit command choices apply only to the run. `settings` saves future project defaults. If saved defaults enable auto-deploy, start asks whether to keep it or use no auto-deploy; explicit `auto-deploy` skips that settings question.
+- Explicit command choices apply only to the run. `settings` saves future project defaults. A start uses saved auto-deploy without another confirmation; explicit `auto-deploy` or `no-auto-deploy` overrides it for that run.
 - N limits occupied development teams, including blocked/paused/approval-waiting teams. Host capacity and safe task independence can reduce the actual parallel count. Named starts never expand into continuous queue work.
 - B counts completed top-level tasks, not commits or subtasks. `start 3 auto-deploy` deploys three tasks together; `start 3 auto-deploy 1` deploys each integrated task. Continuous mode refills independently of batching.
 - A final smaller batch deploys when the run's work ends or only blocked work remains, if auto-deploy is enabled and release gates pass. Explicit pause and a deployment-failure hold prevent that flush.

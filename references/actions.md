@@ -8,16 +8,16 @@ Accept `auto-agent start` with the same modifiers as a plain-language alias for 
 
 | Action | Behavior |
 | --- | --- |
-| `start [N or name] [continuous] [with-preview] [auto-deploy [B]]` | Resolve project defaults and run-only overrides using [settings](settings.md). Select safe tasks and run bounded or continuous teams using [runs](runs.md). N is 1–6; B counts completed top-level tasks. A name selects one feature only. |
+| `start [N or name] [continuous] [with-preview] [auto-deploy [B]]` | Resolve project defaults and run-only overrides using [settings](settings.md). Saved auto-deploy does not prompt for confirmation; explicit modifiers can override it for this run. Select safe tasks and run bounded or continuous teams using [runs](runs.md). N is 1–6; B counts completed top-level tasks. A name selects one feature only. |
 | `auto-deploy [B or off]` | Enable current-run deployment batches (default B=1), or stop future automatic batches with off. Include eligible integrated work, without starting teams or saving defaults. Follow [release](release.md). |
 | `help` | Show the [command list and examples](help.md) without setup, checks, or mutations. |
-| `settings` | View/edit [current-project defaults](settings.md); do not start work or change an active run. |
+| `settings` | Run the [current-project](settings.md) sequential numbered settings wizard; do not start work or change an active run. |
 | `status [name-or-ID or all]` | Run the read-only [status procedure](status.md). Never enter setup, recovery, or development from this action. |
 | `pause [name-or-ID or all]` | Without a target, show the in-progress team picker plus All and wait for selection. Explicit all acts on all eligible teams; a name/ID targets one. Follow [recovery](recovery.md). |
 | `pause and deploy` | Pause all Agent-Team writers and project activity, then commit and deploy verified finished, integrated, approved, not-yet-deployed work through the normal release gates. |
 | `resume [name-or-ID or all]` | Without a target, show the paused team picker plus All and wait for selection. Explicit all acts on all eligible teams; a name/ID targets one. Inspect actual and saved state using recovery. |
 | `approve <name-or-ID>` | Record the user's approval of the current review version for integration using [preview approval](preview.md). |
-| `setup` | Follow [dependency setup](setup.md), then offer to keep or edit project defaults through [settings](settings.md) in the same flow. |
+| `setup` | Follow [dependency setup](setup.md), offer automatic installation for each missing dependency, then run the complete [settings wizard](settings.md) in the same flow. |
 
 Names use a short readable form such as `email-preferences`. Resolve exact name or stable team ID within the current project. Reserve action words, modifier words, `all`, and numeric selectors; never interpret user text as a shell command or path. No fuzzy selection for actions that change state. Ask one question for an ambiguous project, feature scope, or target; do not invent requirements from a name alone.
 

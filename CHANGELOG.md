@@ -1,5 +1,13 @@
 # Changelog
 
+## 6.5.0 - 2026-09-07
+
+- Detect the active Codex or Claude Code harness and reset only role routing when a saved project switches between them.
+- Add a one-question-at-a-time numbered setup/settings wizard for every run default and each role's model and effort.
+- Let setup offer automatic installation for each missing dependency while preserving explicit skip and fallback behavior.
+- Honor saved auto-deploy on `start` without asking for a redundant run-specific confirmation.
+- Include LeanCTX in per-run skill confirmations while preserving Agent-Team task and recovery authority.
+
 ## 6.4.0 - 2026-09-07
 
 - Add a conservative LeanCTX integration contract for Codex and Claude Code while keeping Agent-Team records authoritative.

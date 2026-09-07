@@ -2,6 +2,8 @@
 
 Use only in Claude Code. Invoke `/agent-team`; resolve dependencies through the actual Skill tool and installed names, including plugin namespaces. Keep the root skill in the main conversation; do not add `context: fork` or require Codex controls.
 
+Confirm Claude Code from trusted runtime/tool metadata before loading this adapter. Reconcile the saved harness through [settings](settings.md): when the saved harness is `codex`, record Claude Code, remove project role routing (`role_routing`), and use the Claude Code defaults below while preserving `run_defaults`. If it is unknown or malformed, use the settings repair path and preserve routing until the user selects that repair. Do not infer Claude Code from `/agent-team` text alone.
+
 ## Role map
 
 These are workflow choices, not benchmark equivalence claims. Verified against Anthropic's model documentation on 2026-09-04.

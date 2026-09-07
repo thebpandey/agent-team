@@ -31,11 +31,11 @@ The official source for this skill is [thebpandey/agent-team on GitHub](https://
 
 When instructed to change the skill, use a checkout of this repository and preserve existing user changes. Follow the user's instructions for commits, pushes, and installation updates. An installed copy can differ from the source; compare it before replacing files. Changes to the repository do not automatically update installed Codex or Claude Code copies.
 
-The pinned source for this release is [Agent-Team v6.4.0](https://github.com/thebpandey/agent-team/releases/tag/v6.4.0). Check [the latest official release](https://github.com/thebpandey/agent-team/releases/latest) for future updates. Each release ZIP contains `.agent-team-source.json` with the canonical repository, release tag, update URL, runtime, and exact source revision. Use that metadata to verify where an installed archive came from before updating it.
+The pinned source for this release is [Agent-Team v6.5.0](https://github.com/thebpandey/agent-team/releases/tag/v6.5.0). Check [the latest official release](https://github.com/thebpandey/agent-team/releases/latest) for future updates. Each release ZIP contains `.agent-team-source.json` with the canonical repository, release tag, update URL, runtime, and exact source revision. Use that metadata to verify where an installed archive came from before updating it.
 
 ## Skill version
 
-The current skill version is **6.4.0**. The authoritative value is `metadata.version` in `SKILL.md`; the [changelog](CHANGELOG.md) records release changes. Run `$agent-team help` in Codex or `/agent-team help` in Claude Code on each machine to display that installed copy's version. Setup and status also display it.
+The current skill version is **6.5.0**. The authoritative value is `metadata.version` in `SKILL.md`; the [changelog](CHANGELOG.md) records release changes. Run `$agent-team help` in Codex or `/agent-team help` in Claude Code on each machine to display that installed copy's version. Setup and status also display it.
 
 To check whether a copy is current, ask the agent to compare its installed version with `SKILL.md` on this repository's `main` branch. This requires GitHub access. A displayed version alone is not a remote update check. Local modifications can differ even when version numbers match; compare package files or the Git revision when exact equality matters. Refresh the host after updating so it loads the new instructions.
 
@@ -49,13 +49,13 @@ The hooks use Node.js 24 standard-library modules only. The transactional instal
 
 ## Install
 
-Running `agent-team setup` checks dependencies and then shows project settings. Keep the current defaults or edit parallel teams, continuous mode, auto-deploy, and deployment batch size in the same flow. Settings changes apply to future starts.
+Running `agent-team setup` checks dependencies, offers automatic installation for each missing item, and then opens the numbered settings wizard. The same wizard opens for `agent-team settings` and walks through parallel teams, continuous mode, auto-deploy, deployment batch size, and model/effort routing for every role. Agent-Team detects the host from runtime metadata. Only a recognized switch from Codex to Claude Code or from Claude Code to Codex automatically resets role routing to the new defaults while preserving run defaults. An unknown saved harness is reported and preserved until you select the repair. A start honors saved auto-deploy without another confirmation; explicit start modifiers can still override it for that run.
 
 Install this repository as the `agent-team` skill using your host's supported skill installer. The repository root contains `SKILL.md` and its supporting references.
 
 For an authorized ZIP installation, extract the package and place its `agent-team` folder in the selected host's skill directory. The final path must be `agent-team/SKILL.md`, not an extra nested archive folder. Include `references/`, `agents/`, `assets/`, and `LICENSE`; do not copy only SKILL.md. Inspect an existing installation before replacing files and preserve user changes. Restart or refresh the host as required for discovery. Claude's native role definitions still need the setup step described below.
 
-Prefer the runtime-specific ZIP attached to the pinned GitHub Release over an unversioned branch archive. Verify its checksum against the release's `SHA256SUMS` file before extraction. Use `agent-team-codex-6.4.0.zip` for Codex and `agent-team-claude-6.4.0.zip` for Claude Code.
+Prefer the runtime-specific ZIP attached to the pinned GitHub Release over an unversioned branch archive. Verify its checksum against the release's `SHA256SUMS` file before extraction. Use `agent-team-codex-6.5.0.zip` for Codex and `agent-team-claude-6.5.0.zip` for Claude Code.
 
 Build distribution ZIPs from an identified committed revision with an `agent-team/` archive prefix. Include that revision's current license and record its full commit ID and archive checksum with the package. Keep packages private and distribute only through authorized LearnStack OS channels. A repository update does not update existing extracted installations automatically.
 
@@ -84,8 +84,8 @@ package_revision=$(git rev-parse --verify HEAD)
 node hooks/agent-team-cli.mjs check-package
 node hooks/agent-team-cli.mjs build-artifacts --revision "$package_revision" --output ../agent-team-artifacts
 node hooks/agent-team-cli.mjs check-artifacts --revision "$package_revision" \
-  --archive ../agent-team-artifacts/agent-team-codex-6.4.0.zip \
-  --archive ../agent-team-artifacts/agent-team-claude-6.4.0.zip
+  --archive ../agent-team-artifacts/agent-team-codex-6.5.0.zip \
+  --archive ../agent-team-artifacts/agent-team-claude-6.5.0.zip
 sha256sum ../agent-team-artifacts/*.zip
 ```
 
@@ -159,8 +159,8 @@ Run `$agent-team help` for the full command list and examples. `auto-agent start
 | Command in Codex | What happens |
 | --- | --- |
 | `$agent-team help` | Show available commands, their meaning, and examples without starting work. |
-| `$agent-team settings` | View or change this project's defaults for team count, continuous mode, auto-deploy, and deployment batch size. |
-| `$agent-team setup` | Check dependencies and offer installation choices. |
+| `$agent-team settings` | Walk through every project run and role-routing setting with numbered choices. |
+| `$agent-team setup` | Check dependencies, offer automatic installation for each missing item, then run the settings wizard. |
 | `$agent-team start` | Use project defaults. Without saved settings, select one ready, unassigned task; preserve its task ID and assign a stable team ID/name. |
 | `$agent-team start 3` | Start up to three safe independent tasks. Without continuous mode, finish only the admitted set, integrate it, and ask whether to deploy when auto-deploy is off. |
 | `$agent-team start continuous` | Refill a slot after successful verified integration into main. The default team limit is one. |
@@ -189,7 +189,7 @@ Run `$agent-team help` for the full command list and examples. `auto-agent start
 
 ### Project defaults and deployment batches
 
-Built-in defaults are one team, continuous off, and auto-deploy off. `settings` saves defaults only for the current project in the existing local setup receipt. Explicit command values override those defaults for one run. Settings changes do not alter an active run. If a start inherits auto-deploy from saved settings, Agent-Team tells you the setting and asks whether to keep it or use no auto-deploy for this run before starting. An explicit `auto-deploy` modifier skips that settings question. Existing target and release gates still apply.
+Built-in defaults are one team, continuous off, and auto-deploy off. `settings` saves defaults only for the current project in the existing local setup receipt. Explicit command values override those defaults for one run. Settings changes do not alter an active run. If a start inherits auto-deploy from saved settings, Agent-Team shows the effective choice and starts without another settings question. An explicit `auto-deploy` or `no-auto-deploy` modifier overrides it for that run. Existing target and release gates still apply.
 
 Deployment batches count completed top-level tasks, regardless of their commit or subtask count. Standalone `auto-deploy` uses a batch size of one. On a start, `auto-deploy` without a number uses the effective team limit. An explicit batch size overrides that value. Continuous refill does not wait for deployment: a newly integrated task frees its slot while it waits for its release batch.
 
@@ -229,7 +229,7 @@ A development preview is not a production deployment. `localhost` refers to the 
 
 Bare `pause` and `resume` first show a team picker with an All option. Pause lists in-progress teams; resume lists paused teams and clearly labels any interrupted work. This applies even from a feature session or when only one team is available. Nothing changes until you choose. Cancelling leaves work unchanged. Explicit `pause all` and `resume all` act directly; an explicit name or ID affects only that team. The lead stops new assignments and integrations, saves checkpoints, and reports each team's result. Operations that cannot safely stop are reported as still stopping or unknown. The harness does not claim a complete pause until the affected writers and release activity have stopped safely. It preserves worktrees, preview approval, and safely running previews with frozen source. Other projects are unaffected.
 
-`pause all` also stops continuous refill and new automatic batches until project resume, including between tasks. A bare picker includes an eligible run when no teams are eligible. All selected there controls that run and the offered teams. A named resume does not clear a project-wide hold. Resume restores effective run settings and pending deployment batches from evidence; it does not reload changed defaults or repeat an already answered settings confirmation.
+`pause all` also stops continuous refill and new automatic batches until project resume, including between tasks. A bare picker includes an eligible run when no teams are eligible. All selected there controls that run and the offered teams. A named resume does not clear a project-wide hold. Resume restores effective run settings and pending deployment batches from evidence; it does not reload changed defaults or reopen the settings wizard.
 
 Each agent saves short checkpoints during meaningful progress and before a requested pause. Resume reads those notes, current files, task evidence, active processes, approval gates, and release records. It checks whether earlier agents are still writing before replacing them. If deployment already succeeded, it records the result and continues remaining verification or cleanup instead of deploying again.
 
@@ -257,7 +257,7 @@ The second diagram shows serial integration, release, recovery, and required cle
 
 [Open the full-size flowchart](assets/diagrams/release-recovery.svg) · [Mermaid source](assets/diagrams/release-recovery.mmd)
 
-Installation does not grant deployment permission. Auto-deploy uses the run's explicit command or confirmed saved preference and established target authority. With auto-deploy off, Agent-Team asks before deploying the integrated result. It restores an earlier version only when authorized and safe. It does not automatically reverse destructive data changes. If recovery fails, it stops further releases and reports the incident.
+Installation does not grant deployment permission. Auto-deploy uses the run's explicit command or saved project preference and established target authority. With auto-deploy off, Agent-Team asks before deploying the integrated result. It restores an earlier version only when authorized and safe. It does not automatically reverse destructive data changes. If recovery fails, it stops further releases and reports the incident.
 
 After every successful release or recovery, Agent-Team updates the active task record. A recovery does not mean that the requested feature is complete. Before work-folder removal, it preserves required evidence and checks that the work is deployed and verified. It keeps the main folder, unrelated work, and unfinished work.
 
@@ -288,13 +288,7 @@ All teammates read relevant mistake lessons before work and retries. Only the le
 
 A dependency is a tool or skill that helps Agent-Team do a task. Agent-Team checks what is installed before it offers changes. It explains each tool in simple terms.
 
-| Choice | What happens |
-| --- | --- |
-| Recommended tools for this project | Install the accepted recommended tools and useful optional tools. |
-| All free tools that work here | Install accepted free skills and reference files. Add app packages only where needed. |
-| Choose tools or skip installation | Install selected items, or continue without new tools. |
-
-Before installation, you see the source, version, location, and proposed changes. Agent-Team remembers declined tools. It does not ask about them again unless you change the choice. It checks each selected installation before use.
+Setup shows each missing dependency one at a time. After you see its source, version, location, scope, commands, and configuration effects, choose a numbered option: **Install now**, choose another supported scope, **Skip and remember**, or cancel setup. One selection never approves another dependency. Agent-Team remembers declined tools and checks each selected installation before use.
 
 A package is software that you can install. Some packages work only with specific app software. A collection can contain many separate components. Agent-Team adds only the needed parts. Paid features require existing access. Installation cannot bypass permissions or required approvals.
 

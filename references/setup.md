@@ -2,7 +2,7 @@
 
 Run this procedure on first use or when the user requests setup. Also check it when the environment changes or a selected tool is missing. A skill contains instructions. It cannot install software without tools supplied by the host. The host is the app that runs the agent, such as Codex or Claude Code.
 
-An explicit setup action displays the [wordmark](wordmark.md) once, with the installed skill version, then the creator credit and GitHub source below it. Preserve `run_defaults` in an existing receipt. Explicit `setup` includes the project settings step below. The standalone [settings](settings.md) action remains available without installing tools or starting work; dependency setup must not silently enable continuous mode or auto-deploy.
+An explicit setup action displays the [wordmark](wordmark.md) once, with the installed skill version, then the creator credit and GitHub source below it. Reconcile the detected runtime with the saved project `harness` using [settings](settings.md). Preserve `run_defaults` during a harness change. Explicit `setup` offers automatic installation for missing dependencies and includes the complete settings wizard below. The standalone `settings` action remains available without installing tools or starting work; dependency setup must not silently enable continuous mode or auto-deploy.
 
 ## 1. Check what is available
 
@@ -12,7 +12,7 @@ Resolve the canonical main checkout from the project record and Git metadata bef
 
 During explicit setup for an active project, any session identity can use a normal `SessionStart` event to rebuild `.agent-team/operation-mappings.json` from healthy canonical state. A supported post-tool state-file event also refreshes it. Hook JSON is unsigned, so runtime, event, and session fields do not authenticate the caller and cannot supply cache mappings. Report missing, invalid, or stale cache health as unavailable fallback evidence where applicable. Read-only checks and status actions do not create or refresh the cache. The cache is non-authoritative. It stores validated operation mappings for fallback classification, not tasks, progress, or permission.
 
-Record the host, project, task file location, installation scope, tool sources, versions, and status. Also record declined items and the scope of approved installation. A saved record does not grant new permission. Check actual access when the host changes.
+Record the detected host as top-level `harness`, plus the project, task file location, installation scope, tool sources, versions, and status. Also record declined items and the scope of approved installation. A saved record does not grant new permission. When the saved value is the recognized opposite harness, perform the automatic role-routing migration before showing dependency or settings choices. When it is unknown or malformed, use the settings report-and-repair path and preserve routing until the user selects the repair.
 
 ## 2. Explain the choices
 
@@ -22,13 +22,16 @@ Show what each item does, why the project needs it, and its current status. Use 
 
 Present missing Beads, Ponytail, Using-Superpowers, Impeccable, and LeanCTX. Keep the existing four-tool tracker-selection rule unchanged: LeanCTX availability does not select Beads or local tracking. Also show all optional design tools from the guide. Explain which optional items fit the project. Do not hide the other choices because they are not needed now.
 
-If the user already approved the same installation plan, continue. Otherwise, show the proposed changes and ask one question with these choices:
+For each missing dependency, prompt one at a time with a numbered choice list after showing its source, inspected version or revision, exact installation location, scope, commands, files/configuration changed, and any hook or permission effect:
 
-1. **Recommended tools for this project (Recommended).** Install the accepted recommended tools and the optional tools needed by this project.
-2. **All free tools that work here.** Install accepted free skills and reference files. Add app packages only to a project that needs them.
-3. **Choose tools or skip installation.** Install only the selected items. If the user declines the four recommended tools, continue with a local task file.
+1. **Install now at the recommended scope (Recommended).** Run the displayed, inspected installation plan automatically.
+2. **Choose another supported scope.** Show this only when another safe project/user scope exists, then ask for that scope as the next numbered prompt.
+3. **Skip and remember.** Record the declined item and continue with the documented fallback.
+4. **Cancel setup.** Stop before installing this or later items; preserve already completed, verified installations and do not open the settings wizard.
 
-Before the user chooses, show each source, version, installation location, and required command or host action. Explain any automatic scripts or changes to project files. A hook is a script that runs automatically after a specified event. Do not approve hook access for the user.
+Use a native single-select control when available; otherwise accept the displayed number or exact label. Never install a dependency without the user's explicit selection for its displayed plan. A prior approval can be reused only when item, source version, commands, destination, scope, and configuration effects are unchanged. Do not treat selection of one dependency as approval for another.
+
+Explain any automatic scripts or changes to project files. A hook is a script that runs automatically after a specified event. Do not approve hook access for the user. An install selection does not approve a purchase, administrator access, host hook trust, a different scope, or overwriting an existing customized installation; obtain the host's separate confirmation when it requires one.
 
 State whether an item is for this project or all projects for the user. Identify duplicate tools, paid features, and items that cannot work here. The selected choice approves only the displayed plan. Ask again only for a new scope or a required approval.
 
@@ -91,8 +94,8 @@ After setup, give a short status and continue the task. A setup-only request end
 
 ## 5. Set project defaults
 
-On every explicit `setup`, automatically show the effective project defaults from [settings](settings.md): parallel teams, continuous mode, auto-deploy, and deployment batch size. Show whether each value is saved or built-in. Offer to keep these values or change them within setup; the user does not need to invoke `settings` separately. Apply clear settings choices already supplied with the setup request without asking again.
+On every explicit `setup`, run the complete settings wizard from [settings](settings.md). It asks one numbered question at a time for parallel teams, continuous mode, auto-deploy, deployment batch size, and then each role's model followed by its effort. The user does not need to invoke `settings` separately. Values supplied with the setup request are preselected and validated; they do not skip the remaining wizard stages.
 
-Use the existing settings procedure to validate and save only the user's chosen changes in the canonical project's `run_defaults`. Keep or skip leaves existing defaults unchanged. An unanswered offer does not authorize a change. Preserve dependency results and all other receipt fields. Settings affect future starts only; setup does not start teams, change an active run, or deploy. Show the wordmark only once for the whole setup invocation.
+Keep the draft in memory until its final review. Save it with the settings procedure's single atomic write only after the user selects Save. `Keep current` preserves a value. `Back` revisits the preceding prompt. `Cancel without saving` discards the wizard draft; a required harness migration and already recorded dependency results remain. Preserve dependency results and all other receipt fields. Settings affect future starts only; setup does not start teams, change an active run, or deploy. Show the wordmark only once for the whole setup invocation.
 
 If no project is available, explain that defaults are project-only and defer this step until the user identifies a project. Do not create user-wide defaults. Include the saved, unchanged, or deferred settings result in the final setup status.

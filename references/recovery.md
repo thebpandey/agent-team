@@ -2,7 +2,7 @@
 
 Restore the work from durable evidence. Do not promise restoration of the exact chat, unsaved edits, or original agents. Use existing tracker records, the team directory, and CONTEXT.md; do not add another task database or transcript archive.
 
-Restore [run scheduling and batches](runs.md) along with team state. Preserve effective run choices, settings confirmation, fixed membership or continuous scope, occupied slots, integration boundaries, pending/in-flight batches, and deployment-failure holds. Saved defaults changed after start do not change the resumed run. The project owner alone restarts admission or release; a replacement team cannot do either.
+Restore [run scheduling and batches](runs.md) along with team state. Preserve effective run choices, explicit run overrides, fixed membership or continuous scope, occupied slots, integration boundaries, pending/in-flight batches, and deployment-failure holds. Saved defaults changed after start do not change the resumed run. Reconcile the current harness before replacement dispatch, but do not replace recorded run choices. The project owner alone restarts admission or release; a replacement team cannot do either.
 
 ## Checkpoint during normal work
 

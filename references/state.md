@@ -10,7 +10,7 @@ Use [project coordination](projects.md) for stable team IDs, shared-record owner
 
 Task evidence needs project/team IDs, requirement IDs, acceptance criteria, owner/dependencies, current phase, changed revision, relevant check/environment identity, result/evidence link, and next action. Link logs/screenshots instead of inserting them. Track unrelated discoveries separately without automatically expanding scope.
 
-For counted or continuous work, include the [run record](runs.md) in this same tracker. Keep selected top-level delivery IDs distinct from child tasks and summary epics. Record effective choices/confirmation, run ownership/hold, membership, integration boundary per delivery, pending batch IDs, exact release artifacts, and provider outcomes. Derive occupied development slots from actual team/task evidence; integration frees a slot without claiming production success. Do not create a second live queue or count Git commits as completed tasks. Project defaults live only in `run_defaults` in the canonical setup receipt, as [settings](settings.md) specifies.
+For counted or continuous work, include the [run record](runs.md) in this same tracker. Keep selected top-level delivery IDs distinct from child tasks and summary epics. Record effective choices and explicit overrides, run ownership/hold, membership, integration boundary per delivery, pending batch IDs, exact release artifacts, and provider outcomes. Derive occupied development slots from actual team/task evidence; integration frees a slot without claiming production success. Do not create a second live queue or count Git commits as completed tasks. Project defaults live only in `run_defaults` in the canonical setup receipt, as [settings](settings.md) specifies.
 
 ## Local-file tracking and safe switching
 
@@ -34,7 +34,7 @@ Objective: <requested outcome>
 <Deployment/recovery identity, revision, live evidence, retained/removed worktrees.>
 
 ## Run
-<Run ID/owner/scope, effective choices and confirmation, scheduling/release holds,
+<Run ID/owner/scope, effective choices and explicit overrides, scheduling/release holds,
 admitted delivery IDs, integration boundaries, pending/in-flight batch pointers.>
 
 ## Reconciliation

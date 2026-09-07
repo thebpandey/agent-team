@@ -8,9 +8,9 @@ Before updating remote main, inspect whether that push itself triggers productio
 
 ## Standing authorization
 
-Resolve deployment mode through [settings](settings.md) and the [run record](runs.md). Explicit `auto-deploy` authorizes automatic batches for this run using the established target/process. If inherited from saved defaults, notify the user and wait for their keep/disable choice before start; do not repeat that answered question on resume. With auto-deploy off, report the integrated result and ask whether to deploy. Earlier general standing authority does not silently enable this mode. A one-time approval covers the reported release, not future automatic batches.
+Resolve deployment mode through [settings](settings.md) and the [run record](runs.md). Explicit `auto-deploy` authorizes automatic batches for this run using the established target/process. When auto-deploy is inherited from saved defaults, show it in the effective-run summary and continue without a run-specific confirmation. With auto-deploy off, report the integrated result and ask whether to deploy. Earlier general standing authority does not silently enable this mode. A one-time approval covers the reported release, not future automatic batches.
 
-Reuse the active user's established target and safe rollback authority within its scope. Do not ask again per enabled batch. If target or required authority is missing, prepare a concrete verified release and ask for the missing decision once. Installing the skill or saving a preference grants no unknown destination, purchase, or destructive data permission. Preserve the run's command/confirmation and target/authority pointers for recovery. Honor enforced approval gates and access controls.
+Reuse the active user's established target and safe rollback authority within its scope. Do not ask again per enabled batch. If target or required authority is missing, prepare a concrete verified release and ask for the missing decision once. Installing the skill or saving a preference grants no unknown destination, purchase, or destructive data permission. Preserve the run's effective setting source, explicit overrides, and target/authority pointers for recovery. Honor enforced approval gates and access controls.
 
 ## Batch completed tasks
 

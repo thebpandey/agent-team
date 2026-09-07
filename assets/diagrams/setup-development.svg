@@ -6,7 +6,7 @@
 <rect x="60" y="190" width="610" height="120" rx="18" fill="#FFFFFF" stroke="#CBD8E8" stroke-width="2"/><rect x="61" y="210" width="5" height="80" rx="2" fill="#2467BC"/>
 <text x="365" y="228" text-anchor="middle" font-size="23" font-weight="700" fill="#13263F">Resolve the requested action</text>
 <text x="365" y="262" text-anchor="middle" font-size="17" font-weight="400" fill="#51647B">Start: resolve defaults and run-only overrides.</text>
-<text x="365" y="288" text-anchor="middle" font-size="17" font-weight="400" fill="#51647B">Confirm auto-deploy when inherited from settings.</text>
+<text x="365" y="288" text-anchor="middle" font-size="17" font-weight="400" fill="#51647B">Use saved auto-deploy without another prompt.</text>
 <path d="M365 310 V385" fill="none" stroke="#54759B" stroke-width="3" marker-end="url(#arrow)"/>
 <rect x="60" y="390" width="610" height="120" rx="18" fill="#FFFFFF" stroke="#CBD8E8" stroke-width="2"/><rect x="61" y="410" width="5" height="80" rx="2" fill="#2467BC"/>
 <text x="365" y="428" text-anchor="middle" font-size="23" font-weight="700" fill="#13263F">Admit safe ready tasks</text>
@@ -43,8 +43,8 @@
 <text x="920" y="283" text-anchor="middle" font-size="16" font-weight="400" fill="#51647B">No checks, refill, or releases.</text>
 <rect x="770" y="420" width="300" height="122" rx="18" fill="#FFF6E7" stroke="#E9C88D" stroke-width="2"/>
 <text x="920" y="454" text-anchor="middle" font-size="20" font-weight="700" fill="#13263F">Settings / setup</text>
-<text x="920" y="487" text-anchor="middle" font-size="16" font-weight="400" fill="#51647B">Handle project choices.</text>
-<text x="920" y="513" text-anchor="middle" font-size="16" font-weight="400" fill="#51647B">Do not start teams.</text>
+<text x="920" y="487" text-anchor="middle" font-size="16" font-weight="400" fill="#51647B">Reconcile the harness.</text>
+<text x="920" y="513" text-anchor="middle" font-size="16" font-weight="400" fill="#51647B">Numbered choices; no team start.</text>
 <rect x="770" y="670" width="300" height="148" rx="18" fill="#FFF6E7" stroke="#E9C88D" stroke-width="2"/>
 <text x="920" y="704" text-anchor="middle" font-size="20" font-weight="700" fill="#13263F">Pause / resume</text>
 <text x="920" y="737" text-anchor="middle" font-size="16" font-weight="400" fill="#51647B">Bare commands show a picker.</text>
