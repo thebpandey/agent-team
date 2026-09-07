@@ -38,6 +38,17 @@ test("reproducible Codex and Claude archives match the manifest and source", asy
   assert.deepEqual(firstArchives, secondArchives);
 });
 
+test("archives identify the canonical repository and pinned release source", async () => {
+  const value = await artifacts();
+  for (const archive of value.built.archives) {
+    const entries = await readZip(archive);
+    const source = JSON.parse(entries.find(({ name }) => name === "agent-team/.agent-team-source.json").data.toString("utf8"));
+    assert.equal(source.repository, "https://github.com/thebpandey/agent-team");
+    assert.equal(source.releaseTag, "v6.3.0");
+    assert.equal(source.sourceRevision, "fixture-revision");
+  }
+});
+
 test("artifact validation rejects stale, omitted, unexpected, duplicate, absolute, and path-escaping entries", async (context) => {
   // This table protects every archive boundary named by the package contract.
   const cases = [

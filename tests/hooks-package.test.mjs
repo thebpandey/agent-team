@@ -31,6 +31,13 @@ test("package validator detects missing files, version drift, broken links, miss
   const cases = [
     ["missing file", async (root) => rm(path.join(root, "hooks", "agent-team-hook.mjs"))],
     ["version drift", async (root) => writeFile(path.join(root, "SKILL.md"), (await readFile(path.join(root, "SKILL.md"), "utf8")).replace(/version: "[^"]+"/, 'version: "9.9.9"'))],
+    ["changelog version drift", async (root) => writeFile(path.join(root, "CHANGELOG.md"), (await readFile(path.join(root, "CHANGELOG.md"), "utf8")).replace(/^## 6\.3\.0/m, "## 9.9.9"))],
+    ["repository source drift", async (root) => {
+      const file = path.join(root, "hooks", "manifest.json");
+      const manifest = JSON.parse(await readFile(file, "utf8"));
+      manifest.repository = "https://github.com/example/wrong";
+      await writeFile(file, JSON.stringify(manifest));
+    }],
     ["broken link", async (root) => writeFile(path.join(root, "README.md"), `${await readFile(path.join(root, "README.md"), "utf8")}\n[broken](references/not-present.md)\n`)],
     ["missing adapter", async (root) => rm(path.join(root, "hooks", "claude-hooks.json"))],
     ["registration", async (root) => {

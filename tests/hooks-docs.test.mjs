@@ -6,7 +6,7 @@ import test from "node:test";
 const root = path.resolve(import.meta.dirname, "..");
 const read = (file) => readFile(path.join(root, file), "utf8");
 
-test("hook release version and guide links stay consistent", async () => {
+test("release version and guide links stay consistent", async () => {
   // This test catches a hook release published with stale version or missing public guidance.
   const [manifest, skill, readme, changelog, guide] = await Promise.all([
     read("hooks/manifest.json").then(JSON.parse),
@@ -16,12 +16,31 @@ test("hook release version and guide links stay consistent", async () => {
     read("references/hooks.md"),
   ]);
 
-  assert.equal(manifest.version, "6.2.0");
-  assert.match(skill, /version: "6\.2\.0"/);
-  assert.match(readme, /current skill version is \*\*6\.2\.0\*\*/i);
-  assert.match(changelog, /^## 6\.2\.0 - 2026-09-06/m);
+  assert.equal(manifest.version, "6.3.0");
+  assert.equal(manifest.repository, "https://github.com/thebpandey/agent-team");
+  assert.match(skill, /version: "6\.3\.0"/);
+  assert.match(readme, /current skill version is \*\*6\.3\.0\*\*/i);
+  assert.match(changelog, /^## 6\.3\.0 - 2026-09-06/m);
   for (const source of [skill, readme]) assert.match(source, /\(references\/hooks\.md\)/);
   assert.match(guide, /Requirements 1.?15/i);
+});
+
+test("GitHub releases are tag-driven, validated, and publish both runtime archives", async () => {
+  const workflow = await read(".github/workflows/release.yml");
+  assert.match(workflow, /tags:\s*\n\s*- ['"]v\*['"]/);
+  assert.match(workflow, /permissions:\s*\n\s*contents:\s*write/);
+  assert.match(workflow, /node --test tests\/hooks-\*\.test\.mjs/);
+  assert.match(workflow, /check-package/);
+  assert.match(workflow, /build-artifacts/);
+  assert.match(workflow, /check-artifacts/);
+  assert.match(workflow, /gh release create/);
+});
+
+test("installation guidance uses the canonical pinned release and update source", async () => {
+  const readme = await read("README.md");
+  assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/tag\/v6\.3\.0/);
+  assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/latest/);
+  assert.match(readme, /\.agent-team-source\.json/);
 });
 
 test("hook guide documents runtime, safety, install, audit, and archive contracts", async () => {

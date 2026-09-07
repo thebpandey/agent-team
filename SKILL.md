@@ -1,7 +1,7 @@
 ---
 name: agent-team
 metadata:
-  version: "6.2.0"
+  version: "6.3.0"
 description: Use for Agent-Team development on Codex or Claude Code, coordinated implementation streams, continued work tracked through this harness, or agent-team start, continuous runs, auto-deploy, settings, help, status, pause, resume, approve, and setup requests.
 ---
 

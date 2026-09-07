@@ -47,10 +47,13 @@ export async function checkPackage(root) {
 
   const skill = await readFile(path.join(root, "SKILL.md"), "utf8").catch(() => "");
   const readme = await readFile(path.join(root, "README.md"), "utf8").catch(() => "");
+  const changelog = await readFile(path.join(root, "CHANGELOG.md"), "utf8").catch(() => "");
   const skillVersion = skill.match(/^\s*version:\s*["']?([^"'\s]+)["']?\s*$/m)?.[1];
   const readmeVersion = readme.match(/current skill version is \*\*([^*]+)\*\*/i)?.[1];
   if (skillVersion !== manifest.version) errors.push(`SKILL.md version ${skillVersion ?? "missing"} does not match manifest ${manifest.version}.`);
   if (readmeVersion !== manifest.version) errors.push(`README.md version ${readmeVersion ?? "missing"} does not match manifest ${manifest.version}.`);
+  if (changelog.match(/^##\s+([^\s]+)\s+-/m)?.[1] !== manifest.version) errors.push(`CHANGELOG.md latest version does not match manifest ${manifest.version}.`);
+  if (manifest.repository !== "https://github.com/thebpandey/agent-team") errors.push("Manifest repository is not the canonical Agent-Team source.");
 
   for (const file of manifest.files.filter((entry) => entry.endsWith(".md"))) {
     let source;
@@ -104,7 +107,7 @@ export async function checkPackage(root) {
     if (!ids.has(id)) errors.push(`Missing policy parity ID: ${id}`);
   }
 
-  for (const file of [".github/workflows/check-package.yml", "tests/hooks-package.test.mjs", "tests/hooks-artifacts.test.mjs"]) {
+  for (const file of [".github/workflows/check-package.yml", ".github/workflows/release.yml", "tests/hooks-package.test.mjs", "tests/hooks-artifacts.test.mjs"]) {
     if (!(await present(path.join(root, file)))) errors.push(`Missing validation support file: ${file}`);
   }
   return { status: errors.length ? "failed" : "passed", errors };

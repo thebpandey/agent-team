@@ -119,7 +119,16 @@ async function expectedEntries(sourceRoot, manifest, runtime, sourceRevision) {
   }
   entries.push({
     name: manifest.artifacts.metadata,
-    data: Buffer.from(`${JSON.stringify({ name: manifest.name, version: manifest.version, runtime, sourceRevision }, null, 2)}\n`),
+    data: Buffer.from(`${JSON.stringify({
+      name: manifest.name,
+      version: manifest.version,
+      runtime,
+      repository: manifest.repository,
+      releaseTag: `v${manifest.version}`,
+      releaseUrl: `${manifest.repository}/releases/tag/v${manifest.version}`,
+      updateUrl: `${manifest.repository}/releases/latest`,
+      sourceRevision,
+    }, null, 2)}\n`),
   });
   return entries.sort((left, right) => left.name.localeCompare(right.name));
 }
@@ -175,6 +184,8 @@ export async function checkArtifacts({ sourceRoot, archives = [], expectedRevisi
     seenRuntimes.add(runtime);
     if (metadata.sourceRevision !== expectedRevision) errors.push(`${path.basename(archive)} has stale source revision metadata.`);
     if (metadata.version !== manifest.version) errors.push(`${path.basename(archive)} has stale version metadata.`);
+    if (metadata.repository !== manifest.repository) errors.push(`${path.basename(archive)} has stale repository metadata.`);
+    if (metadata.releaseTag !== `v${manifest.version}`) errors.push(`${path.basename(archive)} has stale release tag metadata.`);
     const expected = await expectedEntries(sourceRoot, manifest, runtime, expectedRevision);
     const expectedMap = new Map(expected.map((entry) => [entry.name, entry.data]));
     const actualMap = new Map(entries.map((entry) => [entry.name, entry.data]));

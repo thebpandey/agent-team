@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.3.0 - 2026-09-06
+
+- Add project-configurable model and effort routing for every teammate role.
+- Add Matrix agent names, role explanations, numbered team identities, and start/resume assignment reports.
+- Add `pause and deploy` for a project-wide pause followed by gated release of verified finished work.
+- Add tag-driven GitHub Releases with validated Codex and Claude archives, checksums, and canonical update-source metadata.
+
 ## 6.2.0 - 2026-09-06
 
 - Add dependency-free lifecycle hooks for current Codex and Claude Code with shared normalization, canonical project resolution, ownership and completion gates, bounded advisories, and atomic recovery checkpoints.
