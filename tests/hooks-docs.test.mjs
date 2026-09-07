@@ -16,11 +16,11 @@ test("release version and guide links stay consistent", async () => {
     read("references/hooks.md"),
   ]);
 
-  assert.equal(manifest.version, "6.3.1");
+  assert.equal(manifest.version, "6.3.2");
   assert.equal(manifest.repository, "https://github.com/thebpandey/agent-team");
-  assert.match(skill, /version: "6\.3\.1"/);
-  assert.match(readme, /current skill version is \*\*6\.3\.1\*\*/i);
-  assert.match(changelog, /^## 6\.3\.1 - 2026-09-06/m);
+  assert.match(skill, /version: "6\.3\.2"/);
+  assert.match(readme, /current skill version is \*\*6\.3\.2\*\*/i);
+  assert.match(changelog, /^## 6\.3\.2 - 2026-09-07/m);
   for (const source of [skill, readme]) assert.match(source, /\(references\/hooks\.md\)/);
   assert.match(guide, /Requirements 1.?15/i);
 });
@@ -39,7 +39,7 @@ test("GitHub releases are tag-driven, validated, and publish both runtime archiv
 
 test("installation guidance uses the canonical pinned release and update source", async () => {
   const readme = await read("README.md");
-  assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/tag\/v6\.3\.1/);
+  assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/tag\/v6\.3\.2/);
   assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/latest/);
   assert.match(readme, /\.agent-team-source\.json/);
 });

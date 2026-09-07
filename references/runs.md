@@ -30,6 +30,7 @@ Keep these fields in a run section/record of the active tracker, using installed
 | --- | --- |
 | Run identity | Run ID, project owner/session, source command, authorized task-list scope, fixed admitted set or continuous membership links |
 | Effective choices | Team limit, continuous flag, auto-deploy flag, batch size, preview requirement, settings revision/source and confirmation response |
+| Skill confirmation | Each Team Orchestrator's current-run report covering itself and every teammate for Ponytail, Using-Superpowers, and Impeccable; loading/use evidence pointers, exceptions, and Project Orchestrator acknowledgment. Follow [per-run confirmation](dependencies.md#per-run-confirmation-to-the-project-orchestrator). |
 | Scheduling state | Running / Pause requested / Paused / Blocked / Finished; reason, occupancy derived from team/task evidence, next action |
 | Deployment state | Enabled / Off / Held after failure; target/authority pointer, pending delivery IDs in integration order, release-boundary commits, in-flight batch ID/artifact/provider identity |
 | Results | Integrated revisions, deployed task IDs and batch evidence, unresolved blockers, cleanup pointers |

@@ -14,6 +14,8 @@ Verify the parent is Astra using exposed runtime metadata. If unavailable or mis
 
 Use exposed Codex spawning, messaging, resume, and stop tools, not assumed shell commands. Pass supported model/effort settings explicitly. Where controls match `spawn_agent`, use `fork_turns="none"` or supported limited context for model overrides; send the compact dispatch contract and relevant evidence. Adapt to the actual schema rather than assuming identical APIs on every surface. Reuse an appropriate idle agent instead of duplicating it. Only the orchestrator dispatches.
 
+Before task work or dispatch, both orchestrators and every child complete [skill startup](dependencies.md#skill-startup-for-every-agent). Send the procedure and all three resolved skill paths in each spawn/replacement assignment. When no Skill tool is exposed, complete file/resource reads load the instructions; `$name` in a message alone does not. Check each agent's skill receipt before accepting its work.
+
 Apply shared worktree ownership, CONTEXT.md, tracking, verification, release, and cleanup rules unchanged. A missing teammate model is a reported routing constraint: reassign only to an available suitable model under the user's policy, never label a substitute as the requested model.
 
 ## Lifecycle hooks

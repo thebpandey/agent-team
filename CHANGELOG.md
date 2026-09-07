@@ -1,5 +1,11 @@
 # Changelog
 
+## 6.3.2 - 2026-09-07
+
+- Require Project and Team Orchestrators and every teammate to load Ponytail, Using-Superpowers, and Impeccable in their own context and report loading evidence.
+- Require Team Orchestrators to confirm skill loading and current-task use to the Project Orchestrator for every run and resume, including replacements and explicit exceptions.
+- Update Codex dispatch guidance and all Claude role templates; distinguish loaded instructions from actual use and apply UI procedures only to UI assignments.
+
 ## 6.3.1 - 2026-09-06
 
 - Generate portable release checksums with archive basenames so verification works after downloading GitHub Release assets.
