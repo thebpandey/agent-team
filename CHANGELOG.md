@@ -1,5 +1,9 @@
 # Changelog
 
+## 6.3.1 - 2026-09-06
+
+- Generate portable release checksums with archive basenames so verification works after downloading GitHub Release assets.
+
 ## 6.3.0 - 2026-09-06
 
 - Add project-configurable model and effort routing for every teammate role.
