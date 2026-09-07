@@ -26,6 +26,8 @@ Give one aggregate report with each team's Paused, Pause requested, or activity-
 
 ## Pause each selected team
 
+`pause and deploy` first records the project-wide pause hold and safely stops Agent-Team writers, integrations, releases, and continuous admission. It then commits and deploys only work that is verified finished, integrated into main, approved where required, and not yet deployed, using the normal release gates, live verification, tracking, and cleanup. It does not deploy unfinished or unverified work and leaves the project paused until explicit resume.
+
 1. Resolve the team and its current owner. Stop assigning new work to that team; leave unrelated teams running.
 2. Request a checkpoint and safe pause from its active members through supported controls. Let an indivisible external operation reach an observable state when stopping it would be unsafe. Do not kill processes blindly.
 3. Save existing edits, task progress, unfinished checks, ownership, preview identity, and pending operation IDs. Preserve worktrees and evidence. Pausing does not mean committing, merging, deployment, or deletion.

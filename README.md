@@ -8,6 +8,21 @@ Agent-Team is a development skill for **Codex and Claude Code**. A skill is a se
 
 Give Agent-Team a task. It selects a suitable team, records progress, checks the result, and reports which requirements it met. The lead agent is called the **orchestrator**. It assigns work and controls the final checks.
 
+### Matrix agent names
+
+Each team uses a Matrix character name plus its two-digit team number. The name identifies the agent in settings, start/resume notices, status, and reports.
+
+| Agent name | Role | Responsibility |
+| --- | --- | --- |
+| Morpheus | Project/team orchestrator | Coordinates the team, assigns work, and controls integration and release. |
+| Neo | Complex developer | Solves difficult or tightly connected engineering problems. |
+| Trinity | Standard developer | Implements features, including UI/UX code and frontend behavior. |
+| Tank | Routine developer | Handles bounded implementation, checks, and support work. |
+| Agent Smith | Code reviewer | Tests assumptions, reviews code, and reports defects or risks. |
+| The Oracle | Visual reviewer | Reviews UI/UX usability, visual quality, accessibility, and responsive behavior. |
+
+For example, Team 01 may include `Morpheus 01`, `Neo 01`, `Trinity 01`, `Tank 01`, `Agent Smith 01`, and `The Oracle 01`.
+
 Tool descriptions use short sentences and consistent terms based on [ASD-STE100 principles](https://www.asd-ste100.org/STE_faq.html). Official tool names and commands keep their original form.
 
 ## Source repository

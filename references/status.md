@@ -1,5 +1,7 @@
 # Pro non-disruptive status
 
+Status and reports display assigned Matrix agent names, without role labels. Help and settings are the views that include role labels and explanations.
+
 A status request reads recorded state. It does not change execution. Run this path before setup, dependency/model checks, recovery, or dispatch. Use the [action](actions.md) target rules. The project overview includes all project tasks and names unassigned work; a team view includes only its mapped tasks.
 
 Display the [wordmark](wordmark.md) once before the report. This is static output, not a tool action or a reason to refresh records.

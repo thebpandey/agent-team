@@ -14,6 +14,7 @@ Accept `auto-agent start` with the same modifiers as a plain-language alias for 
 | `settings` | View/edit [current-project defaults](settings.md); do not start work or change an active run. |
 | `status [name-or-ID or all]` | Run the read-only [status procedure](status.md). Never enter setup, recovery, or development from this action. |
 | `pause [name-or-ID or all]` | Without a target, show the in-progress team picker plus All and wait for selection. Explicit all acts on all eligible teams; a name/ID targets one. Follow [recovery](recovery.md). |
+| `pause and deploy` | Pause all Agent-Team writers and project activity, then commit and deploy verified finished, integrated, approved, not-yet-deployed work through the normal release gates. |
 | `resume [name-or-ID or all]` | Without a target, show the paused team picker plus All and wait for selection. Explicit all acts on all eligible teams; a name/ID targets one. Inspect actual and saved state using recovery. |
 | `approve <name-or-ID>` | Record the user's approval of the current review version for integration using [preview approval](preview.md). |
 | `setup` | Follow [dependency setup](setup.md), then offer to keep or edit project defaults through [settings](settings.md) in the same flow. |

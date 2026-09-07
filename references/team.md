@@ -1,5 +1,7 @@
 # Team dispatch and isolated work
 
+Use the Matrix name plus the two-digit team number for each dispatched agent, such as `Trinity 01`. On every `start` and `resume`, tell the user which named agents were spun up or resumed for each team and the task assigned to each. Status, progress, handoff, pause, recovery, and completion reports use names without role labels; help and settings include names with roles and explanations.
+
 Follow [project coordination](projects.md) for canonical records, named teams, ownership, and integration. All post-initialization feature work uses a separate worktree; main is reserved for planning and coordination. Create further worktrees for independent implementation streams. Give writable paths one owner at a time. Reviewers/testers may reuse a stable checkout sequentially; read-only work need not create a worktree. Record task IDs, owners, branch/revision, checkout paths, and reserved resources in the parent task in the active tracker. Worktrees do not isolate databases, services, ports, or credentials; isolate temporary resources when concurrent streams would conflict.
 
 Send this compact contract with every assignment, including replacements:

@@ -20,6 +20,7 @@ This full package is the basis for Pro. Visual browser review, end-to-end accept
 ## Route the action first
 
 Use the [lifecycle hook system](references/hooks.md) when it is installed and registered. Hooks add deterministic checks and small recovery records. They do not create tracker items from arbitrary prompts, replace semantic review, or grant new authority.
+The `settings` action also shows every available teammate role, its adapter default model and effort, and the effective project setting. It permits project-only model+effort overrides for each role. See [settings](references/settings.md).
 
 Display the [AGENT-TEAM wordmark](references/wordmark.md) once for each user-invoked help, start, resume, settings, setup, or status action, including combined commands. Accept `auto-agent start` as an alias for `agent-team start`. Display `Agent-Team v<metadata.version>` from this installed SKILL.md below the wordmark. Include the creator credit below the version and the GitHub source beside the credit for help and setup, following the wordmark reference. The wordmark adds no checks or mutations to read-only commands.
 
@@ -32,6 +33,8 @@ Bare `pause` shows in-progress teams plus All; bare `resume` shows paused teams 
 Read [pause and recovery](references/recovery.md) for pause/resume or interrupted work, [project coordination](references/projects.md) before registering teams or assigning worktrees, and [preview approval](references/preview.md) for preview/gate actions. Do not load every optional procedure for a simple status request.
 
 ## Start a run, resume from evidence
+
+Assign each teammate its fixed Matrix name plus the two-digit team number: Morpheus (project/team orchestrator), Neo (complex developer), Trinity (standard developer and UI/UX developer), Tank (routine developer), Agent Smith (code reviewer), or The Oracle (visual reviewer). On every `start` and `resume`, report each team, each named agent spun up or resumed, and that agent's assigned task. Use names without role labels in status and other reports; help and settings show names with roles and explanations.
 
 For new implementation or explicit setup, run a lightweight dependency check. Resume reuses recorded choices and checks only changed or necessary capabilities. On first use, explicit `setup`/`install dependencies`, a changed environment, or missing dependencies, follow [dependency setup](references/setup.md). Present missing Beads, Ponytail, Using-Superpowers, and Impeccable as recommended dependencies and offer automatic installation with the user's chosen scope. If any is declined, unavailable, or fails to install, continue with the built-in workflow and local-file tracking described in [state and recovery](references/state.md). Reuse the recorded choice; do not repeatedly prompt for declined items. Missing these four tools must never block otherwise feasible work.
 

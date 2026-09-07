@@ -9,6 +9,14 @@
 | `auto_deploy` | `false` | `true` or `false` |
 | `deploy_batch_tasks` | `null` | `null` to follow the run's team limit, or a positive integer |
 
+## Teammate role routing
+
+Show the Matrix agent name beside each role in settings. Settings must show the name, role, explanation, adapter default model/effort, and effective project model/effort. Names are fixed labels and are not user-editable.
+
+`settings` also shows every teammate role available on the current host, its default model and effort from the active platform adapter, and the effective saved override. The user may set a model and effort for each role independently. Show exact role names, model IDs, and effort values. Mark each value as adapter default, project-saved, or unavailable. Do not invent values that the host cannot enforce.
+
+Store overrides in a project-only `role_routing` object in `.agent-team/setup.json`, keyed by canonical role name, with `model` and `effort` fields. Validate against the active host before saving. Changes apply to future dispatches only. A saved model that becomes unavailable must be reported and corrected before dispatching that role. Resetting routing removes only `role_routing`.
+
 Show each effective value, whether it is saved or built-in, and its meaning. Ask which setting to change, one question at a time when needed. Accept a clear instruction such as “save three parallel teams and continuous mode for this project.” Confirm the saved result. A request to reset defaults removes only `run_defaults`, preserving the rest of the receipt. No user-wide settings or new task ledger is needed.
 
 Only the project owner writes these fields under shared-record ownership. Preserve existing receipt fields and concurrent user changes. A team session routes a change through that owner. Keep the receipt local under the existing setup policy. A malformed file or invalid saved value must be reported before a new run starts; do not silently overwrite it or interpret a string such as `"false"` as enabled. Enabling auto-deploy here saves a preference, not a release destination or permission to bypass project gates.

@@ -13,7 +13,7 @@ Next: independent review.
 ==========================================================================
 ```
 
-Use the actual stable team ID, readable feature name, and sender role. For project-wide output use `AGENT-TEAM / Project Orchestrator`. Before team identity exists, use the project label; never invent a team ID to fill the header. Keep messages concise and use the existing required result/evidence fields for their purpose.
+Use the actual stable team ID, readable feature name, and assigned Matrix agent name. Omit the role label in status and report output; help and settings may show the name with its role. For project-wide output use `AGENT-TEAM / Project Orchestrator`. Before team identity exists, use the project label; never invent a team ID to fill the header. Keep messages concise and use the existing required result/evidence fields for their purpose.
 
 The example is fenced to show spacing. In normal Markdown output, place each border on its own line with a blank line between the border and the message body. This prevents the bottom border from turning the preceding text into a Markdown heading. Keep links, tables, and ordinary content as Markdown inside the frame. In a plain-text host, use the same spacing. Do not wrap the whole response in a code fence; only the [wordmark](wordmark.md) needs one.
 
