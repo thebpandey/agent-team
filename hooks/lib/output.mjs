@@ -10,6 +10,10 @@ export function adaptOutput(runtime, event, decision) {
   if (runtime === "claude" && ["UserPromptExpansion", "PreCompact"].includes(event) && !decision.allow) {
     return { decision: "block", reason: text || "Agent-Team policy denied this operation." };
   }
+  if (runtime === "codex" && ["PreCompact", "PostCompact"].includes(event)) {
+    if (!decision.allow) return { continue: false, stopReason: text || "Agent-Team policy denied this operation." };
+    return text ? { systemMessage: text } : {};
+  }
   const hookSpecificOutput = { hookEventName: event };
   if (!decision.allow) {
     hookSpecificOutput.permissionDecision = "deny";

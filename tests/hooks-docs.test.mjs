@@ -16,11 +16,11 @@ test("release version and guide links stay consistent", async () => {
     read("references/hooks.md"),
   ]);
 
-  assert.equal(manifest.version, "6.3.2");
+  assert.equal(manifest.version, "6.4.0");
   assert.equal(manifest.repository, "https://github.com/thebpandey/agent-team");
-  assert.match(skill, /version: "6\.3\.2"/);
-  assert.match(readme, /current skill version is \*\*6\.3\.2\*\*/i);
-  assert.match(changelog, /^## 6\.3\.2 - 2026-09-07/m);
+  assert.match(skill, /version: "6\.4\.0"/);
+  assert.match(readme, /current skill version is \*\*6\.4\.0\*\*/i);
+  assert.match(changelog, /^## 6\.4\.0 - 2026-09-07/m);
   for (const source of [skill, readme]) assert.match(source, /\(references\/hooks\.md\)/);
   assert.match(guide, /Requirements 1.?15/i);
 });
@@ -39,9 +39,86 @@ test("GitHub releases are tag-driven, validated, and publish both runtime archiv
 
 test("installation guidance uses the canonical pinned release and update source", async () => {
   const readme = await read("README.md");
-  assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/tag\/v6\.3\.2/);
+  assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/tag\/v6\.4\.0/);
   assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/latest/);
   assert.match(readme, /\.agent-team-source\.json/);
+});
+
+test("LeanCTX stays supplemental and reaches every orchestrator and teammate", async () => {
+  // This catches a dispatch contract that omits LeanCTX or lets its memory replace Agent-Team records.
+  const rolePaths = [
+    "complex", "developer", "reviewer", "routine", "text", "visual-tester",
+  ].map((role) => `assets/claude-agents/agent-team-${role}.md`);
+  const [skill, dependencies, setup, team, projects, state, codex, claude, leanctx, ...roles] = await Promise.all([
+    read("SKILL.md"),
+    read("references/dependencies.md"),
+    read("references/setup.md"),
+    read("references/team.md"),
+    read("references/projects.md"),
+    read("references/state.md"),
+    read("references/platform-codex.md"),
+    read("references/platform-claude.md"),
+    read("references/lean-ctx.md"),
+    ...rolePaths.map(read),
+  ]);
+
+  for (const source of [skill, dependencies, setup, team, projects, codex, claude, leanctx, ...roles]) {
+    assert.match(source, /LeanCTX|lean-ctx/i);
+  }
+  assert.match(dependencies, /Project Orchestrator.*Team Orchestrator/s);
+  assert.match(dependencies, /loaded.*missing.*unreadable.*disabled.*not applicable/is);
+  assert.match(team, /exact|full|raw/i);
+  assert.match(projects, /supplemental/i);
+  assert.match(projects, /CONTEXT\.md/);
+  assert.match(state, /Default to local mode when any of Beads, Ponytail, Using-Superpowers, or Impeccable is skipped\/unusable/);
+  assert.match(codex, /init --agent codex/);
+  assert.match(claude, /init --agent claude/);
+  for (const [index, role] of roles.entries()) {
+    assert.match(role, /skill receipt/i, `missing receipt in ${rolePaths[index]}`);
+    assert.match(role, /loaded.*missing.*unreadable.*disabled.*not applicable/is, `missing statuses in ${rolePaths[index]}`);
+    assert.match(role, /exact|full/i, `missing exact recovery in ${rolePaths[index]}`);
+    assert.match(role, /raw|uncompressed/i, `missing raw diagnostics in ${rolePaths[index]}`);
+    assert.match(role, /authoritative/i, `missing authority boundary in ${rolePaths[index]}`);
+  }
+});
+
+test("LeanCTX profile keeps native recovery and Agent-Team authority", async () => {
+  const [leanctx, projects, claude] = await Promise.all([
+    read("references/lean-ctx.md"),
+    read("references/projects.md"),
+    read("references/platform-claude.md"),
+  ]);
+
+  for (const required of [
+    'tool_profile = "standard"',
+    'shadow_mode = false',
+    'prompt_reinject = "off"',
+    'prefer_native_editor = true',
+    'proxy_enabled = false',
+    'rules_injection = "dedicated"',
+    'tee_mode = "always"',
+    'response_verbosity = "full"',
+    'ctx_session',
+    'ctx_knowledge',
+    'ctx_handoff',
+    'ctx_call',
+    'ctx_execute',
+    'ctx_expand',
+    'fresh=true',
+    'lean-ctx -c --raw "command"',
+    'LEAN_CTX_RAW=1',
+    'LEAN_CTX_DISABLED=1',
+    '"shell"',
+  ]) assert.ok(leanctx.includes(required), `Missing LeanCTX safeguard: ${required}`);
+  assert.doesNotMatch(leanctx, /lean-ctx -c "command" --raw/);
+  assert.doesNotMatch(leanctx, /response_verbosity = "normal"/);
+  assert.match(leanctx, /autoApprove/);
+  assert.match(leanctx, /permissions\.allow/);
+  assert.match(claude, /autoApprove/);
+  assert.match(claude, /permissions\.allow/);
+  assert.match(leanctx, /Do not install RTK, Headroom, or another automatic context compressor/);
+  assert.match(leanctx, /do not create.*ledger/i);
+  assert.match(projects, /must not create another tracker.*prove completion.*override a current record/i);
 });
 
 test("hook guide documents runtime, safety, install, audit, and archive contracts", async () => {

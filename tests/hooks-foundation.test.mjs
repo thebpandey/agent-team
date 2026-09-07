@@ -88,6 +88,19 @@ test("Claude Write and Edit payloads normalize to the shared file model", () => 
   assert.deepEqual(edit.operation.files, [{ action: "edit", path: "old.txt", changedContent: "after", previousContent: "before" }]);
 });
 
+test("LeanCTX ctx_shell calls normalize to the shared shell model", () => {
+  // This keeps Agent-Team lifecycle gates on the inner command when agents use LeanCTX explicitly.
+  for (const tool of ["ctx_shell", "mcp__lean-ctx__ctx_shell", "mcp__lean_ctx__ctx_shell", "mcp__lean-ctx__shell"]) {
+    const event = normalizeEvent("claude", "PreToolUse", {
+      cwd: "/repo",
+      session_id: "claude-session",
+      tool_name: tool,
+      tool_input: { command: "git push origin main", raw: true },
+    });
+    assert.deepEqual(event.operation, { kind: "shell", tool, command: "git push origin main" });
+  }
+});
+
 test("Claude PostToolBatch normalizes all changed files once", () => {
   // This test catches per-edit lint wiring and a batch parser that keeps only one tool call.
   const event = normalizeEvent("claude", "PostToolBatch", {
@@ -320,6 +333,28 @@ test("runtime output adapters emit native advisory and deny contracts without as
   assert.equal(claude.hookSpecificOutput.permissionDecision, "deny");
   assert.equal(JSON.stringify(codex).includes('"ask"'), false);
   assert.match(codexAdvice.hookSpecificOutput.additionalContext, /integration evidence/);
+});
+
+test("Codex compact hooks emit only the stateless universal output schema", () => {
+  // Codex rejects hookSpecificOutput for PreCompact/PostCompact even though it is valid for other events.
+  const advisory = {
+    mode: "advisory",
+    allow: true,
+    messages: ["Agent-Team checkpoint is unavailable for this event."],
+    context: {},
+    capabilities: {},
+    mutations: [],
+  };
+  const denied = { ...advisory, allow: false, messages: ["Stop before compaction."] };
+
+  assert.deepEqual(adaptOutput("codex", "PreCompact", advisory), {
+    systemMessage: "Agent-Team checkpoint is unavailable for this event.",
+  });
+  assert.deepEqual(adaptOutput("codex", "PostCompact", { ...advisory, messages: [] }), {});
+  assert.deepEqual(adaptOutput("codex", "PreCompact", denied), {
+    continue: false,
+    stopReason: "Stop before compaction.",
+  });
 });
 
 test("Claude TaskCompleted blocks by exit 2 while PostToolUse advice uses its JSON contract", () => {

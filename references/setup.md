@@ -20,7 +20,7 @@ Use ASD-STE100 principles for all tool descriptions and setup messages. Use shor
 
 Show what each item does, why the project needs it, and its current status. Use simple status labels: Ready, Missing, Cannot use, Paid access needed, or Manual step needed.
 
-Present missing Beads, Ponytail, Using-Superpowers, and Impeccable. Also show all optional design tools from the guide. Explain which optional items fit the project. Do not hide the other choices because they are not needed now.
+Present missing Beads, Ponytail, Using-Superpowers, Impeccable, and LeanCTX. Keep the existing four-tool tracker-selection rule unchanged: LeanCTX availability does not select Beads or local tracking. Also show all optional design tools from the guide. Explain which optional items fit the project. Do not hide the other choices because they are not needed now.
 
 If the user already approved the same installation plan, continue. Otherwise, show the proposed changes and ask one question with these choices:
 
@@ -48,6 +48,7 @@ Use the project's package manager. Preserve the lockfile, which records package 
 | [Using-Superpowers](https://github.com/obra/superpowers) | Install the supported package and required companion files. Find `using-superpowers`. One copied instruction file is not the complete tool. |
 | [Beads](https://github.com/gastownhall/beads) | Install `bd` for the operating system. Check existing project settings before setup. Confirm safe access before multiple agents write task updates. |
 | [Impeccable](https://github.com/pbakaus/impeccable) | Install the version for the selected host. Include its required files. Respect approval requests for hooks. |
+| [LeanCTX](https://github.com/yvgude/lean-ctx) | Inspect the current release and its `skills/lean-ctx/SKILL.md`. Install the documented user-scope package only with approval. Initialize Codex with `lean-ctx init --agent codex --mode hybrid` and Claude Code with `lean-ctx init --agent claude --mode hybrid`; merge additively and follow [the safe integration contract](lean-ctx.md). |
 | [UI UX Pro Max](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) | Use the setup for the selected host. Include its data and search programs. Install Python if needed and approved. |
 | [UI Skills](https://github.com/ibelick/ui-skills) | Select the instructions needed by the task. The collection contains separate skills. Do not install every linked external skill. |
 | [shadcn/ui](https://ui.shadcn.com/docs/installation) | Check that the app supports it. Preserve existing settings and components. Add only selected components. |
@@ -65,6 +66,8 @@ Use the host's supported installation method. Follow the selected platform adapt
 
 For the built-in Agent-Team hook package, follow the [lifecycle hook guide](hooks.md). The managed installer puts Codex at `~/.agents/skills/agent-team`, puts Claude Code at `~/.claude/skills/agent-team`, and provisions unchanged current role definitions under `~/.claude/agents`. It reports customized-role conflicts instead of overwriting them. One user-level transaction lock covers both skill copies, native roles, host configurations, backups, and the receipt. A failed transaction restores its own earlier changes. The installer backs up and removes the old `~/.codex/skills/agent-team` duplicate. Do not run this user-wide install without explicit authority. Do not claim native hook trust; report the required `/hooks` action when the host requires it.
 
+LeanCTX user setup is a separate approved transaction. Before it, inventory the existing Codex and Claude MCP servers, instructions, skills, hooks, and Claude role definitions without exposing secrets. Back up every file the initializer can change. Resolve the effective configuration with `lean-ctx config path`; do not assume a legacy or XDG location. Merge the conservative LeanCTX configuration instead of replacing the file. Run the inspected upstream initializer one host at a time, then compare the result and confirm that every prior Agent-Team hook group and customized role remains byte-for-byte present. Do not use LeanCTX `wrap`, `onboard`, `setup`, `harden`, or proxy commands for this integration. Do not enable persistent/cross-agent memory for Agent-Team. Do not run either user-level installer merely because repository documentation was updated.
+
 An installation in ChatGPT does not install software on the user's computer. If a new skill is not yet visible, give the supported refresh instruction. Do not claim that an unavailable skill ran.
 
 ## Pro browser review tools
@@ -79,7 +82,7 @@ Tell each teammate which tools are available and which task record to use. Run a
 
 Record each result: Ready, Failed, Deferred, Cannot use, or Excluded. Link meaningful setup failures from the active task record. Preserve successful installations when another installation fails. Do not repeat an unchanged failed installation.
 
-If any recommended tool is declined or unusable, select local-file mode and continue the original task. Use `.agent-team/TASKS.md` in the main checkout. Keep the other available skills enabled. Optional tool failures do not stop feasible work. Report a blocker only when the actual task cannot proceed.
+If any of Beads, Ponytail, Using-Superpowers, or Impeccable is declined or unusable, select local-file mode and continue the original task. Use `.agent-team/TASKS.md` in the main checkout. LeanCTX failure does not change tracker mode: report it to the Project Orchestrator and continue with normal source tools and Agent-Team records unless the user made LeanCTX a hard gate. Keep the other available skills enabled. Optional tool failures do not stop feasible work. Report a blocker only when the actual task cannot proceed.
 
 For explicit `setup`, complete the project settings step below before the final status, even when tools are already ready or installation is skipped. Automatic dependency checks during start, resume, or recovery do not open the settings flow.
 

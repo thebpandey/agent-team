@@ -71,6 +71,45 @@ test("entrypoint emits native denial when project resolution fails for a critica
   assert.match(output(result).hookSpecificOutput.permissionDecisionReason, /unavailable/i);
 });
 
+test("LeanCTX shell paths retain Agent-Team critical-operation coverage", async () => {
+  // This catches ctx_shell or the explicit CLI wrapper hiding an integration command from Agent-Team.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-entry-home-"));
+  temporary.push(home);
+  const cwd = path.join(home, "missing-project");
+  const results = [
+    invoke("claude", "PreToolUse", {
+      cwd,
+      session_id: "owner-session",
+      tool_name: "mcp__lean-ctx__ctx_shell",
+      tool_input: { command: "git push origin main" },
+    }, home),
+    invoke("codex", "PreToolUse", {
+      cwd,
+      session_id: "owner-session",
+      tool_name: "exec_command",
+      tool_input: { cmd: 'lean-ctx -c --raw "git push origin main"' },
+    }, home),
+    invoke("codex", "PreToolUse", {
+      cwd,
+      session_id: "owner-session",
+      tool_name: "exec_command",
+      tool_input: { cmd: 'lean-ctx raw "git push origin main"' },
+    }, home),
+    invoke("codex", "PreToolUse", {
+      cwd,
+      session_id: "owner-session",
+      tool_name: "exec_command",
+      tool_input: { cmd: 'lean-ctx.exe -c --raw "git push origin main"' },
+    }, home),
+  ];
+
+  for (const result of results) {
+    assert.equal(result.status, 0);
+    assert.equal(output(result).hookSpecificOutput.permissionDecision, "deny");
+    assert.match(output(result).hookSpecificOutput.permissionDecisionReason, /unavailable/i);
+  }
+});
+
 test("entrypoint uses the separate mapping inventory when operational state is malformed", async () => {
   // This test catches fallback classification that forgets separately readable critical mappings.
   const value = await fixture();
@@ -108,6 +147,12 @@ test("entrypoint leaves ordinary and unmapped read-only operations available whe
       session_id: "owner-session",
       tool_name: "exec_command",
       tool_input: { cmd: "echo ready" },
+    }, value.home),
+    invoke("claude", "PreToolUse", {
+      cwd: value.feature,
+      session_id: "owner-session",
+      tool_name: "mcp__lean-ctx__ctx_shell",
+      tool_input: { command: "git status --short" },
     }, value.home),
     invoke("claude", "PreToolUse", {
       cwd: value.feature,
@@ -343,7 +388,7 @@ test("entrypoint keeps checkpoint and telemetry failures visible and non-blockin
   }, value.home);
 
   assert.equal(checkpoint.status, 0);
-  assert.match(output(checkpoint).hookSpecificOutput.additionalContext, /checkpoint.*unavailable/i);
+  assert.match(output(checkpoint).systemMessage, /checkpoint.*unavailable/i);
   assert.equal(telemetry.status, 0);
   assert.match(output(telemetry).hookSpecificOutput.additionalContext, /activation logging.*unavailable/i);
 });

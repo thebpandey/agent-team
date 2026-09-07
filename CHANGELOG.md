@@ -1,5 +1,15 @@
 # Changelog
 
+## 6.4.0 - 2026-09-07
+
+- Add a conservative LeanCTX integration contract for Codex and Claude Code while keeping Agent-Team records authoritative.
+- Require every orchestrator, teammate, replacement, and resumed fresh session to load LeanCTX in its own context and report an evidence-based status and normal progress/handoff use.
+- Document additive MCP, shell-hook, skill, and configuration setup, exact/raw recovery, safe fallback, and preservation of Agent-Team hooks and Claude role definitions.
+- Add regression coverage for role dispatch, receipts, tracker authority, and additive hook merging.
+- Keep Agent-Team critical-operation gates active when commands use LeanCTX `ctx_shell` or its documented CLI wrappers.
+- Emit Codex `PreCompact` and `PostCompact` results with their stateless universal schema instead of the invalid `hookSpecificOutput` shape.
+- Permit clean managed-package upgrades when a new release adds files, while still preserving locally changed installations.
+
 ## 6.3.2 - 2026-09-07
 
 - Require Project and Team Orchestrators and every teammate to load Ponytail, Using-Superpowers, and Impeccable in their own context and report loading evidence.

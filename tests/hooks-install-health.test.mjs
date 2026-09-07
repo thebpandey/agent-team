@@ -22,9 +22,11 @@ async function homeFixture() {
   await writeFile(path.join(home, ".agents", "skills", "agent-team", "old.txt"), "old\n");
   await writeFile(path.join(home, ".codex", "hooks.json"), JSON.stringify({ hooks: {
     Stop: [{ hooks: [{ type: "command", command: "unrelated-stop" }] }],
+    SessionStart: [{ hooks: [{ type: "command", command: "lean-ctx hook codex-session-start" }] }],
   } }));
   await writeFile(path.join(home, ".claude", "settings.json"), JSON.stringify({ model: "fable", hooks: {
     PostToolUse: [{ matcher: "Write", hooks: [{ type: "command", command: "unrelated-write" }] }],
+    PreToolUse: [{ matcher: "Read", hooks: [{ type: "command", command: "lean-ctx hook redirect" }] }],
   } }));
   return home;
 }
@@ -46,14 +48,39 @@ test("installer preserves unrelated settings, backs up replaced copies, removes 
   assert.equal(first.changed, true);
   assert.equal(second.changed, false);
   assert.equal(codex.hooks.Stop[0].hooks[0].command, "unrelated-stop");
+  assert.equal(codex.hooks.SessionStart.some((group) => group.hooks[0].command === "lean-ctx hook codex-session-start"), true);
   assert.equal(claude.model, "fable");
   assert.equal(claude.hooks.PostToolUse.some((group) => group.hooks[0].command === "unrelated-write"), true);
+  assert.equal(claude.hooks.PreToolUse.some((group) => group.hooks[0].command === "lean-ctx hook redirect"), true);
   assert.ok(agentTeamGroups(codex).length > 0);
   assert.ok(agentTeamGroups(claude).length > 0);
   assert.equal(await readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md"), "utf8").then(Boolean), true);
   assert.equal(await readFile(path.join(home, ".claude", "skills", "agent-team", "hooks", "agent-team-hook.mjs"), "utf8").then(Boolean), true);
   await assert.rejects(readFile(path.join(home, ".codex", "skills", "agent-team", "legacy.txt")), { code: "ENOENT" });
   assert.equal(backupCountAfter, backupCount);
+});
+
+test("installer upgrades an unchanged managed package when the manifest adds a file", async () => {
+  // This catches clean upgrades being mistaken for user changes when the package file list grows.
+  const home = await homeFixture();
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-expanded-source-"));
+  temporary.push(changedSource);
+  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await installPackage({ sourceRoot, home, now: new Date("2026-09-06T12:00:00.000Z") });
+
+  const addedFile = "references/new-release-file.md";
+  await writeFile(path.join(changedSource, addedFile), "new managed file\n");
+  const manifestPath = path.join(changedSource, "hooks", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.files.push(addedFile);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const result = await installPackage({ sourceRoot: changedSource, home, now: new Date("2026-09-06T12:01:00.000Z") });
+
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.conflicts, []);
+  assert.equal(await readFile(path.join(home, ".agents", "skills", "agent-team", addedFile), "utf8"), "new managed file\n");
+  assert.equal(await readFile(path.join(home, ".claude", "skills", "agent-team", addedFile), "utf8"), "new managed file\n");
 });
 
 test("uninstall removes owned groups, preserves unrelated settings, and restores backed-up skill copies", async () => {

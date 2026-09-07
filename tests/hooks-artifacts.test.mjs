@@ -44,7 +44,7 @@ test("archives identify the canonical repository and pinned release source", asy
     const entries = await readZip(archive);
     const source = JSON.parse(entries.find(({ name }) => name === "agent-team/.agent-team-source.json").data.toString("utf8"));
     assert.equal(source.repository, "https://github.com/thebpandey/agent-team");
-    assert.equal(source.releaseTag, "v6.3.2");
+    assert.equal(source.releaseTag, "v6.4.0");
     assert.equal(source.sourceRevision, "fixture-revision");
   }
 });

@@ -171,12 +171,15 @@ async function installLocked({ sourceRoot, home, now }, stateRoot) {
         targets.push({ runtime, path: target, mode: "source", digest, files: manifest.files });
         continue;
       }
-      const currentDigest = targetPresent ? await managedPackageDigest(target, manifest.files) : undefined;
-      if (targetPresent && previous?.mode === "copied" && currentDigest !== previous.digest) {
+      const previousDigest = targetPresent && previous?.mode === "copied"
+        ? await managedPackageDigest(target, previous.files ?? manifest.files)
+        : undefined;
+      if (targetPresent && previous?.mode === "copied" && previousDigest !== previous.digest) {
         conflicts.push({ kind: "skill", target, reason: "managed_target_changed" });
         targets.push(previous);
         continue;
       }
+      const currentDigest = targetPresent ? await managedPackageDigest(target, manifest.files) : undefined;
       if (targetPresent && currentDigest === digest) {
         targets.push({ runtime, path: target, mode: "copied", digest, files: manifest.files });
         continue;

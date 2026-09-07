@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "agent-team",
-  "version": "6.3.2",
+  "version": "6.4.0",
   "repository": "https://github.com/thebpandey/agent-team",
   "rootFiles": [
     "CHANGELOG.md",
@@ -62,6 +62,7 @@
     "references/dependencies.md",
     "references/help.md",
     "references/hooks.md",
+    "references/lean-ctx.md",
     "references/mistakes-memory.md",
     "references/output.md",
     "references/platform-claude.md",

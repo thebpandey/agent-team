@@ -71,6 +71,12 @@ function batchFileOperation(runtime, event, payload) {
   return files.length ? { kind: "file_change", tool: "PostToolBatch", files } : { kind: "lifecycle" };
 }
 
+function shellTool(tool) {
+  const name = tool.toLowerCase();
+  return ["bash", "shell", "unified_exec", "exec_command", "ctx_shell"].includes(name)
+    || /^mcp__lean[-_]ctx__(?:ctx_shell|shell)$/.test(name);
+}
+
 /** Normalize host payloads once so every policy sees the same operation shape. */
 export function normalizeEvent(runtime, event, payload = {}) {
   if (!new Set(["codex", "claude"]).has(runtime)) throw new Error(`Unsupported runtime: ${runtime}`);
@@ -81,7 +87,7 @@ export function normalizeEvent(runtime, event, payload = {}) {
 
   if (!operation && event === "UserPromptExpansion") {
     operation = { kind: "skill", skill: String(payload.skill_name ?? payload.skillName ?? payload.command_name ?? "") };
-  } else if (!operation && ["bash", "shell", "unified_exec", "exec_command"].includes(tool.toLowerCase())) {
+  } else if (!operation && shellTool(tool)) {
     operation = { kind: "shell", tool, command: String(input.command ?? input.cmd ?? "") };
   } else if (!operation && tool.toLowerCase() === "skill") {
     operation = { kind: "skill", tool, skill: String(input.skill ?? input.name ?? "") };

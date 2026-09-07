@@ -58,6 +58,8 @@ The installer puts the authoritative Codex skill at `~/.agents/skills/agent-team
 
 One user-level lock covers skill, role, configuration, backup, and receipt mutations. A failed transaction rolls back its own changes. The installer does not mark the source-at-target checkout for deletion. Uninstall removes a copied package only when its complete managed file set still matches the receipt. It preserves changed targets and reports conflicts. The installer also backs up and removes `~/.codex/skills/agent-team` from active discovery, merges only Agent-Team hook groups, and preserves unrelated settings. A second identical install does not duplicate groups or backups.
 
+LeanCTX hooks and MCP registration are unrelated configuration and must survive Agent-Team install, update, and uninstall. Agent-Team merges only its own groups; it does not replace hook arrays or settings objects. When LeanCTX is initialized after Agent-Team, its initializer must provide the same additive preservation. Back up user configuration before either operation and compare all pre-existing groups afterward. A healthy LeanCTX hook does not replace or prove Agent-Team lifecycle-hook health, and the reverse is also true. See [LeanCTX integration](lean-ctx.md).
+
 Run these commands from an inspected source checkout:
 
 ```bash

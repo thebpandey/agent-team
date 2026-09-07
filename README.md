@@ -31,11 +31,11 @@ The official source for this skill is [thebpandey/agent-team on GitHub](https://
 
 When instructed to change the skill, use a checkout of this repository and preserve existing user changes. Follow the user's instructions for commits, pushes, and installation updates. An installed copy can differ from the source; compare it before replacing files. Changes to the repository do not automatically update installed Codex or Claude Code copies.
 
-The pinned source for this release is [Agent-Team v6.3.2](https://github.com/thebpandey/agent-team/releases/tag/v6.3.2). Check [the latest official release](https://github.com/thebpandey/agent-team/releases/latest) for future updates. Each release ZIP contains `.agent-team-source.json` with the canonical repository, release tag, update URL, runtime, and exact source revision. Use that metadata to verify where an installed archive came from before updating it.
+The pinned source for this release is [Agent-Team v6.4.0](https://github.com/thebpandey/agent-team/releases/tag/v6.4.0). Check [the latest official release](https://github.com/thebpandey/agent-team/releases/latest) for future updates. Each release ZIP contains `.agent-team-source.json` with the canonical repository, release tag, update URL, runtime, and exact source revision. Use that metadata to verify where an installed archive came from before updating it.
 
 ## Skill version
 
-The current skill version is **6.3.2**. The authoritative value is `metadata.version` in `SKILL.md`; the [changelog](CHANGELOG.md) records release changes. Run `$agent-team help` in Codex or `/agent-team help` in Claude Code on each machine to display that installed copy's version. Setup and status also display it.
+The current skill version is **6.4.0**. The authoritative value is `metadata.version` in `SKILL.md`; the [changelog](CHANGELOG.md) records release changes. Run `$agent-team help` in Codex or `/agent-team help` in Claude Code on each machine to display that installed copy's version. Setup and status also display it.
 
 To check whether a copy is current, ask the agent to compare its installed version with `SKILL.md` on this repository's `main` branch. This requires GitHub access. A displayed version alone is not a remote update check. Local modifications can differ even when version numbers match; compare package files or the Git revision when exact equality matters. Refresh the host after updating so it loads the new instructions.
 
@@ -55,7 +55,7 @@ Install this repository as the `agent-team` skill using your host's supported sk
 
 For an authorized ZIP installation, extract the package and place its `agent-team` folder in the selected host's skill directory. The final path must be `agent-team/SKILL.md`, not an extra nested archive folder. Include `references/`, `agents/`, `assets/`, and `LICENSE`; do not copy only SKILL.md. Inspect an existing installation before replacing files and preserve user changes. Restart or refresh the host as required for discovery. Claude's native role definitions still need the setup step described below.
 
-Prefer the runtime-specific ZIP attached to the pinned GitHub Release over an unversioned branch archive. Verify its checksum against the release's `SHA256SUMS` file before extraction. Use `agent-team-codex-6.3.2.zip` for Codex and `agent-team-claude-6.3.2.zip` for Claude Code.
+Prefer the runtime-specific ZIP attached to the pinned GitHub Release over an unversioned branch archive. Verify its checksum against the release's `SHA256SUMS` file before extraction. Use `agent-team-codex-6.4.0.zip` for Codex and `agent-team-claude-6.4.0.zip` for Claude Code.
 
 Build distribution ZIPs from an identified committed revision with an `agent-team/` archive prefix. Include that revision's current license and record its full commit ID and archive checksum with the package. Keep packages private and distribute only through authorized LearnStack OS channels. A repository update does not update existing extracted installations automatically.
 
@@ -84,8 +84,8 @@ package_revision=$(git rev-parse --verify HEAD)
 node hooks/agent-team-cli.mjs check-package
 node hooks/agent-team-cli.mjs build-artifacts --revision "$package_revision" --output ../agent-team-artifacts
 node hooks/agent-team-cli.mjs check-artifacts --revision "$package_revision" \
-  --archive ../agent-team-artifacts/agent-team-codex-6.3.2.zip \
-  --archive ../agent-team-artifacts/agent-team-claude-6.3.2.zip
+  --archive ../agent-team-artifacts/agent-team-codex-6.4.0.zip \
+  --archive ../agent-team-artifacts/agent-team-claude-6.4.0.zip
 sha256sum ../agent-team-artifacts/*.zip
 ```
 
@@ -302,7 +302,7 @@ See the [setup procedure](references/setup.md) for exact installation rules.
 
 ## Recommended tools
 
-These tools are recommended, not mandatory. You can decline any of them and continue with the local task file.
+These four tools select the tracker. They are recommended, not mandatory. You can decline any of them and continue with the local task file.
 
 | Tool | What it does | When Agent-Team uses it |
 | --- | --- | --- |
@@ -312,7 +312,9 @@ These tools are recommended, not mandatory. You can decline any of them and cont
 | [Impeccable](https://github.com/pbakaus/impeccable) | Helps the agents design and check clear, consistent app screens. | Use it for screen design, layout, and user controls. |
 
 
-Every teammate uses the available skills selected for its task. Missing skills are not reported as used.
+LeanCTX is the separate runtime context tool. After it is selected and installed, every Agent-Team role loads it and uses compact discovery and recoverable shell output. Agents recover exact/full source before editing and raw diagnostics when needed. LeanCTX does not select the tracker.
+
+Every Project Orchestrator, Team Orchestrator, developer, reviewer, tester, and replacement loads the available skills in its own context and returns a receipt. Team Orchestrators confirm the roster to the Project Orchestrator on every run and resume. LeanCTX remains supplemental: Agent-Team's tracker, `CONTEXT.md`, `TEAMS.md`, and `MISTAKES.md` stay authoritative. Missing skills are not reported as used. See the [LeanCTX integration and recovery guide](references/lean-ctx.md).
 
 ## Optional design tools
 

@@ -35,6 +35,15 @@ function executable(token) {
   return path.basename(token ?? "").toLowerCase();
 }
 
+function unwrapLeanCtx(tokens) {
+  const index = tokens.findIndex((token) => ["lean-ctx", "lean-ctx.exe"].includes(executable(token)));
+  if (index === -1 || !["-c", "exec", "raw"].includes(tokens[index + 1])) return tokens;
+  const wrapped = tokens.slice(index + 2);
+  if (["-c", "exec"].includes(tokens[index + 1]) && wrapped[0] === "--raw") wrapped.shift();
+  if (!wrapped.length) return tokens;
+  return [...tokens.slice(0, index), ...tokenizeShell(wrapped.join(" "))];
+}
+
 function gitOperation(tokens) {
   const index = tokens.findIndex((token) => executable(token) === "git");
   if (index === -1) return undefined;
@@ -97,7 +106,7 @@ export function classifyOperation(event, mappings = {}) {
   if (event.operation.kind !== "shell") return event.operation;
 
   const command = event.operation.command;
-  const tokens = tokenizeShell(command);
+  const tokens = unwrapLeanCtx(tokenizeShell(command));
   const git = gitOperation(tokens);
   if (git?.command === "push") return { kind: "integration", repository: git.repository };
   const gh = tokens.findIndex((token) => executable(token) === "gh");

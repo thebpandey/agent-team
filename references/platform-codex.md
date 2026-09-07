@@ -14,13 +14,17 @@ Verify the parent is Astra using exposed runtime metadata. If unavailable or mis
 
 Use exposed Codex spawning, messaging, resume, and stop tools, not assumed shell commands. Pass supported model/effort settings explicitly. Where controls match `spawn_agent`, use `fork_turns="none"` or supported limited context for model overrides; send the compact dispatch contract and relevant evidence. Adapt to the actual schema rather than assuming identical APIs on every surface. Reuse an appropriate idle agent instead of duplicating it. Only the orchestrator dispatches.
 
-Before task work or dispatch, both orchestrators and every child complete [skill startup](dependencies.md#skill-startup-for-every-agent). Send the procedure and all three resolved skill paths in each spawn/replacement assignment. When no Skill tool is exposed, complete file/resource reads load the instructions; `$name` in a message alone does not. Check each agent's skill receipt before accepting its work.
+Before task work or dispatch, both orchestrators and every child complete [skill startup](dependencies.md#skill-startup-for-every-agent). Send the procedure, [LeanCTX contract](lean-ctx.md), and all four resolved skill paths in each spawn/replacement assignment. When no Skill tool is exposed, complete file/resource reads load the instructions; `$name` in a message alone does not. Check each agent's skill receipt before accepting its work.
+
+For approved user-scope LeanCTX setup, merge the shared conservative profile first, then run `lean-ctx init --agent codex --mode hybrid`. It registers MCP in `~/.codex/config.toml`, hooks in `~/.codex/hooks.json`, LeanCTX-owned guidance in `~/.codex/instructions.md` and `~/.codex/LEAN-CTX.md`, and the skill at `~/.codex/skills/lean-ctx/SKILL.md`. With dedicated rules it does not add a shared `AGENTS.md` block. Preserve existing MCP servers, hook groups, and Agent-Team configuration. The LeanCTX shell hook can be unavailable inside a Codex sandbox; confirm it before relying on normal wrapped commands and use `ctx_shell` when it is not active. Keep `shadow_mode = false`, the standard LeanCTX tool profile plus disabled coordination/memory tools, and Agent-Team's existing worktree, tracker, context, and recovery rules.
 
 Apply shared worktree ownership, CONTEXT.md, tracking, verification, release, and cleanup rules unchanged. A missing teammate model is a reported routing constraint: reassign only to an available suitable model under the user's policy, never label a substitute as the requested model.
 
 ## Lifecycle hooks
 
 The current edition can register the shared [lifecycle hook system](hooks.md) in `~/.codex/hooks.json`. The authoritative Codex skill path is `~/.agents/skills/agent-team`. Codex has no reliable local skill-activation event, so health reports that dimension as unsupported. Do not infer activation from reading `SKILL.md`. Use the native `/hooks` trust flow when Codex requires it; the installer never fabricates trust.
+
+LeanCTX initialization and Agent-Team hook installation are separate additive operations. Snapshot both configurations first. After either operation, verify every prior hook group and MCP server still exists and run both health checks. Neither installer may replace the other's arrays or settings objects.
 
 ## Named teams and lifecycle actions
 
