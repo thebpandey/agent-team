@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -53,6 +53,29 @@ function invokeCli(command, options) {
   for (const [name, value] of Object.entries(options)) args.push(`--${name}`, value);
   const result = spawnSync(process.execPath, args, { encoding: "utf8" });
   return { status: result.status, output: JSON.parse(result.stdout), stderr: result.stderr };
+}
+
+for (const runtime of ["codex", "claude"]) {
+  test(`${runtime} subprocess stdout exposes actionable lint failure while permitting repair (synthetic host payload)`, async () => {
+    const value = await fixture();
+    const bin = path.join(value.feature, "node_modules/.bin/eslint");
+    await mkdir(path.dirname(bin), { recursive: true });
+    await writeFile(bin, "#!/usr/bin/env node\nprocess.stdout.write('src/owned.js:4:7 no-undef missingName\\n' + 'detail '.repeat(10000)); process.exitCode=1;\n");
+    await chmod(bin, 0o755);
+    const result = invoke(runtime, "PostToolUse", {
+      cwd: value.feature, session_id: "developer-session",
+      tool_name: runtime === "codex" ? "apply_patch" : "Edit",
+      tool_input: runtime === "codex"
+        ? { command: "*** Begin Patch\n*** Update File: src/owned.js\n+missingName();\n*** End Patch" }
+        : { file_path: "src/owned.js", old_string: "export {};", new_string: "missingName();" },
+    }, value.home);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /owned.js:4:7.*no-undef.*missingName/);
+    assert.match(result.stdout, /lint failed/i);
+    assert.match(result.stdout, /log/i);
+    assert.ok(Buffer.byteLength(result.stdout) < 7000);
+    assert.doesNotMatch(result.stdout, /permissionDecision.*deny/);
+  });
 }
 
 test("entrypoint emits native denial when project resolution fails for a critical command", async () => {
