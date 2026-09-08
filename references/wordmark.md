@@ -1,6 +1,6 @@
 # AGENT-TEAM wordmark
 
-For user-invoked `help`, `start`, `resume`, `settings`, `setup`, and `status`, print this solid block-letter wordmark once before the command's summary, picker, settings confirmation, or result. Use a fenced plain-text block so spacing stays intact:
+On first setup or requested help, this optional wordmark may precede the compact summary when the terminal is wide enough. Ordinary start, resume, settings, status, refills and progress updates omit it. Use a fenced plain-text block so spacing stays intact:
 
 ```text
  ███   █████  █████  ██  ██  ██████        ██████  █████   ███   ██   ██
@@ -19,13 +19,13 @@ Show the attribution once with the wordmark. In a plain-text host, use `Created 
 
 The filled letters use the Unicode full-block character. If the output surface cannot display it, replace each block with `#` and preserve spacing. No font package or image is needed.
 
-Place it inside the first [message frame](output.md) for the invocation, before the identity header and body. Later progress messages retain borders but do not repeat the wordmark.
+Follow [compact output](output.md); do not add a message frame or border. Later progress messages omit the wordmark.
 
-Select by the resolved action, not a substring in a task name, quoted example, or help text. Combined starts show it once; internal continuous refills, each team reply, and each batch do not repeat it. Show it for read-only status, but do not run a shell command, install fonts/tools, write a file, request agent reports, or change task state to display it. During active work, the banner and short status response leave that work running. A help invocation shows the wordmark once; quoted command examples do not trigger additional banners. Do not add banners to individual subagent messages.
+Select by the resolved help/first-setup action, not a substring in a task name or quoted example. Do not run a shell command, install fonts/tools, write a file, request agent reports or change task state just for branding. On narrow or incompatible surfaces, use the plain product name/version and creator/source credit. Do not add banners to individual subagent messages.
 
 
 ## Installed skill version
 
-Immediately below the wordmark's closing code fence, show `Agent-Team v<version>` on its own line, using `metadata.version` from the installed `SKILL.md` that supplied these instructions. Put the creator credit and any GitHub source link on the next line. This applies to every wordmark command, including help, setup, and status. Use the installed version, not the working project's version or a guessed latest version. If metadata is absent, show `Agent-Team — version unknown (unversioned copy)`.
+Immediately below an emitted wordmark, show `Agent-Team v<version>` from metadata.version in the installed SKILL.md, followed by creator/source credit. A plain version request returns the version without the banner. Use the installed version, not a guessed latest version. If metadata is absent, show `Agent-Team — version unknown (unversioned copy)`.
 
 Displaying a version is local and does not check GitHub. Only claim that an installation is current after an explicit update/check request and a successful comparison with the official source. If remote access fails, report that freshness is unverified. Matching version numbers identify a release; local edits can still differ from it.

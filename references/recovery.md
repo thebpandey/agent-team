@@ -16,7 +16,7 @@ Use persistent project storage for code and checkpoints. Record the location out
 
 Bare `pause` first shows the [team picker](actions.md) and waits. Only after selection does it pause the chosen team or offered All set. Explicit `pause all` directly targets all in-progress Agent-Team teams in the current project without a picker. A name or ID directly targets one team. Resolve the project before fan-out; never pause another project or unrelated user processes. Preserve completed work and already-paused teams without reopening tasks or restarting agents just to pause them.
 
-Project-wide pause also holds continuous refill and automatic batches, even with no occupied teams between tasks. Record that hold before sending checkpoints. All selected in a picker holds the identified run and offered team set; a named pause leaves other slots active and retains its own slot. Do not treat an explicit pause as the blocked-tail condition for a smaller automatic deployment.
+Project-wide pause also holds continuous refill and automatic batches, even with no active teams between tasks. Record that hold before sending checkpoints. All selected in a picker holds the identified run and offered team set. A named pause preserves its claim and explicit pause intent; after its writer safely stops and checkpoints, its compute slot may be reused by independent authorized work. Do not treat an explicit pause as the blocked-tail condition for a smaller automatic deployment.
 
 The project owner records pause intent for the targeted teams through the canonical tracker before requesting safe checkpoints. Stop new assignments, integrations, and releases for those teams. Include the project orchestrator's active integration or release work in a project-wide pause. Finish only the minimum observation or safe recovery needed for an operation that cannot safely stop immediately; do not begin another release or delete worktrees as part of pause.
 
@@ -58,3 +58,15 @@ Continue from the actual stage: unfinished code returns to implementation; verif
 8. Update ownership/session identity and the canonical tracker through its writer. Give a short report: recovered work, verified results, remaining uncertainty, surviving/replaced agents, preview/approval state, and next action. Continue the next safe authorized task without asking for general permission again. An approval gate or unresolved access/ownership constraint remains a real blocker.
 
 A normal development invocation that clearly requests continued work in an identified scope enters this procedure. Never treat bare pause or resume as such an invocation to bypass its required picker. A `status` invocation never enters it. Do not fabricate lost task criteria or silently migrate the tracker to make recovery appear complete.
+
+## Fresh context and safe parking
+
+Save decisions and consequential operation facts during ordinary work. A pre-compaction hook supplies a compact index to existing records; it must not reconstruct a full conversation or invent semantic next actions. Record authored next action/decision pointers before the handoff boundary. Keep the last complete checkpoint if a write fails.
+
+Select checkpoints by project/task/session/worktree and relevant revision, not simply the newest file in the project. Validate current source and evidence after restoration. A newer checkpoint for another task is not this task's memory. Preserve approved/rejected choices, scope exclusions, failed approaches and pending-operation uncertainty.
+
+Park only after checkpointing and proving the active writer stopped or transferred ownership. Preserve the logical claim, worktree, review/preview gates and evidence; release only compute capacity. Unknown activity does not count as stopped. Resume when the recorded prerequisite is restored within existing authority; an explicit user pause requires explicit resume. Reserve reviewer capacity and admit eligible work fairly.
+
+Keep native auto-compaction enabled as fallback. Use supported startup/compaction events to restore the small recovery index; verify actual installed-host behavior. Do not disable compaction, inflate a context window or choose a fixed threshold by default. A fresh worker has startup cost; compare full accepted-work cost, not only compaction count. Cached input is a price/latency property, not extra context capacity.
+
+The skill cannot guarantee automatic replacement of its parent conversation or execution after the host exits. Use such controls only if actually exposed or supplied by a separately authorized controller. A fresh-context test and simulated hook JSON do not prove native automatic compaction restoration.

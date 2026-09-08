@@ -1,10 +1,10 @@
 # Pro non-disruptive status
 
-Status and reports display assigned Matrix agent names, without role labels. Help and settings are the views that include role labels and explanations.
+Status and reports show role labels and stable task/team IDs first. Friendly names are optional. Show configured model/effort when useful, with recorded versus actually enforced values distinguished.
 
 A status request reads recorded state. It does not change execution. Run this path before setup, dependency/model checks, recovery, or dispatch. Use the [action](actions.md) target rules. The project overview includes all project tasks and names unassigned work; a team view includes only its mapped tasks.
 
-Display the [wordmark](wordmark.md) once before the report. This is static output, not a tool action or a reason to refresh records.
+Use compact state-first output without a wordmark or fixed-width border. Start with active/parked/ready work, actual capacity, overall progress, release state and any necessary user action.
 
 Read the canonical team directory, active tracker, and already available evidence through a supported read-only query. In Beads, discover installed help only if needed and use a read-only listing of the complete requested scope, including completed tasks and all pages. Never run a command that initializes, migrates, syncs, claims, or repairs the store merely to report status. If read access is unavailable, use an existing timestamped snapshot or report unavailable data; do not create a fallback tracker during status.
 
@@ -49,3 +49,11 @@ Example with complete current data:
 | Project total | 18 | 8 | 5 | 4 | 1 | 10 | 44% |
 
 Label cached data with its age. Note unconsumed team handoffs without silently turning them into completed tasks. Show “recorded in progress; session activity unverified” when only task state is known. The status action must not repair inconsistencies it discovers.
+
+## Optional webpage
+
+The dashboard derives teams, all tasks and overall progress from this same read model and canonical tracker. Opening or reloading local HTML displays its latest saved snapshot; it cannot itself query bd or bv. Event-driven generation updates the snapshot after meaningful task transitions without a model call.
+
+Optional live mode uses one loopback-only helper for current read/refresh, not a build/dev server or execution controller. Opening/refreshing may regenerate only its own derived artifacts, never claim/resume tasks, repair code, run tests or deploy. Enablement is a separate explicit dashboard action, not a side effect of status.
+
+Keep all-task search/filter, dependency graphs, source and freshness visible. A stale/failed refresh keeps the last good snapshot clearly labeled. For Beads, refresh the canonical bd export before the separately attributed optional bv provider reads it. TASKS mode retains complete progress/task/team views without forcing Beads installation. See the setup catalog for bv's upstream identity and license terms.

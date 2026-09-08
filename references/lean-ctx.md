@@ -128,16 +128,16 @@ This profile keeps compact discovery, `ctx_shell`, shell-hook shaping, and `ctx_
 1. Start discovery with `ctx_overview`, `ctx_search`, file maps, signatures, or targeted-line reads. If the host hook is confirmed active, use normal shell commands. Otherwise use `ctx_shell`, or `lean-ctx -c` only where upstream documents that explicit wrapper. Agent-Team's hook normalizes the documented `ctx_shell.command`, `lean-ctx -c`, `lean-ctx exec`, and `lean-ctx raw` paths so its existing critical-operation gates still inspect the inner command. Do not use another LeanCTX execution alias or hide commands in an unsupported nested form.
 2. Before editing, retrieve the exact relevant implementation plus nearby callers, interfaces, types, and tests. Never edit from only a map, summary, signature list, compressed diff, or memory entry.
 3. Use full/raw source and uncompressed diagnostics for failing tests, production incidents, deployment, migrations, database/schema work, authentication, authorization, payments, security, destructive operations, and unclear errors.
-4. When compact context is insufficient, use `ctx_read` with `mode="full"` and `fresh=true`, or the host's native reader. Recover archived tool output with `ctx_expand`. At the CLI, use `lean-ctx raw "command"`, `lean-ctx -c --raw "command"`, or `LEAN_CTX_RAW=1` for one command. Use `LEAN_CTX_DISABLED=1` to bypass LeanCTX for a diagnostic shell run. Do not rely on `ctx_retrieve`; the standard profile does not advertise it.
+4. When compact context is insufficient, recover the already-captured original with `ctx_read` full/fresh, `ctx_expand`, or the permitted native reader. Request uncompressed diagnostics through a supported path when the operation itself is permitted. A command denial is not permission to retry through raw mode, another wrapper, an interpreter, environment overrides or an altered allowlist. Do not rely on unadvertised retrieval tools.
 5. Report meaningful LeanCTX use in the normal progress update and handoff. Examples are the search or compact read that found the source, the full/raw recovery used before an edit, and the compressed command whose original output remains recoverable. Do not create a LeanCTX ledger.
 
 ## Status, receipt, and fallback
 
-Resolve LeanCTX's installed skill name and exact `SKILL.md` path or resource identifier. Each Project Orchestrator, Team Orchestrator, developer, reviewer, tester, replacement, and resumed fresh session must load that complete skill in its own context before task work. The dispatch includes the path, binary/version, MCP state, shell-wrapper state, memory-policy state, and health result.
+Resolve LeanCTX's installed skill name and exact SKILL.md path for assignments that use its context tools. Each fresh worker using it reads its complete instructions and applicable references in its own context. A text-only assignment with no source/tool work need not load it. Retained workers reuse current reads; the packet points to prepared capability evidence rather than repeating all configuration on every turn.
 
-Use one of these receipt statuses: `loaded`, `missing`, `unreadable`, `disabled`, or `not applicable`. `loaded` requires a successful Skill invocation or a complete read through end of file. A present directory, prompt mention, parent receipt, MCP registration, or shell hook does not prove the skill loaded. `not applicable` is for a host where LeanCTX does not support the requested integration, not for ordinary non-UI work.
+Use loaded, missing, unreadable, disabled or not applicable honestly. Loaded requires a successful full instruction read/invocation in this context. A folder, mention, parent receipt, MCP registration or hook does not prove loading. Not applicable means this assignment does not use the capability, or the host does not support it; ordinary backend source work can still benefit from it.
 
-If LeanCTX is absent, unreadable, disabled, or unhealthy, report the exact status to the Project Orchestrator. Continue with Agent-Team's existing source-reading, `CONTEXT.md`, tracker, team, mistakes, and recovery procedures unless the user made LeanCTX a hard gate. Never report LeanCTX as active or in use without evidence. LeanCTX failure does not change the existing Beads-versus-local tracker selection rule.
+If LeanCTX is absent, unreadable, disabled or unhealthy, report the exception to the orchestrator once. Diagnose within authority and use permitted native source tools when possible. Never bypass a denial or claim unavailable capabilities are active. LeanCTX does not select, migrate or replace the canonical tracker.
 
 ## Verification
 
@@ -148,6 +148,6 @@ After an approved user-level setup, verify all of the following without exposing
 - Claude Code MCP registration, Claude initialization instructions and skill, its exact `autoApprove` and `permissions.allow` additions, and coexistence of every Agent-Team hook group and customized role definition.
 - A compact source read/search followed by exact full-source recovery.
 - One verbose shell command compressed through the active wrapper followed by original-output expansion.
-- A Project Orchestrator, Team Orchestrator, developer, and reviewer dispatch that each returns its own LeanCTX receipt and meaningful-use evidence.
+- Relevant orchestrator/developer/reviewer assignments can access the selected tool profile and recover exact output; fresh users read their own applicable instructions. A role that does not need LeanCTX is not forced through a demonstration.
 
 Record unavailable checks as unavailable. An installed binary, a healthy MCP entry, and a loaded skill are separate facts.
