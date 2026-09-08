@@ -3,7 +3,7 @@ import process from "node:process";
 import os from "node:os";
 import path from "node:path";
 import { normalizeEvent } from "./lib/event.mjs";
-import { identityFor, loadCanonicalState, syncOperationMappingInventory } from "./lib/canonical-state.mjs";
+import { identityFor, syncOperationMappingInventory } from "./lib/canonical-state.mjs";
 import { resolveProject } from "./lib/project.mjs";
 import { inspectRecovery } from "./lib/recovery.mjs";
 import { writeCheckpoint } from "./lib/checkpoint.mjs";
@@ -76,16 +76,10 @@ export async function runNormalizedHook(event, { timeoutMs = 5000, runBeads } = 
 
 async function runEvent(event, budget, runBeads) {
   const project = await budget.run(() => resolveProject(event.cwd, { budget }));
-  let canonical;
-  if (project.active) {
-    try {
-      canonical = await budget.run(() => loadCanonicalState(project, { includeTasks: false, budget }));
-    } catch { /* Policy retains its validated mapping fallback on failed shared reads. */ }
-  }
   const progress = {};
   let decision;
   try {
-    decision = await budget.run(() => evaluatePolicy(event, project, { canonical, budget, runBeads, progress }));
+    decision = await budget.run(() => evaluatePolicy(event, project, { budget, runBeads, progress }));
   } catch {
     decision = unavailableDecision({ ...event, operation: progress.operation ?? event.operation });
     if (progress.lint) {
@@ -93,6 +87,7 @@ async function runEvent(event, budget, runBeads) {
       decision.messages.push(...lintMessages(decision.capabilities.lint, project.worktreeRoot));
     }
   }
+  const canonical = progress.canonical;
   decision.context.active = project.active;
   decision.context.projectId = project.projectId;
 

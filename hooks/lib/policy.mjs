@@ -294,10 +294,13 @@ export async function evaluatePolicy(event, project, { now = new Date(), canonic
     // A bad inventory cannot expand the set of operations that fail closed.
     inventoryStatus = error.code === "ENOENT" ? "missing" : "invalid";
   }
+  // Preserve validated fallback classification before any later read can time out.
+  progress.operation = classifyOperation(event, inventory, { tracker: project.tracker });
   let canonical;
   let operation;
   try {
     canonical = suppliedCanonical ?? await bounded(() => loadCanonicalState(project, { includeTasks: false, budget }));
+    progress.canonical = canonical;
     operation = classifyOperation(event, validateOperationMappings(canonical.state.operationMappings ?? inventory), { tracker: project.tracker });
     progress.operation = operation;
   } catch {

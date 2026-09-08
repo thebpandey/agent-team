@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -146,4 +147,20 @@ test("activation logging cannot append after its lock waiter exceeds the shared 
   await rm(lock, { recursive: true });
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.deepEqual((await readActivationLogs(directory)).records, []);
+});
+
+test("outer deadline preserves mapped destructive classification when canonical state read stalls after inventory", async () => {
+  const value = await fixture();
+  const statePath = path.join(value.root, ".agent-team/state.json");
+  await rm(statePath);
+  execFileSync("mkfifo", [statePath]);
+  const releaseRead = new Promise((resolve, reject) => setTimeout(() => {
+    writeFile(statePath, JSON.stringify(value.state)).then(resolve, reject);
+  }, 150));
+  const result = await runNormalizedHook(hookEvent(value, { sessionId: "owner-session", operation: {
+    kind: "provider", tool: "mcp__database__execute", input: { query: "DROP TABLE records" },
+  } }), { timeoutMs: 50 });
+  await releaseRead;
+  assert.equal(result.decision.allow, false);
+  assert.match(result.decision.messages.join(" "), /unavailable/i);
 });
