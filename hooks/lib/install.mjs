@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, chmod, copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { withDirectoryLock } from "./lock.mjs";
+import { checkInstalledPackage } from "./package-validator.mjs";
 
 async function present(file) {
   try {
@@ -32,30 +33,164 @@ async function atomicJson(file, value) {
   await atomicText(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function owned(group) {
-  return group.hooks?.some(({ command = "" }) => command.includes("agent-team-hook.mjs"));
+function same(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function mergeHooks(config, declaration) {
+function handlerDigest(handler) {
+  return hashBytes(Buffer.from(JSON.stringify(handler)));
+}
+
+function handlerId(runtime, event, groupIndex, handlerIndex) {
+  return `${runtime}:${event}:${groupIndex}:${handlerIndex}`;
+}
+
+function exactLocations(config, event, handler) {
+  const matches = [];
+  for (const [groupIndex, group] of (config.hooks?.[event] ?? []).entries()) {
+    for (const [handlerIndex, candidate] of (group.hooks ?? []).entries()) {
+      if (same(candidate, handler)) matches.push({ groupIndex, handlerIndex });
+    }
+  }
+  return matches;
+}
+
+function managedCommandIdentity(handler) {
+  if (handler?.type !== "command" || typeof handler.command !== "string") return undefined;
+  if (!/(?:^|[\\/])agent-team-hook\.mjs(?=["'\s]|$)/.test(handler.command)) return undefined;
+  const runtime = handler.command.match(/(?:^|\s)--runtime\s+(codex|claude)(?=\s|$)/)?.[1];
+  const event = handler.command.match(/(?:^|\s)--event\s+([^\s"']+)(?=\s|$)/)?.[1];
+  return runtime && event ? `${runtime}:${event}` : undefined;
+}
+
+function identityLocations(config, event, handler) {
+  const identity = managedCommandIdentity(handler);
+  if (!identity) return [];
+  const matches = [];
+  for (const [groupIndex, group] of (config.hooks?.[event] ?? []).entries()) {
+    for (const [handlerIndex, candidate] of (group.hooks ?? []).entries()) {
+      if (managedCommandIdentity(candidate) === identity) matches.push({ groupIndex, handlerIndex });
+    }
+  }
+  return matches;
+}
+
+function recordAt(runtime, event, handlerIdValue, location, handler, preexisting = false) {
+  return {
+    runtime,
+    event,
+    handlerId: handlerIdValue,
+    groupIndex: location.groupIndex,
+    handlerIndex: location.handlerIndex,
+    digest: handlerDigest(handler),
+    handler: structuredClone(handler),
+    preexisting,
+  };
+}
+
+function mergeHooks(config, declaration, { runtime, previousHandlers = [], adoptExisting = false }) {
   const output = structuredClone(config);
   output.hooks ??= {};
-  for (const [event, groups] of Object.entries(declaration.hooks)) {
-    output.hooks[event] = [...(output.hooks[event] ?? []).filter((group) => !owned(group)), ...groups];
+  const handlers = [];
+  const conflicts = [];
+  let changed = false;
+
+  for (const [event, declaredGroups] of Object.entries(declaration.hooks ?? {})) {
+    output.hooks[event] ??= [];
+    for (const [declaredGroupIndex, declaredGroup] of declaredGroups.entries()) {
+      let appendedGroup;
+      for (const [declaredHandlerIndex, desired] of (declaredGroup.hooks ?? []).entries()) {
+        const id = handlerId(runtime, event, declaredGroupIndex, declaredHandlerIndex);
+        const previous = previousHandlers.find((entry) => entry.handlerId === id);
+        if (previous) {
+          const exact = exactLocations(output, event, previous.handler);
+          if (exact.length === 1) {
+            const location = exact[0];
+            if (!same(previous.handler, desired)) {
+              output.hooks[event][location.groupIndex].hooks[location.handlerIndex] = structuredClone(desired);
+              changed = true;
+            }
+            handlers.push(recordAt(runtime, event, id, location, desired, previous.preexisting));
+            continue;
+          }
+          if (exact.length > 1) {
+            conflicts.push({ kind: "handler", runtime, event, handlerId: id, reason: "ambiguous_handler" });
+            handlers.push(previous);
+            continue;
+          }
+          const candidate = output.hooks[event]?.[previous.groupIndex]?.hooks?.[previous.handlerIndex];
+          if (candidate) conflicts.push({ kind: "handler", runtime, event, handlerId: id, reason: "customized_handler" });
+          else conflicts.push({ kind: "handler", runtime, event, handlerId: id, reason: "managed_handler_missing" });
+          handlers.push(previous);
+          continue;
+        }
+
+        const existing = exactLocations(output, event, desired);
+        if (existing.length === 1) {
+          handlers.push(recordAt(runtime, event, id, existing[0], desired, !adoptExisting));
+          continue;
+        }
+        if (existing.length > 1) {
+          conflicts.push({ kind: "handler", runtime, event, handlerId: id, reason: "ambiguous_handler" });
+          continue;
+        }
+        if (identityLocations(output, event, desired).length) {
+          conflicts.push({ kind: "handler", runtime, event, handlerId: id, reason: "ambiguous_handler" });
+          continue;
+        }
+        if (!appendedGroup) {
+          appendedGroup = structuredClone(declaredGroup);
+          appendedGroup.hooks = [];
+          output.hooks[event].push(appendedGroup);
+        }
+        appendedGroup.hooks.push(structuredClone(desired));
+        const location = {
+          groupIndex: output.hooks[event].length - 1,
+          handlerIndex: appendedGroup.hooks.length - 1,
+        };
+        handlers.push(recordAt(runtime, event, id, location, desired));
+        changed = true;
+      }
+    }
   }
-  for (const [event, groups] of Object.entries(output.hooks)) {
-    if (!declaration.hooks[event]) output.hooks[event] = groups.filter((group) => !owned(group));
-    if (!output.hooks[event].length) delete output.hooks[event];
-  }
-  return output;
+  return { config: output, handlers, conflicts, changed };
 }
 
-function removeOwnedHooks(config) {
+function removeOwnedHooks(config, handlerRecords) {
   const output = structuredClone(config);
-  for (const [event, groups] of Object.entries(output.hooks ?? {})) {
-    output.hooks[event] = groups.filter((group) => !owned(group));
-    if (!output.hooks[event].length) delete output.hooks[event];
+  const conflicts = [];
+  let changed = false;
+  for (const record of [...handlerRecords].reverse()) {
+    if (record.preexisting) {
+      conflicts.push({
+        kind: "handler",
+        runtime: record.runtime,
+        event: record.event,
+        handlerId: record.handlerId,
+        reason: "preexisting_handler",
+      });
+      continue;
+    }
+    const exact = exactLocations(output, record.event, record.handler);
+    if (exact.length !== 1) {
+      const candidate = output.hooks?.[record.event]?.[record.groupIndex]?.hooks?.[record.handlerIndex];
+      conflicts.push({
+        kind: "handler",
+        runtime: record.runtime,
+        event: record.event,
+        handlerId: record.handlerId,
+        reason: exact.length > 1 ? "ambiguous_handler" : candidate ? "customized_handler" : "managed_handler_missing",
+      });
+      continue;
+    }
+    const { groupIndex, handlerIndex } = exact[0];
+    const groups = output.hooks[record.event];
+    groups[groupIndex].hooks.splice(handlerIndex, 1);
+    if (!groups[groupIndex].hooks.length) groups.splice(groupIndex, 1);
+    if (!groups.length) delete output.hooks[record.event];
+    changed = true;
   }
-  return output;
+  return { config: output, conflicts, changed };
 }
 
 function hashBytes(bytes) {
@@ -146,7 +281,48 @@ function targetRecord(receipt, runtime, target) {
     : entry).find((entry) => entry.runtime === runtime || entry.path === target);
 }
 
-async function installLocked({ sourceRoot, home, now }, stateRoot) {
+function selection({ host, scope, projectRoot, trustedHost }) {
+  const selectedHost = host ?? trustedHost;
+  if (!selectedHost) throw new Error("Installation host is required: choose codex, claude-code, or both.");
+  if (!host && trustedHost === "both") throw new Error("Trusted host metadata is ambiguous; choose both explicitly to configure both hosts.");
+  if (!["codex", "claude-code", "both"].includes(selectedHost)) throw new Error(`Unsupported installation host: ${selectedHost}`);
+  if (!["user", "project"].includes(scope)) throw new Error("Installation scope is required: choose user or project.");
+  if (scope === "project" && !projectRoot) throw new Error("projectRoot is required for project scope.");
+  return {
+    host: selectedHost,
+    scope,
+    projectRoot: scope === "project" ? path.resolve(projectRoot) : undefined,
+    runtimes: selectedHost === "both" ? ["codex", "claude"] : [selectedHost === "claude-code" ? "claude" : selectedHost],
+  };
+}
+
+async function hookDeclaration(sourceRoot, runtime, selected) {
+  const declaration = await readJson(path.join(sourceRoot, "hooks", `${runtime}-hooks.json`));
+  if (selected.scope !== "project") return declaration;
+  const serialized = JSON.stringify(declaration);
+  const userSkill = runtime === "codex"
+    ? "$HOME/.agents/skills/agent-team"
+    : "$HOME/.claude/skills/agent-team";
+  const projectSkill = runtime === "codex"
+    ? "$(git rev-parse --show-toplevel)/.agents/skills/agent-team"
+    : "${CLAUDE_PROJECT_DIR}/.claude/skills/agent-team";
+  return JSON.parse(serialized.replaceAll(userSkill, projectSkill));
+}
+
+function runtimePaths({ home, scope, projectRoot }, runtime) {
+  const root = scope === "project" ? projectRoot : home;
+  if (runtime === "codex") return {
+    target: path.join(root, ".agents", "skills", "agent-team"),
+    configPath: path.join(root, ".codex", "hooks.json"),
+  };
+  return {
+    target: path.join(root, ".claude", "skills", "agent-team"),
+    configPath: path.join(root, ".claude", scope === "project" ? "settings.local.json" : "settings.json"),
+    agentsRoot: path.join(root, ".claude", "agents"),
+  };
+}
+
+async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
   const manifest = await readJson(path.join(sourceRoot, "hooks", "manifest.json"));
   const digest = await packageDigest(sourceRoot, manifest.files);
   const receiptPath = path.join(stateRoot, "install.json");
@@ -158,12 +334,13 @@ async function installLocked({ sourceRoot, home, now }, stateRoot) {
 
   return transaction(async (addUndo) => {
     addUndo(() => rm(backupRoot, { force: true, recursive: true }));
-    const targets = [];
+    const previousTargets = (previousReceipt?.targets ?? []).map((entry, index) => typeof entry === "string"
+      ? { runtime: index === 0 ? "codex" : "claude", path: entry, mode: "legacy", digest: previousReceipt.digest }
+      : entry);
+    const targets = previousTargets.filter((entry) => !selected.runtimes.includes(entry.runtime));
     const sourceIdentity = await realpath(sourceRoot);
-    for (const [index, [runtime, target]] of [
-      ["codex", path.join(home, ".agents", "skills", "agent-team")],
-      ["claude", path.join(home, ".claude", "skills", "agent-team")],
-    ].entries()) {
+    for (const [index, runtime] of selected.runtimes.entries()) {
+      const { target } = runtimePaths({ home, ...selected }, runtime);
       const targetPresent = await present(target);
       const sourceIsTarget = targetPresent && await realpath(target) === sourceIdentity;
       const previous = targetRecord(previousReceipt, runtime, target);
@@ -186,7 +363,7 @@ async function installLocked({ sourceRoot, home, now }, stateRoot) {
       }
       await mkdir(path.dirname(target), { recursive: true });
       if (targetPresent) {
-        const backup = path.join(backupRoot, "skills", index === 0 ? "agents-agent-team" : "claude-agent-team");
+        const backup = path.join(backupRoot, "skills", runtime === "codex" ? "agents-agent-team" : "claude-agent-team");
         await mkdir(path.dirname(backup), { recursive: true });
         await rename(target, backup);
         addUndo(async () => { if (await present(backup)) await rename(backup, target); });
@@ -199,7 +376,7 @@ async function installLocked({ sourceRoot, home, now }, stateRoot) {
     }
 
     const legacy = path.join(home, ".codex", "skills", "agent-team");
-    if (await present(legacy)) {
+    if (selected.scope === "user" && selected.runtimes.includes("codex") && await present(legacy)) {
       const backup = path.join(backupRoot, "skills", "codex-legacy-agent-team");
       await mkdir(path.dirname(backup), { recursive: true });
       await rename(legacy, backup);
@@ -208,9 +385,11 @@ async function installLocked({ sourceRoot, home, now }, stateRoot) {
       changed = true;
     }
 
-    const claudeAgents = [];
-    for (const sourceFile of manifest.files.filter((file) => file.startsWith("assets/claude-agents/") && file.endsWith(".md"))) {
-      const target = path.join(home, ".claude", "agents", path.basename(sourceFile));
+    const claudeAgents = selected.runtimes.includes("claude") ? [] : [...(previousReceipt?.claudeAgents ?? [])];
+    const handlerReceipts = (previousReceipt?.handlers ?? []).filter((entry) => !selected.runtimes.includes(entry.runtime));
+    const handlerConflictReceipts = (previousReceipt?.handlerConflicts ?? []).filter((entry) => !selected.runtimes.includes(entry.runtime));
+    for (const sourceFile of selected.runtimes.includes("claude") ? manifest.files.filter((file) => file.startsWith("assets/claude-agents/") && file.endsWith(".md")) : []) {
+      const target = path.join(runtimePaths({ home, ...selected }, "claude").agentsRoot, path.basename(sourceFile));
       const source = path.join(sourceRoot, sourceFile);
       const desiredDigest = await fileDigest(source);
       const currentDigest = await fileDigest(target);
@@ -241,21 +420,29 @@ async function installLocked({ sourceRoot, home, now }, stateRoot) {
       changed = true;
     }
 
-    for (const runtime of ["codex", "claude"]) {
-      const configPath = runtime === "codex" ? path.join(home, ".codex", "hooks.json") : path.join(home, ".claude", "settings.json");
-      const declaration = await readJson(path.join(sourceRoot, "hooks", `${runtime}-hooks.json`));
+    for (const runtime of selected.runtimes) {
+      const { configPath } = runtimePaths({ home, ...selected }, runtime);
+      const declaration = await hookDeclaration(sourceRoot, runtime, selected);
       const configPresent = await present(configPath);
       const original = configPresent ? await readFile(configPath, "utf8") : undefined;
       const config = configPresent ? JSON.parse(original) : {};
-      const merged = mergeHooks(config, declaration);
-      if (JSON.stringify(config) !== JSON.stringify(merged)) {
+      const merged = mergeHooks(config, declaration, {
+        runtime,
+        previousHandlers: (previousReceipt?.handlers ?? []).filter((entry) => entry.runtime === runtime),
+        adoptExisting: Boolean(previousReceipt && !Array.isArray(previousReceipt.handlers)),
+      });
+      const mergedConflicts = merged.conflicts.map((entry) => ({ ...entry, target: configPath }));
+      conflicts.push(...mergedConflicts);
+      handlerConflictReceipts.push(...mergedConflicts.filter((conflict) => !merged.handlers.some((handler) => handler.handlerId === conflict.handlerId)));
+      handlerReceipts.push(...merged.handlers.map((entry) => ({ ...entry, configPath })));
+      if (merged.changed) {
         if (configPresent) {
           const backup = path.join(backupRoot, "config", runtime === "codex" ? "hooks.json" : "settings.json");
           await mkdir(path.dirname(backup), { recursive: true });
           await copyFile(configPath, backup);
           backups.push({ kind: "config", target: configPath, backup });
         }
-        await atomicJson(configPath, merged);
+        await atomicJson(configPath, merged.config);
         addUndo(async () => {
           if (original === undefined) await rm(configPath, { force: true });
           else await atomicText(configPath, original);
@@ -264,16 +451,22 @@ async function installLocked({ sourceRoot, home, now }, stateRoot) {
       }
     }
 
+    const installedRuntimes = [...new Set([...targets.map(({ runtime }) => runtime), ...handlerReceipts.map(({ runtime }) => runtime)])];
     const receipt = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       installedAt: now.toISOString(),
       sourceRoot,
       digest,
+      host: installedRuntimes.length === 2 ? "both" : installedRuntimes[0] === "claude" ? "claude-code" : installedRuntimes[0],
+      scope: selected.scope,
+      projectRoot: selected.projectRoot,
       targets,
       claudeAgents,
+      handlers: handlerReceipts,
+      handlerConflicts: handlerConflictReceipts,
       backups: [...(previousReceipt?.backups ?? []), ...backups],
     };
-    if (changed || !previousReceipt) {
+    if (changed || !previousReceipt || previousReceipt.schemaVersion !== 3 || !Array.isArray(previousReceipt.handlers)) {
       const original = previousReceipt ? `${JSON.stringify(previousReceipt, null, 2)}\n` : undefined;
       await atomicJson(receiptPath, receipt);
       addUndo(async () => {
@@ -285,32 +478,50 @@ async function installLocked({ sourceRoot, home, now }, stateRoot) {
   });
 }
 
-/** Install both runtime copies, native Claude roles, and owned hook groups under one user lock. */
-export async function installPackage({ sourceRoot, home, now = new Date() }) {
-  const stateRoot = path.join(home, ".agent-team-hooks");
-  return withDirectoryLock(path.join(stateRoot, "install.lock"), {
+/** Install only the selected host/scope, preserving exact handler ownership under one scope lock. */
+export async function installPackage({ sourceRoot, home, host, scope, projectRoot, trustedHost, now = new Date() }) {
+  const selected = selection({ host, scope, projectRoot, trustedHost });
+  const validation = await checkInstalledPackage(sourceRoot);
+  if (validation.status !== "passed") throw new Error(`Invalid installable package: ${validation.errors.join("; ")}`);
+  const stateRoot = path.join(selected.scope === "project" ? selected.projectRoot : home, ".agent-team-hooks");
+  const result = await withDirectoryLock(path.join(stateRoot, "install.lock"), {
     pid: process.pid,
     operation: "install",
     acquiredAt: now.toISOString(),
-  }, () => installLocked({ sourceRoot, home, now }, stateRoot), { timeoutMs: 5000 });
+  }, () => installLocked({ sourceRoot, home, now, selected }, stateRoot), { timeoutMs: 5000 });
+  return {
+    ...result,
+    validation,
+    selection: {
+      host: selected.host,
+      scope: selected.scope,
+      ...(selected.projectRoot ? { projectRoot: selected.projectRoot } : {}),
+    },
+    configured: selected.runtimes.map((runtime) => ({
+      runtime,
+      configPath: runtimePaths({ home, ...selected }, runtime).configPath,
+      trust: "required",
+    })),
+  };
 }
 
-async function uninstallLocked({ home }, stateRoot) {
+async function uninstallLocked({ home, selected }, stateRoot) {
   const receiptPath = path.join(stateRoot, "install.json");
   const receipt = await readJson(receiptPath, null);
   if (!receipt) return { status: "not_installed", changed: false, conflicts: [] };
-  const conflicts = [];
+  const conflicts = (receipt.handlerConflicts ?? []).filter((entry) => selected.runtimes.includes(entry.runtime));
   const removalRoot = path.join(stateRoot, "removals", randomUUID());
 
   const result = await transaction(async (addUndo) => {
-    for (const runtime of ["codex", "claude"]) {
-      const configPath = runtime === "codex" ? path.join(home, ".codex", "hooks.json") : path.join(home, ".claude", "settings.json");
+    for (const runtime of selected.runtimes) {
+      const { configPath } = runtimePaths({ home, ...selected }, runtime);
       const configPresent = await present(configPath);
       const original = configPresent ? await readFile(configPath, "utf8") : undefined;
       const config = configPresent ? JSON.parse(original) : {};
-      const cleaned = removeOwnedHooks(config);
-      if (JSON.stringify(config) !== JSON.stringify(cleaned)) {
-        await atomicJson(configPath, cleaned);
+      const cleaned = removeOwnedHooks(config, (receipt.handlers ?? []).filter((entry) => entry.runtime === runtime && (!entry.configPath || entry.configPath === configPath)));
+      conflicts.push(...cleaned.conflicts.map((entry) => ({ ...entry, target: configPath })));
+      if (cleaned.changed && !cleaned.conflicts.length) {
+        await atomicJson(configPath, cleaned.config);
         addUndo(async () => {
           if (original === undefined) await rm(configPath, { force: true });
           else await atomicText(configPath, original);
@@ -321,13 +532,14 @@ async function uninstallLocked({ home }, stateRoot) {
     const normalizedTargets = (receipt.targets ?? []).map((entry, index) => typeof entry === "string"
       ? { runtime: index === 0 ? "codex" : "claude", path: entry, mode: "legacy", digest: receipt.digest }
       : entry);
+    const blockedRuntimes = new Set(conflicts.filter(({ kind }) => kind === "handler").map(({ runtime }) => runtime));
     let sourceIdentity;
     try {
       sourceIdentity = await realpath(receipt.sourceRoot);
     } catch {
       sourceIdentity = undefined;
     }
-    for (const target of normalizedTargets) {
+    for (const target of normalizedTargets.filter((entry) => selected.runtimes.includes(entry.runtime) && !blockedRuntimes.has(entry.runtime))) {
       if (!(await present(target.path))) continue;
       let targetIdentity;
       try {
@@ -340,7 +552,7 @@ async function uninstallLocked({ home }, stateRoot) {
       if (!files) files = (await readJson(path.join(target.path, "hooks", "manifest.json"), { files: [] })).files;
       const currentDigest = await managedPackageDigest(target.path, files ?? []);
       if (!currentDigest || currentDigest !== target.digest) {
-        conflicts.push({ kind: "skill", target: target.path, reason: "managed_target_changed" });
+        conflicts.push({ kind: "skill", runtime: target.runtime, target: target.path, reason: "managed_target_changed" });
         continue;
       }
       const removed = path.join(removalRoot, "skills", target.runtime);
@@ -355,10 +567,10 @@ async function uninstallLocked({ home }, stateRoot) {
       }
     }
 
-    for (const agent of receipt.claudeAgents ?? []) {
+    for (const agent of selected.runtimes.includes("claude") && !blockedRuntimes.has("claude") ? receipt.claudeAgents ?? [] : []) {
       if (!(await present(agent.path))) continue;
       if (await fileDigest(agent.path) !== agent.digest) {
-        conflicts.push({ kind: "claude_agent", target: agent.path, reason: "custom_definition" });
+        conflicts.push({ kind: "claude_agent", runtime: "claude", target: agent.path, reason: "custom_definition" });
         continue;
       }
       const removed = path.join(removalRoot, "claude-agents", path.basename(agent.path));
@@ -367,7 +579,7 @@ async function uninstallLocked({ home }, stateRoot) {
       addUndo(async () => { if (await present(removed)) await rename(removed, agent.path); });
     }
 
-    for (const backup of [...(receipt.backups ?? [])].reverse().filter(({ kind }) => kind === "legacy")) {
+    for (const backup of selected.runtimes.includes("codex") ? [...(receipt.backups ?? [])].reverse().filter(({ kind }) => kind === "legacy") : []) {
       if (!(await present(backup.target)) && await present(backup.backup)) {
         await mkdir(path.dirname(backup.target), { recursive: true });
         await rename(backup.backup, backup.target);
@@ -375,8 +587,37 @@ async function uninstallLocked({ home }, stateRoot) {
       }
     }
 
-    if (conflicts.length) {
-      await atomicJson(receiptPath, { ...receipt, status: "uninstall_conflicts", conflicts });
+    const unselectedRuntimes = new Set(["codex", "claude"].filter((runtime) => !selected.runtimes.includes(runtime)));
+    const handlerConflictRuntimes = new Set(conflicts.filter(({ kind }) => kind === "handler").map(({ runtime }) => runtime));
+    const targetConflictRuntimes = new Set(conflicts.filter(({ kind }) => ["handler", "skill"].includes(kind)).map(({ runtime }) => runtime));
+    const claudeConflict = conflicts.some(({ kind, runtime }) => runtime === "claude" && ["handler", "claude_agent"].includes(kind));
+    const remainingTargets = normalizedTargets.filter((entry) => unselectedRuntimes.has(entry.runtime) || targetConflictRuntimes.has(entry.runtime));
+    const remainingHandlers = (receipt.handlers ?? []).filter((entry) => unselectedRuntimes.has(entry.runtime) || handlerConflictRuntimes.has(entry.runtime));
+    const remainingHandlerConflicts = (receipt.handlerConflicts ?? []).filter((entry) => unselectedRuntimes.has(entry.runtime) || handlerConflictRuntimes.has(entry.runtime));
+    const remainingClaudeAgents = unselectedRuntimes.has("claude") || claudeConflict ? receipt.claudeAgents ?? [] : [];
+    const remainingRuntimes = [...new Set([
+      ...remainingTargets.map(({ runtime }) => runtime),
+      ...remainingHandlers.map(({ runtime }) => runtime),
+      ...(remainingClaudeAgents.length ? ["claude"] : []),
+    ])];
+    const remaining = {
+      ...receipt,
+      host: remainingRuntimes.length === 2 ? "both" : remainingRuntimes[0] === "claude" ? "claude-code" : remainingRuntimes[0],
+      targets: remainingTargets,
+      handlers: remainingHandlers,
+      handlerConflicts: remainingHandlerConflicts,
+      claudeAgents: remainingClaudeAgents,
+      backups: (receipt.backups ?? []).filter((entry) => {
+        if (entry.kind === "legacy") return remainingRuntimes.includes("codex");
+        if (entry.kind === "claude_agent") return remainingClaudeAgents.some((agent) => agent.path === entry.target);
+        if (entry.kind === "skill") return remainingTargets.some((target) => target.path === entry.target);
+        if (entry.kind === "config") return remainingHandlers.some((handler) => handler.configPath === entry.target);
+        return true;
+      }),
+    };
+    const hasRemaining = (remaining.targets?.length ?? 0) || (remaining.handlers?.length ?? 0) || (remaining.handlerConflicts?.length ?? 0) || (remaining.claudeAgents?.length ?? 0);
+    if (conflicts.length || hasRemaining) {
+      await atomicJson(receiptPath, conflicts.length ? { ...remaining, status: "uninstall_conflicts", conflicts } : remaining);
       addUndo(() => atomicJson(receiptPath, receipt));
     } else {
       await rm(receiptPath, { force: true });
@@ -389,13 +630,19 @@ async function uninstallLocked({ home }, stateRoot) {
 }
 
 /** Unregister hooks and remove only unchanged files owned by the install receipt. */
-export async function uninstallPackage({ home }) {
-  const stateRoot = path.join(home, ".agent-team-hooks");
+export async function uninstallPackage({ home, host, scope, projectRoot, trustedHost }) {
+  const selected = selection({ host, scope, projectRoot, trustedHost });
+  const stateRoot = path.join(selected.scope === "project" ? selected.projectRoot : home, ".agent-team-hooks");
   return withDirectoryLock(path.join(stateRoot, "install.lock"), {
     pid: process.pid,
     operation: "uninstall",
     acquiredAt: new Date().toISOString(),
-  }, () => uninstallLocked({ home }, stateRoot), { timeoutMs: 5000 });
+  }, () => uninstallLocked({ home, selected }, stateRoot), { timeoutMs: 5000 });
+}
+
+/** Roll back the selected installed host/scope using the same ownership receipt. */
+export async function rollbackPackage(options) {
+  return uninstallPackage(options);
 }
 
 export { mergeHooks, removeOwnedHooks };

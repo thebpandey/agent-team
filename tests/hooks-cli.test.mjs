@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -61,5 +61,37 @@ test("CLI health reports missing, invalid, and current project mapping caches", 
     await rm(`${root}-feature`, { force: true, recursive: true });
     await rm(`${root}-remote`, { force: true, recursive: true });
     await rm(home, { force: true, recursive: true });
+  }
+});
+
+test("CLI install and rollback require effective target flags and reject unknown input", async () => {
+  // Ignored flags or positional text could make the CLI configure a different target than the caller selected.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-cli-install-home-"));
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), "agent-team-cli-project-root-"));
+  try {
+    const failures = [
+      ["health", "--unknown", "value"],
+      ["install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user", "--project", projectRoot],
+      ["install", "--source", sourceRoot, "--home", home, "--host"],
+      ["install", "unexpected", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"],
+    ];
+    for (const args of failures) {
+      await assert.rejects(run(process.execPath, [cli, ...args]), (error) => {
+        const result = JSON.parse(error.stdout);
+        assert.equal(result.status, "failed");
+        assert.match(result.error, /unsupported|ineffective|missing|unexpected/i);
+        return true;
+      });
+    }
+
+    const installed = JSON.parse((await run(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"])).stdout);
+    assert.equal(installed.status, "installed");
+    await readFile(path.join(home, ".codex", "hooks.json"));
+    await assert.rejects(readFile(path.join(home, ".claude", "settings.json")), { code: "ENOENT" });
+    const rolledBack = JSON.parse((await run(process.execPath, [cli, "rollback", "--home", home, "--host", "codex", "--scope", "user"])).stdout);
+    assert.equal(rolledBack.status, "uninstalled");
+  } finally {
+    await rm(home, { force: true, recursive: true });
+    await rm(projectRoot, { force: true, recursive: true });
   }
 });
