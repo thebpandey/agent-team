@@ -2,11 +2,13 @@ import { execFile } from "node:child_process";
 import { access, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { resolveTracker } from "./tracker.mjs";
 
 const run = promisify(execFile);
 
-async function git(cwd, ...args) {
-  const { stdout } = await run("git", args, { cwd, encoding: "utf8", timeout: 1500, maxBuffer: 16 * 1024 });
+async function git(cwd, budget, ...args) {
+  const { stdout } = await run("git", args, { cwd, encoding: "utf8", timeout: budget?.timeout(1500) ?? 1500,
+    ...(budget ? { signal: budget.signal } : {}), maxBuffer: 16 * 1024 });
   return stdout.trim();
 }
 
@@ -20,15 +22,16 @@ async function readable(file) {
 }
 
 /** Resolve shared state through Git metadata, including nested paths and linked worktrees. */
-export async function resolveProject(cwd) {
+export async function resolveProject(cwd, { budget } = {}) {
   const resolvedCwd = await realpath(cwd);
   let worktreeRoot;
   let commonDirectory;
   try {
-    worktreeRoot = await realpath(await git(resolvedCwd, "rev-parse", "--show-toplevel"));
-    const value = await git(resolvedCwd, "rev-parse", "--git-common-dir");
+    worktreeRoot = await realpath(await git(resolvedCwd, budget, "rev-parse", "--show-toplevel"));
+    const value = await git(resolvedCwd, budget, "rev-parse", "--git-common-dir");
     commonDirectory = await realpath(path.isAbsolute(value) ? value : path.resolve(resolvedCwd, value));
-  } catch {
+  } catch (error) {
+    if (budget?.signal.aborted || budget?.remaining() === 0) throw error;
     return { active: false, reason: "not_git", root: resolvedCwd, cwd: resolvedCwd };
   }
 
@@ -55,6 +58,7 @@ export async function resolveProject(cwd) {
   }
 
   const active = setup.skill === "agent-team" && typeof setup.projectId === "string" && setup.projectId.length > 0;
+  const tracker = resolveTracker(root, setup.tracker);
   return {
     active,
     reason: active ? "active" : "setup_unrecognized",
@@ -64,12 +68,13 @@ export async function resolveProject(cwd) {
     cwd: resolvedCwd,
     projectId: setup.projectId,
     setup,
+    tracker,
     paths: {
       stateRoot,
       setup: setupPath,
       state: path.join(stateRoot, "state.json"),
       operationMappings: path.join(stateRoot, "operation-mappings.json"),
-      tasks: path.join(stateRoot, "TASKS.md"),
+      tasks: tracker.path,
       teams: path.join(stateRoot, "TEAMS.md"),
       checkpoints: path.join(stateRoot, "checkpoints"),
       handoffs: path.join(stateRoot, "handoffs"),

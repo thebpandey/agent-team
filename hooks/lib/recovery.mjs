@@ -1,18 +1,19 @@
 import { execFile } from "node:child_process";
-import { access, readFile, readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { identityFor, loadCanonicalState } from "./canonical-state.mjs";
+import { identityFor, loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs";
 
 const run = promisify(execFile);
 
-export async function runBoundedProbe(executable, args, { cwd, timeoutMs = 1000, maxOutputBytes = 4096 } = {}) {
+export async function runBoundedProbe(executable, args, { cwd, timeoutMs = 1000, maxOutputBytes = 4096, budget } = {}) {
   try {
-    const { stdout, stderr } = await run(executable, args, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024, encoding: "utf8" });
+    const { stdout, stderr } = await run(executable, args, { cwd, timeout: budget?.timeout(timeoutMs) ?? timeoutMs,
+      ...(budget ? { signal: budget.signal } : {}), maxBuffer: 1024 * 1024, encoding: "utf8" });
     return { status: "available", output: `${stdout}${stderr}`.slice(0, maxOutputBytes) };
   } catch (error) {
     const output = `${error.stdout ?? ""}${error.stderr ?? ""}`.slice(0, maxOutputBytes);
-    if (error.killed || error.signal || error.code === "ETIMEDOUT") return { status: "timeout", output };
+    if (error.killed || error.signal || ["ETIMEDOUT", "ABORT_ERR", "EVENT_DEADLINE"].includes(error.code)) return { status: "timeout", output };
     if (error.code === "ENOENT") return { status: "unavailable", output: "" };
     return { status: "failed", output };
   }
@@ -61,27 +62,23 @@ function operationPointers(state) {
   };
 }
 
-async function factualSnapshot(project, sessionId, probe) {
+async function factualSnapshot(project, sessionId, probe, { includeProbes, budget, canonical: suppliedCanonical }) {
+  const boundedProbe = (executable, args, options) => probe(executable, args, { ...options, budget });
   const [branchProbe, revisionProbe, dirtyProbe, githubProbe] = await Promise.all([
-    probe("git", ["branch", "--show-current"], { cwd: project.worktreeRoot, timeoutMs: 500, maxOutputBytes: 256 }),
-    probe("git", ["rev-parse", "HEAD"], { cwd: project.worktreeRoot, timeoutMs: 500, maxOutputBytes: 256 }),
-    probe("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: project.worktreeRoot, timeoutMs: 500, maxOutputBytes: 2048 }),
-    probe("gh", ["pr", "status"], { cwd: project.worktreeRoot, timeoutMs: 1000, maxOutputBytes: 512 }),
+    boundedProbe("git", ["branch", "--show-current"], { cwd: project.worktreeRoot, timeoutMs: 500, maxOutputBytes: 256 }),
+    boundedProbe("git", ["rev-parse", "HEAD"], { cwd: project.worktreeRoot, timeoutMs: 500, maxOutputBytes: 256 }),
+    boundedProbe("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: project.worktreeRoot, timeoutMs: 500, maxOutputBytes: 2048 }),
+    includeProbes ? boundedProbe("gh", ["pr", "status"], { cwd: project.worktreeRoot, timeoutMs: 1000, maxOutputBytes: 512 }) : { status: "not_requested" },
   ]);
   const dirtyLines = dirtyProbe.status === "available" ? dirtyProbe.output.split(/\r?\n/).filter(Boolean) : [];
   let canonical;
   try {
-    canonical = await loadCanonicalState(project);
+    canonical = suppliedCanonical ?? await loadCanonicalState(project, { budget });
+    if (canonical.tracker?.status === "not_read") Object.assign(canonical, await loadCanonicalTracker(project, { budget }));
   } catch {
     canonical = undefined;
   }
   const identity = canonical ? identityFor(canonical.registry, sessionId) : { role: "unknown" };
-  let trackerStatus = "current";
-  try {
-    await access(project.paths.tasks);
-  } catch {
-    trackerStatus = "unavailable";
-  }
   return {
     worktree: project.worktreeRoot,
     git: {
@@ -103,7 +100,7 @@ async function factualSnapshot(project, sessionId, probe) {
         taskIds: identity.team.tasks.split(/\s*,\s*/).filter(Boolean).slice(0, 20),
       } : { taskIds: [] }),
     } : { status: "unavailable", projectId: project.projectId, sessionId, kind: "unknown", taskIds: [] },
-    tracker: { status: trackerStatus, path: project.paths.tasks },
+    tracker: canonical?.tracker ?? { status: "unavailable", path: project.paths.tasks },
     handoffs: await handoffInventory(project.paths.handoffs),
     controls: {
       projectPaused: canonical?.state.run?.paused === true,
@@ -124,13 +121,16 @@ export async function inspectRecovery(project, {
   now = new Date(),
   staleAfterMs = 15 * 60_000,
   includeProbes = false,
+  includeGit = false,
   sessionId = "unknown",
   probe = runBoundedProbe,
+  budget,
+  canonical,
 } = {}) {
   if (!project.active) return { status: "unavailable", reason: project.reason };
   const finish = async (snapshot) => {
-    if (!includeProbes) return snapshot;
-    return { ...snapshot, ...(await factualSnapshot(project, sessionId, probe)) };
+    if (!includeProbes && !includeGit) return snapshot;
+    return { ...snapshot, ...(await factualSnapshot(project, sessionId, probe, { includeProbes, budget, canonical })) };
   };
   let names;
   try {

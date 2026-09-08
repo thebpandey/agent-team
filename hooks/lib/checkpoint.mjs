@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { withDirectoryLock } from "./lock.mjs";
@@ -48,8 +48,9 @@ async function existing(file) {
 }
 
 /** Save a small factual recovery record without storing the native hook payload. */
-export async function writeCheckpoint(project, input, { now = new Date(), timeoutMs = 1000 } = {}) {
+export async function writeCheckpoint(project, input, { now = new Date(), timeoutMs = 1000, budget } = {}) {
   if (!project.active) return { created: false, skipped: "inactive" };
+  budget?.check();
   await mkdir(project.paths.checkpoints, { recursive: true, mode: 0o700 });
   const file = path.join(project.paths.checkpoints, `${safeId(input.sessionId)}.json`);
   const lock = path.join(project.paths.locks, `checkpoint-${safeId(input.sessionId)}.lock`);
@@ -63,8 +64,14 @@ export async function writeCheckpoint(project, input, { now = new Date(), timeou
     if (input.eventId && previous?.eventId === input.eventId) return { created: false, path: file, checkpoint: previous };
     const checkpoint = checkpointData(input, previous, now);
     const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(checkpoint, null, 2)}\n`, { mode: 0o600 });
-    await rename(temporary, file);
+    try {
+      budget?.check();
+      await writeFile(temporary, `${JSON.stringify(checkpoint, null, 2)}\n`, { mode: 0o600, ...(budget ? { signal: budget.signal } : {}) });
+      budget?.check();
+      await rename(temporary, file);
+    } finally {
+      await rm(temporary, { force: true });
+    }
     return { created: true, path: file, checkpoint };
-  }, { timeoutMs });
+  }, { timeoutMs, budget });
 }

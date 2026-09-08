@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { withDirectoryLock } from "./lock.mjs";
+import { readTracker } from "./tracker.mjs";
 
 const criticalMappingKinds = new Set(["file_change", "integration", "release", "database_destructive", "completion"]);
 
@@ -31,7 +32,7 @@ function tables(source) {
       rows.push(Object.fromEntries(headers.map((header, position) => [header, values[position] ?? ""])));
       index += 1;
     }
-    output.push(rows);
+    output.push({ headers, rows });
   }
   return output;
 }
@@ -41,10 +42,10 @@ function cells(line) {
 }
 
 /** Read identities and task status from their canonical records; state.json only carries gate evidence. */
-export async function loadCanonicalState(project) {
-  const [teamsText, tasksText, stateText] = await Promise.all([
+export async function loadCanonicalState(project, options = {}) {
+  const [teamsText, taskResult, stateText] = await Promise.all([
     text(project.paths.teams),
-    text(project.paths.tasks),
+    options.includeTasks === false ? null : loadCanonicalTracker(project, options),
     text(project.paths.state),
   ]);
   let state = {};
@@ -55,10 +56,24 @@ export async function loadCanonicalState(project) {
       projectId: label(teamsText, "Project"),
       projectOwner: label(teamsText, "Project owner"),
       integrationOwner: label(teamsText, "Integration owner"),
-      teams: tables(teamsText).flat().filter((row) => row["team id"]),
+      teams: tables(teamsText).flatMap(({ rows }) => rows).filter((row) => row["team id"]),
     },
-    tasks: tables(tasksText).flat().filter((row) => row.id),
+    tasks: taskResult?.tasks ?? [],
+    tracker: taskResult?.tracker ?? { ...project.tracker, status: "not_read", fingerprint: null },
   };
+}
+
+export async function loadCanonicalTracker(project, options = {}) {
+  const result = await readTracker(project, options);
+  const taskTables = tables(result.source).filter(({ headers }) => headers.includes("id"));
+  const tasks = result.tasks ?? taskTables.flatMap(({ rows }) => rows);
+  if (result.tracker.kind === "markdown" && result.tracker.status === "current") {
+    if (!taskTables.length || taskTables.some(({ headers }) => !headers.includes("owner") || !headers.includes("status") || new Set(headers).size !== headers.length)
+      || tasks.some((row) => !row.id || !row.owner || !row.status) || new Set(tasks.map(({ id }) => id)).size !== tasks.length) {
+      return { tracker: { ...result.tracker, status: "unavailable", reason: "invalid_response", fingerprint: null }, tasks: [] };
+    }
+  }
+  return { tracker: result.tracker, tasks };
 }
 
 function mapping(value, label) {
@@ -122,11 +137,14 @@ function sameMappings(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-async function atomicWrite(file, source) {
+async function atomicWrite(file, source, budget) {
+  budget?.check();
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, source, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    budget?.check();
+    await writeFile(temporary, source, { encoding: "utf8", mode: 0o600, flag: "wx", ...(budget ? { signal: budget.signal } : {}) });
+    budget?.check();
     await rename(temporary, file);
   } finally {
     await rm(temporary, { force: true });
@@ -134,13 +152,13 @@ async function atomicWrite(file, source) {
 }
 
 /** Rebuild the non-authoritative mapping cache only from validated canonical state. */
-export async function syncOperationMappingInventory(project) {
+export async function syncOperationMappingInventory(project, { canonical: suppliedCanonical, budget } = {}) {
   if (!project.active) throw new Error("An active Agent-Team project is required.");
   return withDirectoryLock(path.join(project.paths.locks, "operation-mappings.lock"), {
     kind: "operation_mapping_cache",
     projectId: project.projectId,
   }, async () => {
-    const canonical = await loadCanonicalState(project);
+    const canonical = suppliedCanonical ?? await loadCanonicalState(project, { includeTasks: false });
     const operationMappings = canonicalOperationMappings(canonical.state);
     const receipt = {
       schemaVersion: 1,
@@ -158,9 +176,10 @@ export async function syncOperationMappingInventory(project) {
       if (error.code !== "ENOENT") throw error;
     }
     if (previous === source) return { status: "completed", changed: false };
-    await atomicWrite(project.paths.operationMappings, source);
+    budget?.check();
+    await atomicWrite(project.paths.operationMappings, source, budget);
     return { status: "completed", changed: true };
-  });
+  }, { budget });
 }
 
 const operationMappingThreatModel = {
