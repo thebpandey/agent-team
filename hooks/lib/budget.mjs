@@ -10,6 +10,7 @@ export function createEventBudget(timeoutMs = 5000) {
   }
   return {
     signal: controller.signal,
+    check,
     remaining,
     timeout(cap) { check(); return Math.min(cap, remaining()); },
     async run(action) {

@@ -56,6 +56,15 @@ function invokeCli(command, options) {
 }
 
 for (const runtime of ["codex", "claude"]) {
+  test(`${runtime} mapped-provider tracker completion requires the project owner (synthetic host payload)`, async () => {
+    const value = await fixture();
+    const result = invoke(runtime, "PreToolUse", { cwd: value.feature, session_id: "developer-session",
+      tool_name: "mcp__filesystem__write", tool_input: { path: path.join(value.root, ".agent-team/TASKS.md"), content: "| AT-001 | TEAM-001 | verified |" },
+    }, value.home);
+    assert.equal(result.status, 0);
+    assert.equal(output(result).hookSpecificOutput.permissionDecision, "deny");
+    assert.match(output(result).hookSpecificOutput.permissionDecisionReason, /project owner|shared path/i);
+  });
   test(`${runtime} subprocess stdout exposes actionable lint failure while permitting repair (synthetic host payload)`, async () => {
     const value = await fixture();
     const bin = path.join(value.feature, "node_modules/.bin/eslint");

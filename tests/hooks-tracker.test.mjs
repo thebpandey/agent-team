@@ -153,3 +153,39 @@ test("selected Beads close and closed-status commands use the completion gate", 
     assert.match(result.messages.join(" "), /completion|check evidence/i);
   }
 });
+
+test("mapped provider final tracker writes preserve shared project-owner enforcement", async () => {
+  const value = await fixture({ kind: "markdown", path: ".agent-team/TASKS.md" });
+  const project = await resolveProject(value.feature);
+  const result = await evaluatePolicy(hookEvent(value, { operation: { kind: "provider", tool: "mcp__filesystem__write", input: {
+    path: project.paths.tasks, content: "| AT-001 | TEAM-001 | verified |",
+  } } }), project);
+  assert.equal(result.allow, false);
+  assert.match(result.messages.join(" "), /project owner|shared path/i);
+});
+
+test("Markdown transitions compare terminal status per task ID and reject multiple new completions", async () => {
+  const value = await fixture({ kind: "markdown", path: ".agent-team/TASKS.md" });
+  const project = await resolveProject(value.root);
+  for (const [previousContent, changedContent] of [
+    ["| AT-001 | TEAM-001 | verified |\n| AT-002 | TEAM-001 | in_progress |", "| AT-001 | TEAM-001 | verified |\n| AT-002 | TEAM-001 | verified |"],
+    ["", "| AT-001 | TEAM-001 | verified |\n| AT-002 | TEAM-001 | verified |"],
+  ]) {
+    const result = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation: { kind: "file_change", files: [{ path: project.paths.tasks, previousContent, changedContent }] } }), project);
+    assert.equal(result.allow, false);
+    assert.match(result.messages.join(" "), /completion|task owner/i);
+  }
+});
+
+test("invalid separators and blank task IDs cannot create empty current tracker evidence", async () => {
+  const value = await fixture({ kind: "markdown", path: ".agent-team/TASKS.md" });
+  const project = await resolveProject(value.root);
+  for (const source of [
+    "| ID | Owner | Status |\n| nonsense | nonsense | nonsense |\n| AT-001 | TEAM-001 | in_progress |\n",
+    "| ID | Owner | Status |\n| --- | --- | --- |\n| | TEAM-001 | in_progress |\n",
+    "| ID | Owner | Status |\n",
+  ]) {
+    await writeFile(project.paths.tasks, source);
+    assert.equal((await loadCanonicalState(project)).tracker.status, "unavailable");
+  }
+});

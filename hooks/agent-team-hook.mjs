@@ -11,6 +11,7 @@ import { adaptOutput, adaptTransport } from "./lib/output.mjs";
 import { evaluatePolicy, unavailableDecision } from "./lib/policy.mjs";
 import { activationRecordFor, appendActivationLog } from "./lib/telemetry.mjs";
 import { createEventBudget } from "./lib/budget.mjs";
+import { lintMessages } from "./lib/lint.mjs";
 
 function argument(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -81,13 +82,23 @@ async function runEvent(event, budget, runBeads) {
       canonical = await budget.run(() => loadCanonicalState(project, { includeTasks: false, budget }));
     } catch { /* Policy retains its validated mapping fallback on failed shared reads. */ }
   }
-  const decision = await evaluatePolicy(event, project, { canonical, budget, runBeads });
+  const progress = {};
+  let decision;
+  try {
+    decision = await budget.run(() => evaluatePolicy(event, project, { canonical, budget, runBeads, progress }));
+  } catch {
+    decision = unavailableDecision({ ...event, operation: progress.operation ?? event.operation });
+    if (progress.lint) {
+      decision.capabilities.lint = structuredClone(progress.lint);
+      decision.messages.push(...lintMessages(decision.capabilities.lint, project.worktreeRoot));
+    }
+  }
   decision.context.active = project.active;
   decision.context.projectId = project.projectId;
 
   if (project.active && decision.allow && shouldRefreshOperationMappings(event, project)) {
     try {
-      const result = await budget.run(() => syncOperationMappingInventory(project, { canonical }));
+      const result = await budget.run(() => syncOperationMappingInventory(project, { canonical, budget }));
       decision.mutations.push({ kind: "operation_mapping_cache", changed: result.changed });
       decision.messages.push(`Agent-Team mapping cache is ${result.changed ? "updated" : "current"}.`);
     } catch {
@@ -107,7 +118,7 @@ async function runEvent(event, budget, runBeads) {
   const activation = activationRecordFor(event, project, identity);
   if (activation) {
     try {
-      const result = await budget.run(() => appendActivationLog(path.join(os.homedir(), ".agent-team-hooks", "logs"), activation));
+      const result = await budget.run(() => appendActivationLog(path.join(os.homedir(), ".agent-team-hooks", "logs"), activation, { budget }));
       decision.mutations.push({ kind: "activation_log", recorded: result.recorded });
     } catch {
       decision.messages.push("Agent-Team activation logging is unavailable for this event.");
@@ -130,7 +141,7 @@ async function runEvent(event, budget, runBeads) {
   if (project.active && checkpointEvent) {
     try {
       const facts = await budget.run(() => checkpointFacts(event, project, { canonical, budget }));
-      const result = await budget.run(() => writeCheckpoint(project, facts));
+      const result = await budget.run(() => writeCheckpoint(project, facts, { budget }));
       decision.mutations.push({ kind: "checkpoint", created: result.created });
     } catch {
       decision.messages.push("Agent-Team checkpoint is unavailable for this event.");

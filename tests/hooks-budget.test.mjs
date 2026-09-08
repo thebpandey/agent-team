@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { runNormalizedHook } from "../hooks/agent-team-hook.mjs";
 import { resolveProject } from "../hooks/lib/project.mjs";
 import { evaluatePolicy } from "../hooks/lib/policy.mjs";
+import { loadCanonicalState } from "../hooks/lib/canonical-state.mjs";
+import { withDirectoryLock } from "../hooks/lib/lock.mjs";
+import { createEventBudget } from "../hooks/lib/budget.mjs";
+import { appendActivationLog, readActivationLogs } from "../hooks/lib/telemetry.mjs";
 import { hookEvent, policyFixture } from "./hook-test-helpers.mjs";
 
 const temporary = [];
@@ -79,4 +83,67 @@ test("unchanged advisory output is deduplicated per session and refreshed after 
   assert.ok(changed.decision.messages.length > 0);
   event.sessionId = "other-session";
   assert.ok((await runNormalizedHook(event)).decision.messages.length > 0);
+});
+
+test("deadline during ownership phase cannot allow classified consequential commands", async () => {
+  const value = await fixture();
+  const project = await resolveProject(value.feature);
+  const canonical = await loadCanonicalState(project);
+  for (const operation of [
+    { kind: "completion", taskId: "AT-001" },
+    { kind: "shell", command: "git push origin feature" },
+    { kind: "shell", command: "npm publish" },
+    { kind: "provider", tool: "mcp__database__execute", input: { query: "DROP TABLE records" } },
+  ]) {
+    let phases = 0;
+    const budget = { run: async (action) => {
+      if (++phases === 2) throw Object.assign(new Error("deadline"), { code: "EVENT_DEADLINE" });
+      return action();
+    } };
+    const result = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation }), project, { canonical, budget });
+    assert.equal(result.allow, false, JSON.stringify(operation));
+    assert.match(result.messages.join(" "), /unavailable/i);
+  }
+});
+
+test("deadline while waiting for a lock never runs its mutation after the lock is released", async () => {
+  const value = await fixture();
+  const project = await resolveProject(value.feature);
+  const lock = path.join(project.paths.locks, "held.lock");
+  await mkdir(lock, { recursive: true });
+  const budget = createEventBudget(20);
+  let mutated = false;
+  try {
+    await assert.rejects(withDirectoryLock(lock, { operationId: "waiter" }, async () => { mutated = true; }, { budget, timeoutMs: 500 }), /deadline|abort/i);
+  } finally { budget.close(); }
+  await rm(lock, { recursive: true });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(mutated, false);
+  assert.deepEqual(await readdir(project.paths.locks), []);
+});
+
+test("outer event deadline bounds an unresponsive tracker read after canonical discovery", async () => {
+  const value = await fixture();
+  await writeFile(path.join(value.root, ".agent-team/setup.json"), JSON.stringify({ skill: "agent-team", projectId: "project-1", tracker: { kind: "beads" } }));
+  const start = performance.now();
+  const result = await runNormalizedHook(hookEvent(value, { operation: { kind: "completion", taskId: "AT-001" } }), {
+    timeoutMs: 40,
+    runBeads: async () => { await new Promise((resolve) => setTimeout(resolve, 200)); return { stdout: "[]" }; },
+  });
+  assert.ok(performance.now() - start < 150);
+  assert.equal(result.decision.allow, false);
+});
+
+test("activation logging cannot append after its lock waiter exceeds the shared deadline", async () => {
+  const value = await fixture();
+  const directory = path.join(value.root, "activation-test");
+  const lock = path.join(directory, ".activation.lock");
+  await mkdir(lock, { recursive: true });
+  const budget = createEventBudget(20);
+  try {
+    await assert.rejects(appendActivationLog(directory, { runtime: "claude", sessionId: "session", correlationId: "event" }, { budget }), /deadline|abort/i);
+  } finally { budget.close(); }
+  await rm(lock, { recursive: true });
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual((await readActivationLogs(directory)).records, []);
 });

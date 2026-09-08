@@ -269,20 +269,21 @@ async function deduplicateAdvice(event, project, messages, advisories, budget) {
   const key = createHash("sha256").update(`${event.runtime}:${event.sessionId}:${project.worktreeRoot}`).digest("hex");
   const file = path.join(project.paths.stateRoot, "cache", "advisories", `${key}.json`);
   const fingerprint = createHash("sha256").update(JSON.stringify({ messages, files: event.operation.files, advisories })).digest("hex");
+  const bounded = (action) => budget ? budget.run(action) : action();
   try {
-    const previous = JSON.parse(await readFile(file, "utf8"));
+    const previous = JSON.parse(await bounded(() => readFile(file, { encoding: "utf8", ...(budget ? { signal: budget.signal } : {}) })));
     if (previous.fingerprint === fingerprint) return [];
   } catch { /* Missing or invalid cache means show advice again. */ }
   if (budget?.remaining() === 0) return messages;
   try {
-    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-    await writeFile(file, JSON.stringify({ fingerprint }), { mode: 0o600 });
+    await bounded(() => mkdir(path.dirname(file), { recursive: true, mode: 0o700 }));
+    await bounded(() => writeFile(file, JSON.stringify({ fingerprint }), { mode: 0o600, ...(budget ? { signal: budget.signal } : {}) }));
   } catch { /* Advisory cache failure cannot affect policy. */ }
   return messages;
 }
 
 /** Apply deterministic gates first, then return bounded advice for changed content. */
-export async function evaluatePolicy(event, project, { now = new Date(), canonical: suppliedCanonical, budget, runBeads } = {}) {
+export async function evaluatePolicy(event, project, { now = new Date(), canonical: suppliedCanonical, budget, runBeads, progress = {} } = {}) {
   if (!project.active) return decision({ capabilities: { activation: "inactive" } });
   const bounded = (action) => budget ? budget.run(action) : action();
   let inventory = {};
@@ -298,6 +299,7 @@ export async function evaluatePolicy(event, project, { now = new Date(), canonic
   try {
     canonical = suppliedCanonical ?? await bounded(() => loadCanonicalState(project, { includeTasks: false, budget }));
     operation = classifyOperation(event, validateOperationMappings(canonical.state.operationMappings ?? inventory), { tracker: project.tracker });
+    progress.operation = operation;
   } catch {
     return unavailableDecision(event, inventory, { inventoryStatus });
   }
@@ -309,16 +311,13 @@ export async function evaluatePolicy(event, project, { now = new Date(), canonic
     const recordedFingerprint = canonical.state[operation.kind]?.trackerFingerprint;
     if (recordedFingerprint && recordedFingerprint !== canonical.tracker.fingerprint) return deny("The selected tracker changed; recorded gate evidence is stale.");
   }
-  const policyEvent = operation.kind === "file_change" ? { ...event, operation } : event;
+  const policyEvent = operation.files ? { ...event, operation: { ...operation, kind: "file_change" } } : event;
   if (operation.kind === "file_change" && operation.parserFailed) return deny("The recognized file operation could not be resolved to a path.");
   let ownershipDecision;
   try {
     ownershipDecision = await bounded(() => ownership(policyEvent, project, canonical, identity));
   } catch {
-    if (event.event === "PreToolUse" && policyEvent.operation.kind === "file_change") {
-      return deny("Canonical ownership evidence is unavailable for this file operation.");
-    }
-    return decision({ messages: ["Agent-Team ownership advice is unavailable for this event."], capabilities: { ownership: "unavailable" } });
+    return unavailableDecision({ ...event, operation }, inventory, { inventoryStatus });
   }
   if (ownershipDecision) return ownershipDecision;
   if (operation.kind === "integration") return (await integrationGate(event, project, canonical, operation, now, budget)) ?? decision();
@@ -335,7 +334,7 @@ export async function evaluatePolicy(event, project, { now = new Date(), canonic
     const messages = findings.map(({ message, path: file }) => `${file}: ${message}`);
     const capabilities = {};
     if (["PostToolUse", "PostToolBatch"].includes(event.event)) {
-      const lint = await runLintChecks(project.worktreeRoot, policyEvent.operation.files.map(({ path: file }) => file), { budget });
+      const lint = await runLintChecks(project.worktreeRoot, policyEvent.operation.files.map(({ path: file }) => file), { budget, progress });
       capabilities.lint = lint;
       messages.push(...lintMessages(lint, project.worktreeRoot));
     }

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { runLintChecks } from "../hooks/lib/lint.mjs";
+import { createEventBudget } from "../hooks/lib/budget.mjs";
 
 const temporary = [];
 test.afterEach(async () => Promise.all(temporary.splice(0).map((item) => rm(item, { force: true, recursive: true }))));
@@ -93,4 +94,37 @@ test("successful batches plus missing lint remain incomplete", async () => {
   const result = await runLintChecks(directory, ["passed/ok.js", "missing/no.js"]);
   assert.equal(result.status, "incomplete");
   assert.deepEqual(result.batches.map(({ status }) => status), ["passed", "skipped"]);
+});
+
+test("slow config discovery respects the event budget without starting a linter", async () => {
+  const directory = await root();
+  const budget = createEventBudget(30);
+  const started = performance.now();
+  try {
+    const result = await runLintChecks(directory, ["index.js"], { budget, filesystem: {
+      access: async () => { await new Promise((resolve) => setTimeout(resolve, 180)); },
+    } });
+    assert.equal(result.status, "timeout");
+    assert.ok(performance.now() - started < 130);
+    assert.equal(result.batches[0].reason, "event_deadline");
+  } finally { budget.close(); }
+});
+
+test("delayed log-directory creation cannot start a log write after event deadline", async () => {
+  const directory = await root();
+  await executable(directory, "process.stdout.write('index.js:1:1 broken'); process.exitCode=1;");
+  const budget = createEventBudget(100);
+  let wroteAfterDelay = false;
+  const started = performance.now();
+  try {
+    const result = await runLintChecks(directory, ["index.js"], { budget, filesystem: {
+      mkdir: async () => { await new Promise((resolve) => setTimeout(resolve, 200)); },
+      writeFile: async () => { wroteAfterDelay = true; },
+    } });
+    assert.ok(performance.now() - started < 180);
+    assert.equal(result.status, "failed");
+    assert.equal(result.batches[0].logStatus, "unavailable");
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    assert.equal(wroteAfterDelay, false);
+  } finally { budget.close(); }
 });

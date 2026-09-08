@@ -71,14 +71,20 @@ function destructiveSql(sql) {
 
 /** Recognize only explicit critical operation forms; unmatched paths remain documented blind spots. */
 export function classifyOperation(event, mappings = {}, { tracker } = {}) {
-  if (event.operation.kind === "completion") return { kind: "completion", taskId: event.operation.taskId, outcome: event.operation.outcome };
+  if (event.operation.kind === "completion") return { ...event.operation };
   if (event.operation.kind === "file_change") {
-    const transition = event.operation.files.find((file) => (tracker
+    const trackerFiles = event.operation.files.filter((file) => (tracker
       ? tracker.kind === "markdown" && path.resolve(event.cwd, file.path) === tracker.path
-      : path.basename(file.path) === "TASKS.md")
-      && /\|\s*(verified|deployed)\s*\|/i.test(file.changedContent ?? "")
-      && !/\|\s*(verified|deployed)\s*\|/i.test(file.previousContent ?? ""));
-    if (transition) return { kind: "completion", taskId: transition.changedContent.match(/^\s*\|\s*([^|]+)\|/)?.[1].trim() };
+      : path.basename(file.path) === "TASKS.md"));
+    const terminalIds = (source) => new Set(String(source ?? "").split(/\r?\n/)
+      .filter((line) => /\|\s*(verified|deployed)\s*\|/i.test(line))
+      .map((line) => line.match(/^\s*\|\s*([^|]*)\|/)?.[1].trim() ?? ""));
+    const taskIds = [...new Set(trackerFiles.flatMap((file) => {
+      const previous = terminalIds(file.previousContent);
+      return [...terminalIds(file.changedContent)].filter((id) => !previous.has(id));
+    }))];
+    if (taskIds.length) return { kind: "completion", taskId: taskIds[0], taskIds, files: event.operation.files,
+      parserFailed: taskIds.length !== 1 || !taskIds[0] };
     return event.operation;
   }
   if (event.operation.kind === "provider") {
