@@ -1,3 +1,6 @@
 # Local setup receipt, never shared authorization or a task ledger.
 .agent-team/setup.json
 __pycache__/
+.worktrees/
+.superpowers/
+harness-artifacts/
