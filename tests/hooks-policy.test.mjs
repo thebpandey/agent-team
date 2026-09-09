@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -48,6 +48,20 @@ test("canonical ownership allows assigned files and blocks unowned, shared, main
     assert.equal(result.allow, false);
     assert.equal(result.mode, "enforce");
   }
+});
+
+test("relative registered worktrees resolve from the canonical project without relaxing ownership", async () => {
+  const value = await fixture();
+  const teams = await readFile(value.project.paths.teams, "utf8");
+  const relative = path.relative(value.root, value.feature);
+  await writeFile(value.project.paths.teams, teams.replace(value.feature, relative));
+  const operation = { kind: "file_change", files: [{ action: "edit", path: "src/owned.js", changedContent: "export {};" }] };
+  assert.equal((await evaluatePolicy(hookEvent(value, { operation }), value.project)).allow, true);
+  const main = await resolveProject(value.root);
+  assert.equal((await evaluatePolicy(hookEvent(value, { cwd: value.root, operation }), main)).allow, false);
+  assert.equal((await evaluatePolicy(hookEvent(value, { operation: { kind: "file_change", files: [{ action: "edit", path: "README.md" }] } }), value.project)).allow, false);
+  await writeFile(value.project.paths.teams, teams.replace(value.feature, ""));
+  assert.equal((await evaluatePolicy(hookEvent(value, { operation }), value.project)).allow, false);
 });
 
 test("one unowned file blocks a multi-file change", async () => {

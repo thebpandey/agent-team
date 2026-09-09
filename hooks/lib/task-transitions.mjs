@@ -190,10 +190,14 @@ export async function transitionTask(project, request, options = {}) {
       const checkpoint = JSON.parse(await bounded(() => readFile(resolved, "utf8")));
       const team = canonical.registry.teams.find((entry) => entry["team id"] === task.owner);
       const expectedSession = team?.session ?? canonical.registry.projectOwner;
-      const expectedWorktree = team?.worktree ?? project.root;
-      if (checkpoint.sessionId !== expectedSession || checkpoint.worktree !== expectedWorktree) return conflict("checkpoint_identity_mismatch");
+      const registeredWorktree = team ? team.worktree : project.root;
+      if (typeof registeredWorktree !== "string" || !registeredWorktree.trim()
+        || typeof checkpoint.worktree !== "string" || !checkpoint.worktree.trim()) return conflict("checkpoint_identity_mismatch");
+      const expectedWorktree = path.resolve(project.root, registeredWorktree);
+      const checkpointWorktree = path.resolve(project.root, checkpoint.worktree);
+      if (checkpoint.sessionId !== expectedSession || checkpointWorktree !== expectedWorktree) return conflict("checkpoint_identity_mismatch");
       if (!checkpoint.taskIds?.includes(task.id) || !checkpoint.nextAction || !checkpoint.revision) return conflict("checkpoint_required");
-      return checkpoint;
+      return { ...checkpoint, worktree: checkpointWorktree };
     };
     let changes;
     if (request.action === "claim") {

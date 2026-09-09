@@ -176,6 +176,48 @@ test("real CLI records an observed claim writer and rejects malformed writer inp
   assert.equal(current.tasks[0].owner, "TEAM-001");
 });
 
+test("real CLI checkpoint and explicit resume accept a relative registered worktree but reject another checkout", async () => {
+  const value = await fixture();
+  const teams = await readFile(value.project.paths.teams, "utf8");
+  await writeFile(value.project.paths.teams, teams.replace(value.feature, path.relative(value.root, value.feature)));
+  const child = spawn(process.execPath, [path.join(import.meta.dirname, "hooks-transitions.test.mjs"), "writer"], { stdio: ["ignore", "pipe", "ignore"] });
+  await new Promise((resolve) => child.stdout.once("data", resolve));
+  try {
+    const previousWriter = await captureWriterIdentity(child.pid);
+    const canonical = await loadCanonicalState(value.project);
+    await writeFile(value.project.paths.state, JSON.stringify({ ...canonical.state, taskRuntime: { "AT-001": { writer: previousWriter, compute: "active" } } }));
+    const pause = await requestFile(value, "relative-pause", envelope("owner-session", 0, {
+      operationId: "relative-pause", taskId: "AT-001", action: "pause", expectedOwner: "TEAM-001", expectedFingerprint: canonical.tracker.fingerprint,
+    }));
+    assert.equal((await invoke("task-transition", "--project", value.feature, "--request", pause)).status, "applied");
+    const stopped = new Promise((resolve) => child.once("exit", resolve));
+    child.kill("SIGTERM");
+    await stopped;
+    const current = await loadCanonicalState(value.project);
+    const writer = await captureWriterIdentity();
+    for (const [index, worktree] of [value.root, path.relative(value.root, value.feature)].entries()) {
+      const checkpointRequest = await requestFile(value, `relative-checkpoint-${index}`, envelope("developer-session", index, {
+        eventId: `relative-checkpoint-${index}`, sessionId: "developer-session", taskIds: ["AT-001"], worktree,
+        revision: value.revision, evidenceRevision: value.revision, nextAction: "Resume the assigned implementation.",
+      }));
+      const checkpoint = await invoke("checkpoint", "--project", value.feature, "--request", checkpointRequest);
+      assert.equal(checkpoint.status, "applied");
+      const resumeRequest = await requestFile(value, `relative-resume-${index}`, envelope("owner-session", current.state.stateVersion, {
+        operationId: `relative-resume-${index}`, taskId: "AT-001", action: "resume", explicitResume: true,
+        expectedOwner: "TEAM-001", expectedFingerprint: current.tracker.fingerprint, writer, checkpointPath: checkpoint.path,
+      }));
+      const resumed = await invoke("task-transition", "--project", value.feature, "--request", resumeRequest);
+      if (index === 0) assert.equal(resumed.reason, "checkpoint_identity_mismatch");
+      else assert.equal(resumed.status, "applied", JSON.stringify(resumed));
+    }
+    const after = await loadCanonicalState(value.project);
+    assert.equal(after.tasks[0].status, "in_progress");
+    assert.deepEqual(after.state.taskRuntime["AT-001"].writer, writer);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+  }
+});
+
 test("request JSON must be a bounded regular file with valid schema, actor, version, and command fields", async () => {
   const value = await fixture();
   const missingActor = await requestFile(value, "missing-actor", { schemaVersion: 1, expectedVersion: 0, request: {} });

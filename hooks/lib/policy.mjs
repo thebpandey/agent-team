@@ -73,7 +73,8 @@ async function ownership(event, project, canonical, identity) {
   if (event.event !== "PreToolUse" || event.operation.kind !== "file_change") return undefined;
   if (identity.role === "unknown") return deny("Registered Agent-Team ownership is missing for this session.");
   if (identity.role === "project_owner") return undefined;
-  const registeredWorktree = await realpath(identity.team.worktree);
+  if (typeof identity.team.worktree !== "string" || !identity.team.worktree.trim()) return deny("The registered team worktree is missing.");
+  const registeredWorktree = await realpath(path.resolve(project.root, identity.team.worktree));
   if (project.worktreeRoot !== registeredWorktree) return deny("The registered team does not own this worktree.");
   const patterns = identity.team["owned paths"].split(/\s*,\s*/).filter(Boolean);
 
