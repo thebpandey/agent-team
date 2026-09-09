@@ -226,7 +226,7 @@ if (process.argv[2] === "initialize-worker") {
   });
 
   test("duplicate initialization rejects incomplete or inconsistent setup receipts", async (t) => {
-    for (const field of ["status", "planIds", "version", "initialRunIds"]) await t.test(field, async () => {
+    for (const field of ["status", "planIds", "version", "initialRunIds", "emptyStandalone"]) await t.test(field, async () => {
       const value = await fixture();
       value.request.plan.tasks.push({ id: "AT-002", title: "Remaining work", status: "ready" });
       await initialize(value.root, value.request);
@@ -240,6 +240,13 @@ if (process.argv[2] === "initialize-worker") {
         state.run.taskIds = ["AT-001"];
         await writeFile(project.paths.state, JSON.stringify(state));
       }
+      if (field === "emptyStandalone") {
+        setup.plan.taskIds = [];
+        const state = JSON.parse(await readFile(project.paths.state, "utf8"));
+        state.run.taskIds = [];
+        await writeFile(project.paths.state, JSON.stringify(state));
+        await writeFile(project.paths.tasks, (await readFile(project.paths.tasks, "utf8")).split("\n").filter((line) => !/^\| AT-00/.test(line)).join("\n"));
+      }
       await writeFile(project.paths.setup, JSON.stringify(setup));
       const before = await readFile(project.paths.setup, "utf8");
       const result = await initialize(value.root, value.request);
@@ -247,6 +254,19 @@ if (process.argv[2] === "initialize-worker") {
       assert.notEqual(result.status, "duplicate");
       assert.equal(await readFile(project.paths.setup, "utf8"), before);
     });
+  });
+
+  test("outage-tolerant receipt validation still rejects invalid or mismatched tracker selectors", async () => {
+    const value = await fixture();
+    await initialize(value.root, value.request);
+    const project = await resolveProject(value.root);
+    const canonical = await loadCanonicalState(project);
+    const { initializationRecordProblem } = await import(modulePath);
+    for (const tracker of [{ kind: "markdown", path: "elsewhere.md" }, { kind: "beads", executable: "relative/bd" }, { kind: "markdown", path: "TASKS.md" }]) {
+      assert.equal(initializationRecordProblem({ ...project.setup, tracker }, canonical, { projectRoot: project.root }), "invalid_tracker_selection");
+    }
+    assert.equal(initializationRecordProblem(project.setup, { ...canonical, tracker: undefined }, { projectRoot: project.root }), "invalid_tracker_selection");
+    assert.equal(initializationRecordProblem(project.setup, { ...canonical, tracker: { ...canonical.tracker, status: "unavailable" } }, { projectRoot: project.root }), undefined);
   });
 
   test("duplicate initialization preserves a later finite run scope without losing the full approved plan", async () => {

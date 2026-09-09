@@ -61,7 +61,7 @@ function validateRequest(request) {
 }
 
 /** Structural readiness only; neither a receipt nor a caller identity proves native host trust. */
-export function initializationRecordProblem(setup, canonical, { validateTracker = false } = {}) {
+export function initializationRecordProblem(setup, canonical, { projectRoot, validateTracker = false } = {}) {
   const receipt = setup?.initialization;
   const ids = setup?.plan?.taskIds;
   const owner = canonical?.registry?.projectOwner;
@@ -69,8 +69,12 @@ export function initializationRecordProblem(setup, canonical, { validateTracker 
     || receipt?.status !== "complete" || !validId(receipt.operationId) || !/^[a-f0-9]{64}$/.test(receipt.signature ?? "")
     || !["standalone", "existing"].includes(receipt.source) || !Array.isArray(ids) || new Set(ids).size !== ids.length
     || validateRequest({ projectId: setup.projectId, ownerSessionId: owner, operationId: receipt.operationId,
-      source: "existing", tracker: setup.tracker, plan: { ...setup.plan, tasks: ids?.map((id) => ({ id })) } })) return "invalid_initialization_receipt";
+      source: receipt.source, tracker: setup.tracker, plan: { ...setup.plan, tasks: ids?.map((id) => ({ id })) } })) return "invalid_initialization_receipt";
   if (canonical.registry.projectId !== setup.projectId) return "existing_owner_conflict";
+  if (typeof projectRoot !== "string" || !path.isAbsolute(projectRoot)) return "invalid_tracker_selection";
+  const selected = resolveTracker(projectRoot, setup.tracker);
+  if (selected.reason || !canonical.tracker || canonical.tracker.reason === "invalid_selection"
+    || Object.entries(selected).some(([key, value]) => canonical.tracker[key] !== value)) return "invalid_tracker_selection";
   if (!completeState(canonical.state, { taskIds: ids, integrationOwner: canonical.registry.integrationOwner, branch: setup.plan.branch })) return "required_state_facts_missing";
   if (validateTracker) {
     if (canonical.tracker?.status !== "current") return "tracker_unavailable";
@@ -179,7 +183,7 @@ export async function initializeProject(projectPath, request, options = {}) {
           for (const file of [paths.setup, paths.teams, paths.state]) if (await read(file) === undefined) return decision("unavailable", "required_records_missing");
           const committed = JSON.parse(await read(paths.setup));
           const canonical = await loadCanonicalState({ ...project, setup: committed }, { ...options, budget });
-          const problem = initializationRecordProblem(committed, canonical, { validateTracker: true });
+          const problem = initializationRecordProblem(committed, canonical, { projectRoot: root, validateTracker: true });
           if (problem) return decision("unavailable", problem);
           if (canonical.tracker.status !== "current") return decision("unavailable", "tracker_unavailable", { tracker: canonical.tracker });
           const observedIdentity = registryIdentity(await read(paths.teams));
