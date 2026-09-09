@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { access, chmod, cp, lstat, mkdir, open, opendir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, cp, link, lstat, mkdir, mkdtemp, open, opendir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { CATALOG_BY_ID, DEPENDENCY_CATALOG } from "./dependency-catalog.mjs";
@@ -207,14 +207,14 @@ async function prepareOne(dependency, runner, budget) {
       };
     }
   }
-  if (dependency.id === "playwright-cli") {
+  if (["playwright-cli", "lean-ctx"].includes(dependency.id)) {
     const companion = await run({ dependency, phase: "companion" });
     if (companion.status !== "passed") {
       return {
         id: dependency.id, version: dependency.version, detected, installed,
         functional: "not_run", availableToWorker: "not_run",
         status: companion.status === "customized" ? "cannot_use" : "failed", observedAt,
-        boundary: dependencyBoundary(dependency, companion, "The selected-scope Playwright companion and browser prerequisites were not prepared."),
+        boundary: dependencyBoundary(dependency, companion, "The selected-scope companion prerequisites were not prepared."),
       };
     }
   }
@@ -304,6 +304,10 @@ export async function prepareDependencies({ setupPath, expectedVersion, writer, 
 
 function binaryPath(dependency, toolRoot) {
   if (dependency.executable) return dependency.executable;
+  // Keep old npm shims/custom binaries untouched; register this exact scoped release path.
+  if (dependency.id === "lean-ctx" && dependency.install?.kind === "github-release") {
+    return path.join(toolRoot, `lean-ctx-${dependency.version}`, process.platform === "win32" ? "lean-ctx.exe" : "lean-ctx");
+  }
   const command = dependency.install?.command ?? dependency.id;
   return path.join(toolRoot, "bin", process.platform === "win32" ? `${command}.cmd` : command);
 }
@@ -329,7 +333,12 @@ async function exists(file) {
   try { await access(file); return true; } catch { return false; }
 }
 
-function parsedVersion(output) {
+function parsedVersion(output, dependencyId) {
+  // Serena's release CLI appends the current repository's commit, not a prerelease tag.
+  if (dependencyId === "serena") {
+    const release = String(output ?? "").trim().match(/^Serena (\d+\.\d+\.\d+)(?:-[0-9a-f]{8}(?:-dirty)?)?$/);
+    if (release) return release[1];
+  }
   return String(output ?? "").match(/\d+\.\d+\.\d+(?:[-+][\w.-]+)?/)?.[0] ?? null;
 }
 
@@ -548,6 +557,104 @@ async function installUvRelease(dependency, paths) {
     await chmod(destination, 0o755);
     return { status: "passed", version: dependency.version, evidence: `Verified ${asset} with its pinned release checksum.` };
   } catch (error) {
+    return { status: "failed", evidence: error.message };
+  }
+}
+
+function leanCtxAsset() {
+  const architecture = { x64: "x86_64", arm64: "aarch64" }[process.arch];
+  if (!architecture) return null;
+  if (process.platform === "darwin") return `lean-ctx-${architecture}-apple-darwin.tar.gz`;
+  if (process.platform === "win32") return process.arch === "x64" ? "lean-ctx-x86_64-pc-windows-msvc.zip" : null;
+  if (process.platform !== "linux") return null;
+  const [major, minor] = (process.report?.getReport().header.glibcVersionRuntime ?? "0.0").split(".").map(Number);
+  const libc = major > 2 || major === 2 && minor >= 35 ? "gnu" : "musl";
+  return `lean-ctx-${architecture}-unknown-linux-${libc}.tar.gz`;
+}
+
+async function releaseBytes(url, limit, budget) {
+  budget?.check();
+  const response = await fetch(url, { signal: budget?.signal ?? AbortSignal.timeout(120_000), redirect: "follow" });
+  if (!response.ok) throw new Error(`Download failed (${response.status}) for ${url}`);
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body) {
+    budget?.check();
+    size += chunk.length;
+    if (size > limit) throw new Error(`Release byte limit exceeded for ${url}`);
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function installLeanCtxRelease(dependency, paths, budget) {
+  const asset = leanCtxAsset();
+  if (!asset) return { status: "failed", evidence: `No verified LeanCTX asset for ${process.platform}/${process.arch}.` };
+  const destination = binaryPath(dependency, paths.toolRoot);
+  const directory = path.dirname(destination);
+  let stage;
+  try {
+    try {
+      await lstat(directory);
+      return { status: "customized", evidence: `Preserved existing LeanCTX release directory: ${directory}` };
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+    await mkdir(paths.toolRoot, { recursive: true });
+    stage = await mkdtemp(path.join(paths.toolRoot, ".lean-ctx-download-"));
+    const archive = await releaseBytes(`${dependency.install.source}/${asset}`, 128 * 1024 * 1024, budget);
+    const checksums = (await releaseBytes(dependency.install.checksums, 64 * 1024, budget)).toString("utf8");
+    const matching = checksums.split(/\r?\n/).map((line) => line.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/))
+      .filter((match) => match?.[2] === asset);
+    const digest = createHash("sha256").update(archive).digest("hex");
+    if (matching.length !== 1 || matching[0][1].toLowerCase() !== digest) throw new Error(`LeanCTX checksum mismatch for ${asset}.`);
+    const archivePath = path.join(stage, asset);
+    await writeFile(archivePath, archive, { mode: 0o600, flag: "wx" });
+    const name = path.basename(destination);
+    const extracted = await command("tar", ["-xf", archivePath, "-C", stage, name], { budget });
+    if (extracted.status !== "passed") return extracted;
+    const source = path.join(stage, name);
+    await companionBytes(source, budget, 128 * 1024 * 1024); // Reject symlinks/special entries before publication.
+    await chmod(source, 0o755);
+    budget?.check();
+    await mkdir(directory, { mode: 0o700 }); // Exclusive: preserve a directory created during download.
+    await link(source, destination); // Atomic and never follows or replaces a destination link.
+    return { status: "passed", version: dependency.version, evidence: `Verified pinned ${asset} SHA256 ${digest}; no npm lifecycle or initializer executed.` };
+  } catch (error) {
+    if (error.code === "EVENT_DEADLINE") throw error;
+    return { status: "failed", evidence: error.message };
+  } finally { if (stage) await rm(stage, { recursive: true, force: true }); }
+}
+
+async function prepareLeanCtxSkill(dependency, paths, budget) {
+  const destination = path.join(paths.skillRoot, "lean-ctx");
+  const provenance = { source: dependency.install.skill.source, revision: dependency.version, gitBlob: dependency.install.skill.gitBlob };
+  try {
+    try {
+      const files = await skillContents(destination, budget);
+      const metadata = JSON.parse(await companionBytes(path.join(destination, ".agent-team-source.json"), budget, 64 * 1024));
+      const bytes = await companionBytes(path.join(destination, "SKILL.md"), budget, 64 * 1024);
+      const blob = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+      return Object.keys(files).length === 1 && files["SKILL.md"] && blob === provenance.gitBlob &&
+        Object.entries(provenance).every(([key, value]) => metadata[key] === value)
+        ? { status: "passed", evidence: "Reused complete pinned LeanCTX skill." }
+        : { status: "customized", evidence: `Preserved customized LeanCTX skill: ${destination}` };
+    } catch (error) {
+      if (error.code === "EVENT_DEADLINE") throw error;
+      try { await lstat(destination); return { status: "customized", evidence: `Preserved existing LeanCTX skill: ${destination}` }; }
+      catch (missing) { if (missing.code !== "ENOENT") throw missing; }
+    }
+    const bytes = await releaseBytes(provenance.source, 64 * 1024, budget);
+    const blob = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    if (blob !== provenance.gitBlob) throw new Error("Pinned LeanCTX skill blob mismatch.");
+    budget?.check();
+    await mkdir(paths.skillRoot, { recursive: true });
+    await mkdir(destination, { mode: 0o700 });
+    budget?.check();
+    await writeFile(path.join(destination, "SKILL.md"), bytes, { mode: 0o600, flag: "wx", signal: budget?.signal });
+    budget?.check();
+    await writeFile(path.join(destination, ".agent-team-source.json"), `${JSON.stringify(provenance)}\n`, { mode: 0o600, flag: "wx", signal: budget?.signal });
+    return { status: "passed", evidence: "Prepared complete pinned LeanCTX host skill; Agent-Team narrowed profile governs its use." };
+  } catch (error) {
+    if (error.code === "EVENT_DEADLINE") throw error;
     return { status: "failed", evidence: error.message };
   }
 }
@@ -849,7 +956,7 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       }
       const result = await execute(executable, ["--version"], dependency.id === "playwright-cli"
         ? { env: { ...process.env, NO_UPDATE_NOTIFIER: "1" } } : {});
-      return result.status === "passed" ? { ...result, version: parsedVersion(`${result.stdout}\n${result.stderr}`) } : result;
+      return result.status === "passed" ? { ...result, version: parsedVersion(`${result.stdout}\n${result.stderr}`, dependency.id) } : result;
     }
     if (phase === "install") {
       await mkdir(paths.toolRoot, { recursive: true, mode: 0o700 });
@@ -868,8 +975,10 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       }
       if (dependency.install?.kind === "git-skill") return installGitSkills(dependency, paths);
       if (dependency.id === "uv" && dependency.install?.kind === "github-release") return installUvRelease(dependency, paths);
+      if (dependency.id === "lean-ctx" && dependency.install?.kind === "github-release") return installLeanCtxRelease(dependency, paths, budget);
       return { status: "failed", evidence: `Pinned ${dependency.install?.kind ?? "unknown"} preparation requires its verified installer adapter.` };
     }
+    if (phase === "companion" && dependency.id === "lean-ctx") return prepareLeanCtxSkill(dependency, paths, budget);
     if (phase === "companion" && dependency.id === "playwright-cli") {
       const companion = await preparePlaywrightSkill(dependency, paths, budget);
       if (companion.status !== "passed") return companion;

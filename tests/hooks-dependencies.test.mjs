@@ -4,6 +4,31 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+test("Serena probes separate its documented Git display suffix from the pinned package version", async (t) => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-version-probe-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const executable = path.join(directory, "version-fixture");
+  const runner = createDependencyRunner({ host: "codex", scope: "project", paths: {
+    projectRoot: directory, toolRoot: directory, skillRoot: directory,
+  } });
+  for (const [id, output, expected] of [
+    ["serena", "Serena 1.7.0-ef4f7385", "1.7.0"],
+    ["serena", "Serena 1.7.0-ef4f7385-dirty", "1.7.0"],
+    ["serena", "Serena 1.7.0", "1.7.0"],
+    ["serena", "Serena 1.6.0-ef4f7385", "1.6.0"],
+    ["serena", "Serena 1.7.0-rc1", "1.7.0-rc1"],
+    ["serena", "Serena 1.7.0-ef4f7385-custom", "1.7.0-ef4f7385-custom"],
+    ["another-tool", "Version 1.7.0-ef4f7385", "1.7.0-ef4f7385"],
+  ]) {
+    await writeFile(executable, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(`${output}\n`)});\n`, { mode: 0o755 });
+    const result = await runner({ dependency: { id, executable }, phase: "probe" });
+    assert.equal(result.status, "passed");
+    assert.equal(result.version, expected, output);
+    assert.equal(result.stdout, `${output}\n`, "retain the complete reported version as evidence");
+  }
+});
+
 test("catalog selects mandatory, defaults, tracker dependency, and explicit optionals while excluding rejected tools", async () => {
   const { resolveCatalogSelection } = await import("../hooks/lib/dependencies.mjs").catch(() => ({}));
   const result = resolveCatalogSelection?.({ tracker: { kind: "beads" }, optionals: ["context7"] });

@@ -41,7 +41,15 @@ export const DEPENDENCY_CATALOG = Object.freeze([
   },
   {
     id: "lean-ctx", name: "LeanCTX", disposition: "default", version: "3.10.1", prerequisites: [],
-    install: npm("lean-ctx-bin", "3.10.1", "lean-ctx"),
+    install: {
+      kind: "github-release",
+      source: "https://github.com/yvgude/lean-ctx/releases/download/v3.10.1",
+      checksums: "https://github.com/yvgude/lean-ctx/releases/download/v3.10.1/SHA256SUMS",
+      skill: {
+        source: "https://raw.githubusercontent.com/yvgude/lean-ctx/4a76710a6c792229f170a66fdda1f4a0a64f47ee/rust/src/templates/SKILL.md",
+        gitBlob: "258398981da1eb779677dc999bd11ac6206cf606",
+      },
+    },
     profile: { wrap: false, proxy: false, knowledge: false, coordination: false, modelSteering: false, exactRecovery: true },
     functionalCheck: "narrow-read-recovery",
   },
