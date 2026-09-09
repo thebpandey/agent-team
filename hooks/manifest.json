@@ -1,10 +1,12 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "agent-team",
-  "version": "6.5.0",
+  "version": "7.0.0",
   "repository": "https://github.com/thebpandey/agent-team",
   "rootFiles": [
     "CHANGELOG.md",
+    "GETTING_STARTED.md",
+    "Getting_Started_with_Agent-Team.html",
     "LICENSE",
     "README.md",
     "SKILL.md"
@@ -17,6 +19,8 @@
   ],
   "files": [
     "CHANGELOG.md",
+    "GETTING_STARTED.md",
+    "Getting_Started_with_Agent-Team.html",
     "LICENSE",
     "README.md",
     "SKILL.md",
@@ -28,6 +32,9 @@
     "assets/claude-agents/agent-team-routine.md",
     "assets/claude-agents/agent-team-text.md",
     "assets/claude-agents/agent-team-visual-tester.md",
+    "assets/dashboard/dashboard.css",
+    "assets/dashboard/dashboard.js",
+    "assets/diagrams/README.md",
     "assets/diagrams/release-recovery.mmd",
     "assets/diagrams/release-recovery.png",
     "assets/diagrams/release-recovery.svg",
@@ -42,10 +49,17 @@
     "hooks/manifest.json",
     "hooks/lib/analyzers.mjs",
     "hooks/lib/artifacts.mjs",
+    "hooks/lib/budget.mjs",
     "hooks/lib/canonical-state.mjs",
     "hooks/lib/checkpoint.mjs",
+    "hooks/lib/cleanup.mjs",
+    "hooks/lib/dashboard.mjs",
+    "hooks/lib/dependencies.mjs",
+    "hooks/lib/dependency-catalog.mjs",
+    "hooks/lib/dependency-profiles.mjs",
     "hooks/lib/event.mjs",
     "hooks/lib/health.mjs",
+    "hooks/lib/initialization.mjs",
     "hooks/lib/install.mjs",
     "hooks/lib/lint.mjs",
     "hooks/lib/lock.mjs",
@@ -54,8 +68,16 @@
     "hooks/lib/package-validator.mjs",
     "hooks/lib/policy.mjs",
     "hooks/lib/project.mjs",
+    "hooks/lib/readiness.mjs",
     "hooks/lib/recovery.mjs",
+    "hooks/lib/settings.mjs",
+    "hooks/lib/setup-cli.mjs",
+    "hooks/lib/status.mjs",
+    "hooks/lib/task-transitions.mjs",
     "hooks/lib/telemetry.mjs",
+    "hooks/lib/tracker.mjs",
+    "hooks/lib/usage.mjs",
+    "hooks/lib/workflow-cli.mjs",
     "references/acceptance-tests.md",
     "references/actions.md",
     "references/code-explanations.md",
@@ -91,8 +113,14 @@
     "claude": "hooks/claude-hooks.json"
   },
   "registrationTargets": {
-    "codex": ".codex/hooks.json",
-    "claude": ".claude/settings.json"
+    "codex": {
+      "user": ".codex/hooks.json",
+      "project": ".codex/hooks.json"
+    },
+    "claude": {
+      "user": ".claude/settings.json",
+      "project": ".claude/settings.local.json"
+    }
   },
   "requiredEvents": {
     "codex": ["SessionStart", "PreToolUse", "PostToolUse", "PreCompact", "Interrupt"],
@@ -121,9 +149,7 @@
   },
   "artifacts": {
     "prefix": "agent-team/",
-    "metadata": "agent-team/.agent-team-source.json",
-    "codex": { "exclude": ["hooks/claude-hooks.json"] },
-    "claude": { "exclude": ["hooks/codex-hooks.json"] }
+    "metadata": "agent-team/.agent-team-source.json"
   },
   "legacy": {
     "path": "legacy/claude-v3",

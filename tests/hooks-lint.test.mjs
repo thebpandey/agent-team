@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { runLintChecks } from "../hooks/lib/lint.mjs";
+import { createEventBudget } from "../hooks/lib/budget.mjs";
 
 const temporary = [];
 test.afterEach(async () => Promise.all(temporary.splice(0).map((item) => rm(item, { force: true, recursive: true }))));
@@ -62,4 +63,68 @@ test("lint timeouts and output are bounded", async () => {
 
   assert.equal(result.status, "timeout");
   assert.ok(result.output.length <= 80);
+});
+
+test("mixed lint batches preserve passed, failed, missing and timeout evidence with recoverable diagnostics", async () => {
+  // Catches early returns discarding completed batches and failed batches reported as checked.
+  const directory = await root();
+  for (const name of ["passed", "failed", "missing", "timeout"]) {
+    await mkdir(path.join(directory, name), { recursive: true });
+    await writeFile(path.join(directory, name, "eslint.config.js"), "export default [];\n");
+  }
+  await executable(path.join(directory, "passed"), "process.stdout.write('ok');");
+  await executable(path.join(directory, "failed"), "process.stdout.write('bad.js:2:3 no-undef brokenName\\n' + 'detail '.repeat(1000)); process.exitCode = 1;");
+  await executable(path.join(directory, "timeout"), "setTimeout(() => {}, 5000);");
+  const result = await runLintChecks(directory, ["passed/ok.js", "failed/bad.js", "missing/unknown.js", "timeout/slow.js"], { timeoutMs: 150, maxOutputBytes: 120 });
+  assert.equal(result.status, "failed");
+  assert.deepEqual(result.batches.map(({ status }) => status), ["passed", "failed", "skipped", "timeout"]);
+  assert.match(result.batches[1].output, /bad.js:2:3.*brokenName/);
+  assert.ok(Buffer.byteLength(result.output) <= 120);
+  assert.match(await readFile(result.batches[1].logPath, "utf8"), /detail detail detail/);
+  assert.ok((await readFile(result.batches[1].logPath, "utf8")).length > 6000);
+});
+
+test("successful batches plus missing lint remain incomplete", async () => {
+  const directory = await root();
+  for (const name of ["passed", "missing"]) {
+    await mkdir(path.join(directory, name));
+    await writeFile(path.join(directory, name, "eslint.config.js"), "export default [];\n");
+  }
+  await executable(path.join(directory, "passed"), "process.stdout.write('ok');");
+  const result = await runLintChecks(directory, ["passed/ok.js", "missing/no.js"]);
+  assert.equal(result.status, "incomplete");
+  assert.deepEqual(result.batches.map(({ status }) => status), ["passed", "skipped"]);
+});
+
+test("slow config discovery respects the event budget without starting a linter", async () => {
+  const directory = await root();
+  const budget = createEventBudget(30);
+  const started = performance.now();
+  try {
+    const result = await runLintChecks(directory, ["index.js"], { budget, filesystem: {
+      access: async () => { await new Promise((resolve) => setTimeout(resolve, 180)); },
+    } });
+    assert.equal(result.status, "timeout");
+    assert.ok(performance.now() - started < 130);
+    assert.equal(result.batches[0].reason, "event_deadline");
+  } finally { budget.close(); }
+});
+
+test("delayed log-directory creation cannot start a log write after event deadline", async () => {
+  const directory = await root();
+  await executable(directory, "process.stdout.write('index.js:1:1 broken'); process.exitCode=1;");
+  const budget = createEventBudget(100);
+  let wroteAfterDelay = false;
+  const started = performance.now();
+  try {
+    const result = await runLintChecks(directory, ["index.js"], { budget, filesystem: {
+      mkdir: async () => { await new Promise((resolve) => setTimeout(resolve, 200)); },
+      writeFile: async () => { wroteAfterDelay = true; },
+    } });
+    assert.ok(performance.now() - started < 180);
+    assert.equal(result.status, "failed");
+    assert.equal(result.batches[0].logStatus, "unavailable");
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    assert.equal(wroteAfterDelay, false);
+  } finally { budget.close(); }
 });

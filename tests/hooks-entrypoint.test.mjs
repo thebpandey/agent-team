@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { readActivationLogs } from "../hooks/lib/telemetry.mjs";
 import { policyFixture } from "./hook-test-helpers.mjs";
+import { normalizeEvent } from '../hooks/lib/event.mjs';
+import { runNormalizedHook } from '../hooks/agent-team-hook.mjs';
 
 const hook = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-hook.mjs");
 const cli = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-cli.mjs");
@@ -44,6 +46,85 @@ function output(result) {
   return JSON.parse(result.stdout);
 }
 
+test('checkpoint events without native IDs remain distinct and complete batch IDs cannot collide', async () => {
+  const value = await fixture();
+  const payload = { cwd: value.feature, session_id: 'developer-session' };
+  assert.equal(invoke('codex', 'PreCompact', payload, value.home).status, 0);
+  const file = path.join(value.root, '.agent-team/checkpoints/developer-session.json');
+  const first = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(invoke('codex', 'PreCompact', payload, value.home).status, 0);
+  const second = JSON.parse(await readFile(file, 'utf8'));
+  assert.notEqual(second.eventId, first.eventId);
+  assert.equal(second.version, first.version + 1);
+  const calls = Array.from({ length: 21 }, (_, index) => ({ tool_use_id: `tool-${index}` }));
+  const a = normalizeEvent('claude', 'PostToolBatch', { ...payload, tool_calls: calls });
+  const b = normalizeEvent('claude', 'PostToolBatch', { ...payload, tool_calls: [...calls.slice(0, 20), { tool_use_id: 'different' }] });
+  assert.notEqual(a.eventId, b.eventId);
+  assert.equal(a.eventId, normalizeEvent('claude', 'PostToolBatch', { ...payload, tool_calls: calls }).eventId);
+  const partial = { ...payload, tool_calls: [{ tool_use_id: 'known' }, {}] };
+  assert.notEqual(normalizeEvent('claude', 'PostToolBatch', partial).eventId, normalizeEvent('claude', 'PostToolBatch', partial).eventId);
+});
+
+test('a factual checkpoint refreshes an explicitly enabled snapshot without changing task authority', async () => {
+  const value = await fixture();
+  const setupPath = path.join(value.root, '.agent-team/setup.json');
+  const setup = JSON.parse(await readFile(setupPath, 'utf8'));
+  setup.dashboard = { snapshot: true };
+  await writeFile(setupPath, JSON.stringify(setup));
+  const trackerPath = path.join(value.root, '.agent-team/TASKS.md');
+  const before = await readFile(trackerPath, 'utf8');
+  assert.equal(invoke('codex', 'PreCompact', { cwd: value.feature, session_id: 'developer-session' }, value.home).status, 0);
+  assert.match(await readFile(path.join(value.root, '.agent-team/dashboard/index.html'), 'utf8'), /LOCAL STATUS SNAPSHOT/);
+  assert.equal(await readFile(trackerPath, 'utf8'), before);
+});
+
+for (const blockedAt of ['discovery', 'recording']) {
+  test(`optional hook evidence ${blockedAt} cannot turn a mapped denial into allow`, async () => {
+    const value = await fixture();
+    const packageRoot = path.join(value.root, '.agents/skills/agent-team');
+    const directory = path.join(value.root, '.agent-team-hooks');
+    await mkdir(directory);
+    const receipt = path.join(directory, 'install.json');
+    let release;
+    if (blockedAt === 'discovery') {
+      assert.equal(spawnSync('mkfifo', [receipt]).status, 0);
+      // Release the genuine FIFO reader even in the RED implementation.
+      release = new Promise((resolve, reject) => setTimeout(() => writeFile(receipt, '{}').then(resolve, reject), 500));
+    } else {
+      await writeFile(receipt, JSON.stringify({ targets: [{ runtime: 'codex', path: packageRoot }] }));
+      await mkdir(path.join(directory, '.hook-evidence.lock'));
+    }
+    try {
+      const event = normalizeEvent('codex', 'PreToolUse', { cwd: value.feature, session_id: 'developer-session',
+        tool_name: 'mcp__filesystem__write', tool_input: { path: path.join(value.root, '.agent-team/TASKS.md'), content: '| AT-001 | TEAM-001 | verified |' } });
+      const result = await runNormalizedHook(event, { timeoutMs: 200, evidencePackageRoot: packageRoot });
+      assert.equal(result.decision.allow, false, 'optional observation must never discard required enforcement');
+    } finally { if (release) await release; }
+  });
+}
+
+test('actual copied hook under a spaced installation path executes and records only its scoped transport', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'agent team hook consumer '));
+  temporary.push(directory);
+  const value = await policyFixture(path.join(directory, 'project'));
+  const packageRoot = path.join(value.root, '.agents/skills/agent-team');
+  await mkdir(packageRoot, { recursive: true });
+  await cp(path.dirname(hook), path.join(packageRoot, 'hooks'), { recursive: true });
+  await mkdir(path.join(value.root, '.agent-team-hooks'));
+  await writeFile(path.join(value.root, '.agent-team-hooks/install.json'), JSON.stringify({ targets: [{ runtime: 'codex', path: packageRoot }] }));
+  const isolatedHome = path.join(directory, 'home');
+  await mkdir(isolatedHome);
+  const result = spawnSync(process.execPath, [path.join(packageRoot, 'hooks/agent-team-hook.mjs'), '--runtime', 'codex', '--event', 'PreToolUse'], {
+    input: JSON.stringify({ cwd: value.feature, session_id: 'owner-session', tool_name: 'exec_command', tool_input: { cmd: 'git status --short' } }),
+    encoding: 'utf8', env: { ...process.env, HOME: isolatedHome },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.trim(), 'copied hook must execute its main function');
+  const events = JSON.parse(await readFile(path.join(value.root, '.agent-team-hooks/hook-events.json'), 'utf8'));
+  assert.equal(events['codex:PreToolUse'].source, 'packaged_entrypoint');
+  await assert.rejects(readFile(path.join(isolatedHome, '.agent-team-hooks/hook-events.json')), { code: 'ENOENT' });
+});
+
 function mappingDigest(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -53,6 +134,38 @@ function invokeCli(command, options) {
   for (const [name, value] of Object.entries(options)) args.push(`--${name}`, value);
   const result = spawnSync(process.execPath, args, { encoding: "utf8" });
   return { status: result.status, output: JSON.parse(result.stdout), stderr: result.stderr };
+}
+
+for (const runtime of ["codex", "claude"]) {
+  test(`${runtime} mapped-provider tracker completion requires the project owner (synthetic host payload)`, async () => {
+    const value = await fixture();
+    const result = invoke(runtime, "PreToolUse", { cwd: value.feature, session_id: "developer-session",
+      tool_name: "mcp__filesystem__write", tool_input: { path: path.join(value.root, ".agent-team/TASKS.md"), content: "| AT-001 | TEAM-001 | verified |" },
+    }, value.home);
+    assert.equal(result.status, 0);
+    assert.equal(output(result).hookSpecificOutput.permissionDecision, "deny");
+    assert.match(output(result).hookSpecificOutput.permissionDecisionReason, /project owner|shared path/i);
+  });
+  test(`${runtime} subprocess stdout exposes actionable lint failure while permitting repair (synthetic host payload)`, async () => {
+    const value = await fixture();
+    const bin = path.join(value.feature, "node_modules/.bin/eslint");
+    await mkdir(path.dirname(bin), { recursive: true });
+    await writeFile(bin, "#!/usr/bin/env node\nprocess.stdout.write('src/owned.js:4:7 no-undef missingName\\n' + 'detail '.repeat(10000)); process.exitCode=1;\n");
+    await chmod(bin, 0o755);
+    const result = invoke(runtime, "PostToolUse", {
+      cwd: value.feature, session_id: "developer-session",
+      tool_name: runtime === "codex" ? "apply_patch" : "Edit",
+      tool_input: runtime === "codex"
+        ? { command: "*** Begin Patch\n*** Update File: src/owned.js\n+missingName();\n*** End Patch" }
+        : { file_path: "src/owned.js", old_string: "export {};", new_string: "missingName();" },
+    }, value.home);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /owned.js:4:7.*no-undef.*missingName/);
+    assert.match(result.stdout, /lint failed/i);
+    assert.match(result.stdout, /log/i);
+    assert.ok(Buffer.byteLength(result.stdout) < 7000);
+    assert.doesNotMatch(result.stdout, /permissionDecision.*deny/);
+  });
 }
 
 test("entrypoint emits native denial when project resolution fails for a critical command", async () => {

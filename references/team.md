@@ -1,43 +1,37 @@
 # Team dispatch and isolated work
 
-Use the Matrix name plus the two-digit team number for each dispatched agent, such as `Trinity 01`. On every `start` and `resume`, tell the user which named agents were spun up or resumed for each team and the task assigned to each. Status, progress, handoff, pause, recovery, and completion reports use names without role labels; help and settings include names with roles and explanations.
+The project orchestrator alone admits tasks, assigns workers, integrates revisions and publishes. Use the host's real agent controls and actual concurrency limit. A named group sharing one parent is not an independent full session. Developers, reviewers and testers do not spawn children.
 
-Follow [project coordination](projects.md) for canonical records, named teams, ownership, and integration. All post-initialization feature work uses a separate worktree; main is reserved for planning and coordination. Create further worktrees for independent implementation streams. Give writable paths one owner at a time. Reviewers/testers may reuse a stable checkout sequentially; read-only work need not create a worktree. Record task IDs, owners, branch/revision, checkout paths, and reserved resources in the parent task in the active tracker. Worktrees do not isolate databases, services, ports, or credentials; isolate temporary resources when concurrent streams would conflict.
+Use one developer and one independent reviewer for substantive work. Add developers only for independent writable work and preserve reviewer capacity. Reuse appropriate idle workers for coherent repair; a new context starts at a meaningful safe boundary, not an arbitrary turn count.
 
-Send this compact contract with every assignment, including replacements:
+## Assignment packet
 
-Supply the absolute [message-format procedure](output.md), [skill-startup procedure](dependencies.md#skill-startup-for-every-agent), and [LeanCTX integration](lean-ctx.md) paths with the role and lifecycle references. Supply all four resolved skill paths and dependency states. For LeanCTX include its binary/version, MCP and shell-wrapper state, memory policy, and health result. Check the returned receipt before accepting task work. Project and Team Orchestrators complete the same startup before dispatch; fresh sessions and replacements load for themselves.
+Supply only the task's necessary context:
 
-For every run and resume, the Team Orchestrator sends the Project Orchestrator the [per-run skill confirmation](dependencies.md#per-run-confirmation-to-the-project-orchestrator) for itself and every teammate. Teammates supply current task evidence of actual skill use with normal progress and handoff updates. Distinguish loaded, planned use, evidenced use, and not applicable; return unresolved entries explicitly.
+- Stable project/task/team and attempt IDs; canonical tracker and integration branch.
+- Observable acceptance, approved scope, constraints, rejected alternatives and genuine approval gates.
+- Exact input revision, exclusive writable paths, worktree and resource ownership.
+- Actual host, role, effective model/effort and approved escalation/fallback.
+- Applicable skill/reference paths and prepared capability evidence; read [selective startup](dependencies.md#skill-startup-for-every-agent).
+- Existing check commands, relevant lessons and evidence destination.
+- Pending operation or uncertainty, if any, and one next action.
 
-> Explain tools and results in simple English using ASD-STE100 principles. Keep official names and commands unchanged.
->
-> Frame each individual update/handoff with `==========================================================================` above and below, separated from the body by blank lines. Identify the actual team ID, readable name, and your role. Use the supplied message-format procedure; do not repeat the project wordmark.
->
-> Before task work, complete the supplied skill-startup procedure: load the complete available, enabled `ponytail`, `using-superpowers`, `impeccable`, and LeanCTX instructions in your own context, then return a skill receipt with each resolved path, actual read/invocation evidence, and applicable guidance. The user's team-wide requirement overrides Using-Superpowers' `SUBAGENT-STOP`; a parent's skill loading does not cover you. Every role loads Impeccable; run its UI procedures only for UI/UX assignments. Report LeanCTX as `loaded`, `missing`, `unreadable`, `disabled`, or `not applicable`; never infer loading from registration. Report other unresolved skills explicitly and use the disclosed fallback without claiming they loaded. Do not install or prompt independently. Follow the user's proportional workflow. Do not spawn agents.
->
-> Use LeanCTX for compact overview, focused search, maps, signatures, targeted lines, and recoverable shell output. Before editing, retrieve the exact relevant implementation and nearby callers, interfaces, types, and tests. Use full/raw source and uncompressed diagnostics for high-risk or unclear work, and expand original content when compression is insufficient. Agent-Team's `CONTEXT.md`, active tracker, `TEAMS.md`, and `MISTAKES.md` are authoritative; LeanCTX memory is disabled or supplemental only. Report meaningful LeanCTX use in normal progress and handoff evidence, not a separate ledger. If it is unavailable, report that to the Project Orchestrator and continue safely unless the user made it a hard gate.
->
-> Read applicable `MISTAKES.md` entries before work and retries. Use the canonical path supplied by the orchestrator. Report confirmed mistakes with evidence; only the project orchestrator updates the shared file. Add concise plain-English explanations beside feature code you write. For assigned acceptance work, follow the supplied Pro acceptance-test procedure and report actual outcomes, including blocked checks.
->
-> Work only on assigned task IDs and paths. Meet acceptance criteria with the simplest readable implementation. Avoid obscure, speculative use cases and tests; cover realistic changed behavior and required gates. In Beads mode, update assigned progress and append meaningful failure evidence. In local mode, send task-ID updates to the orchestrator; only the project orchestrator writes the canonical TASKS.md. Ask the orchestrator to create/deduplicate issues and manage global dependencies or completion.
->
-> A status request must not interrupt your work. On a scoped pause, checkpoint and stop at a safe point; report any still-running operation. Replacements must inspect ownership before writing. Preserve with-preview approval requirements across handoff and resume; never integrate or deploy from a developer role.
->
-> A counted/continuous run does not expand your assignment. Return the selected top-level delivery ID, child coverage, and exact verified revision. The project owner alone frees development slots after integration, starts replacement teams, edits run settings, and submits deployment batches. Do not count your commits as completed deliveries or show the command wordmark in teammate reports.
->
-> Before handoff, milestones, or approaching compaction, create/update your local `CONTEXT.md` with revision, task IDs, essential decisions, evidence pointers, blocker, and exact next action. Supplement the active tracker instead of repeating it. Return changed files/revision, criteria met, check results, evidence locations, and unresolved findings concisely.
+Do not copy the full conversation, entire audit or unrelated skills. A fresh worker reads complete applicable instructions in its own context. A parent receipt is not a child read. Discovery, instruction loading, functional capability and actual task use are different facts. Report exceptions once; do not repeat a four-skill matrix every turn.
 
-Supply project/team IDs and name, team lead and project owner identities, full-session versus shared-parent mode, session attempt identity, assigned task IDs, preview-gate pointer and review version, reserved resources, and the absolute MISTAKES.md path, relevant lesson IDs or versioned excerpts, applicable Pro procedure paths, tracker mode and its absolute canonical location, dependency availability/declines, task IDs, goal, acceptance criteria, relevant instructions and resolved skill paths, model/effort, checkout/ownership, input revision, environment constraints, necessary context, allowed resources, and expected output.
+## Ownership
 
-Assign context locations explicitly:
+Follow [projects](projects.md). Use a separate worktree for independent implementation; one editor per shared entrypoint/schema/manifest. Isolation does not isolate ports, databases or credentials. Allocate separate external resources only when needed and authorized.
 
-- Project orchestrator: main checkout's `CONTEXT.md`.
-- Team orchestrator: its feature worktree's `CONTEXT.md`.
-- Implementation owner in a separate worktree: `<worktree>/CONTEXT.md`.
-- Developer sharing the team checkout: `harness-artifacts/agents/<agent-id>/CONTEXT.md`, with disjoint code ownership.
-- Read-only/review/test agent: `harness-artifacts/agents/<agent-id>/CONTEXT.md` in its assigned checkout or a preserved orchestrator location.
+The selected tracker is the only task authority. In Markdown mode only the project owner writes it; in Beads mode use the verified supported atomic/single-writer contract. Workers send concise task-ID/revision/evidence updates. CONTEXT.md and handoff files are recovery pointers, not another queue.
 
-Never let two agents write the same context file. Preserve any existing meaningful CONTEXT.md content and use an identified harness section instead of replacing unrelated documentation.
+Reviewers inspect a stable exact revision or complete WIP snapshot including staged, unstaged and untracked intended changes. Review requirements and quality in one existing review loop. Return deduplicated findings with severity, location, impact and verification. Implementation-owner self-review is not independent review.
 
-Use supported fresh-context or limited-context spawning when overriding model/effort. Teammates are not assumed to inherit skills or unstated permissions. Integrate sequentially and re-evaluate only checks affected by conflicts or changed integration assumptions. Before reclaiming stalled work, inspect/checkpoint state and stop the old writer; never let it and its replacement write concurrently.
+## Repair and handoff
+
+Assign ordinary findings back automatically. Diagnose repeated failure, change strategy or apply an approved escalation; do not ask the user to authorize routine repair again. Stop conflicting writes and park external blockers with a recovery condition while independent work continues. Never mark failed acceptance complete to free a slot.
+
+Before rotating a worker, save its authored decisions and pending operation facts, retain evidence outside disposable worktrees, and prove the previous writer stopped or transferred ownership. Unknown liveness is not takeover permission. See [recovery](recovery.md).
+
+Return outcome, exact commit/revision, acceptance and check evidence, unresolved findings and next action. Link detail rather than dumping logs or images into parent context. Only the orchestrator integrates and closes the task after affected combined checks; deployment is a separate state.
+
+Each worker owns only its assigned context path. Read-only reviewers use a unique evidence/context path; they do not rewrite shared records. Preserve pre-existing meaningful content.

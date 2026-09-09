@@ -1,5 +1,5 @@
 function message(decision) {
-  return decision.messages.filter(Boolean).join("\n");
+  return [...new Set(decision.messages.filter(Boolean))].join("\n");
 }
 
 /** Convert one shared decision to the selected host's documented hook response. */

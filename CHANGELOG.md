@@ -1,5 +1,17 @@
 # Changelog
 
+## 7.0.0 - 2026-09-09
+
+Version 7.0.0 adds explicit host/scope installation and the updated Agent-Team workflow for Codex and Claude Code.
+
+- Require explicit host/scope installation, ship one complete universal package, and preserve handler-level ownership during updates, interruption recovery and removal.
+- Keep the selected Beads or Markdown tracker authoritative; use versioned, idempotent claims, stopped-writer checkpoints, bounded repair and safe parking without a second task ledger.
+- Reuse Project Kickoff when available while retaining standalone/existing-plan setup, independent per-host settings and targeted role/model/effort menus.
+- Prepare mandatory Serena and Microsoft Playwright CLI plus selected defaults with pinned sources, scoped records and truthful functional/discovery states. Optional tools remain opt-in.
+- Add read-only all-task status, usage and recovery helpers, private standalone HTML snapshots and an optional loopback dashboard. Optional external beads_viewer graph output retains Jeffrey Emanuel attribution and its complete upstream license/rider.
+- Reduce instruction loading to applicable task profiles, retain durable checkpoint/source evidence and preserve resolved hook decisions under one event deadline. Unknown usage and native trust remain unknown.
+- Replace repetitive setup/status messaging with grouped readiness, compact progress and an updated prompt-first HTML/Markdown onboarding guide, GitHub authentication steps and README flowcharts.
+
 ## 6.5.0 - 2026-09-07
 
 - Detect the active Codex or Claude Code harness and reset only role routing when a saved project switches between them.

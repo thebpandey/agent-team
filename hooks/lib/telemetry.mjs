@@ -14,16 +14,19 @@ function logNames(maxFiles) {
   return [...Array(maxFiles).keys()].slice(1).reverse().map((index) => `activation.jsonl.${index}`).concat("activation.jsonl");
 }
 
-async function rotate(directory, maxFiles) {
+async function rotate(directory, maxFiles, budget) {
+  budget?.check();
   await rm(path.join(directory, `activation.jsonl.${maxFiles}`), { force: true });
   for (let index = maxFiles - 1; index >= 1; index -= 1) {
     try {
+      budget?.check();
       await rename(path.join(directory, `activation.jsonl.${index}`), path.join(directory, `activation.jsonl.${index + 1}`));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
   }
   try {
+    budget?.check();
     await rename(path.join(directory, "activation.jsonl"), path.join(directory, "activation.jsonl.1"));
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
@@ -31,8 +34,10 @@ async function rotate(directory, maxFiles) {
 }
 
 /** Append one allowlisted activation event under a lock, with bounded rotation and dedupe. */
-export async function appendActivationLog(directory, input, { now = new Date(), maxBytes = 256 * 1024, maxFiles = 3 } = {}) {
+export async function appendActivationLog(directory, input, { now = new Date(), maxBytes = 256 * 1024, maxFiles = 3, budget } = {}) {
+  budget?.check();
   await mkdir(directory, { recursive: true, mode: 0o700 });
+  budget?.check();
   await chmod(directory, 0o700);
   const file = path.join(directory, "activation.jsonl");
   return withDirectoryLock(path.join(directory, ".activation.lock"), {
@@ -51,11 +56,13 @@ export async function appendActivationLog(directory, input, { now = new Date(), 
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    if (size > 0 && size + Buffer.byteLength(line) > maxBytes) await rotate(directory, maxFiles);
-    await writeFile(file, line, { flag: "a", mode: 0o600 });
+    if (size > 0 && size + Buffer.byteLength(line) > maxBytes) await rotate(directory, maxFiles, budget);
+    budget?.check();
+    await writeFile(file, line, { flag: "a", mode: 0o600, ...(budget ? { signal: budget.signal } : {}) });
+    budget?.check();
     await chmod(file, 0o600);
     return { recorded: true, path: file };
-  });
+  }, { budget });
 }
 
 export async function readActivationLogs(directory, { maxRecords = 1000, maxFiles = 3 } = {}) {

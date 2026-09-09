@@ -4,20 +4,20 @@ Treat these as instructions handled by the skill, not new native CLI commands. U
 
 A full natural-language `$agent-team` or `/agent-team` feature request can create a new canonical Beads or `TASKS.md` task after scope is sufficient and duplicate work is excluded. It can then register and start the assigned team. `start <name>` selects an already-defined tracker item; it must not invent requirements from the name. Bare `start` selects existing ready work. Lifecycle hooks validate later ownership and completion, but the hooks do not create task records from arbitrary prompts. This rule adds no prompt-parsing hook or new command.
 
-Accept `auto-agent start` with the same modifiers as a plain-language alias for `agent-team start`; it does not install or invoke a separate program. For resolved help, start, resume, settings, setup, or status actions, display the [AGENT-TEAM wordmark](wordmark.md) once before user-facing command output. Internal refills do not count as new user invocations.
+Accept `auto-agent start` with the same modifiers as a plain-language alias for `agent-team start`; it does not install or invoke a separate program. Use compact role-first output. Display the [AGENT-TEAM wordmark](wordmark.md) on first setup or requested help, not ordinary start/resume/settings/status or internal refills.
 
 | Action | Behavior |
 | --- | --- |
 | `start [N or name] [continuous] [with-preview] [auto-deploy [B]]` | Resolve project defaults and run-only overrides using [settings](settings.md). Saved auto-deploy does not prompt for confirmation; explicit modifiers can override it for this run. Select safe tasks and run bounded or continuous teams using [runs](runs.md). N is 1–6; B counts completed top-level tasks. A name selects one feature only. |
 | `auto-deploy [B or off]` | Enable current-run deployment batches (default B=1), or stop future automatic batches with off. Include eligible integrated work, without starting teams or saving defaults. Follow [release](release.md). |
 | `help` | Show the [command list and examples](help.md) without setup, checks, or mutations. |
-| `settings` | Run the [current-project](settings.md) sequential numbered settings wizard; do not start work or change an active run. |
+| `settings` | Show [current-project](settings.md) role/model/effort defaults and targeted controls. The complete wizard is opt-in; do not start work or change an active run. |
 | `status [name-or-ID or all]` | Run the read-only [status procedure](status.md). Never enter setup, recovery, or development from this action. |
 | `pause [name-or-ID or all]` | Without a target, show the in-progress team picker plus All and wait for selection. Explicit all acts on all eligible teams; a name/ID targets one. Follow [recovery](recovery.md). |
 | `pause and deploy` | Pause all Agent-Team writers and project activity, then commit and deploy verified finished, integrated, approved, not-yet-deployed work through the normal release gates. |
 | `resume [name-or-ID or all]` | Without a target, show the paused team picker plus All and wait for selection. Explicit all acts on all eligible teams; a name/ID targets one. Inspect actual and saved state using recovery. |
 | `approve <name-or-ID>` | Record the user's approval of the current review version for integration using [preview approval](preview.md). |
-| `setup` | Follow [dependency setup](setup.md), offer automatic installation for each missing dependency, then run the complete [settings wizard](settings.md) in the same flow. |
+| `setup` | Follow [dependency setup](setup.md), automatically prepare missing mandatory and selected default capabilities, then show recommended grouped defaults or requested targeted changes. Optional choices and real auth/trust remain separate. |
 
 Names use a short readable form such as `email-preferences`. Resolve exact name or stable team ID within the current project. Reserve action words, modifier words, `all`, and numeric selectors; never interpret user text as a shell command or path. No fuzzy selection for actions that change state. Ask one question for an ambiguous project, feature scope, or target; do not invent requirements from a name alone.
 
@@ -35,7 +35,7 @@ These lifecycle, multi-team, and preview features belong to Pro. They are not a 
 
 ## Automatic start
 
-Accept plain-language forms such as “agent team start” and “agent team resume.” Without a name, use the existing canonical Beads list, or its configured local-file fallback. Read complete eligible records and dependency/claim state using installed-version commands. Select one ready, unclaimed, non-deferred actionable task by the tracker's recorded priority and order; break otherwise equal ties by stable task ID. Do not select blocked tasks or a summary epic merely because it appears first.
+Accept plain-language forms such as “agent team start” and “agent team resume.” Without a name, use the explicitly selected canonical Beads list or root/designated TASKS.md. An unavailable Beads backend never activates a fallback tracker. Read complete eligible records and dependency/claim state using installed-version commands. Select one ready, unclaimed, non-deferred actionable task by the tracker's recorded priority and order; break otherwise equal ties by stable task ID. Do not select blocked tasks or a summary epic merely because it appears first.
 
 Under project registration/claim ownership, recheck eligibility, preserve its existing task ID, allocate one unique team number, and derive a readable name from the task title. Use a team-ID suffix if the name collides. If a new task genuinely needs an ID, let Beads assign its native ID or allocate one through the local tracker's single writer. Never replace an existing Beads ID or create duplicate tasks just to match a naming convention. Record the mapping before starting the team.
 

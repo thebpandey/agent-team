@@ -1,22 +1,18 @@
-# Agent-Team message format
+# Compact Agent-Team output
 
-Frame each user-facing Agent-Team response and each individual team update or handoff with this exact top and bottom border:
+Lead with current state and the useful outcome. Use plain language and stable task/team IDs. Show role labels first; optional display names may follow. Do not require a fixed-width frame, ASCII border or repeated wordmark.
 
-```text
-==========================================================================
+A normal progress update contains: changed outcome, important evidence or blocker, and next action. Omit empty fields and routine tool narration. Keep updates event-driven, with a concise heartbeat when lengthy work has no visible transition; do not poll agents merely to manufacture an update.
 
-TEAM-001 / lesson-progress / Developer
+Example:
 
-Implemented the assigned change. Focused checks passed.
-Next: independent review.
+> Developer · AT-012: implementation verified; independent review next.
+> Reviewer · AT-009: two findings assigned for repair. Other work continues.
 
-==========================================================================
-```
+Status shows run state, active/parked/ready work, actual capacity, task progress, release state and any necessary user action. A setting view shows role, purpose, effective model/effort, source and enforceability. Use narrow stacked text when a table would overflow; color must not carry meaning alone. Respect no-color and reduced-motion preferences.
 
-Use the actual stable team ID, readable feature name, and assigned Matrix agent name. Omit the role label in status and report output; help and settings may show the name with its role. For project-wide output use `AGENT-TEAM / Project Orchestrator`. Before team identity exists, use the project label; never invent a team ID to fill the header. Keep messages concise and use the existing required result/evidence fields for their purpose.
+Use native selection controls only when exposed. Otherwise use readable numbered options; never invent a host widget. One targeted settings request does not open every wizard stage.
 
-The example is fenced to show spacing. In normal Markdown output, place each border on its own line with a blank line between the border and the message body. This prevents the bottom border from turning the preceding text into a Markdown heading. Keep links, tables, and ordinary content as Markdown inside the frame. In a plain-text host, use the same spacing. Do not wrap the whole response in a code fence; only the [wordmark](wordmark.md) needs one.
+Show the [wordmark](wordmark.md), version and creator/source credit on first setup or requested help. Ordinary start, resume, settings, status, repair and handoff responses need no banner. Formatting never creates a tool action or state change.
 
-Apply this format to progress updates, questions/pickers expressed as text, help, settings, setup, status, recovery notices, and completion reports. Use one frame for a project summary table; do not frame each table row. If relaying individual team messages, give each message its own frame and identity. Do not add nested frames inside a project report. Native selection widgets and tool calls keep the host's required format; frame their accompanying text rather than altering their payload.
-
-For a user-invoked help, start, resume, settings, setup, or status, put the wordmark inside the first frame, before its identity and body. Place the installed skill version directly below the wordmark, then the creator credit, adding the GitHub source beside it for help and setup as specified in [wordmark](wordmark.md). Show it once per invocation, not once per progress update, team, continuous refill, or batch. Team messages use their identity header and borders without the project wordmark. Formatting alone never triggers a state change, agent request, or shell command.
+Handoffs use a compact receipt: outcome; exact revision and owned changes; acceptance/check results with evidence paths; unresolved findings; next action. Keep full logs, screenshots and transcripts out of the parent context unless a specific finding requires them.

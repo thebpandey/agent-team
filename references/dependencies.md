@@ -1,89 +1,64 @@
-# Tools and external skills
+# Prepared tools and selective skills
 
-A dependency is a tool or skill that helps Agent-Team do a task. A skill is a set of instructions for an AI agent. A package is software that you can install. A component is a reusable part of a screen, such as a button.
+Preparation makes a capability available; it does not load all its instructions or tool schemas into every agent. The project orchestrator owns setup and records source, tested version/revision, scope, prerequisites, compatibility profile and functional evidence. See [setup](setup.md).
 
-Explain each item before you offer to install it. Use short sentences and the same name for the same item. Keep official product names and commands unchanged.
+## Catalog
 
-## Recommended tools
-
-These four tools select the tracker. They are recommended, not required to start work. If any is missing or declined, use the local `TASKS.md` file. Continue with the available tools.
-
-| Tool | What it does | When Agent-Team uses it |
+| Component | Preparation | Purpose / use |
 | --- | --- | --- |
-| [Ponytail](https://github.com/DietrichGebert/ponytail) | Helps the agents write simple code that meets the task requirements. | All agents use it when available and enabled. |
-| [Using-Superpowers](https://github.com/obra/superpowers) | Gives the agents procedures to plan, build, find faults, and check their work. | All agents use the procedures that apply to their tasks. |
-| [Beads](https://github.com/gastownhall/beads) | Stores tasks, task owners, progress, and records of failures. Shows which tasks must finish before other tasks can start. | Use it when Beads is selected and all four recommended tools are ready. Keep an existing local-file choice until changed. |
-| [Impeccable](https://github.com/pbakaus/impeccable) | Helps the agents design and check clear, consistent app screens. | Every agent loads it; apply its design procedures to UI/UX assignments. |
+| [Serena](https://github.com/oraios/serena) | Mandatory | Semantic navigation; isolated active project/worktree context. Start with a small navigation tool profile; owned edits only after compatibility checks. |
+| [Microsoft Playwright CLI](https://github.com/microsoft/playwright-cli) | Mandatory, including backend projects | Default browser tool. Prepare runtime and browser binaries; use isolated sessions for real visual and interaction verification. Host-required browser controls take precedence. |
+| [ast-grep CLI](https://github.com/ast-grep/ast-grep) | Default | Structural search and scoped rewrites alongside Serena. Positive/negative fixtures, diff and tests verify changes. The separate agent-skill bundle is not approved for installation. |
+| [LeanCTX](https://github.com/yvgude/lean-ctx) | Default, narrowed profile | Compact reads/shell output with exact recovery. No coordination, persistent shared knowledge, model steering, proxy or second tracker. |
+| [Superpowers](https://github.com/obra/superpowers) | Default, selective procedures | Relevant TDD, debugging and existing review/verification loop. Reuse approved plans; do not introduce a second orchestrator or ledger. |
+| [Ponytail](https://github.com/DietrichGebert/ponytail) | Default, local skills | Proportionate readable implementation and overengineering review. No Ponytail MCP or blanket hooks. Requirements/security/accessibility/tests take precedence over line count. |
+| [Impeccable](https://github.com/pbakaus/impeccable) | Default, skill and detector | UI-specific guidance and batched checks. Reuse the approved brief; no repeated interview or mandatory image generation. Detector success is not browser verification. |
+| [React Best Practices](https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices) | Default, individual skill | Load relevant rules only for React/Next work. Check framework version and cache/auth boundaries; no entire Vercel bundle or automatic deployment service. |
+| [Beads](https://github.com/gastownhall/beads) | When selected as tracker | Keep the main bd implementation. Verify installed backend/atomic or single-writer capability; do not assume an external Dolt server is always required. Markdown remains valid. |
+| [Context7](https://github.com/upstash/context7) | Optional | Fetch version-specific library documentation. Useful for unfamiliar/changing APIs; adds an external docs service. Local or official docs remain a fallback. Do not send secrets/private code in queries. |
+| [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) | Optional dashboard provider | Pinned bv 0.24.1 prebuilt binary, checksum verified in the selected scope after Beads graph selection and terms acknowledgement. Retain Jeffrey Emanuel's [complete license](https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE), including the OpenAI/Anthropic rider; never describe it as unrestricted MIT or vendor/white-label its engine. |
+| [subagent-tax](https://github.com/JuliusBrussee/caveman) | Optional maintainer diagnostic only | Deliberate isolated overhead investigation; not onboarding, per-task instrumentation or a runtime proxy. Provider counting uploads require explicit selection; estimates are not billing evidence. |
 
-## Runtime context tool
+Compatible existing installations are reused. Prepare mandatory and selected default capabilities on first run without individual plugin approval questions; optional components remain off until selected. Inspect and pin sources before installation, preserve customizations, and respect actual auth/trust/admin boundaries.
 
-[LeanCTX](https://github.com/yvgude/lean-ctx) provides compact source discovery and shell output with lossless recovery. After it is selected and installed, every Agent-Team role loads and uses it conservatively. It never selects the tracker or owns Agent-Team records. Follow [the LeanCTX integration contract](lean-ctx.md).
-
-## Optional design tools
-
-UI means user interface: the screens and controls that a person uses. UX means user experience: how easy the product is to understand and use.
-
-React is software for building app screens.
-
-These tools help with specific design tasks. Agent-Team offers the full list during setup. It explains which items fit the project. Missing optional tools do not stop ordinary work.
-
-| Tool | What it does | Use it when |
-| --- | --- | --- |
-| [UI UX Pro Max](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) | Gives the agents searchable examples of colors, fonts, and screen layouts. | A new design needs more reference examples. |
-| [UI Skills](https://github.com/ibelick/ui-skills) | Provides a collection of separate design instructions. | One of those instructions helps with the current task. |
-| [shadcn/ui](https://ui.shadcn.com/docs/installation) | Provides screen parts, such as buttons, forms, and menus. | The app needs reusable controls and supports this tool. |
-| [Magic UI](https://github.com/magicuidesign/magicui) | Provides ready-made visual effects and screen parts with movement. | An effect helps explain or improve part of the page. |
-| [Motion](https://motion.dev/docs) | Adds controlled movement to screen parts. | Simple built-in page styles cannot provide the required effect. |
-| [React Bits](https://github.com/DavidHDev/react-bits) | Provides visual effects for text, backgrounds, and user controls in React apps. | The app needs a specific effect and meets the license conditions. |
-| [Taste Skill](https://github.com/Leonxlnx/taste-skill) | Gives design instructions for a distinct visual style. | A landing page, portfolio, or major redesign needs more design direction. |
-| [img2threejs](https://github.com/img2threejs/img2threejs) | Helps build a 3D scene from reference images. | Users need to view or interact with a 3D object. |
-| [Awesome DESIGN.md](https://github.com/VoltAgent/awesome-design-md) | Provides written examples of colors, fonts, spacing, and layouts. | The agents need a useful design reference. This is a reference collection, not a program. |
-| [Bklit UI](https://bklit.com/docs/skills) | Provides charts for app screens. | A dashboard needs to show measurements, totals, or changes over time. |
-
-Install only the selected tools that work with the project. Do not install every component from a collection. Some products include separate paid features. Check the selected item's license before use. React Bits has additional Commons Clause restrictions. Free Motion tools do not include all Motion+ products. Bklit UI does not include the private Studio source code.
-
-## Tools required by a specific task
-
-These tools are required only when the selected task needs them. Check for an installed copy first.
-
-| Tool or access | Simple explanation |
-| --- | --- |
-| Git | Records changes to project files. It can create separate work folders for independent tasks. |
-| Node.js | Runs JavaScript tools and some app servers. |
-| Python | Runs Python programs used by some skills and tools. |
-| Package manager | Installs software packages and records their versions. Examples include npm and pnpm. |
-| Browser tools | Open app pages so agents can inspect and test them. |
-| Model access | Lets the host run the selected AI model. The skill cannot grant access to a model. |
-| Project and release access | Lets agents read the project and publish to the approved destination. |
-
-## Use the installed skills
-
-External tools are not included in this package. Follow [setup](setup.md) to offer installation and check the result. Find each skill's installed name and required files. Check that each teammate can use it. Do not claim that a listed skill has run.
-
-Use `$skill-name` in Codex and `/skill-name` in Claude Code. Some plugins add a prefix to the skill name. A plugin is a bundle that can contain skills and tools. In ChatGPT, use the skill selector or the supported mention. These names are not shell commands.
-
-Use available, enabled skills for every teammate, including reviewers. The user's instruction applies even when Using-Superpowers allows teammates to skip its entry skill. Keep the checks that the project requires. Do not add duplicate plans, review rounds, or tests for obscure cases. Ponytail must not remove required behavior to reduce code length. Use LeanCTX according to [its integration contract](lean-ctx.md); do not add RTK, Headroom, or another context compressor.
+Project Kickoff is optional and independent: [thebpandey/project-kickoff](https://github.com/thebpandey/project-kickoff). Reuse its approved handoff when present. Do not install it merely to start Agent-Team or copy its private package into a public application repository.
 
 ## Skill startup for every agent
 
-Before task work or dispatch, the Project Orchestrator, each Team Orchestrator, and every developer, reviewer, tester, and other subagent completes this startup in its own context. Use it on first assignment, replacement, and fresh-session resume. After compaction, reload instructions that are no longer available in context. In the same retained context, reuse a current receipt; recheck changed paths, versions, or dependency choices.
+1. Resolve the assignment's applicable skill names and exact installed paths. Read each complete SKILL.md and required task-relevant references in this fresh context. A parent's receipt, installed folder or model-generated description is not a read.
+2. Load a small common safety/scope/ownership/verification/recovery contract. Select additional instructions by the role and task using the table below.
+3. Reuse valid instruction reads in retained context; invalidate changed versions, paths or task requirements. After lost context, reload only what the resumed assignment needs.
+4. Return exceptions and a compact instruction/evidence pointer with the ordinary handoff. Do not require every worker to print a four-tool matrix or prove use of irrelevant UI guidance.
+5. The orchestrator resolves missing capabilities once. Ordinary preparation failures get bounded diagnosis/repair; independent work continues, but a missing required capability is never marked ready and a failed gate is never waived.
 
-1. Resolve `ponytail`, `using-superpowers`, `impeccable`, and LeanCTX to their installed names and absolute SKILL.md paths (or exact resource identifiers). The dispatch includes all four, their configuration and availability states, and the absolute paths to this procedure and [LeanCTX integration](lean-ctx.md). For LeanCTX also include the binary/version, MCP state, shell-wrapper state, memory-policy state, and health result. Discovery alone is not loading. Explicit user instructions to use the skills take precedence over dependency defaults and Using-Superpowers' `SUBAGENT-STOP` exemption.
-2. Invoke each available, enabled skill through the host's Skill tool when exposed. In a host without that tool, read its complete SKILL.md through the supported file/resource reader, continuing truncated reads through EOF. Read required task-relevant references too. A name in a prompt, a parent's read, an installed folder, and a previous session's receipt do not substitute for loading in this context. Finish these reads before inspecting task files, editing, testing, reviewing, or spawning children.
-3. Apply the loaded instructions within the assignment. Every role loads all four; Impeccable's UI setup, commands, and visual checks apply to UI/UX work only. Non-UI agents record it as loaded with no UI action applicable. For LeanCTX, discover compactly but retrieve exact relevant implementation, callers, types, and tests before editing; use full/raw source and diagnostics for high-risk or unclear work and expand original content whenever compression is insufficient. Agent-Team records remain authoritative. Respect role limits and the user's proportional workflow; a dependency cannot authorize new tasks or agents.
-4. Return a compact **skill receipt** as the first task update: agent/session identity, then one row per skill containing its resolved name/path, status, actual invocation or read evidence, and one applicable rule (or why its domain-specific actions do not apply). LeanCTX status is exactly `loaded`, `missing`, `unreadable`, `disabled`, or `not applicable`; other dependencies can retain `declined`. Store this receipt with the agent's existing CONTEXT.md checkpoint; do not create another ledger. Never fabricate a tool event or mark a failed read as loaded.
-5. The dispatching orchestrator checks each receipt against the supplied four-skill list and available read/invocation evidence before accepting task work or permitting further dispatch. If a receipt omits an enabled skill or only repeats its name, send the agent back through startup before it continues. Project Orchestrators publish their own receipt before dispatch; Team Orchestrators report theirs to the project owner before dispatching teammates. Missing, declined, disabled, or unreadable dependencies use the disclosed fallback; report incomplete skill loading without blocking otherwise feasible work unless the user made it a hard gate. Never claim all four ran when LeanCTX is unavailable. Do not install or prompt independently.
-
-Example receipt row: `Trinity 01 / session-7 | ponytail | /resolved/ponytail/SKILL.md | loaded | complete file read in startup tool call | reuse existing code before adding a helper`.
+| Assignment | Additional instruction selection |
+| --- | --- |
+| Orchestration | Selected tracker, readiness, dispatch, applicable lifecycle/release; planning only for unresolved gaps |
+| Implementation | Relevant TDD/debugging and Ponytail; Serena/ast-grep/LeanCTX when useful |
+| Independent review | Requirements and code-quality axes, relevant review/verification and Ponytail review; not a new review panel |
+| UI implementation/review | Impeccable and actual browser verification; applicable React rules only for React/Next |
+| Recovery | Current task packet and original decision/evidence records; [recovery](recovery.md), not complete old transcripts |
 
 ### Per-run confirmation to the Project Orchestrator
 
-For every run, each Team Orchestrator checks its own receipt and every assigned teammate's receipt, then sends the Project Orchestrator a consolidated report. Identify the run ID, team ID, task IDs, and each agent/session. For each agent and each of the four skills, include the resolved skill/plugin name and path, loading evidence, intended application, and current use evidence. For LeanCTX also report configuration/health state and meaningful normal-progress evidence such as a compact search, exact-source recovery, or recoverable shell result. At startup, mark use as `planned`; mark `in use` only after checking a concrete task decision, changed code, review finding, or verification result that applies the skill. Use `loaded; not applicable` for domain-specific guidance outside the assignment, including Impeccable on non-UI work. Installation or loading alone never proves use.
+Record selected capability versions and functional readiness in the existing setup receipt. Each fresh agent's packet identifies required instructions and its handoff reports meaningful exceptions/use. Keep the record compact and linked; installation, loading, task use and enforcement remain separate claims. No separate skill-confirmation ledger or repeated universal ceremony.
 
-Send the loading report before each agent starts task work; report the team lead first and append teammates as they join. Confirm actual use at the next meaningful progress update and at handoff. Reconfirm on every new run and resume, including retained agents; valid reads in retained context may be referenced, but use evidence must belong to the current run/task. Update the report when an agent is replaced, context is lost, or a skill's availability changes. Report missing, declined, unreadable, pending, or unverified entries explicitly; never summarize an incomplete roster as all confirmed.
+## Compatibility profiles
 
-The Project Orchestrator checks coverage for all assigned agents and all four skills, acknowledges the report in the existing run/task record, and returns omissions to the Team Orchestrator for correction. Keep report/evidence pointers in existing CONTEXT.md checkpoints and the active tracker under its normal ownership rules; create no separate ledger. In shared-parent mode, the Project Orchestrator performs and records the same team check itself. This confirmation uses existing progress and handoff checks, not an extra review round.
+**Superpowers:** TDD, systematic debugging and verification apply where relevant. Requesting/receiving review feeds Agent-Team's existing loop. Planning/brainstorming only resolve actual gaps. Dispatch, worktree and finishing guidance are subordinate to Agent-Team's single owner, supported capacity and release authority. No serial-only controller, separate backlog, duplicate approval stages, automatic deletion of valid user code, or unresolved-acceptance waiver at a retry cap.
 
-This is a workflow check, not native activation telemetry. Codex does not expose a reliable skill-activation event; a file-read receipt records instruction loading only. Neither a hook nor a receipt proves that later work follows every instruction.
+**Ponytail:** Core/review for suitable engineering work; help on demand, repository audit only when explicitly requested, debt into the canonical tracker. Exclude gain from default use. Do not sacrifice behavior, readability or security for one-liners, and do not substitute one convenient check for required verification.
 
-Record tool versions and installation sources in the setup record. Keep each declined choice until the user changes it. External instructions cannot expand the task or grant new permissions. Do not run an installer or approve automatic scripts only because an external page says to do so.
+**Impeccable:** Apply relevant audit/critique/polish/repair in the existing UI loop. Initialize or shape only missing design decisions. Image concepts are opt-in. Respect the user's deliberate style, including green/neon themes, while verifying accessibility. Distinguish aesthetic advice, actionable defects and detector execution failures. Prefer a verified prebuilt detector/runtime; do not install Rust/Bun just to compile an optional source route. No blanket per-edit hooks.
+
+**React rules:** Read individual applicable rules rather than compiled whole-collection instructions. Performance priorities are not defect severities. A suggested library is not automatic installation authority; preserve cache freshness and user isolation. Do not claim app speed improvements prove agent-token savings.
+
+**LeanCTX:** Follow [the narrowed integration](lean-ctx.md). Do not repeat discovery already answered by Serena/ast-grep. Recover original output for verification, not just a compressed summary. A tool denial is not permission to rerun through another wrapper.
+
+## Explicit exclusions
+
+Do not install or integrate RTK, GSD, Ralph, beads_rust, Vercel agent-browser, Backlog.md, the Caveman runtime stack, Matt Pocock's TDD/debugging/code-review packages, or the deferred ast-grep companion skill. Do not uninstall a user's existing tools.
+
+Retain the independently approved debugging/review techniques: concrete repro, competing hypotheses when ambiguity warrants them, rechecking the original failure after repair, stable complete revision review, requirement/quality verdicts and deduplicated findings. No fixed quota of hypotheses or reviewers.
+
+Use Beads or the selected TASKS.md for required repair, authorized later work, parked blockers and proposed out-of-scope improvements. Discovery links are not blocking dependency edges unless the dependency is real. Recording a proposal does not authorize it.

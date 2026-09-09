@@ -26,6 +26,8 @@ The project orchestrator alone controls [bounded/continuous runs](runs.md), [pro
 
 ## Main, feature, and integration worktrees
 
+Here, “main” means the project's recorded canonical checkout and integration branch, which may be named `develop` or something else. Preserve that branch and existing tracker when adopting a project; do not rename them to match examples.
+
 Use the main checkout for project initialization, planning, and coordination. The main branch still contains integrated application code. After initialization, all feature code, tests, feature documentation, and repairs occur in separate feature worktrees, even when a lead handles a small change directly. Never edit application files in main as a shortcut.
 
 Create a feature branch/worktree from an identified base using the project's Git rules. Preserve existing edits. If the repository has no initial commit or commit authority is missing, finish permissible initialization/planning and report that concrete prerequisite; do not silently commit or invent worktree isolation. Adopt an existing suitable worktree after checking ownership instead of duplicating it.
@@ -43,4 +45,4 @@ Use one reusable integration worktree owned by the project orchestrator. Merge b
 5. Update main through the established authorized merge/PR process only if it still matches the tested base. If main advances, incorporate it and repeat affected checks. Never force an update to bypass a race or protection rule.
 6. Record the completed top-level task ID and exact integration boundary in the active tracker. This frees a development slot for a continuous run; deployment and cleanup remain separate. Follow [release](release.md) for batch selection, authorized production deployment, live verification, tracker updates, and required disk cleanup. Merged, deployed, and verified-in-production are separate facts. A pending preview approval cannot be bypassed by another team's combined release. Inspect whether updating remote main itself triggers deployment; use an established gated process to honor off/batch choices, or report the conflict before pushing. Do not change pipeline configuration or silently deploy to satisfy integration.
 
-Keep the integration worktree at most one per project. Reuse it while queued work needs it; after verified release and no queued or unfinished integration, remove the clean idle integration worktree using the same cleanup checks. Main is always preserved.
+Keep the integration worktree at most one per project. Reuse it while queued work needs it; after verified integration and no queued or unfinished integration, remove the clean idle integration worktree using the same cleanup checks, independently of deployment. Main is always preserved. A safely parked team may release verified stopped compute while retaining its task claim and worktree; unknown writer liveness never creates free capacity.

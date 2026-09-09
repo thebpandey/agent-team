@@ -2,7 +2,7 @@
 
 ## One authoritative task graph
 
-Choose Beads or the local TASKS.md as the only active project tracker, recording the mode and canonical location in the setup receipt and agent handoffs. Default to local mode when any of Beads, Ponytail, Using-Superpowers, or Impeccable is skipped/unusable. Continue using the other enabled skills. In Beads mode, discover installed-version help; do not assume storage backends, commands, or custom statuses. Use native states plus a short phase field/note for planned, implementing, verifying, ready to deploy, deployed, or blocked if needed. Keep requirement-to-task/evidence mappings in the active tracker, never a second parallel checklist.
+Choose Beads or the selected root/designated TASKS.md as the only active project tracker, recording its identity and canonical location in the setup receipt and handoffs. Reuse Project Kickoff or existing project choices. Skill availability never selects or migrates the tracker. In Beads mode, discover installed-version help; do not assume storage backends, commands, or custom statuses. Use native states plus supported metadata for execution phase. Keep requirement-to-task/evidence mappings in the active tracker, never a second parallel checklist.
 
 The project orchestrator creates/deduplicates tasks/issues, manages dependencies/ownership, integrates evidence, and closes/reopens tasks. In Beads mode teammates update only assigned progress and append evidence; in local mode the project orchestrator is the sole tracker writer and teammates send updates to the orchestrator. For Beads, confirm the backend supports concurrent writes before enabling them. If single-writer, serialize teammate-authored updates through the orchestrator; do not start competing database writers. Use supported persistence/sync at handoff and release.
 
@@ -43,7 +43,7 @@ admitted delivery IDs, integration boundaries, pending/in-flight batch pointers.
 
 Use planned, in_progress, blocked, verified, deployed, or deferred status as appropriate. A non-deployed task can finish at verified if deployment is outside scope. Update after claims, meaningful progress, failures, handoffs, verification, each successful deployment/rollback, and cleanup. Keep release history and unresolved evidence references; remove redundant narration instead of appending a diary. CONTEXT.md remains short resumption memory, not a second task list.
 
-If an existing Beads tracker becomes unavailable, reconstruct local tasks from the latest accessible evidence and preserve original IDs. Mark unknown states explicitly, retain the original data, and do not repeat external actions to infer their outcome. Genuine uncertainty about an operation may require inspection; absence of these four dependencies alone does not block development.
+If Beads becomes unavailable, preserve it as the authority. Diagnose and repair within scope; use timestamped evidence only as explicitly stale/unknown information, never as a writable fallback tracker. Continue independent work that does not require unavailable claims or gates. Do not repeat external actions to infer their outcome or manufacture a passing empty task list.
 
 Do not switch back just because Beads is later installed. On explicit selection of Beads, pause tracker writes, snapshot the local file, transfer tasks/IDs or record an ID mapping, dependencies, failures, and evidence, and verify coverage before changing the active mode. Mark the old file as an archived snapshot with a pointer to Beads. If transfer fails, keep local mode active. Apply the same reconciliation when leaving an accessible Beads tracker. Never maintain two writable authorities or destroy original records.
 
@@ -75,7 +75,26 @@ Create one issue per distinct meaningful failure, link affected work, and dedupl
 
 Do not issue-track routine typos, expected empty searches, or harmless transient commands. Append evidence to an existing failure instead of creating tickets per retry.
 
-Retry only with new evidence or a changed approach. After two attempts without useful progress, the orchestrator reassesses and may assign the complex developer; after another unsuccessful approach, stop that loop and ask one focused question or report the external blocker. Continue independent unblocked work. A transient failure may justify one bounded retry; inspect ambiguous side effects first. Never erase failing tests, waive required checks, or mark blocked work complete to advance.
+Retry only with new evidence or a changed approach. After two attempts without useful progress, reassess and apply an approved escalation or different strategy. If repair still cannot progress, safely park the affected task with its evidence and resume condition while independent authorized tasks continue. An ordinary engineering failure does not require a user fix/continue instruction. Ask only for a genuinely missing authority, access or material product decision. A transient failure may justify one bounded retry; inspect ambiguous side effects first. Never erase failing tests, waive required checks, or mark blocked work complete to advance.
+
+## Findings and later work
+
+Record all findings in the same Beads/TASKS authority, not backlog.md:
+
+- Required in-scope repair: assign, fix and verify automatically.
+- Approved later work: queue with priority/dependencies and execute when eligible within the run scope.
+- External blocker: record impact, attempts and resume condition; retain claim/gates and stop its writer before parking compute.
+- Out-of-scope improvement: record proposed/deferred, not authorized implementation.
+
+Keep stable ID, description, priority, origin, acceptance, disposition and blocker/next action. A discovery relation becomes a blocking dependency only when work actually depends on it. A required check cannot be relabeled optional just to complete the task.
+
+## Durable context ownership
+
+Persist facts when they arise, not only when compaction is imminent. The tracker owns task state and acceptance. Project documents own approved decisions, constraints and rejected alternatives. Checkpoints own only the current attempt, pending operations, uncertainty, next action and links to those records. Evidence belongs to its actual revision/environment.
+
+Use a compact recovery index, not a summary of previous summaries. Preserve prohibitions and distinguish proposals, approvals and unresolved decisions. Do not add a memory database, vector index, MCP memory service or full-transcript archive. Recover original diagnostics when needed; compressed output is not verification proof.
+
+A fresh worker must verify task scope, actual files/revision, writer handoff, pending operations and required evidence from its packet and referenced records before continuing. Missing records trigger bounded reconstruction from original evidence; ask only when a material fact cannot be recovered. Keep native compaction enabled as fallback and never claim cache space expands the context window.
 
 Reference: [Beads documentation](https://github.com/gastownhall/beads). Installed-version behavior controls implementation.
 
