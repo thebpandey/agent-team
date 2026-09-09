@@ -285,3 +285,59 @@ test('setup pre-rename deadline preserves original setup and removes its tempora
   assert.equal(await readFile(setupPath, 'utf8'), original);
   assert.equal((await readdir(f.root)).some(name => name.endsWith('.tmp')), false);
 });
+
+test('Playwright npm installation deadline kills the labelled fake installer and releases setup lock', async (t) => {
+  const f = await fixture(t);
+  const fakeBin = path.join(f.root, 'labelled-fake-installers');
+  await mkdir(fakeBin);
+  const late = path.join(f.root, 'late-npm-success');
+  const fakeNpm = path.join(fakeBin, 'npm');
+  await writeFile(fakeNpm, `#!/usr/bin/env node\n// Labelled fake npm; never installs packages.\nimport { writeFileSync } from 'node:fs';\nsetTimeout(() => writeFileSync(${JSON.stringify(late)}, 'late'), 700);\n`);
+  await chmod(fakeNpm, 0o755);
+  const setupPath = path.join(f.root, 'setup.json');
+  const original = JSON.stringify({ skill: 'agent-team', projectId: 'p', version: 1, tracker: { kind: 'markdown', path: 'TASKS.md' } });
+  await writeFile(setupPath, original);
+  const priorPath = process.env.PATH;
+  process.env.PATH = `${fakeBin}${path.delimiter}${priorPath}`;
+  const budget = createEventBudget(180);
+  const started = performance.now();
+  try {
+    await assert.rejects(prepareDependencies({
+      setupPath, expectedVersion: 1, operationId: 'npm-deadline', writer: { id: 'owner', role: 'project_orchestrator' },
+      loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: [] }, budget,
+      runner: async (request) => {
+        if (request.dependency.id !== 'playwright-cli') return { status: 'passed', version: request.dependency.version };
+        if (request.phase === 'probe') return { status: 'not_found' };
+        return f.runner({ ...request, dependency: f.dependency });
+      },
+    }), { code: 'EVENT_DEADLINE' });
+    assert.ok(performance.now() - started < 550, 'installer must stop at the caller deadline');
+    assert.equal(await readFile(setupPath, 'utf8'), original);
+    await assert.rejects(readdir(path.join(f.root, '.locks/setup.lock')), { code: 'ENOENT' });
+    await new Promise(resolve => setTimeout(resolve, 800));
+    await assert.rejects(readFile(late), { code: 'ENOENT' });
+  } finally {
+    budget.close();
+    if (priorPath === undefined) delete process.env.PATH;
+    else process.env.PATH = priorPath;
+  }
+});
+
+for (const hangingAction of ['open', 'click', 'eval', 'close', 'failure-close']) {
+  test(`Playwright functional ${hangingAction} deadline cancels its labelled fake child`, async (t) => {
+    const f = await fixture(t);
+    const late = path.join(f.root, 'late-functional-success');
+    const calls = path.join(f.root, 'functional-calls');
+    await writeFile(f.dependency.executable, `#!/usr/bin/env node\n// Labelled fake browser command; no browser/native CLI is used.\nimport { appendFileSync, writeFileSync } from 'node:fs';\nconst action = process.argv.find(arg => ['open', 'click', 'eval', 'close'].includes(arg));\nappendFileSync(${JSON.stringify(calls)}, action + '\\n');\nif (${JSON.stringify(hangingAction)} === 'failure-close' && action === 'click') process.exit(9);\nif (action === ${JSON.stringify(hangingAction === 'failure-close' ? 'close' : hangingAction)}) setTimeout(() => writeFileSync(${JSON.stringify(late)}, 'late'), 700);\nelse if (action === 'eval') console.log('yes');\n`);
+    const budget = createEventBudget(250);
+    const started = performance.now();
+    try {
+      await assert.rejects(f.runner({ dependency: f.dependency, phase: 'functional', check: 'browser-interaction', budget }), { code: 'EVENT_DEADLINE' });
+      assert.ok(performance.now() - started < 600, 'functional child must stop at the caller deadline');
+      const completedCalls = await readFile(calls, 'utf8');
+      await new Promise(resolve => setTimeout(resolve, 800));
+      await assert.rejects(readFile(late), { code: 'ENOENT' });
+      assert.equal(await readFile(calls, 'utf8'), completedCalls, 'expired cleanup must not spawn another child');
+    } finally { budget.close(); }
+  });
+}

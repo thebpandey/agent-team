@@ -308,10 +308,13 @@ function binaryPath(dependency, toolRoot) {
 }
 
 async function command(file, args, options = {}) {
-  const { budget, ...executionOptions } = options;
+  const { budget, timeout = 120_000, ...executionOptions } = options;
   try {
     budget?.check();
-    const result = await exec(file, args, { encoding: "utf8", timeout: budget?.timeout(120_000) ?? 120_000, signal: budget?.signal, maxBuffer: 1024 * 1024, ...executionOptions });
+    const result = await exec(file, args, {
+      encoding: "utf8", maxBuffer: 1024 * 1024, ...executionOptions,
+      timeout: budget?.timeout(timeout) ?? timeout, signal: budget?.signal ?? executionOptions.signal,
+    });
     budget?.check();
     return { status: "passed", code: 0, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
@@ -765,21 +768,22 @@ async function serenaFunctional(executable, paths) {
   }
 }
 
-async function playwrightFunctional(executable, paths) {
+async function playwrightFunctional(executable, paths, execute = command) {
   const session = `agent-team-${randomUUID()}`;
   const url = "data:text/html,<button%20id='activate'%20onclick=\"document.body.dataset.ready='yes'\">Activate</button>";
   const options = { cwd: paths.projectRoot, env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: path.join(paths.toolRoot, "playwright-browsers"), NO_UPDATE_NOTIFIER: "1" } };
-  const opened = await command(executable, [`-s=${session}`, "open", url], options);
+  const opened = await execute(executable, [`-s=${session}`, "open", url], options);
   if (opened.status !== "passed") return opened;
   try {
-    const clicked = await command(executable, [`-s=${session}`, "click", "#activate"], options);
+    const clicked = await execute(executable, [`-s=${session}`, "click", "#activate"], options);
     if (clicked.status !== "passed") return clicked;
-    const checked = await command(executable, [`-s=${session}`, "eval", "document.body.dataset.ready"], options);
+    const checked = await execute(executable, [`-s=${session}`, "eval", "document.body.dataset.ready"], options);
     return checked.status === "passed" && checked.stdout?.includes("yes")
       ? { status: "passed", evidence: "Launched an isolated browser, clicked the fixture, and observed its state change." }
       : { status: "failed", evidence: "Browser interaction did not produce the expected page state." };
   } finally {
-    await command(executable, [`-s=${session}`, "close"], options);
+    // Cleanup uses the same deadline: it cannot start or linger after expiry.
+    await execute(executable, [`-s=${session}`, "close"], options);
   }
 }
 
@@ -788,6 +792,7 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
   if (!paths?.toolRoot || !paths?.skillRoot || !paths?.projectRoot) throw new Error("Dependency preparation paths are required.");
   return async ({ dependency, phase, check, budget = eventBudget }) => {
     budget?.check();
+    const execute = (file, args, options = {}) => command(file, args, { ...options, budget });
     const executable = binaryPath(dependency, paths.toolRoot);
     if (phase === "probe") {
       if (dependency.id === "playwright-cli") {
@@ -798,22 +803,22 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
         if (!dependency.install.paths.length) return { status: "not_found" };
         return inspectSkillDestinations(dependency, paths);
       }
-      const result = await command(executable, ["--version"], dependency.id === "playwright-cli"
-        ? { env: { ...process.env, NO_UPDATE_NOTIFIER: "1" }, budget } : { budget });
+      const result = await execute(executable, ["--version"], dependency.id === "playwright-cli"
+        ? { env: { ...process.env, NO_UPDATE_NOTIFIER: "1" } } : {});
       return result.status === "passed" ? { ...result, version: parsedVersion(`${result.stdout}\n${result.stderr}`) } : result;
     }
     if (phase === "install") {
       await mkdir(paths.toolRoot, { recursive: true, mode: 0o700 });
       if (dependency.install?.kind === "npm") {
         for (const step of buildPreparationPlan({ dependencyId: dependency.id, host, scope, paths, executable: dependency.executable }).install) {
-          const result = await command(step.file, step.args, { cwd: step.cwd, env: step.env ? { ...process.env, ...step.env } : process.env });
+          const result = await execute(step.file, step.args, { cwd: step.cwd, env: step.env ? { ...process.env, ...step.env } : process.env });
           if (result.status !== "passed") return result;
         }
         return { status: "passed", version: dependency.version, evidence: `Installed pinned ${dependency.install.package}@${dependency.version}.` };
       }
       if (dependency.install?.kind === "uv-tool") {
         const uv = binaryPath(CATALOG_BY_ID.get("uv"), paths.toolRoot);
-        return command(uv, ["tool", "install", "--python", dependency.install.python, `${dependency.install.package}==${dependency.version}`], {
+        return execute(uv, ["tool", "install", "--python", dependency.install.python, `${dependency.install.package}==${dependency.version}`], {
           env: { ...process.env, UV_TOOL_DIR: path.join(paths.toolRoot, "uv-tools"), UV_TOOL_BIN_DIR: path.join(paths.toolRoot, "bin") },
         });
       }
@@ -825,17 +830,17 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       const companion = await preparePlaywrightSkill(dependency, paths, budget);
       if (companion.status !== "passed") return companion;
       const step = buildPreparationPlan({ dependencyId: dependency.id, host, scope, paths, executable }).browserInstall;
-      const browser = await command(step.file, step.args, { cwd: step.cwd, env: { ...process.env, ...step.env }, budget });
+      const browser = await execute(step.file, step.args, { cwd: step.cwd, env: { ...process.env, ...step.env } });
       return browser.status === "passed" ? companion : browser;
     }
     if (phase === "functional") {
-      if (check === "command") return command(executable, ["--version"]);
-      if (functionalAdapters[dependency.id]) return functionalAdapters[dependency.id]({ dependency, executable, host, scope, paths, command });
+      if (check === "command") return execute(executable, ["--version"]);
+      if (functionalAdapters[dependency.id]) return functionalAdapters[dependency.id]({ dependency, executable, host, scope, paths, command: execute });
       if (check === "complete-selective-skills") return verifySkillFiles(dependency, paths);
       if (check === "skill-discovery") return verifySkillFiles(dependency, paths);
       if (check === "symbol-operation") return serenaFunctional(executable, paths);
       if (check === "positive-negative-structural-pattern") return astGrepFunctional(executable, paths);
-      if (check === "browser-interaction") return playwrightFunctional(executable, paths);
+      if (check === "browser-interaction") return playwrightFunctional(executable, paths, execute);
       if (check === "narrow-read-recovery") return leanCtxFunctional(executable, paths);
       if (check === "detector-exit-contract") return impeccableFunctional(executable, paths);
       if (check === "atomic-tracker-write") return beadsFunctional(executable, paths);
