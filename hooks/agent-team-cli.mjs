@@ -11,11 +11,12 @@ import { buildArtifacts, checkArtifacts } from "./lib/artifacts.mjs";
 import { getHealth } from "./lib/health.mjs";
 import { installPackage, rollbackPackage, uninstallPackage } from "./lib/install.mjs";
 import { checkInstalledPackage, checkPackage } from "./lib/package-validator.mjs";
+import { runWorkflowCommand, workflowCommandFlags } from "./lib/workflow-cli.mjs";
 
 const run = promisify(execFile);
 
 const commandFlags = {
-  health: new Set(["home", "project"]),
+  health: new Set(["home", "project", "scope"]),
   audit: new Set(["home", "log", "tracker", "mistakes", "limit"]),
   install: new Set(["source", "home", "host", "scope", "project"]),
   uninstall: new Set(["home", "host", "scope", "project"]),
@@ -24,6 +25,7 @@ const commandFlags = {
   "check-installed-package": new Set(["source"]),
   "check-artifacts": new Set(["source", "archive", "revision"]),
   "build-artifacts": new Set(["source", "output", "revision"]),
+  ...workflowCommandFlags,
 };
 
 function flags(command, args) {
@@ -46,13 +48,14 @@ async function gitRevision(sourceRoot) {
   return stdout.trim();
 }
 
-/** Provide one structured command surface for health, audit, install, rollback, and validation. */
-export async function runCommand(command, options) {
+/** Provide one structured command surface for package and project workflows. */
+export async function runCommand(command, options, context = {}) {
   const sourceRoot = path.resolve(options.source ?? path.join(import.meta.dirname, ".."));
   const home = path.resolve(options.home ?? os.homedir());
   if (command === "health") return getHealth({
     home,
     ...(options.project ? { projectPath: path.resolve(options.project) } : {}),
+    ...(options.scope ? { scope: options.scope } : {}),
   });
   if (command === "audit") return auditEffectiveness({
     logDirectory: path.resolve(options.log ?? path.join(home, ".agent-team-hooks", "logs")),
@@ -81,16 +84,21 @@ export async function runCommand(command, options) {
     await mkdir(outputDirectory, { recursive: true });
     return buildArtifacts({ sourceRoot, outputDirectory, sourceRevision: options.revision ?? await gitRevision(sourceRoot) });
   }
+  if (workflowCommandFlags[command]) return runWorkflowCommand(command, options, context);
   throw new Error(`Unknown command: ${command ?? "missing"}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const command = process.argv[2];
+  const streaming = command === "dashboard-start";
   try {
-    const result = await runCommand(process.argv[2], flags(process.argv[2], process.argv.slice(3)));
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    const result = await runCommand(command, flags(command, process.argv.slice(3)), {
+      onStarted(value) { process.stdout.write(`${JSON.stringify(value)}\n`); },
+    });
+    process.stdout.write(`${JSON.stringify(result, null, streaming ? 0 : 2)}\n`);
     if (result.status === "failed") process.exitCode = 1;
   } catch (error) {
-    process.stdout.write(`${JSON.stringify({ status: "failed", error: error.message }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ status: "failed", error: error.message }, null, streaming ? 0 : 2)}\n`);
     process.exitCode = 1;
   }
 }
