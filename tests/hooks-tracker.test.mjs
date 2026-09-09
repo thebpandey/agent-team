@@ -19,6 +19,33 @@ async function fixture(tracker) {
 }
 const beads = async () => ({ stdout: JSON.stringify([{ id: "AT-001", title: "Complete fixture work", assignee: "TEAM-001", status: "in_progress", updated_at: "2026-09-08T10:00:00Z" }]) });
 
+test("explicit selected Beads executable is canonical across linked worktrees; invalid explicit paths never fall back", async () => {
+  const value = await fixture({ kind: "beads", executable: "/selected/bin/bd" });
+  const main = await resolveProject(value.root);
+  const linked = await resolveProject(value.feature);
+  assert.deepEqual(main.tracker, linked.tracker);
+  assert.equal(linked.tracker.executable, "/selected/bin/bd");
+  const environment = { ...process.env, BEADS_DB: "/wrong/db", BD_DB: "/wrong/other", BEADS_DOLT_SERVER_HOST: "wrong-host", BEADS_DOLT_SERVER_DATABASE: "wrong-database", BEADS_DOLT_SERVER_PASSWORD: "fixture-auth" };
+  const current = await loadCanonicalState(linked, { environment, runBeads: async (binary, _args, options) => {
+    assert.equal(binary, "/selected/bin/bd");
+    assert.equal(options.env.BEADS_DB, undefined);
+    assert.equal(options.env.BD_DB, undefined);
+    assert.equal(options.env.BEADS_DOLT_SERVER_HOST, undefined);
+    assert.equal(options.env.BEADS_DOLT_SERVER_DATABASE, undefined);
+    assert.equal(options.env.BEADS_DOLT_SERVER_PASSWORD, "fixture-auth");
+    assert.equal(options.env.BEADS_DIR, path.join(value.root, ".beads"));
+    return beads();
+  } });
+  assert.equal(current.tracker.executableSource, "selected");
+  assert.equal(current.tracker.status, "current");
+  for (const executable of ["bd", "", null]) {
+    await writeFile(main.paths.setup, JSON.stringify({ skill: "agent-team", tracker: { kind: "beads", executable } }));
+    const invalid = await loadCanonicalState(await resolveProject(value.feature));
+    assert.equal(invalid.tracker.status, "unavailable");
+    assert.equal(invalid.tracker.reason, "invalid_selection");
+  }
+});
+
 for (const tracker of [{ kind: "markdown", path: "TASKS.md" }, { kind: "markdown", path: ".agent-team/TASKS.md" }, { kind: "beads" }]) {
   test(`selected ${JSON.stringify(tracker)} shares authority and completion gates across worktrees (adapter fixture)`, async () => {
     // Catches hardcoded Markdown selection, lost Beads owner mapping, and worktree-local authority.
@@ -188,4 +215,18 @@ test("invalid separators and blank task IDs cannot create empty current tracker 
     await writeFile(project.paths.tasks, source);
     assert.equal((await loadCanonicalState(project)).tracker.status, "unavailable");
   }
+});
+
+test("Beads normalization preserves explicit priority, dependency IDs and parent without inference", async () => {
+  const value = await fixture({ kind: "beads" });
+  const project = await resolveProject(value.root);
+  const canonical = await loadCanonicalState(project, { runBeads: async () => ({ stdout: JSON.stringify([
+    { id: "work-abc.2", title: "Child", status: "open", priority: 1, parent: "work-abc", dependencies: [{ issue_id: "work-abc.2", depends_on_id: "work-xyz", type: "blocks" }] },
+    { id: "work-def.3", title: "Unrelated dotted ID", status: "open", priority: 3 },
+  ]) }) });
+  assert.deepEqual(canonical.tasks[0].dependencies, ["work-xyz"]);
+  assert.equal(canonical.tasks[0].parent, "work-abc");
+  assert.equal(canonical.tasks[0].priority, 1);
+  assert.equal(canonical.tasks[1].parent, undefined);
+  assert.equal(canonical.tasks[1].dependencyEvidence, "unavailable");
 });

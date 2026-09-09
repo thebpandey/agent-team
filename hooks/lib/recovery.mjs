@@ -2,9 +2,38 @@ import { execFile } from "node:child_process";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import { identityFor, loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs";
 
 const run = promisify(execFile);
+
+async function checkpointSources(project, checkpoint, budget) {
+  const result = [];
+  for (const pointer of checkpoint.sourcePointers ?? []) {
+    const recorded = checkpoint.sourceEvidence?.find((entry) => entry.path === pointer.path)?.fingerprint;
+    try {
+      const read = () => readFile(path.resolve(project.root, pointer.path));
+      const source = await (budget ? budget.run(read) : read());
+      const fingerprint = createHash("sha256").update(source).digest("hex");
+      result.push({ ...pointer, status: !recorded ? "unavailable" : recorded === fingerprint ? "current" : "stale" });
+    } catch { result.push({ ...pointer, status: "unavailable" }); }
+  }
+  return result;
+}
+
+/** Current original records and revision binding, also enforced by consequential resume. */
+export async function inspectCheckpointEvidence(project, checkpoint, { budget, probe = runBoundedProbe } = {}) {
+  const sourceEvidence = await checkpointSources(project, checkpoint, budget);
+  const [head, dirty] = await Promise.all([
+    probe("git", ["rev-parse", "HEAD"], { cwd: checkpoint.worktree, budget, timeoutMs: 500, maxOutputBytes: 256 }),
+    probe("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: checkpoint.worktree, budget, timeoutMs: 500, maxOutputBytes: 2048 }),
+  ]);
+  const unavailable = !checkpoint.evidenceRevision || head.status !== "available" || dirty.status !== "available"
+    || sourceEvidence.some(({ status }) => status === "unavailable");
+  const stale = sourceEvidence.some(({ status }) => status === "stale") || head.output.trim() !== checkpoint.evidenceRevision
+    || head.output.trim() !== checkpoint.revision || dirty.output.trim() !== "";
+  return { status: unavailable ? "unavailable" : stale ? "stale" : "current", evidenceRevision: checkpoint.evidenceRevision, sourceEvidence };
+}
 
 export async function runBoundedProbe(executable, args, { cwd, timeoutMs = 1000, maxOutputBytes = 4096, budget } = {}) {
   try {
@@ -25,13 +54,13 @@ function evidence(probeResult, transform = (value) => value) {
   return value ? { status: "current", value } : { status: "unavailable" };
 }
 
-async function handoffInventory(root, limit = 20) {
+async function handoffInventory(root, limit = 20, budget) {
   const items = [];
   const queue = [{ directory: root, relative: "" }];
   try {
     while (queue.length && items.length <= limit) {
       const { directory, relative } = queue.shift();
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
+      for (const entry of await (budget ? budget.run(() => readdir(directory, { withFileTypes: true })) : readdir(directory, { withFileTypes: true }))) {
         const name = path.posix.join(relative, entry.name);
         if (entry.isDirectory()) queue.push({ directory: path.join(directory, entry.name), relative: name });
         else if (entry.isFile()) items.push(name);
@@ -101,7 +130,7 @@ async function factualSnapshot(project, sessionId, probe, { includeProbes, budge
       } : { taskIds: [] }),
     } : { status: "unavailable", projectId: project.projectId, sessionId, kind: "unknown", taskIds: [] },
     tracker: canonical?.tracker ?? { status: "unavailable", path: project.paths.tasks },
-    handoffs: await handoffInventory(project.paths.handoffs),
+    handoffs: await handoffInventory(project.paths.handoffs, 20, budget),
     controls: {
       projectPaused: canonical?.state.run?.paused === true,
       integrationPaused: canonical?.state.integration?.paused === true,
@@ -123,18 +152,24 @@ export async function inspectRecovery(project, {
   includeProbes = false,
   includeGit = false,
   sessionId = "unknown",
+  taskId,
+  worktree = project.worktreeRoot,
   probe = runBoundedProbe,
   budget,
   canonical,
 } = {}) {
   if (!project.active) return { status: "unavailable", reason: project.reason };
+  const bounded = (action) => budget ? budget.run(action) : action();
   const finish = async (snapshot) => {
     if (!includeProbes && !includeGit) return snapshot;
-    return { ...snapshot, ...(await factualSnapshot(project, sessionId, probe, { includeProbes, budget, canonical })) };
+    const facts = await factualSnapshot(project, sessionId, probe, { includeProbes, budget, canonical });
+    const binding = snapshot.evidenceRevision ?? snapshot.revision;
+    const stale = binding && (facts.git.revision.value !== binding || facts.git.dirty.entries.length > 0);
+    return { ...snapshot, ...facts, ...(stale ? { status: "stale", evidenceStatus: "stale" } : {}) };
   };
   let names;
   try {
-    names = await readdir(project.paths.checkpoints);
+    names = await bounded(() => readdir(project.paths.checkpoints));
   } catch (error) {
     if (error.code === "ENOENT") return finish({ status: "unavailable", reason: "checkpoint_missing" });
     return finish({ status: "unavailable", reason: "checkpoint_unreadable" });
@@ -143,9 +178,15 @@ export async function inspectRecovery(project, {
   const records = [];
   for (const name of names.filter((entry) => entry.endsWith(".json")).slice(0, 100)) {
     try {
-      const record = JSON.parse(await readFile(path.join(project.paths.checkpoints, name), "utf8"));
+      const source = await bounded(() => readFile(path.join(project.paths.checkpoints, name), "utf8"));
+      if (Buffer.byteLength(source) > 32768) continue;
+      const record = JSON.parse(source);
+      const recordSession = record.sessionId ?? name.replace(/\.json$/, "");
+      if (sessionId !== "unknown" && recordSession !== sessionId) continue;
+      if (taskId && !record.taskIds?.includes(taskId)) continue;
+      if (record.worktree && path.resolve(record.worktree) !== path.resolve(worktree)) continue;
       const timestamp = Date.parse(record.updatedAt);
-      if (Number.isFinite(timestamp)) records.push({ ...record, timestamp });
+      if (Number.isFinite(timestamp)) records.push({ ...record, sessionId: recordSession, path: path.join(project.paths.checkpoints, name), timestamp });
     } catch {
       // A malformed record is unavailable evidence, not proof that work is current.
     }
@@ -153,10 +194,36 @@ export async function inspectRecovery(project, {
   records.sort((left, right) => right.timestamp - left.timestamp);
   const latest = records[0];
   if (!latest) return finish({ status: "unavailable", reason: "checkpoint_invalid" });
+  const sourceEvidence = await checkpointSources(project, latest, budget);
+  let task;
+  let currentPending = [];
+  if (taskId) {
+    try {
+      const current = await loadCanonicalState(project, { budget });
+      if (current.tracker.status === "current") task = current.tasks.find(({ id }) => id === taskId);
+      currentPending = Object.entries(current.state.pendingOperations ?? {}).filter(([, entry]) => !entry.taskId || entry.taskId === taskId)
+        .map(([operationId, entry]) => ({ operationId, ...entry }));
+    } catch { /* A missing authority is not reconstructed from hook metadata. */ }
+  }
+  const sourceChanged = sourceEvidence.some(({ status }) => status === "stale")
+    || latest.evidenceRevision && latest.revision !== latest.evidenceRevision;
   return finish({
-    status: now.getTime() - latest.timestamp <= staleAfterMs ? "current" : "stale",
+    status: !sourceChanged && now.getTime() - latest.timestamp <= staleAfterMs ? "current" : "stale",
+    evidenceStatus: sourceChanged ? "stale" : sourceEvidence.some(({ status }) => status === "unavailable") ? "unavailable" : "current",
     updatedAt: latest.updatedAt,
     sessionId: latest.sessionId,
+    path: latest.path,
+    version: latest.version,
+    revision: latest.revision,
+    evidenceRevision: latest.evidenceRevision,
+    taskIds: latest.taskIds ?? [],
     nextAction: latest.nextAction,
+    sourcePointers: latest.sourcePointers ?? [],
+    sourceEvidence,
+    task,
+    pendingOperations: [...(latest.pendingOperations ?? []), ...currentPending].slice(0, 20),
+    uncertainty: latest.uncertainty ?? [],
+    scope: latest.scope,
+    restoreIndex: { tracker: project.paths.tasks, checkpoint: latest.path, sources: latest.sourcePointers ?? [] },
   });
 }
