@@ -9,7 +9,8 @@
     "Getting_Started_with_Agent-Team.html",
     "LICENSE",
     "README.md",
-    "SKILL.md"
+    "SKILL.md",
+    "agent-team-guide-v7.0.1.html"
   ],
   "includeRoots": [
     "agents",
@@ -24,6 +25,7 @@
     "LICENSE",
     "README.md",
     "SKILL.md",
+    "agent-team-guide-v7.0.1.html",
     "agents/openai.yaml",
     "assets/banner.svg",
     "assets/claude-agents/agent-team-complex.md",
@@ -34,6 +36,8 @@
     "assets/claude-agents/agent-team-visual-tester.md",
     "assets/dashboard/dashboard.css",
     "assets/dashboard/dashboard.js",
+    "assets/guide/agent-team-essence-16x9.png",
+    "assets/guide/agent-team-harness-flow-3x4.png",
     "assets/diagrams/README.md",
     "assets/diagrams/release-recovery.mmd",
     "assets/diagrams/release-recovery.png",

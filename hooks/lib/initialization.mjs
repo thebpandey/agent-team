@@ -11,6 +11,8 @@ import { captureWriterIdentity, inspectWriterIdentity, taskEligibility } from ".
 import { resolveTracker, trackerFingerprint as fingerprintTracker } from "./tracker.mjs";
 
 const run = promisify(execFile);
+const MAX_INITIALIZATION_REQUEST_BYTES = 256 * 1024;
+const MAX_PLAN_TASKS = 500;
 const hash = (source) => createHash("sha256").update(source).digest("hex");
 const stable = (value) => JSON.stringify(value && typeof value === "object"
   ? Array.isArray(value) ? value.map((entry) => JSON.parse(stable(entry))) : Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(stable(value[key]))])) : value);
@@ -49,7 +51,7 @@ function registryIdentity(source) {
 }
 
 function validateRequest(request) {
-  if (!request || Buffer.byteLength(JSON.stringify(request)) > 32768) return "invalid_request";
+  if (!request || Buffer.byteLength(JSON.stringify(request)) > MAX_INITIALIZATION_REQUEST_BYTES) return "invalid_request";
   if (![request.projectId, request.ownerSessionId, request.operationId].every(validId)) return "explicit_setup_identity_required";
   if (!["standalone", "existing"].includes(request.source)) return "explicit_source_required";
   if (!request.tracker || !["markdown", "beads"].includes(request.tracker.kind)) return "explicit_tracker_required";
@@ -58,7 +60,7 @@ function validateRequest(request) {
     || !strings(plan.verification) || typeof plan.branch !== "string" || !plan.branch || plan.branch.length > 256
     || !plan.authority || !strings(plan.authority.ownedPaths) || !plan.authority.ownedPaths.every(relative)) return "required_plan_facts_missing";
   if (request.source === "standalone" && (!Array.isArray(plan.tasks) || !plan.tasks.length)) return "actionable_tasks_missing";
-  if (plan.tasks !== undefined && (!Array.isArray(plan.tasks) || plan.tasks.length > 100 || new Set(plan.tasks.map((task) => task?.id)).size !== plan.tasks.length
+  if (plan.tasks !== undefined && (!Array.isArray(plan.tasks) || plan.tasks.length > MAX_PLAN_TASKS || new Set(plan.tasks.map((task) => task?.id)).size !== plan.tasks.length
     || plan.tasks.some((task) => !validId(task?.id)))) return "invalid_task_identity";
   return undefined;
 }

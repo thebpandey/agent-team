@@ -75,6 +75,65 @@ if (process.argv[2] === "initialize-worker") {
     await assert.rejects(access(path.join(value.feature, ".agent-team/setup.json")), { code: "ENOENT" });
   });
 
+  test("standalone initialization accepts 101 tasks", async () => {
+    const value = await fixture();
+    value.request.plan.tasks = Array.from({ length: 101 }, (_, index) => ({
+      id: `AT-${String(index + 1).padStart(3, "0")}`,
+      title: `Implement approved task ${index + 1}`,
+      status: "ready",
+      dependencies: [],
+      acceptance: ["Pass the task checks."],
+    }));
+    const result = await initialize(value.root, value.request);
+    assert.equal(result.status, "applied");
+    assert.equal((await loadCanonicalState(await resolveProject(value.root))).tasks.length, 101);
+  });
+
+  test("standalone initialization and its receipt support 500 tasks", async () => {
+    const value = await fixture();
+    value.request.plan.tasks = Array.from({ length: 500 }, (_, index) => ({
+      id: `AT-${String(index + 1).padStart(3, "0")}`,
+      title: `Implement approved task ${index + 1}`,
+      status: "ready",
+      dependencies: [],
+      acceptance: ["Pass the task checks."],
+    }));
+    const result = await initialize(value.root, value.request);
+    assert.equal(result.status, "applied");
+    assert.equal(result.taskIds.length, 500);
+    const project = await resolveProject(value.root);
+    const canonical = await loadCanonicalState(project);
+    const { initializationRecordProblem } = await import(modulePath);
+    assert.equal(canonical.tasks.length, 500);
+    assert.equal(initializationRecordProblem(project.setup, canonical, { projectRoot: project.root }), undefined);
+  });
+
+  test("standalone initialization rejects 501 tasks without publishing setup", async () => {
+    const value = await fixture();
+    value.request.plan.tasks = Array.from({ length: 501 }, (_, index) => ({
+      id: `AT-${String(index + 1).padStart(3, "0")}`,
+      title: `Implement approved task ${index + 1}`,
+      status: "ready",
+      dependencies: [],
+      acceptance: ["Pass the task checks."],
+    }));
+    const result = await initialize(value.root, value.request);
+    assert.equal(result.status, "conflict");
+    assert.equal(result.reason, "invalid_task_identity");
+    await assert.rejects(access(path.join(value.root, ".agent-team/setup.json")), { code: "ENOENT" });
+  });
+
+  test("larger task capacity still rejects duplicate task IDs", async () => {
+    const value = await fixture();
+    value.request.plan.tasks = [
+      value.request.plan.tasks[0],
+      { ...value.request.plan.tasks[0], title: "Duplicate task" },
+    ];
+    const result = await initialize(value.root, value.request);
+    assert.equal(result.status, "conflict");
+    assert.equal(result.reason, "invalid_task_identity");
+  });
+
   test("initialization is idempotent and changed operation semantics or another owner cannot replace records", async () => {
     const value = await fixture();
     await initialize(value.root, value.request);

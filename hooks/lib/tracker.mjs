@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
+const BEADS_READ_TIMEOUT_MS = 5000;
 
 /** Pin routing to selected project metadata, while preserving authentication/runtime settings. */
 export function beadsEnvironment(project, environment = process.env) {
@@ -50,7 +51,7 @@ export async function readTracker(project, { runBeads = run, budget, environment
     let tasks;
     if (selected.kind === "beads") {
       const result = await runBeads(selected.executable ?? "bd", ["list", "--all", "--limit", "0", "--json", "--readonly"], {
-        cwd: project.root, encoding: "utf8", timeout: budget?.timeout(1500) ?? 1500,
+        cwd: project.root, encoding: "utf8", timeout: budget?.timeout(BEADS_READ_TIMEOUT_MS) ?? BEADS_READ_TIMEOUT_MS,
         maxBuffer: 1024 * 1024, ...(budget ? { signal: budget.signal } : {}),
         // A host/worktree environment must not redirect the selected project authority.
         env: beadsEnvironment(project, environment),

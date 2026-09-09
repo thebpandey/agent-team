@@ -4,7 +4,11 @@ Created by [thebpandey](https://github.com/thebpandey). An orchestrator-led deve
 
 > **Version 7.0.1.** One complete package for Codex and Claude Code. Version 7.0.0 introduced the explicit host/scope installer and revised setup contract; 7.0.1 is a maintenance fix that normalizes release archive modes for portable checksums. Installation lets you choose the host and whether to install for one project or your user account; setup guides you through the required tool and hook checks.
 
-New here? Open the [standalone dark-green, collapsible HTML guide](Getting_Started_with_Agent-Team.html) in your browser, or read the [short Markdown guide](GETTING_STARTED.md). Both start with GitHub authentication and optional Project Kickoff.
+New here? Open the [Agent-Team 7.0.1 field guide](agent-team-guide-v7.0.1.html) in your browser, or read the [short Markdown guide](GETTING_STARTED.md). Both start with GitHub authentication and optional Project Kickoff.
+
+[![Agent-Team overview: Morpheus coordinates bounded work by Neo, Trinity, and Tank, followed by independent review from Agent Smith and the Oracle.](assets/guide/agent-team-essence-16x9.png)](agent-team-guide-v7.0.1.html)
+
+The field guide explains Agent-Team in plain language and includes installation, dependencies, setup, settings, launch examples, and the optional Project Kickoff handoff.
 
 ## The workflow at a glance
 
@@ -30,6 +34,8 @@ flowchart LR
 ```
 
 One selected Beads tracker **or** one local `TASKS.md` owns task state. A dashboard, checkpoint, setup receipt, or plugin never becomes a competing tracker. If the selected Beads backend is unavailable, Agent-Team diagnoses it; it does not quietly start a Markdown replacement.
+
+Canonical initialization accepts up to **500 tasks**. Beads reads have a **5-second default timeout**, while an explicit shorter caller deadline still takes precedence.
 
 Ordinary lint, test, and review findings trigger bounded in-scope repair without waiting for “please continue.” A real external blocker can be parked safely while independent work continues. New authority, credentials, a changed product decision, an explicit pause, or a required user preview approval still needs the user.
 
@@ -207,6 +213,12 @@ flowchart TD
 ```
 
 A retry cap is a signal to change strategy, not permission to declare incomplete work successful. Explicit pauses and required preview approvals are never automatically overridden.
+
+### Harness execution flow
+
+[![Hand-sketched Agent-Team flowchart showing task admission, isolated development, independent review, repair, integration, continuation, reporting, and the separate release gate.](assets/guide/agent-team-harness-flow-3x4.png)](assets/guide/agent-team-harness-flow-3x4.png)
+
+Select the diagram to open it at full size. The [interactive field guide](agent-team-guide-v7.0.1.html#logic) also provides an expandable, borderless view with a step-by-step explanation.
 
 ## 7. Inspect the optional local dashboard
 

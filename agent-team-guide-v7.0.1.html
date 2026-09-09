@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A simple guide to Agent-Team 7.0.1 for Codex and Claude Code.">
+  <title>Agent-Team 7.0.1 Field Guide</title>
+  <style>
+    :root {
+      --canvas:#f5f7fa; --surface:#ffffff; --surface-alt:#f0f4f8; --ink:#14212b; --muted:#526170;
+      --blue:#1d4ed8; --blue-dark:#173b8f; --blue-soft:#e8efff; --orange:#c65a24; --orange-soft:#fff1e9;
+      --green:#25734a; --line:#d5dde5; --line-strong:#aeb9c4; --shadow:0 18px 45px rgba(20,33,43,.09);
+      --sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      --mono:"SFMono-Regular",Consolas,"Liberation Mono",monospace;
+    }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; color:var(--ink); background:var(--canvas); font:400 1rem/1.65 var(--sans); }
+    a { color:var(--blue); text-underline-offset:.2em; }
+    a:hover { color:var(--blue-dark); }
+    a:focus-visible,button:focus-visible,summary:focus-visible { outline:3px solid #f09a63; outline-offset:3px; }
+    code,pre { font-family:var(--mono); }
+    code { padding:.12em .35em; background:var(--blue-soft); border-radius:4px; font-size:.92em; }
+    img { display:block; max-width:100%; height:auto; }
+    p,li { max-width:72ch; }
+    .skip { position:fixed; top:-5rem; left:1rem; z-index:100; padding:.7rem 1rem; color:white; background:var(--ink); border-radius:6px; }
+    .skip:focus { top:1rem; }
+    .page { width:min(1180px,calc(100% - 3rem)); margin:0 auto; }
+    .site-head { display:flex; gap:1.5rem; align-items:center; justify-content:space-between; min-height:72px; border-bottom:1px solid var(--line); }
+    .brand { color:var(--ink); font-weight:750; font-size:1.05rem; letter-spacing:-.01em; text-decoration:none; }
+    .site-head nav { display:flex; flex-wrap:wrap; gap:.25rem 1.3rem; }
+    .site-head nav a { min-height:44px; display:inline-flex; align-items:center; color:var(--muted); font-size:.93rem; font-weight:600; text-decoration:none; }
+    .site-head nav a:hover { color:var(--blue); }
+    .hero { padding:clamp(3rem,7vw,5.5rem) 0 4rem; }
+    .hero-copy { max-width:760px; margin-bottom:2.25rem; }
+    .version { display:inline-flex; align-items:center; padding:.32rem .7rem; border:1px solid #b9c9f9; border-radius:999px; color:var(--blue-dark); background:var(--blue-soft); font-size:.82rem; font-weight:700; }
+    h1,h2,h3 { color:var(--ink); font-family:var(--sans); line-height:1.15; letter-spacing:-.03em; }
+    h1 { max-width:17ch; margin:1rem 0 1.25rem; font-size:clamp(2.5rem,6vw,4rem); font-weight:780; }
+    h2 { margin:0 0 .85rem; font-size:clamp(1.85rem,3vw,2.6rem); font-weight:750; }
+    h3 { margin:0 0 .5rem; font-size:1.2rem; font-weight:720; letter-spacing:-.015em; }
+    .lede { margin:0; color:var(--muted); font-size:clamp(1.08rem,2vw,1.25rem); line-height:1.7; }
+    figure { margin:0; }
+    .hero-art,.flow-chart { overflow:hidden; border:1px solid var(--line); border-radius:14px; background:var(--surface); box-shadow:var(--shadow); }
+    figcaption { padding:.8rem 1rem; border-top:1px solid var(--line); color:var(--muted); font-size:.92rem; }
+    .note,.callout { margin:1.4rem 0 0; padding:1rem 1.15rem; border:1px solid #f2c4aa; border-left:4px solid var(--orange); border-radius:8px; background:var(--orange-soft); }
+    .note strong,.callout strong { color:#7f3515; }
+    .layout { display:grid; grid-template-columns:210px minmax(0,1fr); gap:clamp(2.5rem,6vw,5rem); }
+    .rail { align-self:start; position:sticky; top:1.5rem; padding:1rem 0; }
+    .rail strong { display:block; margin:0 0 .65rem .75rem; color:var(--muted); font-size:.78rem; font-weight:750; letter-spacing:.06em; text-transform:uppercase; }
+    .rail a { display:block; min-height:40px; padding:.42rem .75rem; border-left:2px solid var(--line); color:var(--muted); font-size:.92rem; text-decoration:none; }
+    .rail a:hover { border-color:var(--blue); color:var(--blue); background:var(--blue-soft); }
+    main { min-width:0; padding-bottom:6rem; }
+    .section { padding:clamp(3rem,7vw,5rem) 0; border-top:1px solid var(--line); }
+    .section:first-child { border-top:0; }
+    .intro { color:var(--muted); font-size:1.08rem; }
+    .analogy { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(250px,.8fr); gap:1.5rem; align-items:start; }
+    .sketch-note { padding:1.2rem; border:1px solid var(--line); border-radius:10px; color:var(--muted); background:var(--surface-alt); }
+    .roles,.steps { margin:1.6rem 0 0; padding:0; list-style:none; }
+    .roles { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1rem; }
+    .roles li { padding:1.1rem; border:1px solid var(--line); border-radius:10px; background:var(--surface); }
+    .roles strong { display:block; margin-bottom:.2rem; color:var(--ink); font-size:1rem; }
+    .steps { counter-reset:step; }
+    .steps>li { position:relative; padding:0 0 2rem 4rem; counter-increment:step; }
+    .steps>li::before { content:counter(step); position:absolute; top:-.1rem; left:0; display:grid; width:2.65rem; height:2.65rem; place-items:center; border-radius:8px; color:white; background:var(--blue); font-weight:750; }
+    .steps>li:not(:last-child)::after { content:""; position:absolute; top:2.75rem; bottom:.3rem; left:1.28rem; border-left:1px solid var(--line-strong); }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; margin-top:1.25rem; }
+    .sheet { padding:1.25rem; border:1px solid var(--line); border-radius:10px; background:var(--surface); box-shadow:0 5px 18px rgba(20,33,43,.035); }
+    .sheet.required { border-top:4px solid var(--blue); }
+    .sheet.optional { border-top:4px solid var(--orange); }
+    .sheet ul { padding-left:1.25rem; }
+    .sheet li+li { margin-top:.45rem; }
+    .command { margin:1rem 0; overflow:hidden; border:1px solid #273849; border-radius:9px; background:#17222d; }
+    .command-head { display:flex; gap:1rem; align-items:center; justify-content:space-between; min-height:48px; padding:.45rem .65rem .45rem 1rem; color:#314355; background:#e8edf2; font-size:.9rem; font-weight:700; }
+    pre { margin:0; padding:1rem; overflow:auto; color:#eef4fa; white-space:pre-wrap; font-size:.88rem; line-height:1.65; }
+    .copy { min-height:36px; padding:.45rem .75rem; border:1px solid #aab6c2; border-radius:6px; color:var(--ink); background:white; cursor:pointer; font:700 .85rem/1 var(--sans); }
+    .copy:hover { border-color:var(--blue); color:var(--blue); background:var(--blue-soft); }
+    table { width:100%; margin:1.25rem 0; border-collapse:collapse; border:1px solid var(--line); background:var(--surface); }
+    th,td { padding:.85rem; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:#344556; background:var(--surface-alt); font-size:.9rem; }
+    details { margin:.9rem 0; overflow:hidden; border:1px solid var(--line); border-radius:9px; background:var(--surface); }
+    summary { min-height:52px; padding:.78rem 1rem; cursor:pointer; font-weight:700; }
+    details>div { padding:0 1rem 1rem; }
+    .flow-wrap { margin-top:1.5rem; }
+    .flow-chart { width:min(100%,880px); margin:0 auto 2rem; }
+    .flow-open { display:block; width:100%; padding:0; border:0; background:white; cursor:zoom-in; }
+    .flow-open img { width:100%; }
+    .flow-open-hint { display:flex; align-items:center; justify-content:center; gap:.45rem; min-height:46px; border-top:1px solid var(--line); color:var(--blue); background:var(--surface-alt); font-size:.9rem; font-weight:700; }
+    .logic { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.75rem 1.5rem; margin:0; padding-left:1.35rem; }
+    .logic li { padding-right:.6rem; }
+    .logic li+li { margin-top:0; }
+    dialog { width:auto; max-width:none; max-height:none; margin:auto; padding:0; border:0; background:transparent; overflow:visible; }
+    dialog::backdrop { background:rgba(8,15,23,.88); backdrop-filter:blur(5px); }
+    .modal-shell { position:relative; width:fit-content; max-width:96vw; margin:auto; }
+    .modal-image { max-width:92vw; max-height:92vh; width:auto; height:auto; border-radius:6px; box-shadow:0 25px 80px rgba(0,0,0,.45); }
+    .modal-close { position:absolute; top:.75rem; right:.75rem; display:grid; width:44px; height:44px; place-items:center; border:0; border-radius:50%; color:white; background:rgba(12,22,32,.82); cursor:pointer; font:400 1.7rem/1 var(--sans); }
+    .modal-close:hover { background:#000; }
+    footer { padding:2.5rem 0 3.5rem; border-top:1px solid var(--line); background:var(--surface); }
+    .footer-inner { display:flex; gap:1rem; justify-content:space-between; align-items:flex-start; }
+    footer p { margin:0; }
+    .credit { font-weight:700; }
+    @media (max-width:860px) {
+      .layout { grid-template-columns:1fr; }
+      .rail { position:static; display:flex; gap:.25rem; overflow-x:auto; padding:.75rem 0 1rem; }
+      .rail strong { display:none; }
+      .rail a { flex:0 0 auto; border:0; border-bottom:2px solid var(--line); }
+      .analogy { grid-template-columns:1fr; }
+      .logic { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    }
+    @media (max-width:640px) {
+      .page { width:min(100% - 1.25rem,1180px); }
+      .site-head { min-height:62px; }
+      .site-head nav { display:none; }
+      .hero { padding:2.5rem 0 3rem; }
+      .roles,.grid,.logic { grid-template-columns:1fr; }
+      h1 { font-size:clamp(2.25rem,11vw,3.25rem); }
+      .steps>li { padding-left:3.6rem; }
+      .footer-inner { display:block; }
+      .credit { margin-bottom:.8rem; }
+      .modal-image { max-width:96vw; max-height:90vh; }
+    }
+    @media print { .rail,.copy,.skip,.flow-open-hint,dialog { display:none; } .layout { display:block; } body { background:white; } .section { break-inside:avoid; } }
+    @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to the guide</a>
+  <header class="page site-head">
+    <a class="brand" href="#top">Agent-Team field guide</a>
+    <nav aria-label="Quick links"><a href="#install">Install</a><a href="#setup">Set up</a><a href="#launch">Launch</a><a href="#kickoff">Project Kickoff</a></nav>
+  </header>
+
+  <div class="page" id="top">
+    <section class="hero" aria-labelledby="title">
+      <div class="hero-copy">
+        <span class="version">Version 7.0.1</span>
+        <h1 id="title">Build software with a focused agent team.</h1>
+        <p class="lede">Agent-Team gives one AI agent the lead. The lead splits work into small tasks. Other agents build and review those tasks. The lead joins only verified work.</p>
+        <p class="note"><strong>Important:</strong> Agent-Team is a skill for Codex or Claude Code. It is not a shell command. You speak to it inside your AI coding host.</p>
+      </div>
+      <figure class="hero-art">
+        <img src="assets/guide/agent-team-essence-16x9.png" width="1672" height="941" alt="Technical hand sketch of Morpheus assigning bounded tasks to Neo, Trinity, and Tank in separate worktrees. Agent Smith and the Oracle review the work before Morpheus integrates verified results.">
+        <figcaption>Morpheus controls the run. Developers work in isolation. Agent Smith and the Oracle provide independent review.</figcaption>
+      </figure>
+    </section>
+  </div>
+
+  <div class="page layout">
+    <aside class="rail" aria-label="Guide sections">
+      <strong>On this page</strong>
+      <a href="#what">What it does</a><a href="#install">Install</a><a href="#dependencies">Dependencies</a>
+      <a href="#invoke">Invoke</a><a href="#setup">Set up</a><a href="#settings">Settings</a>
+      <a href="#launch">Launch</a><a href="#logic">Harness logic</a><a href="#kickoff">Project Kickoff</a>
+    </aside>
+
+    <main id="main">
+      <section class="section" id="what">
+        <div class="analogy">
+          <div><h2>What Agent-Team does</h2><p class="intro">Think about a group science project. One student keeps the plan. Other students work on separate parts. A final student checks the facts. Agent-Team uses the same idea for software work.</p></div>
+          <aside class="sketch-note"><strong>Short version:</strong><br>Plan the work.<br>Give each agent one clear job.<br>Review every result.<br>Join the safe parts.</aside>
+        </div>
+        <ul class="roles">
+          <li><strong>The orchestrator</strong>Owns scope, task choice, integration, and release.</li>
+          <li><strong>The developer</strong>Builds one bounded task in a separate worktree.</li>
+          <li><strong>The reviewer</strong>Checks requirements and code quality independently.</li>
+        </ul>
+        <p>Agent-Team can use more than one developer when tasks do not touch the same files. The host can reduce the team count when it needs space for review. Only the orchestrator assigns work. Worker agents do not create more worker agents.</p>
+      </section>
+
+      <section class="section" id="install">
+        <h2>Install the complete package</h2>
+        <p class="intro">Choose one host and one scope. User scope makes the skill available across projects. Project scope keeps it in one project.</p>
+        <table>
+          <thead><tr><th>Scope</th><th>Codex</th><th>Claude Code</th></tr></thead>
+          <tbody>
+            <tr><td>User</td><td><code>~/.agents/skills/agent-team</code></td><td><code>~/.claude/skills/agent-team</code></td></tr>
+            <tr><td>Project</td><td><code>.agents/skills/agent-team</code></td><td><code>.claude/skills/agent-team</code></td></tr>
+          </tbody>
+        </table>
+        <ol class="steps">
+          <li><h3>Open a supported host</h3><p>Install Codex or Claude Code. Sign in to your own account. Confirm that your account can use the models that you select.</p></li>
+          <li><h3>Check the base tools</h3><p>Check Git, GitHub CLI, Node.js 24, and npm. Use <code>gh auth status</code> to check GitHub access. Never paste a token into chat.</p></li>
+          <li><h3>Ask the agent to install it</h3><div class="command"><div class="command-head"><span>Recommended install prompt</span><button class="copy" type="button">Copy</button></div><pre>Install the complete Agent-Team package from https://github.com/thebpandey/agent-team. Use release v7.0.1 and my authorized GitHub access. Inspect the source, license, exact revision, and any existing installation first. Preserve custom files and unrelated settings. Use this actual host only. Use user scope unless I name a project scope. Verify the package and tell me which reload or trust steps remain.</pre></div></li>
+          <li><h3>Reload and review trust</h3><p>Restart or reload the host. Review its hook list. In Codex, use <code>/hooks</code> when that control is available. Trust only the entries that you reviewed.</p></li>
+        </ol>
+        <details><summary>Installer reference for maintainers</summary><div>
+          <p>Run the bundled helper from the checked Agent-Team package. Choose one command.</p>
+          <div class="command"><div class="command-head"><span>Codex, user scope</span><button class="copy" type="button">Copy</button></div><pre>node hooks/agent-team-cli.mjs install --host codex --scope user</pre></div>
+          <div class="command"><div class="command-head"><span>Claude Code, project scope</span><button class="copy" type="button">Copy</button></div><pre>node hooks/agent-team-cli.mjs install --host claude-code --scope project --project /absolute/project/root</pre></div>
+        </div></details>
+      </section>
+
+      <section class="section" id="dependencies">
+        <h2>Know the dependencies</h2>
+        <p class="intro">A dependency is a tool that Agent-Team uses. Setup checks whether each selected tool works. A file on disk is not enough.</p>
+        <div class="grid">
+          <article class="sheet required"><h3>Required</h3><ul>
+            <li><strong>Codex or Claude Code:</strong> runs the skill and the agents.</li>
+            <li><strong>Git:</strong> tracks changes and supports separate worktrees.</li>
+            <li><strong>Node.js 24 and npm:</strong> run Agent-Team helpers and hooks.</li>
+            <li><strong>Serena:</strong> helps agents find and understand code.</li>
+            <li><strong>Microsoft Playwright CLI:</strong> checks real browser behavior. It is required even for backend projects.</li>
+            <li><strong>Python and uv:</strong> support Serena when the selected release needs them.</li>
+          </ul></article>
+          <article class="sheet optional"><h3>Default or optional</h3><ul>
+            <li><strong>Default profiles:</strong> ast-grep, narrowed LeanCTX, Superpowers, Ponytail, Impeccable, and React Best Practices.</li>
+            <li><strong>Beads:</strong> an optional task tracker. A root or designated <code>TASKS.md</code> file also works.</li>
+            <li><strong>Context7:</strong> optional current library documentation.</li>
+            <li><strong>beads_viewer:</strong> optional dashboard for a selected Beads graph.</li>
+            <li><strong>subagent-tax:</strong> optional maintainer diagnostic. It is not an onboarding tool.</li>
+          </ul></article>
+        </div>
+        <div class="callout"><strong>First-use rule:</strong> Setup prepares missing required tools and selected defaults. Optional tools stay off until you select them. Sign-in, payment, administrator approval, and native hook trust still belong to you.</div>
+      </section>
+
+      <section class="section" id="invoke">
+        <h2>Invoke the skill in your host</h2>
+        <p class="intro">Use the correct prefix. These messages go into the Codex or Claude Code chat. Do not run them in Bash.</p>
+        <div class="grid">
+          <article class="sheet"><h3>Codex</h3><div class="command"><div class="command-head"><span>Help</span><button class="copy" type="button">Copy</button></div><pre>$agent-team help</pre></div></article>
+          <article class="sheet"><h3>Claude Code</h3><div class="command"><div class="command-head"><span>Help</span><button class="copy" type="button">Copy</button></div><pre>/agent-team help</pre></div></article>
+        </div>
+        <p>You can also use plain language. For example: <q>Agent-Team, show the setup status for this project.</q></p>
+      </section>
+
+      <section class="section" id="setup">
+        <h2>Set up the project</h2>
+        <p class="intro">Setup prepares the project. It does not start development or turn on deployment.</p>
+        <ol class="steps">
+          <li><h3>Confirm the project root</h3><p>Agent-Team finds the main Git project, its integration branch, and the selected task tracker.</p></li>
+          <li><h3>Give it ready work</h3><p>Use an approved Project Kickoff handoff, an existing plan, or one clear task with acceptance checks.</p></li>
+          <li><h3>Run setup</h3><div class="grid">
+            <div class="command"><div class="command-head"><span>Codex</span><button class="copy" type="button">Copy</button></div><pre>$agent-team setup</pre></div>
+            <div class="command"><div class="command-head"><span>Claude Code</span><button class="copy" type="button">Copy</button></div><pre>/agent-team setup</pre></div>
+          </div></li>
+          <li><h3>Read the readiness report</h3><p>Look for four groups: host access, runtimes and tools, selected skills, and project readiness. Fix each item marked <strong>Missing</strong>, <strong>Manual action</strong>, or <strong>Unavailable</strong>.</p></li>
+          <li><h3>Complete your manual steps</h3><p>Finish sign-in, organization access, administrator approval, host reload, and hook trust when setup requests them.</p></li>
+        </ol>
+      </section>
+
+      <section class="section" id="settings">
+        <h2>Choose settings</h2>
+        <p class="intro">Settings belong to the project. Codex and Claude Code keep separate model choices. A saved choice cannot change the model of the current parent session.</p>
+        <div class="command"><div class="command-head"><span>Show the compact settings view</span><button class="copy" type="button">Copy</button></div><pre>$agent-team settings</pre></div>
+        <div class="command"><div class="command-head"><span>Change one setting in plain language</span><button class="copy" type="button">Copy</button></div><pre>Agent-Team, change only the reviewer model. Show supported choices, effort levels, cost trade-offs, and the current recommendation.</pre></div>
+        <table>
+          <thead><tr><th>Run setting</th><th>Built-in value</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>parallel_teams</code></td><td>1</td><td>Requested active development teams. The supported range is 1 to 6.</td></tr>
+            <tr><td><code>continuous</code></td><td>false</td><td>When on, pick the next authorized task after integration.</td></tr>
+            <tr><td><code>auto_deploy</code></td><td>false</td><td>When on, release verified batches to an already authorized target.</td></tr>
+            <tr><td><code>deploy_batch_tasks</code></td><td>Not set</td><td>Use the effective run limit unless you select a task batch size.</td></tr>
+          </tbody>
+        </table>
+        <p>A start command can override these values for one run. It does not change the saved defaults.</p>
+      </section>
+
+      <section class="section" id="launch">
+        <h2>Launch a run</h2>
+        <p class="intro">Start only after setup reports enough readiness for the selected work.</p>
+        <div class="grid">
+          <article class="sheet"><h3>One ready task</h3><div class="command"><div class="command-head"><span>Codex</span><button class="copy" type="button">Copy</button></div><pre>$agent-team start</pre></div></article>
+          <article class="sheet"><h3>Two teams with refill</h3><div class="command"><div class="command-head"><span>Codex</span><button class="copy" type="button">Copy</button></div><pre>$agent-team start 2 continuous</pre></div></article>
+          <article class="sheet"><h3>One named task</h3><div class="command"><div class="command-head"><span>Codex</span><button class="copy" type="button">Copy</button></div><pre>$agent-team start email-preferences</pre></div></article>
+          <article class="sheet"><h3>Require a preview</h3><div class="command"><div class="command-head"><span>Claude Code</span><button class="copy" type="button">Copy</button></div><pre>/agent-team start with-preview</pre></div></article>
+        </div>
+        <div class="callout"><strong>Team count is not agent count.</strong> Each task can need a developer and a reviewer. Host limits can reduce the number of tasks that run at the same time.</div>
+        <details><summary>Pause, resume, and check status</summary><div>
+          <div class="command"><div class="command-head"><span>Read recorded status</span><button class="copy" type="button">Copy</button></div><pre>$agent-team status all</pre></div>
+          <div class="command"><div class="command-head"><span>Pause after safe checkpoints</span><button class="copy" type="button">Copy</button></div><pre>$agent-team pause all</pre></div>
+          <div class="command"><div class="command-head"><span>Resume from saved evidence</span><button class="copy" type="button">Copy</button></div><pre>$agent-team resume all</pre></div>
+        </div></details>
+      </section>
+
+      <section class="section" id="logic">
+        <h2>How the harness works</h2>
+        <div class="flow-wrap">
+          <figure class="flow-chart">
+            <button class="flow-open" id="flowchart-open" type="button" aria-haspopup="dialog" aria-controls="flowchart-dialog">
+              <img src="assets/guide/agent-team-harness-flow-3x4.png" width="1086" height="1448" alt="Hand-sketched Agent-Team harness flowchart from ready work through scope checks, development, independent review, repair, integration, continuous work, reporting, and a separate release gate.">
+              <span class="flow-open-hint" aria-hidden="true">Click to expand the flowchart</span>
+            </button>
+            <figcaption>A failed review returns to repair and testing. It never skips the quality gate.</figcaption>
+          </figure>
+          <div>
+            <ol class="logic">
+              <li><strong>Read ready work.</strong> The orchestrator reads the one selected tracker.</li>
+              <li><strong>Check safety.</strong> It checks scope, dependencies, ownership, branch, and acceptance tests.</li>
+              <li><strong>Claim one task.</strong> A claim prevents two writers from owning the same work.</li>
+              <li><strong>Build in isolation.</strong> A developer uses a separate Git worktree and owns only named paths.</li>
+              <li><strong>Review independently.</strong> A separate reviewer checks the complete revision.</li>
+              <li><strong>Repair problems.</strong> Normal findings return to the developer. The team tests the repair again.</li>
+              <li><strong>Integrate verified work.</strong> The orchestrator joins the safe revision into the chosen integration branch.</li>
+              <li><strong>Continue or stop.</strong> Continuous mode selects the next authorized task. A finite run reports its result.</li>
+              <li><strong>Release separately.</strong> Deployment needs an authorized target and all required gates.</li>
+            </ol>
+            <div class="callout"><strong>If work is blocked:</strong> Agent-Team saves a safe checkpoint, keeps the task claim, and frees stopped compute when it can. Resume checks ownership and current evidence before work continues.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="kickoff">
+        <h2>Use Project Kickoff first</h2>
+        <p class="intro">Project Kickoff is optional. It helps you decide what to build. Agent-Team then helps you build the approved plan.</p>
+        <div class="grid">
+          <article class="sheet required"><h3>Project Kickoff</h3><p>Moves through discovery, approved planning, setup, and handoff. It asks one unresolved question at a time. It creates the approved product, experience, technical, scaffold, and handoff records. It does not implement product features.</p></article>
+          <article class="sheet optional"><h3>Agent-Team</h3><p>Reuses the approved handoff. It loads the task tracker, checks readiness, assigns bounded work, reviews changes, integrates verified revisions, and releases only with authority.</p></article>
+        </div>
+        <ol class="steps">
+          <li><h3>Install Project Kickoff</h3><p>Use <a href="https://github.com/thebpandey/project-kickoff">the official Project Kickoff repository</a>. Install the complete package in the matching project skill folder. Follow its license. Keep a private package out of application commits.</p></li>
+          <li><h3>Start or audit the project</h3><div class="grid">
+            <div class="command"><div class="command-head"><span>New project in Codex</span><button class="copy" type="button">Copy</button></div><pre>$project-kickoff start Build a study planner for high-school students.</pre></div>
+            <div class="command"><div class="command-head"><span>Existing project in Claude Code</span><button class="copy" type="button">Copy</button></div><pre>/project-kickoff audit /absolute/path/to/project</pre></div>
+          </div></li>
+          <li><h3>Answer one question at a time</h3><p>Approve each planning stage. Project Kickoff records the decisions. A changed decision updates only the affected plans.</p></li>
+          <li><h3>Complete the handoff</h3><p>Approve <code>PLAN.md</code>, choose one tracker, and let Project Kickoff seed stable task IDs. It prepares Agent-Team but does not start it.</p></li>
+          <li><h3>Set up Agent-Team</h3><div class="command"><div class="command-head"><span>Reuse the handoff</span><button class="copy" type="button">Copy</button></div><pre>$agent-team setup
+Reuse the approved Project Kickoff handoff and its selected tracker. Preserve the integration branch, task IDs, acceptance checks, and recorded decisions.</pre></div></li>
+          <li><h3>Launch the approved work</h3><div class="command"><div class="command-head"><span>Safe first run</span><button class="copy" type="button">Copy</button></div><pre>$agent-team start</pre></div></li>
+        </ol>
+        <div class="callout"><strong>Example in plain language</strong><p>You ask Project Kickoff to plan a study app. It helps you choose users, features, design, technology, and tests. It writes an approved plan and creates the task records. You then ask Agent-Team to set up. Agent-Team reads those records. It gives the login task to one developer and the schedule task to another when their files do not conflict. A reviewer checks each result. The orchestrator integrates only work that passes.</p></div>
+        <p>If you already have a good plan and tracker, you can skip Project Kickoff. Agent-Team does not require it.</p>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="flowchart-dialog" aria-label="Expanded Agent-Team harness flowchart">
+    <div class="modal-shell">
+      <img class="modal-image" src="assets/guide/agent-team-harness-flow-3x4.png" width="1086" height="1448" alt="Expanded Agent-Team harness flowchart.">
+      <button class="modal-close" id="flowchart-close" type="button" aria-label="Close expanded flowchart">&times;</button>
+    </div>
+  </dialog>
+
+  <footer><div class="page footer-inner">
+    <p class="credit">Created by <a href="https://github.com/thebpandey">thebpandey</a>.</p>
+    <p><a href="https://github.com/thebpandey/agent-team">Agent-Team on GitHub</a><br><a href="https://github.com/thebpandey/project-kickoff">Project Kickoff on GitHub</a></p>
+  </div></footer>
+
+  <script>
+    document.querySelectorAll(".copy").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const text = button.closest(".command").querySelector("pre").innerText;
+        try {
+          await navigator.clipboard.writeText(text);
+          const oldLabel = button.textContent;
+          button.textContent = "Copied";
+          window.setTimeout(() => { button.textContent = oldLabel; }, 1500);
+        } catch {
+          button.textContent = "Select text";
+        }
+      });
+    });
+
+    const flowchartDialog = document.querySelector("#flowchart-dialog");
+    const flowchartOpen = document.querySelector("#flowchart-open");
+    const flowchartClose = document.querySelector("#flowchart-close");
+
+    flowchartOpen.addEventListener("click", () => flowchartDialog.showModal());
+    flowchartClose.addEventListener("click", () => flowchartDialog.close());
+    flowchartDialog.addEventListener("click", (event) => {
+      if (event.target === flowchartDialog) flowchartDialog.close();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && flowchartDialog.open) {
+        event.preventDefault();
+        flowchartDialog.close();
+      }
+    });
+  </script>
+</body>
+</html>

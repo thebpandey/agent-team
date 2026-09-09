@@ -2,6 +2,7 @@ import { loadCanonicalState } from "./canonical-state.mjs";
 import { resolveProject } from "./project.mjs";
 import { createEventBudget } from "./budget.mjs";
 
+const STATUS_READ_TIMEOUT_MS = 5000;
 const completed = new Set(["completed", "complete", "done", "closed"]);
 const excluded = new Map([
   ["cancelled", "cancelled"],
@@ -189,7 +190,7 @@ export function createStatusModel(project, canonical = {}, options = {}) {
 export async function readStatus(cwd, options = {}) {
   const resolve = options.resolveProject || resolveProject;
   const load = options.loadCanonicalState || loadCanonicalState;
-  const base = options.budget ?? createEventBudget(options.deadlineMs ?? 1500);
+  const base = options.budget ?? createEventBudget(options.deadlineMs ?? STATUS_READ_TIMEOUT_MS);
   const signal = options.signal ? AbortSignal.any([base.signal, options.signal]) : base.signal;
   const budget = {
     ...base, signal,

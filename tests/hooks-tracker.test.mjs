@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { resolveProject } from "../hooks/lib/project.mjs";
 import { loadCanonicalState } from "../hooks/lib/canonical-state.mjs";
 import { evaluatePolicy } from "../hooks/lib/policy.mjs";
+import { readStatus } from "../hooks/lib/status.mjs";
 import { policyFixture, hookEvent } from "./hook-test-helpers.mjs";
 
 const temporary = [];
@@ -18,6 +19,15 @@ async function fixture(tracker) {
   return result;
 }
 const beads = async () => ({ stdout: JSON.stringify([{ id: "AT-001", title: "Complete fixture work", assignee: "TEAM-001", status: "in_progress", updated_at: "2026-09-08T10:00:00Z" }]) });
+
+async function delayedBeads(root) {
+  const executable = path.join(root, "delayed-bd.mjs");
+  await writeFile(executable, `#!/usr/bin/env node
+setTimeout(() => process.stdout.write('[{"id":"AT-001","title":"Delayed task","assignee":"","status":"ready"}]'), 1600);
+`);
+  await chmod(executable, 0o700);
+  return executable;
+}
 
 test("explicit selected Beads executable is canonical across linked worktrees; invalid explicit paths never fall back", async () => {
   const value = await fixture({ kind: "beads", executable: "/selected/bin/bd" });
@@ -153,8 +163,26 @@ test("Beads bounded read includes closed issues and pins canonical project autho
   assert.deepEqual(call.slice(0, 2), ["bd", ["list", "--all", "--limit", "0", "--json", "--readonly"]]);
   assert.equal(call[2].cwd, value.root);
   assert.equal(call[2].env.BEADS_DIR, path.join(value.root, ".beads"));
-  assert.ok(call[2].timeout > 0 && call[2].timeout <= 1500);
+  assert.ok(call[2].timeout > 1600 && call[2].timeout <= 5000);
   assert.ok(call[2].maxBuffer <= 1024 * 1024);
+});
+
+test("canonical Beads reads allow a healthy backend longer than 1.5 seconds", async () => {
+  const value = await fixture({ kind: "beads" });
+  const executable = await delayedBeads(value.root);
+  await writeFile(path.join(value.root, ".agent-team/setup.json"), JSON.stringify({ skill: "agent-team", projectId: "project-1", tracker: { kind: "beads", executable } }));
+  const canonical = await loadCanonicalState(await resolveProject(value.root));
+  assert.equal(canonical.tracker.status, "current");
+  assert.equal(canonical.tasks[0].id, "AT-001");
+});
+
+test("status allows a healthy Beads read longer than 1.5 seconds", async () => {
+  const value = await fixture({ kind: "beads" });
+  const executable = await delayedBeads(value.root);
+  await writeFile(path.join(value.root, ".agent-team/setup.json"), JSON.stringify({ skill: "agent-team", projectId: "project-1", tracker: { kind: "beads", executable } }));
+  const model = await readStatus(await resolveProject(value.root));
+  assert.equal(model.freshness.status, "current");
+  assert.equal(model.tasks[0].id, "AT-001");
 });
 
 test("mapped provider tracker edits cannot bypass completion verification", async () => {
