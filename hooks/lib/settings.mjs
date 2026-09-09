@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ROLE_DEFINITIONS } from "./dependency-profiles.mjs";
 import { withDirectoryLock } from "./lock.mjs";
@@ -146,11 +146,19 @@ function signature(operation) {
   return createHash("sha256").update(stable(operation)).digest("hex");
 }
 
-async function atomicJson(file, value) {
+async function atomicJson(file, value, budget) {
+  budget?.check();
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, file);
+  try {
+    budget?.check();
+    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, signal: budget?.signal });
+    budget?.check();
+    await rename(temporary, file);
+  } catch (error) {
+    budget?.check();
+    throw error;
+  } finally { await rm(temporary, { force: true }); }
 }
 
 function registryOwner(registry) {
@@ -180,13 +188,14 @@ export async function mutateSetup({ setupPath, expectedVersion, writer, operatio
     const actualVersion = Number.isInteger(setup.version) ? setup.version : 0;
     if (actualVersion !== expectedVersion) return { status: "conflict", reason: "version_changed", expectedVersion, actualVersion };
     const outcome = await mutate(structuredClone(setup));
+    budget?.check();
     const next = outcome.setup;
     next.version = actualVersion + 1;
     next.setupOperations = [
       ...(setup.setupOperations ?? []),
       { id: operationId, signature: operationSignature, kind: operation?.kind ?? "setup", writer: writer.id, version: next.version },
     ].slice(-50);
-    await atomicJson(setupPath, next);
+    await atomicJson(setupPath, next, budget);
     return { status: "applied", version: next.version, setup: next, ...(outcome.result ?? {}) };
   }, { budget });
 }

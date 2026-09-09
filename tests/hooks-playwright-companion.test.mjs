@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { existsSync, readdirSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,8 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { buildPreparationPlan, createDependencyRunner, prepareDependencies } from '../hooks/lib/dependencies.mjs';
 import { CATALOG_BY_ID } from '../hooks/lib/dependency-catalog.mjs';
+import { createEventBudget } from '../hooks/lib/budget.mjs';
+import { mutateSetup } from '../hooks/lib/settings.mjs';
 
 // Labelled static package layout and fake command: no upstream CLI code is executed.
 async function fixture(t, host = 'codex', scope = 'user') {
@@ -168,4 +171,117 @@ test('actual integrity-pinned npm companion copies completely without executing 
   for (const file of await readdir(path.join(f.source, 'references'))) {
     assert.deepEqual(await readFile(path.join(f.destination, 'references', file)), await readFile(path.join(f.source, 'references', file)));
   }
+});
+
+test('companion filesystem byte and entry limits preserve oversized customized resources', async (t) => {
+  for (const defect of ['bytes', 'entries']) {
+    const f = await fixture(t);
+    if (defect === 'bytes') await writeFile(path.join(f.source, 'oversized.bin'), Buffer.alloc(3 * 1024 * 1024));
+    else for (let i = 0; i < 300; i++) await writeFile(path.join(f.source, `entry-${i}`), 'fixture');
+    const result = await f.runner({ dependency: f.dependency, phase: 'companion' });
+    assert.equal(result.status, 'failed');
+    assert.match(result.evidence, /limit/i);
+    await assert.rejects(readFile(f.log), { code: 'ENOENT' });
+    await assert.rejects(readFile(path.join(f.destination, 'SKILL.md')), { code: 'ENOENT' });
+  }
+});
+
+test('companion filesystem deadline interrupts validation before copying or browser commands', async (t) => {
+  const f = await fixture(t);
+  let checks = 0;
+  const budget = { signal: new AbortController().signal, check() {
+    if (++checks >= 8) throw Object.assign(new Error('Fixture filesystem deadline'), { code: 'EVENT_DEADLINE' });
+  } };
+  await assert.rejects(f.runner({ dependency: f.dependency, phase: 'companion', budget }), { code: 'EVENT_DEADLINE' });
+  assert.equal(checks, 8);
+  await assert.rejects(readFile(f.log), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(f.destination, 'SKILL.md')), { code: 'ENOENT' });
+});
+
+test('shared browser deadline kills the fake child and never commits a late receipt', async (t) => {
+  const f = await fixture(t);
+  const late = path.join(f.root, 'late-browser-success');
+  await writeFile(f.dependency.executable, `#!/usr/bin/env node\nimport { writeFileSync } from 'node:fs';\nif (process.argv[2] === '--version') console.log('0.1.19');\nelse setTimeout(() => writeFileSync(${JSON.stringify(late)}, 'late'), 700);\n`);
+  const setupPath = path.join(f.root, 'setup.json');
+  const original = JSON.stringify({ skill: 'agent-team', projectId: 'p', version: 1, tracker: { kind: 'markdown', path: 'TASKS.md' } });
+  await writeFile(setupPath, original);
+  const budget = createEventBudget(250);
+  try {
+    await assert.rejects(prepareDependencies({
+      setupPath, expectedVersion: 1, operationId: 'browser-deadline', writer: { id: 'owner', role: 'project_orchestrator' },
+      loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: [] }, budget,
+      runner: async (request) => request.dependency.id === 'playwright-cli'
+        ? f.runner({ ...request, dependency: f.dependency }) : { status: 'passed', version: request.dependency.version },
+    }), { code: 'EVENT_DEADLINE' });
+    assert.equal(await readFile(setupPath, 'utf8'), original);
+    await new Promise(resolve => setTimeout(resolve, 800));
+    await assert.rejects(readFile(late), { code: 'ENOENT' });
+    await assert.rejects(readdir(path.join(f.root, '.locks/setup.lock')), { code: 'ENOENT' });
+  } finally { budget.close(); }
+});
+
+test('setup commit edge rejects an expired mutation even when its callback returns success', async (t) => {
+  const f = await fixture(t);
+  const setupPath = path.join(f.root, 'setup.json');
+  const original = '{"skill":"agent-team","projectId":"p","version":1}';
+  await writeFile(setupPath, original);
+  const budget = createEventBudget(30);
+  try {
+    await assert.rejects(mutateSetup({
+      setupPath, expectedVersion: 1, operationId: 'late-mutation', operation: { kind: 'fixture' },
+      writer: { id: 'owner', role: 'project_orchestrator' }, loadRegistry: async () => ({ projectOwner: 'owner' }), budget,
+      mutate: async setup => { await new Promise(resolve => setTimeout(resolve, 70)); return { setup }; },
+    }), { code: 'EVENT_DEADLINE' });
+    assert.equal(await readFile(setupPath, 'utf8'), original);
+  } finally { budget.close(); }
+});
+
+test('destination validation limits preserve oversized existing managed companions', async (t) => {
+  for (const defect of ['bytes', 'entries']) {
+    const f = await fixture(t);
+    assert.equal((await f.runner({ dependency: f.dependency, phase: 'companion' })).status, 'passed');
+    const before = await readFile(f.log, 'utf8');
+    if (defect === 'bytes') await writeFile(path.join(f.destination, 'custom.bin'), Buffer.alloc(3 * 1024 * 1024, 7));
+    else for (let i = 0; i < 300; i++) await writeFile(path.join(f.destination, `custom-${i}`), 'preserve');
+    const result = await f.runner({ dependency: f.dependency, phase: 'companion' });
+    assert.equal(result.status, 'customized');
+    assert.match(result.evidence, /limit/i);
+    assert.equal(await readFile(f.log, 'utf8'), before);
+    if (defect === 'bytes') assert.deepEqual(await readFile(path.join(f.destination, 'custom.bin')), Buffer.alloc(3 * 1024 * 1024, 7));
+    else assert.equal((await readdir(f.destination)).filter(name => name.startsWith('custom-')).length, 300);
+  }
+});
+
+test('filesystem deadline during companion copy stops before later files and provenance', async (t) => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.source, '00-first.txt'), 'First bounded file\n');
+  const firstFile = path.join(f.destination, '00-first.txt');
+  const budget = { signal: new AbortController().signal, check() {
+    if (existsSync(firstFile)) throw Object.assign(new Error('Fixture copy deadline'), { code: 'EVENT_DEADLINE' });
+  } };
+  await assert.rejects(f.runner({ dependency: f.dependency, phase: 'companion', budget }), { code: 'EVENT_DEADLINE' });
+  assert.equal(await readFile(firstFile, 'utf8'), 'First bounded file\n');
+  await assert.rejects(readFile(path.join(f.destination, 'SKILL.md')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(f.destination, 'references/example.md')), { code: 'ENOENT' });
+  await assert.rejects(readFile(path.join(f.destination, '.agent-team-source.json')), { code: 'ENOENT' });
+  await assert.rejects(readFile(f.log), { code: 'ENOENT' });
+});
+
+test('setup pre-rename deadline preserves original setup and removes its temporary file', async (t) => {
+  const f = await fixture(t);
+  const setupPath = path.join(f.root, 'setup.json');
+  const original = '{"skill":"agent-team","projectId":"p","version":1}';
+  await writeFile(setupPath, original);
+  const budget = { signal: new AbortController().signal, remaining: () => 1000, check() {
+    if (readdirSync(f.root).some(name => name.startsWith('setup.json.') && name.endsWith('.tmp'))) {
+      throw Object.assign(new Error('Fixture pre-rename deadline'), { code: 'EVENT_DEADLINE' });
+    }
+  } };
+  await assert.rejects(mutateSetup({
+    setupPath, expectedVersion: 1, operationId: 'pre-rename', operation: { kind: 'fixture' },
+    writer: { id: 'owner', role: 'project_orchestrator' }, loadRegistry: async () => ({ projectOwner: 'owner' }), budget,
+    mutate: async setup => ({ setup }),
+  }), { code: 'EVENT_DEADLINE' });
+  assert.equal(await readFile(setupPath, 'utf8'), original);
+  assert.equal((await readdir(f.root)).some(name => name.endsWith('.tmp')), false);
 });

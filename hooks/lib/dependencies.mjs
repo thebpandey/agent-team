@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
+import { constants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { access, chmod, cp, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, cp, lstat, mkdir, open, opendir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { CATALOG_BY_ID, DEPENDENCY_CATALOG } from "./dependency-catalog.mjs";
@@ -151,15 +152,19 @@ function dependencyBoundary(dependency, result, fallback) {
   return [...new Set([evidence(result), dependency.boundary, fallback].filter(Boolean))].join(" ");
 }
 
-async function prepareOne(dependency, runner) {
+async function prepareOne(dependency, runner, budget) {
   const observedAt = new Date().toISOString();
   const run = async (request) => {
     try {
-      const outcome = await runner(request);
+      budget?.check();
+      const outcome = await runner({ ...request, budget });
+      budget?.check();
       return outcome && typeof outcome.status === "string"
         ? outcome
         : { status: "failed", evidence: `Dependency runner returned a malformed ${request.phase} result.` };
     } catch (error) {
+      if (error.code === "EVENT_DEADLINE") throw error;
+      budget?.check();
       return { status: "failed", evidence: error.message };
     }
   };
@@ -238,7 +243,7 @@ async function prepareOne(dependency, runner) {
 export async function prepareDependencies({ setupPath, expectedVersion, writer, operationId, loadRegistry, host, scope, selections = {}, paths, runner, budget }) {
   if (!HOSTS.has(host)) throw new Error(`Unknown dependency host: ${host ?? "missing"}.`);
   if (!["user", "project"].includes(scope)) throw new Error(`Unknown dependency scope: ${scope ?? "missing"}.`);
-  const execute = runner ?? createDependencyRunner({ host, scope, paths });
+  const execute = runner ?? createDependencyRunner({ host, scope, paths, budget });
   return mutateSetup({
     setupPath, expectedVersion, writer, operationId, loadRegistry, budget,
     operation: { kind: "dependencies", host, scope, selections },
@@ -265,6 +270,7 @@ export async function prepareDependencies({ setupPath, expectedVersion, writer, 
         : dependency);
       const receipts = [];
       for (const dependency of dependencies) {
+        budget?.check();
         if (dependency.disposition === "mandatory" && declinedSet.has(dependency.id)) {
           receipts.push({
             id: dependency.id, version: dependency.version, detected: false, installed: "not_installed",
@@ -273,9 +279,10 @@ export async function prepareDependencies({ setupPath, expectedVersion, writer, 
             observedAt: new Date().toISOString(),
           });
         } else {
-          receipts.push(await prepareOne(dependency, execute));
+          receipts.push(await prepareOne(dependency, execute, budget));
         }
       }
+      budget?.check();
       const next = setup;
       next.dependencies ??= {};
       next.dependencies.hosts ??= {};
@@ -301,10 +308,15 @@ function binaryPath(dependency, toolRoot) {
 }
 
 async function command(file, args, options = {}) {
+  const { budget, ...executionOptions } = options;
   try {
-    const result = await exec(file, args, { encoding: "utf8", timeout: 120_000, maxBuffer: 1024 * 1024, ...options });
+    budget?.check();
+    const result = await exec(file, args, { encoding: "utf8", timeout: budget?.timeout(120_000) ?? 120_000, signal: budget?.signal, maxBuffer: 1024 * 1024, ...executionOptions });
+    budget?.check();
     return { status: "passed", code: 0, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
+    if (error.code === "EVENT_DEADLINE") throw error;
+    budget?.check();
     return { status: error.code === "ENOENT" ? "not_found" : "failed", code: typeof error.code === "number" ? error.code : null, stdout: error.stdout, stderr: error.stderr, evidence: error.message };
   }
 }
@@ -321,9 +333,10 @@ function skillDestination(dependency, paths, selectedPath) {
   return path.join(paths.skillRoot, selectedPath === "." ? dependency.id : path.basename(selectedPath));
 }
 
-async function inspectSkillDestinations(dependency, paths) {
+async function inspectSkillDestinations(dependency, paths, { budget, bounded = false } = {}) {
   let absent = false;
   for (const selectedPath of dependency.install.paths) {
+    budget?.check();
     const destination = skillDestination(dependency, paths, selectedPath);
     if (!await exists(destination)) {
       absent = true;
@@ -331,11 +344,13 @@ async function inspectSkillDestinations(dependency, paths) {
     }
     const metadataPath = path.join(destination, ".agent-team-source.json");
     try {
-      const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+      const metadata = JSON.parse(bounded ? await companionBytes(metadataPath, budget, 64 * 1024) : await readFile(metadataPath, "utf8"));
       if (metadata.source !== dependency.install.source || metadata.revision !== dependency.version || metadata.selectedPath !== selectedPath) {
         return { status: "customized", evidence: `Preserved existing skill path with different provenance: ${destination}` };
       }
     } catch (error) {
+      if (error.code === "EVENT_DEADLINE") throw error;
+      budget?.check();
       return { status: "customized", evidence: `Preserved existing skill path without matching Agent-Team provenance: ${destination}. ${error.message}` };
     }
   }
@@ -383,31 +398,65 @@ function playwrightSkill(dependency) {
   return { ...dependency, install: { ...dependency.install, paths: ["skills/playwright-cli"] } };
 }
 
+// The pinned companion is ~100 KB. Bound even customized trees before reading/copying.
+async function companionBytes(file, budget, maxBytes = 1024 * 1024) {
+  budget?.check();
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    budget?.check();
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maxBytes) throw new Error(`Companion file byte/type limit exceeded: ${file}`);
+    const chunks = [];
+    let size = 0;
+    const stream = handle.createReadStream({ autoClose: false, start: 0, end: maxBytes, signal: budget?.signal });
+    for await (const chunk of stream) {
+      budget?.check();
+      size += chunk.length;
+      if (size > maxBytes) throw new Error(`Companion file byte limit exceeded: ${file}`);
+      chunks.push(chunk);
+    }
+    budget?.check();
+    return Buffer.concat(chunks);
+  } finally { await handle.close(); }
+}
+
 // Reject links/special files and compare every bundled file, not just SKILL.md.
-async function skillContents(root, prefix = "") {
+async function skillContents(root, budget, prefix = "", bounds = { entries: 0, bytes: 0 }, depth = 0) {
+  budget?.check();
+  if (depth > 12) throw new Error("Companion directory depth limit exceeded.");
   if (!(await lstat(root)).isDirectory()) throw new Error(`Not a regular skill directory: ${root}`);
   const files = {};
-  for (const name of (await readdir(root)).sort()) {
+  for await (const entry of await opendir(root)) {
+    budget?.check();
+    if (++bounds.entries > 128) throw new Error("Companion filesystem entry limit exceeded.");
+    const name = entry.name;
     if (!prefix && name === ".agent-team-source.json") continue;
     const file = path.join(root, name);
     const relative = path.posix.join(prefix, name);
     const stat = await lstat(file);
-    if (stat.isDirectory()) Object.assign(files, await skillContents(file, relative));
-    else if (stat.isFile()) files[relative] = createHash("sha256").update(await readFile(file)).digest("hex");
+    if (stat.isDirectory()) Object.assign(files, await skillContents(file, budget, relative, bounds, depth + 1));
+    else if (stat.isFile()) {
+      if (bounds.bytes + stat.size > 8 * 1024 * 1024) throw new Error("Companion total byte limit exceeded.");
+      const bytes = await companionBytes(file, budget);
+      bounds.bytes += bytes.length;
+      if (bounds.bytes > 8 * 1024 * 1024) throw new Error("Companion total byte limit exceeded.");
+      files[relative] = createHash("sha256").update(bytes).digest("hex");
+    }
     else throw new Error(`Preserved non-regular skill path: ${file}`);
   }
-  return files;
+  return Object.fromEntries(Object.entries(files).sort(([a], [b]) => a.localeCompare(b)));
 }
 
-async function preparePlaywrightSkill(dependency, paths) {
+async function preparePlaywrightSkill(dependency, paths, budget) {
   const companion = playwrightSkill(dependency);
   const destination = skillDestination(companion, paths, companion.install.paths[0]);
   try {
+    budget?.check();
     // A symlink (including a dangling one) is not an owned destination.
     try {
       if (!(await lstat(destination)).isDirectory()) return { status: "customized", evidence: `Preserved non-directory companion: ${destination}` };
     } catch (error) { if (error.code !== "ENOENT") throw error; }
-    const preflight = await inspectSkillDestinations(companion, paths);
+    const preflight = await inspectSkillDestinations(companion, paths, { budget, bounded: true });
     if (preflight.status === "customized") return preflight;
     const packageRoot = path.join(paths.toolRoot, process.platform === "win32" ? "node_modules" : "lib/node_modules", "@playwright/cli");
     const source = path.join(packageRoot, "skills/playwright-cli");
@@ -415,28 +464,49 @@ async function preparePlaywrightSkill(dependency, paths) {
     if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       return { status: "failed", evidence: "Pinned Playwright companion source escapes the managed tool root." };
     }
-    const metadata = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
+    const metadata = JSON.parse(await companionBytes(path.join(packageRoot, "package.json"), budget, 64 * 1024));
     if (metadata.name !== dependency.install.package || metadata.version !== dependency.version) {
       return { status: "failed", evidence: `Expected pinned ${dependency.install.package}@${dependency.version} companion package.` };
     }
-    const sourceFiles = await skillContents(source);
-    const complete = await verifySkillFiles(companion, { ...paths, skillRoot: path.dirname(source) }, { ignoreFencedExamples: true });
+    const sourceFiles = await skillContents(source, budget);
+    const complete = await verifySkillFiles(companion, { ...paths, skillRoot: path.dirname(source) }, { ignoreFencedExamples: true, budget });
     if (complete.status !== "passed") return complete;
     if (preflight.status === "passed") {
       try {
-        if (JSON.stringify(sourceFiles) !== JSON.stringify(await skillContents(destination))) {
+        if (JSON.stringify(sourceFiles) !== JSON.stringify(await skillContents(destination, budget))) {
           return { status: "customized", evidence: `Preserved edited or incomplete managed companion: ${destination}` };
         }
-      } catch (error) { return { status: "customized", evidence: error.message }; }
+      } catch (error) {
+        if (error.code === "EVENT_DEADLINE") throw error;
+        budget?.check();
+        return { status: "customized", evidence: error.message };
+      }
     } else {
+      budget?.check();
       await mkdir(paths.skillRoot, { recursive: true, mode: 0o700 });
-      await cp(source, destination, { recursive: true, errorOnExist: true, force: false });
+      budget?.check();
+      await mkdir(destination, { mode: 0o700 });
+      for (const [relative, hash] of Object.entries(sourceFiles)) {
+        const bytes = await companionBytes(path.join(source, relative), budget);
+        if (createHash("sha256").update(bytes).digest("hex") !== hash) throw new Error("Companion source changed during preparation.");
+        budget?.check();
+        const target = path.join(destination, relative);
+        await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+        budget?.check();
+        await writeFile(target, bytes, { mode: 0o600, flag: "wx", signal: budget?.signal });
+      }
+      budget?.check();
       await writeFile(path.join(destination, ".agent-team-source.json"), `${JSON.stringify({
         source: companion.install.source, revision: companion.version, selectedPath: companion.install.paths[0],
-      }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+      }, null, 2)}\n`, { mode: 0o600, flag: "wx", signal: budget?.signal });
     }
+    budget?.check();
     return { status: "passed", evidence: "Complete pinned Playwright companion is present in the selected skill scope." };
-  } catch (error) { return { status: "failed", evidence: error.message }; }
+  } catch (error) {
+    if (error.code === "EVENT_DEADLINE") throw error;
+    budget?.check();
+    return { status: "failed", evidence: error.message };
+  }
 }
 
 function uvAsset() {
@@ -478,7 +548,7 @@ async function installUvRelease(dependency, paths) {
   }
 }
 
-async function verifySkillFiles(dependency, paths, { ignoreFencedExamples = false } = {}) {
+async function verifySkillFiles(dependency, paths, { ignoreFencedExamples = false, budget } = {}) {
   for (const selectedPath of dependency.install.paths) {
     const root = skillDestination(dependency, paths, selectedPath);
     const skill = path.join(root, "SKILL.md");
@@ -486,9 +556,10 @@ async function verifySkillFiles(dependency, paths, { ignoreFencedExamples = fals
     for (const includedPath of dependency.install.includePaths ?? []) {
       if (!await exists(path.join(root, includedPath))) return { status: "failed", evidence: `Missing approved package path: ${includedPath}` };
     }
-    const text = await readFile(skill, "utf8");
+    const text = ignoreFencedExamples ? (await companionBytes(skill, budget)).toString("utf8") : await readFile(skill, "utf8");
     const source = ignoreFencedExamples ? text.replace(/^```[^\n]*\n[\s\S]*?^```[^\n]*$/gm, "") : text;
     for (const match of source.matchAll(/\]\(([^)#]+)(?:#[^)]+)?\)/g)) {
+      budget?.check();
       const reference = match[1];
       if (/^[a-z]+:/i.test(reference) || reference.startsWith("/")) continue;
       if (!await exists(path.resolve(root, reference))) return { status: "failed", evidence: `Missing referenced skill file: ${reference}` };
@@ -713,13 +784,14 @@ async function playwrightFunctional(executable, paths) {
 }
 
 /** Execute pinned installers in candidate-managed paths. Callers may replace only external probes in tests. */
-export function createDependencyRunner({ host, scope, paths, functionalAdapters = {}, workerDiscovery }) {
+export function createDependencyRunner({ host, scope, paths, functionalAdapters = {}, workerDiscovery, budget: eventBudget }) {
   if (!paths?.toolRoot || !paths?.skillRoot || !paths?.projectRoot) throw new Error("Dependency preparation paths are required.");
-  return async ({ dependency, phase, check }) => {
+  return async ({ dependency, phase, check, budget = eventBudget }) => {
+    budget?.check();
     const executable = binaryPath(dependency, paths.toolRoot);
     if (phase === "probe") {
       if (dependency.id === "playwright-cli") {
-        const companion = await inspectSkillDestinations(playwrightSkill(dependency), paths);
+        const companion = await inspectSkillDestinations(playwrightSkill(dependency), paths, { budget, bounded: true });
         if (companion.status === "customized") return companion;
       }
       if (dependency.install?.kind === "git-skill") {
@@ -727,7 +799,7 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
         return inspectSkillDestinations(dependency, paths);
       }
       const result = await command(executable, ["--version"], dependency.id === "playwright-cli"
-        ? { env: { ...process.env, NO_UPDATE_NOTIFIER: "1" } } : {});
+        ? { env: { ...process.env, NO_UPDATE_NOTIFIER: "1" }, budget } : { budget });
       return result.status === "passed" ? { ...result, version: parsedVersion(`${result.stdout}\n${result.stderr}`) } : result;
     }
     if (phase === "install") {
@@ -750,10 +822,10 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       return { status: "failed", evidence: `Pinned ${dependency.install?.kind ?? "unknown"} preparation requires its verified installer adapter.` };
     }
     if (phase === "companion" && dependency.id === "playwright-cli") {
-      const companion = await preparePlaywrightSkill(dependency, paths);
+      const companion = await preparePlaywrightSkill(dependency, paths, budget);
       if (companion.status !== "passed") return companion;
       const step = buildPreparationPlan({ dependencyId: dependency.id, host, scope, paths, executable }).browserInstall;
-      const browser = await command(step.file, step.args, { cwd: step.cwd, env: { ...process.env, ...step.env } });
+      const browser = await command(step.file, step.args, { cwd: step.cwd, env: { ...process.env, ...step.env }, budget });
       return browser.status === "passed" ? companion : browser;
     }
     if (phase === "functional") {
