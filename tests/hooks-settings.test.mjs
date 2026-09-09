@@ -210,6 +210,23 @@ test("the explicit full wizard covers run defaults and each role with Back and C
   assert.equal(wizard.steps.at(-1).kind, "review");
 });
 
+test("full wizard effort choices refresh from each role's selected draft model", async () => {
+  const { buildSettingsWizard } = await import("../hooks/lib/settings.mjs");
+  const setup = { settings: { hosts: { codex: { roles: { developer: { model: "quality", effort: "high" } } } } } };
+  const nativeChoices = { models: [
+    { id: "quality", efforts: ["high", "max"] },
+    { id: "fast", efforts: ["low"] },
+  ] };
+
+  const wizard = buildSettingsWizard({ setup, host: "codex", nativeChoices, draft: { roles: { developer: { model: "fast" } } } });
+  const effort = wizard.steps.find((step) => step.kind === "role-effort" && step.role === "developer");
+
+  assert.equal(effort.model, "fast");
+  assert.deepEqual(effort.choices.filter(({ id }) => !["back", "cancel"].includes(id)).map(({ id }) => id), ["low"]);
+  assert.ok(effort.choices.some(({ id }) => id === "back"));
+  assert.ok(effort.choices.some(({ id }) => id === "cancel"));
+});
+
 test("recognized legacy routing is shown for its host but never rewrites an unknown host", async () => {
   const { inspectSettings, updateSettings } = await import("../hooks/lib/settings.mjs");
   const nativeChoices = { models: [{ id: "legacy-model", available: true, efforts: ["high"] }] };

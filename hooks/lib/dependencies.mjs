@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { CATALOG_BY_ID, DEPENDENCY_CATALOG } from "./dependency-catalog.mjs";
 import { mutateSetup } from "./settings.mjs";
+import { beadsEnvironment } from "./tracker.mjs";
 
 const exec = promisify(execFile);
 const HOSTS = new Set(["codex", "claude-code"]);
@@ -58,11 +59,11 @@ export function inspectDependencies({ setup = {}, host }) {
   const receipts = profile.receipts ?? [];
   const count = (items) => ({
     ready: items.filter(({ status }) => status === "ready").length,
-    failed: items.filter(({ status }) => ["failed", "cannot_use"].includes(status)).length,
+    failed: items.filter(({ status }) => ["failed", "cannot_use", "required_unavailable"].includes(status)).length,
   });
   const tools = receipts.filter(({ id }) => TOOL_IDS.has(id));
   const skills = receipts.filter(({ id }) => !TOOL_IDS.has(id));
-  const failed = receipts.filter(({ status }) => ["failed", "cannot_use"].includes(status));
+  const failed = receipts.filter(({ status }) => ["failed", "cannot_use", "required_unavailable"].includes(status));
   return {
     host,
     scope: profile.scope ?? "unknown",
@@ -231,31 +232,50 @@ export async function prepareDependencies({ setupPath, expectedVersion, writer, 
     setupPath, expectedVersion, writer, operationId, loadRegistry, budget,
     operation: { kind: "dependencies", host, scope, selections },
     mutate: async (setup) => {
-    const selection = resolveCatalogSelection({ tracker: setup.tracker, defaults: selections.defaults, optionals: selections.optionals });
-      const dependencies = selection.selected.map((dependency) => dependency.id === "beads" && setup.tracker?.executable
-        ? { ...dependency, executable: setup.tracker.executable }
-        : dependency);
       const previousProfile = setup.dependencies?.hosts?.[host] ?? {};
-      const declined = selections.declined === undefined ? (previousProfile.declined ?? []) : [...new Set(selections.declined)];
+      let declined = [...new Set(selections.declined === undefined ? (previousProfile.declined ?? []) : selections.declined)];
+      if (selections.declined === undefined) {
+        const explicitlySelected = new Set([...(selections.defaults ?? []), ...(selections.optionals ?? [])]);
+        declined = declined.filter((id) => !explicitlySelected.has(id));
+      }
       for (const id of declined) {
         const entry = CATALOG_BY_ID.get(id);
-        if (!entry || entry.disposition === "mandatory" || entry.disposition === "prerequisite" || entry.disposition === "excluded") {
+        if (!entry || !["mandatory", "default", "optional"].includes(entry.disposition)) {
           throw new Error(`Dependency cannot be declined: ${id}.`);
         }
       }
-    const receipts = [];
-      for (const dependency of dependencies) receipts.push(await prepareOne(dependency, execute));
-    const next = setup;
-    next.dependencies ??= {};
-    next.dependencies.hosts ??= {};
-    next.dependencies.hosts[host] = {
-      ...previousProfile,
-      scope,
-      selected: dependencies.map(({ id }) => id),
-      declined: declined.filter((id) => !dependencies.some((dependency) => dependency.id === id)),
-      receipts,
-      preparedAt: new Date().toISOString(),
-    };
+      const declinedSet = new Set(declined);
+      const defaults = (selections.defaults ?? DEPENDENCY_CATALOG.filter(({ disposition }) => disposition === "default").map(({ id }) => id))
+        .filter((id) => !declinedSet.has(id));
+      const optionals = (selections.optionals ?? []).filter((id) => !declinedSet.has(id));
+      const selection = resolveCatalogSelection({ tracker: setup.tracker, defaults, optionals });
+      const dependencies = selection.selected.map((dependency) => dependency.id === "beads" && setup.tracker?.executable
+        ? { ...dependency, executable: setup.tracker.executable }
+        : dependency);
+      const receipts = [];
+      for (const dependency of dependencies) {
+        if (dependency.disposition === "mandatory" && declinedSet.has(dependency.id)) {
+          receipts.push({
+            id: dependency.id, version: dependency.version, detected: false, installed: "not_installed",
+            functional: "not_run", availableToWorker: "failed", status: "required_unavailable",
+            boundary: `Mandatory dependency ${dependency.id} was explicitly declined; readiness remains unavailable until it is approved and verified.`,
+            observedAt: new Date().toISOString(),
+          });
+        } else {
+          receipts.push(await prepareOne(dependency, execute));
+        }
+      }
+      const next = setup;
+      next.dependencies ??= {};
+      next.dependencies.hosts ??= {};
+      next.dependencies.hosts[host] = {
+        ...previousProfile,
+        scope,
+        selected: dependencies.map(({ id }) => id),
+        declined,
+        receipts,
+        preparedAt: new Date().toISOString(),
+      };
       return { setup: next, result: { preparationStatus: receipts.every(({ status }) => status === "ready") ? "ready" : "incomplete", receipts } };
     },
   }).then((result) => result.status === "applied"
@@ -467,9 +487,10 @@ async function impeccableFunctional(executable, paths) {
 
 async function beadsFunctional(executable, paths) {
   const root = path.join(paths.toolRoot, "verification", `beads-${randomUUID()}`);
+  const project = { root, tracker: { kind: "beads", path: path.join(root, ".beads"), executable } };
   const options = {
     cwd: root,
-    env: { ...process.env, BD_NON_INTERACTIVE: "1", BEADS_ACTOR: "agent-team-readiness" },
+    env: { ...beadsEnvironment(project), BD_NON_INTERACTIVE: "1", BEADS_ACTOR: "agent-team-readiness" },
   };
   await mkdir(root, { recursive: true, mode: 0o700 });
   try {
@@ -499,9 +520,11 @@ async function serenaFunctional(executable, paths) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   await writeFile(fixture, "export function readinessFixtureSymbol() { return true; }\n", { mode: 0o600 });
 
+  const environment = { ...process.env, SERENA_HOME: path.join(root, "serena-home"), NO_COLOR: "1", PWD: root };
+  for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"]) delete environment[key];
   const child = spawn(executable, ["start-mcp-server", "--context", "ide", "--project", root], {
     cwd: root,
-    env: { ...process.env, NO_COLOR: "1" },
+    env: environment,
     stdio: ["pipe", "pipe", "pipe"],
   });
   const pending = new Map();

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+const baselineCapabilities = {
+  serena: { functional: "passed", availableToWorker: "passed" },
+  "playwright-cli": { functional: "passed", availableToWorker: "passed" },
+};
+
 test("approved Kickoff handoff reaches an eligible task without replacing develop or Beads", async () => {
   const { assessReadiness } = await import("../hooks/lib/readiness.mjs").catch(() => ({}));
   const tracker = { kind: "beads", status: "current" };
@@ -18,7 +23,7 @@ test("approved Kickoff handoff reaches an eligible task without replacing develo
         requiredCapabilities: ["node"],
       },
     },
-    capabilities: { node: { functional: "passed", availableToWorker: "passed" } },
+    capabilities: { ...baselineCapabilities, node: { functional: "passed", availableToWorker: "passed" } },
   });
 
   assert.equal(result.path, "kickoff");
@@ -40,7 +45,7 @@ test("malformed task data and partially verified capabilities remain specific re
       },
       tracker: { kind: "markdown", path: "TASKS.md", status: "current" },
     },
-    capabilities: { serena: { functional: "passed", availableToWorker: "unknown" } },
+    capabilities: { ...baselineCapabilities, serena: { functional: "passed", availableToWorker: "unknown" } },
   });
 
   assert.equal(result.eligible, false);
@@ -62,6 +67,7 @@ test("existing non-Kickoff plan is adopted without a second tracker", async () =
       },
       tracker,
     },
+    capabilities: baselineCapabilities,
   });
 
   assert.equal(result.path, "existing");
@@ -76,6 +82,7 @@ test("standalone request creates only the proportionate execution state it needs
   const result = assessReadiness({
     request: { summary: "Fix empty email validation", acceptance: ["Empty email returns Email required"] },
     project: { currentBranch: "main", projectOwner: "owner-1", verification: ["node --test tests/email.test.mjs"], authority: { writes: ["email.mjs"] } },
+    capabilities: baselineCapabilities,
   });
 
   assert.equal(result.path, "standalone");
@@ -115,10 +122,85 @@ test("a temporary Beads outage remains a specific gap and never migrates the tra
       },
       tracker,
     },
+    capabilities: baselineCapabilities,
   });
 
   assert.strictEqual(result.tracker, tracker);
   assert.equal(result.eligible, false);
   assert.deepEqual(result.missing.map(({ id }) => id), ["acceptance_conditions", "verification_commands", "authorization_boundaries", "tracker_available"]);
   assert.ok(result.missing.every(({ question }) => !/continue|anything else/i.test(question)));
+});
+
+test("mandatory baseline capabilities cannot be bypassed by an omitted plan requirement list", async () => {
+  const { assessReadiness } = await import("../hooks/lib/readiness.mjs");
+  const result = assessReadiness({
+    existing: { plan: {
+      scope: "Repair parser", acceptance: ["Parser passes"], tasks: [{ id: "T-1", status: "ready", dependencies: [] }],
+      branch: "main", verification: ["node --test"], authority: { writes: ["parser.mjs"] },
+    }, tracker: { kind: "markdown", path: "TASKS.md", status: "current" } },
+    capabilities: {},
+  });
+
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.requiredCapabilities, ["serena", "playwright-cli"]);
+  assert.deepEqual(result.missing.map(({ id }) => id), ["capability:serena", "capability:playwright-cli"]);
+});
+
+test("tracker readiness requires a positive current status and preserves the selected tracker", async () => {
+  const { assessReadiness } = await import("../hooks/lib/readiness.mjs");
+  const tracker = { kind: "beads", status: "unknown", reason: "not_probed" };
+  const result = assessReadiness({
+    existing: { plan: {
+      scope: "Repair parser", acceptance: ["Parser passes"], tasks: [{ id: "T-1", status: "ready", dependencies: [] }],
+      branch: "main", verification: ["node --test"], authority: { writes: ["parser.mjs"] },
+    }, tracker },
+    capabilities: {
+      serena: { functional: "passed", availableToWorker: "passed" },
+      "playwright-cli": { functional: "passed", availableToWorker: "passed" },
+    },
+  });
+
+  assert.strictEqual(result.tracker, tracker);
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.missing.map(({ id }) => id), ["tracker_available"]);
+  const missingStatusTracker = { kind: "markdown", path: "TASKS.md" };
+  const missingStatus = assessReadiness({
+    existing: { ...result, tracker: missingStatusTracker, plan: {
+      scope: result.scope, acceptance: result.acceptance, tasks: result.tasks, branch: result.branch,
+      verification: result.verification, authority: result.authority,
+    } },
+    capabilities: baselineCapabilities,
+  });
+  assert.strictEqual(missingStatus.tracker, missingStatusTracker);
+  assert.ok(missingStatus.missing.some(({ id }) => id === "tracker_available"));
+});
+
+test("ready tasks accept only canonical terminal predecessors and retain dependency history", async () => {
+  const { assessReadiness } = await import("../hooks/lib/readiness.mjs");
+  const plan = {
+    scope: "Continue plan", acceptance: ["Success"], branch: "main", verification: ["node --test"], authority: { writes: ["src"] },
+    tasks: [{ id: "T-1", status: "closed", dependencies: [] }, { id: "T-2", status: "ready", dependencies: ["T-1"] }],
+  };
+  const base = {
+    existing: { plan, tracker: { kind: "markdown", path: "TASKS.md", status: "current" } },
+    capabilities: {
+      serena: { functional: "passed", availableToWorker: "passed" },
+      "playwright-cli": { functional: "passed", availableToWorker: "passed" },
+    },
+  };
+
+  const ready = assessReadiness(base);
+  const held = assessReadiness({ ...base, existing: { ...base.existing, plan: { ...plan, tasks: [
+    { id: "T-1", status: "in_progress", dependencies: [] }, { id: "T-2", status: "ready", dependencies: ["T-1"] },
+  ] } } });
+  const missing = assessReadiness({ ...base, existing: { ...base.existing, plan: { ...plan, tasks: [
+    { id: "T-2", status: "ready", dependencies: ["T-missing"] },
+  ] } } });
+
+  assert.equal(ready.eligibleTask.id, "T-2");
+  assert.deepEqual(ready.eligibleTask.dependencies, ["T-1"]);
+  assert.equal(held.eligible, false);
+  assert.ok(held.missing.some(({ id }) => id === "actionable_tasks"));
+  assert.equal(missing.eligible, false);
+  assert.deepEqual(missing.tasks[0].dependencies, ["T-missing"]);
 });

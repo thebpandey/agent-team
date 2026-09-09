@@ -101,7 +101,7 @@ function navigationChoices(values, includeBack = true) {
   ];
 }
 
-export function buildSettingsWizard({ setup = {}, host, nativeChoices = {} }) {
+export function buildSettingsWizard({ setup = {}, host, nativeChoices = {}, draft = {} }) {
   const overview = inspectSettings({ setup, host, nativeChoices });
   const runSettings = ["parallel_teams", "continuous", "auto_deploy", "deploy_batch_tasks"];
   const steps = runSettings.map((setting, index) => ({
@@ -112,10 +112,21 @@ export function buildSettingsWizard({ setup = {}, host, nativeChoices = {} }) {
   }));
   for (const role of ROLE_DEFINITIONS) {
     const menu = buildRoleMenu({ overview, role: role.id, nativeChoices });
-    steps.push({ kind: "role-model", role: role.id, name: role.name, choices: navigationChoices(menu.models) });
-    const efforts = [...new Set((nativeChoices.models ?? []).flatMap(({ efforts = [] }) => efforts))]
+    const current = overview.roles.find(({ id }) => id === role.id);
+    const draftRoute = draft.roles?.[role.id] ?? {};
+    const selectedModel = draftRoute.model ?? current.configured.model ?? current.effective.model;
+    const selectedEffort = draftRoute.effort ?? (selectedModel === current.configured.model ? current.configured.effort : null);
+    const models = menu.models.map((choice) => ({
+      ...choice,
+      markers: [...choice.markers.filter((marker) => marker !== "current"), ...(choice.id === selectedModel ? ["current"] : [])],
+    }));
+    steps.push({ kind: "role-model", role: role.id, name: role.name, choices: navigationChoices(models) });
+    const efforts = (nativeChoices.models?.find(({ id }) => id === selectedModel)?.efforts ?? [])
       .map((id, index) => ({ id, number: index + 1, label: title(id) }));
-    steps.push({ kind: "role-effort", role: role.id, name: role.name, choices: navigationChoices(efforts) });
+    steps.push({
+      kind: "role-effort", role: role.id, name: role.name, model: selectedModel,
+      choices: navigationChoices(efforts.map((choice) => ({ ...choice, markers: choice.id === selectedEffort ? ["current"] : [] }))),
+    });
   }
   steps.push({ kind: "review", choices: navigationChoices([{ id: "save", label: "Save changes" }]) });
   return { host, control: overview.control, steps };

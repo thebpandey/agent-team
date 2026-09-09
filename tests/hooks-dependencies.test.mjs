@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -310,7 +310,7 @@ test("an incompatible selected Beads executable is preserved instead of installi
   assert.match(beads.boundary, /selected executable.*0\.9\.0.*1\.2\.2/);
 });
 
-test("invalid mandatory declines fail before any dependency side effect", async () => {
+test("invalid prerequisite declines fail before any dependency side effect", async () => {
   const { prepareDependencies } = await import("../hooks/lib/dependencies.mjs");
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-deps-"));
   const setupPath = path.join(directory, "setup.json");
@@ -320,7 +320,7 @@ test("invalid mandatory declines fail before any dependency side effect", async 
   await assert.rejects(() => prepareDependencies({
     setupPath, expectedVersion: 1, operationId: "bad-decline",
     writer: { id: "owner", role: "project_orchestrator" }, loadRegistry: async () => ({ projectOwner: "owner" }),
-    host: "codex", scope: "project", selections: { defaults: [], optionals: [], declined: ["serena"] },
+    host: "codex", scope: "project", selections: { defaults: [], optionals: [], declined: ["uv"] },
     paths: { projectRoot: directory, toolRoot: path.join(directory, "tools"), skillRoot: path.join(directory, "skills") },
     runner: async () => { calls += 1; return { status: "passed" }; },
   }), /cannot be declined/);
@@ -521,4 +521,122 @@ if (args.includes("eval")) process.stdout.write("yes\\n");
 
   assert.equal(result.status, "passed");
   assert.match(result.evidence, /clicked.*state change/i);
+});
+
+test("saved default and optional declines survive preparation until explicitly changed", async () => {
+  const { prepareDependencies } = await import("../hooks/lib/dependencies.mjs");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-saved-declines-"));
+  const setupPath = path.join(directory, "setup.json");
+  await writeFile(setupPath, `${JSON.stringify({
+    skill: "agent-team", projectId: "p", version: 1, tracker: { kind: "markdown", path: "TASKS.md" },
+    dependencies: { hosts: { codex: { declined: ["ponytail", "context7"], custom: "keep" } } },
+  })}\n`);
+  const called = [];
+  const runner = async ({ dependency, phase }) => {
+    called.push(`${dependency.id}:${phase}`);
+    return { status: "passed", version: dependency.version };
+  };
+
+  const result = await prepareDependencies({
+    setupPath, expectedVersion: 1, writer: { id: "owner", role: "project_orchestrator" }, operationId: "saved-declines",
+    loadRegistry: async () => ({ projectOwner: "owner" }), host: "codex", scope: "project", selections: {},
+    paths: { projectRoot: directory, toolRoot: path.join(directory, "tools"), skillRoot: path.join(directory, "skills") }, runner,
+  });
+  const saved = JSON.parse(await readFile(setupPath, "utf8"));
+
+  assert.equal(result.status, "ready");
+  assert.ok(!called.some((entry) => entry.startsWith("ponytail:")));
+  assert.deepEqual(saved.dependencies.hosts.codex.declined, ["ponytail", "context7"]);
+  assert.equal(saved.dependencies.hosts.codex.custom, "keep");
+
+  called.length = 0;
+  const changed = await prepareDependencies({
+    setupPath, expectedVersion: 2, writer: { id: "owner", role: "project_orchestrator" }, operationId: "change-saved-decline",
+    loadRegistry: async () => ({ projectOwner: "owner" }), host: "codex", scope: "project",
+    selections: { defaults: ["ponytail"] },
+    paths: { projectRoot: directory, toolRoot: path.join(directory, "tools"), skillRoot: path.join(directory, "skills") }, runner,
+  });
+  const changedSetup = JSON.parse(await readFile(setupPath, "utf8"));
+  assert.equal(changed.status, "ready");
+  assert.ok(called.some((entry) => entry.startsWith("ponytail:")));
+  assert.deepEqual(changedSetup.dependencies.hosts.codex.declined, ["context7"]);
+});
+
+test("declined mandatory dependencies get unavailable receipts while other preparation continues", async () => {
+  const { prepareDependencies } = await import("../hooks/lib/dependencies.mjs");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-required-decline-"));
+  const setupPath = path.join(directory, "setup.json");
+  await writeFile(setupPath, '{"skill":"agent-team","projectId":"p","version":1,"tracker":{"kind":"markdown","path":"TASKS.md"}}\n');
+  const called = [];
+  const runner = async ({ dependency, phase }) => {
+    called.push(`${dependency.id}:${phase}`);
+    return { status: "passed", version: dependency.version };
+  };
+
+  const result = await prepareDependencies({
+    setupPath, expectedVersion: 1, writer: { id: "owner", role: "project_orchestrator" }, operationId: "required-decline",
+    loadRegistry: async () => ({ projectOwner: "owner" }), host: "codex", scope: "project",
+    selections: { defaults: [], declined: ["serena"] },
+    paths: { projectRoot: directory, toolRoot: path.join(directory, "tools"), skillRoot: path.join(directory, "skills") }, runner,
+  });
+  const serena = result.receipts.find(({ id }) => id === "serena");
+
+  assert.equal(result.status, "incomplete");
+  assert.equal(serena.status, "required_unavailable");
+  assert.equal(serena.availableToWorker, "failed");
+  assert.match(serena.boundary, /mandatory.*declined/i);
+  assert.ok(!called.some((entry) => entry.startsWith("serena:")));
+  assert.ok(called.some((entry) => entry.startsWith("playwright-cli:")));
+});
+
+test("Serena functional verification isolates user state and inherited Git routing", async (t) => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const { CATALOG_BY_ID } = await import("../hooks/lib/dependency-catalog.mjs");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-serena-env-"));
+  const sentinelHome = path.join(directory, "sentinel-serena-home");
+  const observation = path.join(directory, "child-environment.json");
+  const server = path.join(directory, "serena-environment-server.mjs");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(server, `#!/usr/bin/env node
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import readline from "node:readline";
+mkdirSync(process.env.SERENA_HOME, { recursive: true });
+writeFileSync(path.join(process.env.SERENA_HOME, "probe-state"), "owned by probe");
+writeFileSync(process.env.AGENT_TEAM_ENV_OBSERVATION, JSON.stringify({ SERENA_HOME: process.env.SERENA_HOME, PWD: process.env.PWD, GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE, GIT_COMMON_DIR: process.env.GIT_COMMON_DIR, GIT_INDEX_FILE: process.env.GIT_INDEX_FILE }));
+const lines = readline.createInterface({ input: process.stdin });
+lines.on("line", line => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { capabilities: { tools: {} } } }) + "\\n");
+  if (message.method === "tools/list") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { tools: [{ name: "find_symbol" }] } }) + "\\n");
+  if (message.method === "tools/call") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "readinessFixtureSymbol" }] } }) + "\\n");
+});
+`);
+  await chmod(server, 0o755);
+  const keys = ["SERENA_HOME", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "AGENT_TEAM_ENV_OBSERVATION"];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  Object.assign(process.env, {
+    SERENA_HOME: sentinelHome,
+    GIT_DIR: "/sentinel/git-dir",
+    GIT_WORK_TREE: "/sentinel/git-work-tree",
+    GIT_COMMON_DIR: "/sentinel/git-common-dir",
+    GIT_INDEX_FILE: "/sentinel/git-index",
+    AGENT_TEAM_ENV_OBSERVATION: observation,
+  });
+  const paths = { projectRoot: directory, toolRoot: path.join(directory, "tools"), skillRoot: path.join(directory, "skills") };
+  try {
+    const runner = createDependencyRunner({ host: "codex", scope: "project", paths });
+    const result = await runner({ dependency: { ...CATALOG_BY_ID.get("serena"), executable: server }, phase: "functional", check: "symbol-operation" });
+    assert.equal(result.status, "passed", result.evidence);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  const observed = JSON.parse(await readFile(observation, "utf8"));
+  assert.ok(observed.SERENA_HOME.startsWith(path.join(paths.toolRoot, "verification", "serena-")));
+  assert.equal(observed.PWD, path.dirname(observed.SERENA_HOME));
+  for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"]) assert.equal(Object.hasOwn(observed, key), false);
+  await assert.rejects(readFile(path.join(sentinelHome, "probe-state")), { code: "ENOENT" });
 });

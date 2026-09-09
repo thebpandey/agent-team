@@ -8,12 +8,28 @@ const missingDefinitions = {
   tracker_available: "When will the selected tracker be available again?",
 };
 
+const BASELINE_CAPABILITIES = Object.freeze(["serena", "playwright-cli"]);
+const TERMINAL_TASK_STATUSES = new Set(["closed", "complete", "completed", "done", "integrated"]);
+
 function gap(id, detail) {
   return { id, question: missingDefinitions[id], ...(detail ? { detail } : {}) };
 }
 
 function readyTask(tasks) {
-  return Array.isArray(tasks) ? tasks.find((task) => task.status === "ready" && (!task.dependencies || task.dependencies.length === 0)) : undefined;
+  if (!Array.isArray(tasks)) return undefined;
+  const ids = tasks.map(({ id }) => id);
+  if (ids.some((id) => typeof id !== "string" || !id) || new Set(ids).size !== ids.length) return undefined;
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  return tasks.find((task) => task.status === "ready" && (task.dependencies === undefined || (
+    Array.isArray(task.dependencies) && task.dependencies.every((id) => {
+      const predecessor = typeof id === "string" ? byId.get(id) : undefined;
+      return predecessor && TERMINAL_TASK_STATUSES.has(String(predecessor.status).toLowerCase());
+    })
+  )));
+}
+
+function requiredCapabilities(plan) {
+  return [...new Set([...BASELINE_CAPABILITIES, ...(Array.isArray(plan.requiredCapabilities) ? plan.requiredCapabilities : [])])];
 }
 
 function requirements(plan, tracker, capabilities) {
@@ -24,8 +40,8 @@ function requirements(plan, tracker, capabilities) {
   if (typeof plan.branch !== "string" || !plan.branch.trim()) missing.push(gap("integration_branch"));
   if (!Array.isArray(plan.verification) || plan.verification.length === 0) missing.push(gap("verification_commands"));
   if (!plan.authority || typeof plan.authority !== "object" || Object.keys(plan.authority).length === 0) missing.push(gap("authorization_boundaries"));
-  if (!tracker || tracker.status === "unavailable") missing.push(gap("tracker_available", tracker?.reason));
-  for (const id of plan.requiredCapabilities ?? []) {
+  if (!tracker || tracker.status !== "current") missing.push(gap("tracker_available", tracker?.reason ?? tracker?.status));
+  for (const id of requiredCapabilities(plan)) {
     const receipt = capabilities?.[id];
     if (receipt?.functional !== "passed" || receipt?.availableToWorker !== "passed") {
       missing.push({ id: `capability:${id}`, question: `How will the required ${id} capability become functional for this task?` });
@@ -50,7 +66,7 @@ function result(path, planning, plan, tracker, capabilities, projectInitializati
     tracker,
     verification: plan.verification ?? [],
     authority: plan.authority ?? {},
-    requiredCapabilities: plan.requiredCapabilities ?? [],
+    requiredCapabilities: requiredCapabilities(plan),
     projectInitialization,
     missing,
   };
