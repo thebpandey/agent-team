@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from 'node:crypto';
+
 function patchSections(source) {
   const sections = [];
   let current;
@@ -103,15 +105,22 @@ export function normalizeEvent(runtime, event, payload = {}) {
     operation = { kind: "lifecycle" };
   }
 
-  const batchId = event === "PostToolBatch" && Array.isArray(payload.tool_calls)
-    ? `batch:${payload.tool_calls.map((call) => call.tool_use_id ?? call.toolUseId).filter(Boolean).slice(0, 20).join(",")}`
-    : "";
+  const batchIds = event === 'PostToolBatch' && Array.isArray(payload.tool_calls)
+    ? payload.tool_calls.map((call) => call.tool_use_id ?? call.toolUseId) : [];
+  // Only complete native identities support replay detection. Do not collapse later
+  // compactions or partial batches into the same session-wide operation receipt.
+  const batchId = batchIds.length && batchIds.every((id) => typeof id === 'string' && id.length)
+    ? batchIds.length <= 20 && batchIds.every((id) => /^[a-zA-Z0-9_.-]+$/.test(id)) && batchIds.join(',').length < 100
+      ? `batch:${batchIds.join(',')}`
+      : `batch:sha256:${createHash('sha256').update(JSON.stringify(batchIds)).digest('hex')}`
+    : '';
+  const nativeId = payload.event_id ?? payload.eventId ?? payload.tool_use_id ?? payload.toolUseId;
   return {
     runtime,
     event,
     cwd: payload.cwd ?? process.cwd(),
     sessionId: String(payload.session_id ?? payload.sessionId ?? "unknown"),
-    eventId: String(payload.event_id ?? payload.eventId ?? payload.tool_use_id ?? payload.toolUseId ?? batchId),
+    eventId: String(nativeId || batchId || `observation:${randomUUID()}`),
     operation,
   };
 }

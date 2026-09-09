@@ -8,6 +8,7 @@ import test from "node:test";
 
 import { readActivationLogs } from "../hooks/lib/telemetry.mjs";
 import { policyFixture } from "./hook-test-helpers.mjs";
+import { normalizeEvent } from '../hooks/lib/event.mjs';
 
 const hook = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-hook.mjs");
 const cli = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-cli.mjs");
@@ -43,6 +44,25 @@ function invoke(runtime, event, payload, home) {
 function output(result) {
   return JSON.parse(result.stdout);
 }
+
+test('checkpoint events without native IDs remain distinct and complete batch IDs cannot collide', async () => {
+  const value = await fixture();
+  const payload = { cwd: value.feature, session_id: 'developer-session' };
+  assert.equal(invoke('codex', 'PreCompact', payload, value.home).status, 0);
+  const file = path.join(value.root, '.agent-team/checkpoints/developer-session.json');
+  const first = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(invoke('codex', 'PreCompact', payload, value.home).status, 0);
+  const second = JSON.parse(await readFile(file, 'utf8'));
+  assert.notEqual(second.eventId, first.eventId);
+  assert.equal(second.version, first.version + 1);
+  const calls = Array.from({ length: 21 }, (_, index) => ({ tool_use_id: `tool-${index}` }));
+  const a = normalizeEvent('claude', 'PostToolBatch', { ...payload, tool_calls: calls });
+  const b = normalizeEvent('claude', 'PostToolBatch', { ...payload, tool_calls: [...calls.slice(0, 20), { tool_use_id: 'different' }] });
+  assert.notEqual(a.eventId, b.eventId);
+  assert.equal(a.eventId, normalizeEvent('claude', 'PostToolBatch', { ...payload, tool_calls: calls }).eventId);
+  const partial = { ...payload, tool_calls: [{ tool_use_id: 'known' }, {}] };
+  assert.notEqual(normalizeEvent('claude', 'PostToolBatch', partial).eventId, normalizeEvent('claude', 'PostToolBatch', partial).eventId);
+});
 
 test('actual copied hook under a spaced installation path executes and records only its scoped transport', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'agent team hook consumer '));

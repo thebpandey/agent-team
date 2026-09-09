@@ -151,7 +151,11 @@ async function runEvent(event, budget, runBeads, evidenceRoot) {
     try {
       const facts = await budget.run(() => checkpointFacts(event, project, { canonical, budget }));
       const result = await budget.run(() => writeCheckpoint(project, facts, { budget }));
-      decision.mutations.push({ kind: "checkpoint", created: result.created });
+      decision.mutations.push({ kind: "checkpoint", created: result.created, status: result.status });
+      if (result.status === 'conflict' || result.status === 'unavailable') {
+        decision.messages.push(`Agent-Team checkpoint ${result.status}: ${result.reason ?? 'evidence not persisted'}. Existing evidence is unchanged.`);
+        decision.capabilities.checkpoint = result.status;
+      }
     } catch {
       decision.messages.push("Agent-Team checkpoint is unavailable for this event.");
       decision.capabilities.checkpoint = "unavailable";
