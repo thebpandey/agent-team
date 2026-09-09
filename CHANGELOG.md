@@ -1,5 +1,13 @@
 # Changelog
 
+## 7.0.2 - 2026-09-09
+
+Version 7.0.2 improves large-project initialization, Beads reliability, and onboarding documentation.
+
+- Accept up to 500 canonical initialization tasks while preserving task-ID validation and rejecting requests above the limit.
+- Allow Beads and complete status reads up to five seconds by default while preserving explicit shorter caller deadlines.
+- Add the professional Agent-Team field guide and its overview and harness-flow illustrations to the universal package and README.
+
 ## 7.0.1 - 2026-09-09
 
 Version 7.0.1 is a maintenance update for the 7.0.0 package.

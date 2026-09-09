@@ -68,7 +68,7 @@ node hooks/agent-team-cli.mjs install --host codex --scope user
 node hooks/agent-team-cli.mjs health --project /path/to/project
 node hooks/agent-team-cli.mjs audit --tracker /path/to/.agent-team/TASKS.md --mistakes /path/to/MISTAKES.md
 node hooks/agent-team-cli.mjs build-artifacts --output /safe/output
-node hooks/agent-team-cli.mjs check-artifacts --archive /safe/output/agent-team-7.0.1.zip
+node hooks/agent-team-cli.mjs check-artifacts --archive /safe/output/agent-team-7.0.2.zip
 node hooks/agent-team-cli.mjs uninstall --host codex --scope user
 ```
 

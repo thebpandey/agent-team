@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "agent-team",
-  "version": "7.0.1",
+  "version": "7.0.2",
   "repository": "https://github.com/thebpandey/agent-team",
   "rootFiles": [
     "CHANGELOG.md",
@@ -10,7 +10,7 @@
     "LICENSE",
     "README.md",
     "SKILL.md",
-    "agent-team-guide-v7.0.1.html"
+    "agent-team-guide-v7.0.2.html"
   ],
   "includeRoots": [
     "agents",
@@ -25,7 +25,7 @@
     "LICENSE",
     "README.md",
     "SKILL.md",
-    "agent-team-guide-v7.0.1.html",
+    "agent-team-guide-v7.0.2.html",
     "agents/openai.yaml",
     "assets/banner.svg",
     "assets/claude-agents/agent-team-complex.md",
