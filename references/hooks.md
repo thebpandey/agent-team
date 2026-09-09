@@ -18,7 +18,7 @@ Both hosts run `hooks/agent-team-hook.mjs`. The `--runtime` and `--event` option
 | Explicit task completion | Supported mapped transition only | `TaskCompleted` |
 | Reliable local skill activation | unsupported | `PreToolUse` for `Skill`; `UserPromptExpansion` for a direct slash command |
 
-Codex loads managed groups from `~/.codex/hooks.json`. Claude Code loads them from the `hooks` object in `~/.claude/settings.json`. Host events have different payloads. The adapters normalize them before shared policy runs. A Codex patch includes every add, edit, delete, and move. Claude `PostToolBatch` collects all `Edit` and `Write` calls once. It runs changed-file lint and saves a factual checkpoint without also registering a per-edit `PostToolUse` hook.
+User-scope Codex configuration is `~/.codex/hooks.json`; Claude Code uses the `hooks` object in `~/.claude/settings.json`. Project-scope installation targets `.codex/hooks.json` or `.claude/settings.local.json` in the selected project. Registration in a file does not prove the installed host supports or exercised an event. Host events have different payloads. The adapters normalize them before shared policy runs. A Codex patch includes every add, edit, delete, and move. Claude `PostToolBatch` collects all `Edit` and `Write` calls once. It runs changed-file lint and saves a factual checkpoint without also registering a per-edit `PostToolUse` hook.
 
 ## Requirements 1–15
 
@@ -38,7 +38,7 @@ Codex loads managed groups from `~/.codex/hooks.json`. Claude Code loads them fr
 | 12. Activation telemetry | Automatic | Log reliable Claude hook-visible activation paths globally by default. Add project/team correlation only when canonical project state is active, and omit it otherwise. Report Codex activation as unsupported instead of inferring it from a file read. |
 | 13. Effectiveness audit | On demand | Bounded-read logs, the canonical tracker, and `MISTAKES.md`. Report unavailable or malformed sources and correlate stable task, team, and lesson IDs. This factual correlation does not prove policy effectiveness. |
 | 14. Package validation | CI and on demand | Check required files, version parity, local links, executable entry points, runtime registration, platform coverage, manifest inclusion, and policy IDs. |
-| 15. Artifact validation | On demand | Compare both runtime ZIP files with the manifest, source bytes, and source revision. Reject missing, stale, unexpected, duplicate, absolute, and path-escaping members. Source-only checks report not applicable. |
+| 15. Artifact validation | On demand | Compare the one complete universal ZIP with the manifest, source bytes, and source revision. It contains both host adapters; installation selects the actual host and scope. Reject missing, stale, unexpected, duplicate, absolute, and path-escaping members. Source-only checks report not applicable. |
 
 ## Policy state and limits
 
@@ -56,23 +56,25 @@ Checkpoints cannot guarantee a final write after abrupt termination. A timestamp
 
 The installer puts the authoritative Codex skill at `~/.agents/skills/agent-team` and the Claude copy at `~/.claude/skills/agent-team`. It also manages the bundled current role definitions under `~/.claude/agents`. It installs missing roles and updates unchanged managed roles with backups. It reports a conflict and preserves a customized role. It does not touch `legacy/claude-v3`.
 
-One user-level lock covers skill, role, configuration, backup, and receipt mutations. A failed transaction rolls back its own changes. The installer does not mark the source-at-target checkout for deletion. Uninstall removes a copied package only when its complete managed file set still matches the receipt. It preserves changed targets and reports conflicts. The installer also backs up and removes `~/.codex/skills/agent-team` from active discovery, merges only Agent-Team hook groups, and preserves unrelated settings. A second identical install does not duplicate groups or backups.
+One scope-specific lock covers skill, role, configuration, backup, and receipt mutations. A failed transaction reconciles only its own changes. The installer does not mark an unowned source checkout for deletion. Uninstall removes a copied package only when its complete managed file set still matches the receipt. It preserves changed targets and reports conflicts. Legacy discovery copies are recoverably backed up under the installation receipt. Handler-level ownership, not a substring or whole-group claim, controls update/removal inside mixed hook groups. A second identical install does not duplicate handlers or backups.
 
-LeanCTX hooks and MCP registration are unrelated configuration and must survive Agent-Team install, update, and uninstall. Agent-Team merges only its own groups; it does not replace hook arrays or settings objects. When LeanCTX is initialized after Agent-Team, its initializer must provide the same additive preservation. Back up user configuration before either operation and compare all pre-existing groups afterward. A healthy LeanCTX hook does not replace or prove Agent-Team lifecycle-hook health, and the reverse is also true. See [LeanCTX integration](lean-ctx.md).
+LeanCTX hooks and MCP registration are unrelated configuration and must survive Agent-Team install, update, and uninstall. Neither integration replaces whole hook arrays or settings objects. Back up affected configuration and compare pre-existing handlers afterward. Do not run a broad LeanCTX initializer as an automatic repair. A healthy LeanCTX hook does not prove Agent-Team lifecycle-hook health, or vice versa. See [LeanCTX integration](lean-ctx.md).
 
 Run these commands from an inspected source checkout:
 
 ```bash
 node hooks/agent-team-cli.mjs check-package
-node hooks/agent-team-cli.mjs install
+node hooks/agent-team-cli.mjs install --host codex --scope user
 node hooks/agent-team-cli.mjs health --project /path/to/project
 node hooks/agent-team-cli.mjs audit --tracker /path/to/.agent-team/TASKS.md --mistakes /path/to/MISTAKES.md
 node hooks/agent-team-cli.mjs build-artifacts --output /safe/output
-node hooks/agent-team-cli.mjs check-artifacts --archive /safe/codex.zip --archive /safe/claude.zip
-node hooks/agent-team-cli.mjs uninstall
+node hooks/agent-team-cli.mjs check-artifacts --archive /safe/output/agent-team-6.5.0.zip
+node hooks/agent-team-cli.mjs uninstall --host codex --scope user
 ```
 
-`uninstall` is the rollback command for the managed installation. It removes Agent-Team hook groups and unchanged files owned by its receipt. It restores saved prior skill copies. It preserves changed managed targets and reports them as conflicts. Installation does not grant trust. `health` reports installed, registered, trusted, supported, and exercised as separate values. With `--project`, it also reports a current, stale, missing, invalid, or unavailable-state mapping cache. Cache health reports that the cache is non-authoritative, comes from validated canonical state, and is only for fallback classification. It leaves `trusted` unknown until the host supplies evidence. Complete any native `/hooks` trust step yourself, then refresh the host if it requires a new session.
+Choose `--host claude-code` for Claude, or `--host both` only when explicitly wanted. Project scope also needs `--project /path/to/project`. `rollback` uses the same selected-host ownership removal contract as `uninstall`; it is not a version downgrade. Only receipted pre-install resources are candidates for restoration, not earlier managed update snapshots. Changed or unowned content is preserved and reported.
+
+Installation does not grant trust. `health` reports installed, registered, trusted, supported, and exercised as separate values, with per-event provenance and native support unknown until evidenced. With `--project`, it also reports a current, stale, missing, invalid, or unavailable-state mapping cache. Cache health reports that the cache is non-authoritative, comes from validated canonical state, and is only for fallback classification. Complete any native `/hooks` trust step yourself, then reload the host if it requires a new session. Approving hooks does not prove each event ran.
 
 Run unit and regression tests with:
 

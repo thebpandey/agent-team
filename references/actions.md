@@ -35,7 +35,7 @@ These lifecycle, multi-team, and preview features belong to Pro. They are not a 
 
 ## Automatic start
 
-Accept plain-language forms such as “agent team start” and “agent team resume.” Without a name, use the existing canonical Beads list, or its configured local-file fallback. Read complete eligible records and dependency/claim state using installed-version commands. Select one ready, unclaimed, non-deferred actionable task by the tracker's recorded priority and order; break otherwise equal ties by stable task ID. Do not select blocked tasks or a summary epic merely because it appears first.
+Accept plain-language forms such as “agent team start” and “agent team resume.” Without a name, use the explicitly selected canonical Beads list or root/designated TASKS.md. An unavailable Beads backend never activates a fallback tracker. Read complete eligible records and dependency/claim state using installed-version commands. Select one ready, unclaimed, non-deferred actionable task by the tracker's recorded priority and order; break otherwise equal ties by stable task ID. Do not select blocked tasks or a summary epic merely because it appears first.
 
 Under project registration/claim ownership, recheck eligibility, preserve its existing task ID, allocate one unique team number, and derive a readable name from the task title. Use a team-ID suffix if the name collides. If a new task genuinely needs an ID, let Beads assign its native ID or allocate one through the local tracker's single writer. Never replace an existing Beads ID or create duplicate tasks just to match a naming convention. Record the mapping before starting the team.
 

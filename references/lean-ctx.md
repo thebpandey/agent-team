@@ -6,22 +6,17 @@ Do not install RTK, Headroom, or another automatic context compressor around Lea
 
 ## Safe architecture
 
-Use LeanCTX's documented hybrid integration: its Model Context Protocol (MCP) server plus its host hook. This contract was verified against release v3.10.1 and the current upstream default branch; inspect the selected release again before installation. Do not use `wrap`, `onboard`, `setup`, `harden`, or proxy commands for Agent-Team. They have a wider mutation or compression scope than this integration needs.
+Prepare the pinned executable and complete applicable skill at the selected scope. Reuse a healthy compatible integration. MCP and a host hook are possible access paths, not proof of availability in a worker. Verify the actual path used by the assignment. Inspect the selected release again before installation.
 
-Resolve LeanCTX's effective global configuration path with `lean-ctx config path`, merge the profile below, validate it, and then initialize each host separately:
+Do not invoke broad `init`, `wrap`, `onboard`, `setup`, `harden`, proxy, or full-catalog permission initializers from automatic setup. Register only the narrowed profile's owned entries in the selected host/scope, using a verified adapter. Never configure both hosts merely because both are installed. If that release cannot isolate a required change safely, report the exact manual/security decision and continue independent preparation; do not mark the integration ready.
 
-```bash
-lean-ctx init --agent codex --mode hybrid
-lean-ctx init --agent claude --mode hybrid
-```
+Inspect the effective configuration with `lean-ctx config path`. Existing Codex/Claude MCP, hook, instruction, skill and role files are user resources. Claude `autoApprove` and `permissions.allow` are security-sensitive, separate from tool visibility. Do not copy an upstream full-catalog approval list or broaden permissions to make verification pass. With `rules_injection = "dedicated"`, keep guidance out of shared project `AGENTS.md`/`CLAUDE.md` unless an existing approved configuration requires it.
 
-The current Codex initializer registers MCP in `~/.codex/config.toml`, hooks in `~/.codex/hooks.json`, LeanCTX-owned guidance in `~/.codex/instructions.md` and `~/.codex/LEAN-CTX.md`, and the skill at `~/.codex/skills/lean-ctx/SKILL.md`. The current Claude initializer registers MCP plus an `autoApprove` list in `~/.claude.json`, hooks plus `permissions.allow` entries for LeanCTX tools in `~/.claude/settings.json`, and the skill at `~/.claude/skills/lean-ctx/SKILL.md`. Its current approval lists cover the full LeanCTX catalog, not only the selected profile, so treat both files as security-sensitive changes and compare every added permission during review. With `rules_injection = "dedicated"`, neither host needs a LeanCTX block in the user's shared `AGENTS.md` or `CLAUDE.md`; SessionStart provides the compact pointer.
-
-The initializer must merge its MCP entry, instructions, skill, hooks, `autoApprove`, and `permissions.allow` entries into existing user configuration. It must not replace Agent-Team hook arrays, settings objects, permissions, skills, or Claude role definitions. Abort on an unparseable target instead of allowing a default object to replace it. Before any user-level change, inspect the selected upstream release, make a separate timestamped backup of every target, record the source and version, and obtain the user's approval. Upstream also writes a `.bak` beside changed files, but that is not the only backup. Run `lean-ctx config validate`, `lean-ctx doctor`, and `lean-ctx doctor integrations` after initialization. Compare the full Claude approval additions with the selected profile; record that non-advertised tools remain approved by the host but prohibited by this Agent-Team contract. Remove only LeanCTX-owned blocks and entries during rollback; do not remove Agent-Team entries.
+Before an authorized change, record the exact source/version and ownership, preserve the previous bytes in a separate recoverable backup, and merge only the intended entries. Fail on malformed or conflicting customization instead of replacing it with defaults. First-use authorization covers approved default preparation, not a new auth/admin/trust decision or an unrelated wider-scope overwrite. Run `lean-ctx config validate`, `lean-ctx doctor`, and applicable integration checks after configuration. Remove only unchanged entries established by the ownership receipt during rollback; preserve Agent-Team and unrelated entries.
 
 LeanCTX currently keys persistent state by project. That does not prove isolation by Git worktree, Agent-Team team ID, and agent/session identity. Use compact reads, search, shell compression, and recoverable local context, but disable LeanCTX task/handoff/coordination and persistent knowledge features for Agent-Team runs until upstream provides and verification proves all four isolation dimensions.
 
-Merge these values into the exact path printed by `lean-ctx config path`; preserve unrelated keys and user changes:
+The following is the compatibility profile, not an instruction to overwrite a global config. Apply only through the selected scope's verified adapter; inspect effective precedence and preserve unrelated keys and user changes:
 
 ```toml
 shell_activation = "agents-only"
