@@ -14,7 +14,7 @@ function complete(output) {
 
 if (command === "--version") {
   complete("bounded-dashboard-bv 1\n");
-} else if (command === "--robot-help") {
+} else if (command === "--help") {
   const output = "--robot-graph --graph-format --no-hooks\n";
   if (mode === "slow") setTimeout(() => complete(output), 2000);
   else complete(output);

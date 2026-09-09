@@ -1,13 +1,14 @@
 import { execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { access, chmod, cp, link, lstat, mkdir, mkdtemp, open, opendir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, cp, link, lstat, mkdir, mkdtemp, open, opendir, readFile, realpath, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { CATALOG_BY_ID, DEPENDENCY_CATALOG } from "./dependency-catalog.mjs";
 import { mutateSetup } from "./settings.mjs";
 import { beadsEnvironment } from "./tracker.mjs";
 import { createEventBudget } from "./budget.mjs";
+import { createBeadsGraphCommandAdapter } from "./dashboard.mjs";
 
 const exec = promisify(execFile);
 const HOSTS = new Set(["codex", "claude-code"]);
@@ -53,7 +54,7 @@ export function resolveCatalogSelection({ tracker, defaults, optionals = [] } = 
   };
 }
 
-const TOOL_IDS = new Set(["uv", "serena", "playwright-cli", "ast-grep", "lean-ctx", "beads", "context7"]);
+const TOOL_IDS = new Set(["uv", "serena", "playwright-cli", "ast-grep", "lean-ctx", "beads", "beads-viewer", "context7"]);
 
 export function inspectDependencies({ setup = {}, host }) {
   if (!HOSTS.has(host)) throw new Error(`Unknown dependency host: ${host ?? "missing"}.`);
@@ -178,7 +179,7 @@ async function prepareOne(dependency, runner, budget) {
     };
   }
   const compatible = probe.status === "passed" && (dependency.version === null || probe.version === dependency.version);
-  if (dependency.executable && probe.status === "passed" && !compatible) {
+  if (dependency.executable && !compatible && (probe.status === "passed" || dependency.id === "beads-viewer")) {
     return {
       id: dependency.id, version: probe.version ?? null, detected: true, installed: "preserved",
       functional: "not_run", availableToWorker: "not_run", status: "cannot_use", observedAt,
@@ -266,8 +267,16 @@ export async function prepareDependencies({ setupPath, expectedVersion, writer, 
         .filter((id) => !declinedSet.has(id));
       const optionals = (selections.optionals ?? []).filter((id) => !declinedSet.has(id));
       const selection = resolveCatalogSelection({ tracker: setup.tracker, defaults, optionals });
+      if (selection.selected.some(({ id }) => id === "beads-viewer") && (setup.tracker?.kind !== "beads"
+        || setup.dashboard?.graph?.enabled !== true || setup.dashboard.graph.termsAcknowledged !== true)) {
+        throw new Error("bv preparation requires the selected Beads tracker and enabled graph with terms acknowledged.");
+      }
       const dependencies = selection.selected.map((dependency) => dependency.id === "beads" && setup.tracker?.executable
         ? { ...dependency, executable: setup.tracker.executable }
+        : dependency.id === "beads-viewer" ? { ...dependency,
+          ...(setup.dashboard?.graph?.executable ? { executable: setup.dashboard.graph.executable } : {}),
+          trackerExecutable: setup.tracker?.executable ?? binaryPath(CATALOG_BY_ID.get("beads"), paths.toolRoot),
+        }
         : dependency);
       const receipts = [];
       for (const dependency of dependencies) {
@@ -280,7 +289,13 @@ export async function prepareDependencies({ setupPath, expectedVersion, writer, 
             observedAt: new Date().toISOString(),
           });
         } else {
-          receipts.push(await prepareOne(dependency, execute, budget));
+          const receipt = await prepareOne(dependency, execute, budget);
+          if (dependency.id === "beads-viewer") {
+            receipt.executable = binaryPath(dependency, paths.toolRoot);
+            receipt.termsAcknowledged = true;
+            if (receipt.functional === "passed") setup.dashboard.graph.executable = receipt.executable;
+          }
+          receipts.push(receipt);
         }
       }
       budget?.check();
@@ -304,6 +319,7 @@ export async function prepareDependencies({ setupPath, expectedVersion, writer, 
 
 function binaryPath(dependency, toolRoot) {
   if (dependency.executable) return dependency.executable;
+  if (dependency.id === "beads-viewer") return path.join(toolRoot, `bv-${dependency.version}`, process.platform === "win32" ? "bv.exe" : "bv");
   // Keep old npm shims/custom binaries untouched; register this exact scoped release path.
   if (dependency.id === "lean-ctx" && dependency.install?.kind === "github-release") {
     return path.join(toolRoot, `lean-ctx-${dependency.version}`, process.platform === "win32" ? "lean-ctx.exe" : "lean-ctx");
@@ -624,6 +640,61 @@ async function installLeanCtxRelease(dependency, paths, budget) {
   } finally { if (stage) await rm(stage, { recursive: true, force: true }); }
 }
 
+async function installBeadsViewerRelease(dependency, paths, budget) {
+  const platform = { linux: "linux", darwin: "darwin" }[process.platform];
+  const architecture = { x64: "amd64", arm64: "arm64" }[process.arch];
+  if (!platform || !architecture) {
+    return { status: "failed", evidence: `No verified bv asset for ${process.platform}/${process.arch}.` };
+  }
+  const asset = `bv_${dependency.version}_${platform}_${architecture}.tar.gz`;
+  const directory = path.dirname(binaryPath(dependency, paths.toolRoot));
+  let stage;
+  let directoryCreated = false;
+  const published = [];
+  try {
+    try {
+      await lstat(directory);
+      return { status: "customized", evidence: `Preserved existing bv release directory: ${directory}` };
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+    await mkdir(paths.toolRoot, { recursive: true, mode: 0o700 });
+    stage = await mkdtemp(path.join(paths.toolRoot, ".bv-download-"));
+    const url = `${dependency.install.source}/${asset}`;
+    const archive = await releaseBytes(url, 128 * 1024 * 1024, budget);
+    const checksums = (await releaseBytes(`${url}.sha256`, 64 * 1024, budget)).toString("utf8");
+    const matching = checksums.split(/\r?\n/).map((line) => line.match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/)).filter((match) => match?.[2] === asset);
+    const digest = createHash("sha256").update(archive).digest("hex");
+    if (matching.length !== 1 || matching[0][1].toLowerCase() !== digest) throw new Error(`bv checksum mismatch for ${asset}.`);
+    const archivePath = path.join(stage, asset);
+    await writeFile(archivePath, archive, { flag: "wx", mode: 0o600 });
+    const name = path.basename(binaryPath(dependency, paths.toolRoot));
+    const extracted = await command("tar", ["-xf", archivePath, "-C", stage, name, "LICENSE"], { budget });
+    if (extracted.status !== "passed") return extracted;
+    await companionBytes(path.join(stage, name), budget, 128 * 1024 * 1024);
+    await companionBytes(path.join(stage, "LICENSE"), budget, 64 * 1024);
+    await chmod(path.join(stage, name), 0o755);
+    budget?.check();
+    await mkdir(directory, { mode: 0o700 });
+    directoryCreated = true;
+    for (const member of ["LICENSE", name]) {
+      await link(path.join(stage, member), path.join(directory, member));
+      published.push(member);
+    }
+    return { status: "passed", version: dependency.version, evidence: `Verified pinned ${asset} SHA256 ${digest}; complete LICENSE retained. No source build, updater or initializer executed.` };
+  } catch (error) {
+    if (directoryCreated) {
+      for (const member of published) {
+        try {
+          const [source, target] = await Promise.all([lstat(path.join(stage, member)), lstat(path.join(directory, member))]);
+          if (source.dev === target.dev && source.ino === target.ino) await unlink(path.join(directory, member));
+        } catch { /* Preserve files no longer identifiable as this invocation's links. */ }
+      }
+      await rmdir(directory).catch(() => {}); // Remove only an empty directory we created, never unrelated contents.
+    }
+    if (error.code === "EVENT_DEADLINE") throw error;
+    return { status: "failed", evidence: error.message };
+  } finally { if (stage) await rm(stage, { recursive: true, force: true }); }
+}
+
 async function prepareLeanCtxSkill(dependency, paths, budget) {
   const destination = path.join(paths.skillRoot, "lean-ctx");
   const provenance = { source: dependency.install.skill.source, revision: dependency.version, gitBlob: dependency.install.skill.gitBlob };
@@ -771,6 +842,39 @@ async function beadsFunctional(executable, paths) {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+async function beadsViewerFunctional(executable, trackerExecutable, paths, budget) {
+  const root = path.join(paths.toolRoot, "verification", `bv-${randomUUID()}`);
+  const tracker = { kind: "beads", id: "bv-readiness", path: path.join(root, ".beads"), executable: trackerExecutable };
+  const options = { cwd: root, budget, env: { ...beadsEnvironment({ root, tracker }), BD_NON_INTERACTIVE: "1", BEADS_ACTOR: "agent-team-readiness" } };
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  try {
+    for (const [file, args] of [
+      ["git", ["init", "--quiet"]],
+      [trackerExecutable, ["init", "--non-interactive", "--skip-agents", "--skip-hooks", "--prefix", "ATV"]],
+    ]) {
+      const result = await command(file, args, options);
+      if (result.status !== "passed") return result;
+    }
+    const ids = [];
+    for (const title of ["graph-prerequisite", "graph-dependent"]) {
+      const created = await command(trackerExecutable, ["create", "--title", title, "--type", "task", "--priority", "2", "--json"], options);
+      if (created.status !== "passed") return created;
+      const id = JSON.parse(created.stdout).id;
+      if (typeof id !== "string" || !id) throw new Error("Beads did not return a graph fixture ID.");
+      ids.push(id);
+    }
+    const linked = await command(trackerExecutable, ["dep", "add", ids[1], ids[0]], options);
+    if (linked.status !== "passed") return linked;
+    const result = await createBeadsGraphCommandAdapter({ projectRoot: root, tracker, bvPath: executable, selected: true, termsAcknowledged: true, budget }).refresh();
+    const adjacency = result.graph?.adjacency;
+    if (result.status !== "available" || !ids.every((id) => adjacency.nodes.some((node) => node.id === id))
+      || !adjacency.edges.some((edge) => edge.from === ids[1] && edge.to === ids[0])) {
+      return { status: "failed", evidence: result.reason ?? "Fresh exported graph did not preserve both tasks and their dependency." };
+    }
+    return { status: "passed", evidence: "Selected Beads exported two isolated tasks and their dependency; bv returned the matching attributed JSON graph with hooks disabled." };
+  } finally { await rm(root, { recursive: true, force: true }); }
 }
 
 async function serenaFunctional(executable, paths) {
@@ -981,6 +1085,7 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       if (dependency.install?.kind === "git-skill") return installGitSkills(dependency, paths);
       if (dependency.id === "uv" && dependency.install?.kind === "github-release") return installUvRelease(dependency, paths);
       if (dependency.id === "lean-ctx" && dependency.install?.kind === "github-release") return installLeanCtxRelease(dependency, paths, budget);
+      if (dependency.id === "beads-viewer" && dependency.install?.kind === "github-release") return installBeadsViewerRelease(dependency, paths, budget);
       return { status: "failed", evidence: `Pinned ${dependency.install?.kind ?? "unknown"} preparation requires its verified installer adapter.` };
     }
     if (phase === "companion" && dependency.id === "lean-ctx") return prepareLeanCtxSkill(dependency, paths, budget);
@@ -1002,6 +1107,7 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       if (check === "narrow-read-recovery") return leanCtxFunctional(executable, paths);
       if (check === "detector-exit-contract") return impeccableFunctional(executable, paths);
       if (check === "atomic-tracker-write") return beadsFunctional(executable, paths);
+      if (check === "fresh-export-graph") return beadsViewerFunctional(executable, dependency.trackerExecutable ?? binaryPath(CATALOG_BY_ID.get("beads"), paths.toolRoot), paths, budget);
       return { status: "failed", evidence: `Functional adapter '${check}' did not run.` };
     }
     if (phase === "worker") {

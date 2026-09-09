@@ -260,8 +260,8 @@ export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDi
     if (trackerVersion.status !== "completed") return { status: "unavailable", reason: `Selected tracker version check: ${trackerVersion.status}`, attribution };
     const version = await command(phase, bvPath, ["--version"]);
     if (version.status !== "completed") return { status: "unavailable", reason: `bv version check: ${version.status}`, attribution };
-    const robot = await command(phase, bvPath, ["--robot-help"]);
-    if (robot.status !== "completed" || !/robot-graph/i.test(robot.output) || !/graph-format/i.test(robot.output) || !/no-hooks/i.test(robot.output)) return { status: "unavailable", reason: "bv robot graph capability is unavailable.", attribution };
+    const robot = await command(phase, bvPath, ["--help"]);
+    if (robot.status !== "completed" || !/--robot-graph\b/.test(robot.output) || !/--graph-format\b/.test(robot.output) || !/--no-hooks\b/.test(robot.output)) return { status: "unavailable", reason: "bv robot graph capability is unavailable.", attribution };
     return { status: "available", version: version.output.trim(), trackerVersion: trackerVersion.output.trim(), attribution };
   }
   return Object.freeze({

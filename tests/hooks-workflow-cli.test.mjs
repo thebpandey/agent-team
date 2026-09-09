@@ -385,9 +385,9 @@ test("dashboard snapshot publishes the base task view before an optional graph d
   assert.match(html, /Graph source task/);
   assert.match(html, /Graph dependent task/);
   assert.doesNotMatch(html, /<svg /);
-  assert.match(await readFile(log, "utf8"), /--robot-help/);
+  assert.match(await readFile(log, "utf8"), /--help/);
   await new Promise((resolve) => setTimeout(resolve, 220));
-  assert.doesNotMatch(await readFile(log, "utf8"), /--robot-help:completed/);
+  assert.doesNotMatch(await readFile(log, "utf8"), /--help:completed/);
 });
 
 test("live dashboard re-resolves graph configuration for each open or refresh", async () => {

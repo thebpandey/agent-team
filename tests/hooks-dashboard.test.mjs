@@ -79,7 +79,7 @@ test('actual command boundary pins canonical export and isolates bv routing from
   const bd = path.join(directory, 'selected-bd');
   const bv = path.join(directory, 'selected-bv');
   await writeFile(bd, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nif (process.argv[2] === '--version') console.log('fixture-bd'); else writeFileSync(process.argv[process.argv.indexOf('-o') + 1], JSON.stringify({ dir: process.env.BEADS_DIR, db: process.env.BEADS_DB ?? null }));\n`);
-  await writeFile(bv, `#!${process.execPath}\nimport { readFileSync } from 'node:fs';\nif (process.argv[2] === '--version') console.log('fixture-bv'); else if (process.argv[2] === '--robot-help') console.log('--robot-graph --graph-format --no-hooks'); else { const input = JSON.parse(readFileSync('.beads/issues.jsonl', 'utf8')); console.log(JSON.stringify({format: 'json', nodes: 2, edges: 1, adjacency: {nodes: [{id: 'A', title: 'A'}, {id: 'B', title: 'B'}], edges: [{from: 'A', to: 'B', type: 'blocks'}]}, probe: input})); }\n`);
+  await writeFile(bv, `#!${process.execPath}\nimport { readFileSync } from 'node:fs';\nif (process.argv[2] === '--version') console.log('fixture-bv'); else if (process.argv[2] === '--help') console.log('--robot-graph --graph-format --no-hooks'); else { const input = JSON.parse(readFileSync('.beads/issues.jsonl', 'utf8')); console.log(JSON.stringify({format: 'json', nodes: 2, edges: 1, adjacency: {nodes: [{id: 'A', title: 'A'}, {id: 'B', title: 'B'}], edges: [{from: 'A', to: 'B', type: 'blocks'}]}, probe: input})); }\n`);
   await chmod(bd, 0o700); await chmod(bv, 0o700);
   const oldDir = process.env.BEADS_DIR, oldDb = process.env.BEADS_DB;
   t.after(() => { if (oldDir === undefined) delete process.env.BEADS_DIR; else process.env.BEADS_DIR = oldDir; if (oldDb === undefined) delete process.env.BEADS_DB; else process.env.BEADS_DB = oldDb; });
@@ -293,7 +293,7 @@ test("documented Beads command adapter checks capabilities then refreshes canoni
     runCommand: async (command, args, options) => {
       calls.push({ command, args, options });
       if (args[0] === "--version") return { status: "completed", output: "bv 0.24.1" };
-      if (args[0] === "--robot-help") return { status: "completed", output: "--robot-graph --graph-format --no-hooks" };
+      if (args[0] === "--help") return { status: "completed", output: "--robot-graph --graph-format --no-hooks" };
       if (command === "/selected/bd") return { status: "completed", output: "" };
       return { status: "completed", output: JSON.stringify({ format: "json", nodes: 2, edges: 1, adjacency: { nodes: [{ id: "A", title: "Title with A -> B" }, { id: "B", title: "Second" }], edges: [{ from: "A", to: "B", type: "blocks" }] } }) };
     },
@@ -302,7 +302,7 @@ test("documented Beads command adapter checks capabilities then refreshes canoni
   assert.equal(graph.status, "available");
   assert.deepEqual(graph.graph.adjacency.edges, [{ from: "A", to: "B", type: "blocks" }]);
   assert.deepEqual(calls.map((entry) => [entry.command, entry.args]), [
-    ["/selected/bd", ["--version"]], ["bv", ["--version"]], ["bv", ["--robot-help"]],
+    ["/selected/bd", ["--version"]], ["bv", ["--version"]], ["bv", ["--help"]],
     ["/selected/bd", ["export", "-o", "/project/.agent-team/dashboard/beads/.beads/issues.jsonl"]],
     ["bv", ["--robot-graph", "--graph-format=json", "--no-hooks"]],
   ]);
@@ -324,7 +324,7 @@ test("structured graph accepts isolated and empty nodes but rejects invalid adja
   const base = { projectRoot: "/project", tracker: { kind: "beads", id: "beads:/project/.beads", executable: "/selected/bd" }, stagingDirectory: "/project/.agent-team/dashboard/beads", selected: true, termsAcknowledged: true, ensureDirectory: async () => {} };
   const run = async (_command, args) => {
     if (args[0] === "--version") return { status: "completed", output: "v1" };
-    if (args[0] === "--robot-help") return { status: "completed", output: "--robot-graph --graph-format --no-hooks" };
+    if (args[0] === "--help") return { status: "completed", output: "--robot-graph --graph-format --no-hooks" };
     if (args[0] === "export") return { status: "completed", output: "" };
     return { status: "completed", output: JSON.stringify({ format: "json", nodes: 1, edges: 0, adjacency: { nodes: [{ id: "SOLO", title: "A -> B is text" }], edges: null } }) };
   };
@@ -361,7 +361,7 @@ test("stalled graph staging preserves publication time and cannot run later comm
     assert.ok(budget.remaining() >= 80, "base view still has a publication reserve");
     finishStaging();
     await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.deepEqual(commands, ["--version", "--version", "--robot-help"]);
+    assert.deepEqual(commands, ["--version", "--version", "--help"]);
   } finally { finishStaging?.(); budget.close(); }
 });
 
@@ -394,7 +394,7 @@ test("actual graph commands share the request deadline and cancellation boundary
         assert.ok(Date.now() - started < 700, `${boundary} must stop the actual command promptly`);
         await new Promise((resolve) => setTimeout(resolve, 220));
         const output = await readFile(log, "utf8").catch((error) => { if (error.code === "ENOENT") return ""; throw error; });
-        assert.doesNotMatch(output, /--robot-help:completed/);
+        assert.doesNotMatch(output, /--help:completed/);
       } finally {
         if (timer) clearTimeout(timer);
         budget.close();

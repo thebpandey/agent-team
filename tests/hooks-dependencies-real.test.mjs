@@ -26,6 +26,22 @@ test("real isolated ast-grep package passes positive and negative structural fix
   assert.deepEqual(functional, { status: "passed", evidence: "Positive and negative structural fixtures passed." });
 });
 
+test("real pinned bv release preserves its license and renders fresh selected Beads dependencies", { skip: !enabled || !process.env.AGENT_TEAM_REAL_BD }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-real-bv-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const paths = { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot: path.join(root, "skills") };
+  const dependency = { ...CATALOG_BY_ID.get("beads-viewer"), trackerExecutable: process.env.AGENT_TEAM_REAL_BD };
+  const runner = createDependencyRunner({ host: "codex", scope: "project", paths });
+  const installed = await runner({ dependency, phase: "install" });
+  assert.equal(installed.status, "passed", installed.evidence);
+  assert.equal((await runner({ dependency, phase: "probe" })).version, dependency.version);
+  const license = await readFile(path.join(paths.toolRoot, `bv-${dependency.version}`, "LICENSE"), "utf8");
+  assert.match(license, /Jeffrey Emanuel/);
+  assert.match(license, /OpenAI.*Anthropic/);
+  const functional = await runner({ dependency, phase: "functional", check: dependency.functionalCheck });
+  assert.equal(functional.status, "passed", functional.evidence);
+});
+
 test("real pinned Superpowers source prepares only selected complete skills", { skip: !enabled }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-real-skills-"));
   t.after(() => rm(root, { recursive: true, force: true }));

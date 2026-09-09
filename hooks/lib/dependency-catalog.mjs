@@ -105,9 +105,9 @@ export const DEPENDENCY_CATALOG = Object.freeze([
     functionalCheck: "skill-discovery",
   },
   {
-    id: "beads-viewer", name: "beads_viewer", disposition: "optional", version: null, prerequisites: ["beads"],
-    install: { kind: "permission-gated", source: "https://github.com/Dicklesworthstone/beads_viewer" },
-    boundary: "License applicability and permission must be resolved before preparation or distribution.",
+    id: "beads-viewer", name: "beads_viewer", disposition: "optional", version: "0.24.1", prerequisites: ["beads"],
+    install: { kind: "github-release", command: "bv", source: "https://github.com/Dicklesworthstone/beads_viewer/releases/download/v0.24.1", checksums: "per-asset .sha256" },
+    boundary: "Optional Beads graph provider; preserve the complete upstream license and operator terms acknowledgement.",
     functionalCheck: "fresh-export-graph",
   },
   ...[
