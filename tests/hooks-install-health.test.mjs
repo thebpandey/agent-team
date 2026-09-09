@@ -340,6 +340,12 @@ test("a receipt-free customized handler is preserved as ambiguous without adding
   const uninstall = await uninstallPackage({ home, host: "codex", scope: "user" });
   assert.equal(uninstall.conflicts.some(({ kind, reason }) => kind === "handler" && reason === "ambiguous_handler"), true);
   await readFile(path.join(home, ".agents", "skills", "agent-team", "hooks", "agent-team-hook.mjs"));
+
+  const resolved = JSON.parse(await readFile(configPath, "utf8"));
+  resolved.hooks.PreToolUse[0].hooks = resolved.hooks.PreToolUse[0].hooks.filter(({ command: value }) => value !== command);
+  await writeFile(configPath, `${JSON.stringify(resolved, null, 2)}\n`);
+  assert.equal((await uninstallPackage({ home, host: "codex", scope: "user" })).status, "uninstalled");
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
 });
 
 test("uninstall keeps the package needed by a customized owned handler", async () => {
@@ -472,6 +478,48 @@ test("a conflict in one host does not retain stale receipt ownership for the oth
   assert.deepEqual([...new Set(receipt.targets.map(({ runtime }) => runtime))], ["codex"]);
   const remainingCodex = JSON.parse(await readFile(codexPath, "utf8"));
   assert.equal(agentTeamGroups(remainingCodex).length, 1);
+});
+
+test("partial Claude uninstall retains receipts for every role it leaves in place", async () => {
+  // Blocking role removal because one handler is customized must not discard ownership of the retained roles.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-retained-claude-roles-"));
+  temporary.push(home);
+  await installPackage({ sourceRoot, home, host: "claude-code", scope: "user" });
+  const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
+  const before = JSON.parse(await readFile(receiptPath, "utf8"));
+  const configPath = path.join(home, ".claude", "settings.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  Object.values(config.hooks).flat().find((group) => group.hooks?.[0])
+    .hooks[0].command += " --user-custom-option";
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+  const result = await uninstallPackage({ home, host: "claude-code", scope: "user" });
+  const after = JSON.parse(await readFile(receiptPath, "utf8"));
+  assert.equal(result.status, "uninstalled_with_conflicts");
+  for (const role of before.claudeAgents) {
+    await readFile(role.path);
+    assert.equal(after.claudeAgents.some(({ path: name }) => name === role.path), true);
+  }
+});
+
+test("restoring one customized hook lets retry finish after safe siblings were removed", async () => {
+  // Retaining receipts for successfully removed same-runtime siblings creates permanent missing-handler conflicts.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-retry-uninstall-"));
+  temporary.push(home);
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  const configPath = path.join(home, ".codex", "hooks.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  const [event, groups] = Object.entries(config.hooks).find(([, rows]) => rows.some((group) => group.hooks?.[0]));
+  const handler = groups.find((group) => group.hooks?.[0]).hooks[0];
+  const original = structuredClone(handler);
+  handler.command += " --user-custom-option";
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  assert.equal((await uninstallPackage({ home, host: "codex", scope: "user" })).status, "uninstalled_with_conflicts");
+
+  const remaining = JSON.parse(await readFile(configPath, "utf8"));
+  remaining.hooks[event].find((group) => group.hooks?.some(({ command }) => command?.endsWith("--user-custom-option"))).hooks[0] = original;
+  await writeFile(configPath, `${JSON.stringify(remaining, null, 2)}\n`);
+  assert.equal((await uninstallPackage({ home, host: "codex", scope: "user" })).status, "uninstalled");
 });
 
 test("installer preserves unrelated settings, removes the legacy Codex duplicate, and reruns cleanly", async () => {
@@ -707,10 +755,83 @@ test("a subsequent CLI invocation recovers ownership after abrupt process termin
   await new Promise((resolve) => child.once("exit", resolve));
   await assert.rejects(readFile(path.join(legacy, "original.txt")), { code: "ENOENT" });
 
-  await run(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"]);
+  const recovered = await Promise.all([
+    run(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"]),
+    run(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"]),
+  ]);
+  const recoveredResults = recovered.map(({ stdout }) => JSON.parse(stdout));
+  assert.equal(recoveredResults.filter(({ recovery }) => recovery?.action === "rolled_back").length, 1);
+  assert.equal(recoveredResults.filter(({ changed }) => changed).length, 1);
   await run(process.execPath, [cli, "rollback", "--home", home, "--host", "codex", "--scope", "user"]);
   assert.equal(await readFile(path.join(legacy, "original.txt"), "utf8"), "original ownership\n");
   await assert.rejects(readFile(path.join(home, ".agent-team-hooks", "transaction.json")), { code: "ENOENT" });
+});
+
+test("recovery preserves a user replacement created after abrupt termination", async () => {
+  // Unconditional undo would delete the replacement before restoring the interrupted transaction's backup.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-interrupted-user-edit-"));
+  temporary.push(home);
+  const legacy = path.join(home, ".codex", "skills", "agent-team");
+  await mkdir(legacy, { recursive: true });
+  await writeFile(path.join(legacy, "original.txt"), "original ownership\n");
+  const configPath = path.join(home, ".codex", "hooks.json");
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, JSON.stringify({ padding: "x".repeat(16 * 1024 * 1024), hooks: {} }));
+  const child = spawn(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"], {
+    stdio: "ignore",
+  });
+  let interruptedBackup;
+  for (let attempt = 0; attempt < 5000 && !interruptedBackup; attempt += 1) {
+    let journal;
+    try {
+      journal = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "transaction.json"), "utf8"));
+    } catch {}
+    const action = journal?.undo?.find(({ kind, to }) => kind === "move" && to === legacy);
+    if (action) {
+      try {
+        await readdir(action.from);
+        interruptedBackup = action.from;
+      } catch {}
+    }
+    if (child.exitCode !== null) break;
+    await delay(1);
+  }
+  assert.ok(interruptedBackup, "installer exited before a moved resource was durably journaled");
+  child.kill("SIGKILL");
+  await new Promise((resolve) => child.once("exit", resolve));
+  await mkdir(legacy, { recursive: true });
+  await writeFile(path.join(legacy, "USER.md"), "created after crash\n");
+
+  await assert.rejects(
+    run(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"]),
+    (error) => /recovery conflict/i.test(error.stdout),
+  );
+  assert.equal(await readFile(path.join(legacy, "USER.md"), "utf8"), "created after crash\n");
+  assert.equal(await readFile(path.join(interruptedBackup, "original.txt"), "utf8"), "original ownership\n");
+});
+
+test("recovery rejects an out-of-scope journal without applying it", async () => {
+  // A writable journal is recovery evidence, not authority to mutate an arbitrary path.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-invalid-journal-home-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "agent-team-invalid-journal-outside-"));
+  temporary.push(home, outside);
+  const protectedFile = path.join(outside, "keep.txt");
+  await writeFile(protectedFile, "keep\n");
+  const stateRoot = path.join(home, ".agent-team-hooks");
+  await mkdir(stateRoot, { recursive: true });
+  await writeFile(path.join(stateRoot, "transaction.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    transactionId: "not-authority",
+    operation: "install",
+    status: "active",
+    undo: [{ kind: "remove_path", path: protectedFile, recursive: true, internal: true }],
+  }, null, 2)}\n`);
+
+  await assert.rejects(
+    installPackage({ sourceRoot, home, host: "codex", scope: "user" }),
+    /journal is invalid|out-of-scope/i,
+  );
+  assert.equal(await readFile(protectedFile, "utf8"), "keep\n");
 });
 
 test("parallel installer calls serialize one transaction and keep one registration set", async () => {
