@@ -7,8 +7,8 @@ const excluded = new Map([
   ["canceled", "cancelled"],
   ["approved_deferred", "deferred"],
   ["approved deferred", "deferred"],
-  ["deferred", "deferred"],
 ]);
+const knownStatuses = new Set(["open", "todo", "ready", "in_progress", "active", "working", "parked", "paused", "deferred", "blocked", "completed", "complete", "done", "closed", ...excluded.keys()]);
 
 function value(row, ...names) {
   for (const name of names) {
@@ -45,11 +45,20 @@ function normalizeTasks(rows) {
       owner: value(row, "owner", "team", "team id") || "unassigned",
       dependencies: dependencies(row),
       parentId: parentId || null,
+      nextAction: value(row, "next action", "next_action") || null,
+      evidence: value(row, "revision / evidence", "evidence", "revision") || null,
       counted: false,
+      duplicate: false,
     };
   });
   const ids = new Set(tasks.map((task) => task.id));
-  for (const task of tasks) task.counted = (!task.parentId || !ids.has(task.parentId)) && !excluded.has(task.status);
+  const parentsWithChildren = new Set(tasks.filter((task) => task.parentId && ids.has(task.parentId)).map((task) => task.parentId));
+  const admittedIds = new Set();
+  for (const task of tasks) {
+    task.duplicate = admittedIds.has(task.id);
+    admittedIds.add(task.id);
+    task.counted = !task.duplicate && !parentsWithChildren.has(task.id) && !excluded.has(task.status);
+  }
   return tasks;
 }
 
@@ -74,8 +83,10 @@ function progressFor(tasks, freshness) {
   if (!actionable.length) return { status: "not_applicable", total: 0, completed: 0, remaining: 0, percentage: null, excluded: counts };
   const complete = actionable.filter((task) => completed.has(task.status)).length;
   const hasUnknownHierarchy = tasks.some((task) => task.parentId && !tasks.some((candidate) => candidate.id === task.parentId));
+  const hasUnknownStatus = tasks.some((task) => !knownStatuses.has(task.status));
+  const hasDuplicates = tasks.some((task) => task.duplicate);
   return {
-    status: hasUnknownHierarchy ? "provisional" : "exact",
+    status: hasUnknownHierarchy || hasUnknownStatus || hasDuplicates ? "provisional" : "exact",
     total: actionable.length,
     completed: complete,
     remaining: actionable.length - complete,
@@ -104,11 +115,23 @@ function capacityFor(value) {
   return null;
 }
 
+function cleanupFor(state, taskId) {
+  const cleanup = state?.cleanup?.[taskId];
+  if (!cleanup || typeof cleanup !== "object") return null;
+  return {
+    revision: typeof cleanup.revision === "string" ? cleanup.revision : null,
+    integrationRef: typeof cleanup.integrationRef === "string" ? cleanup.integrationRef : null,
+    verification: typeof cleanup.verification?.status === "string" ? cleanup.verification.status : "unknown",
+    evidencePaths: Array.isArray(cleanup.evidencePaths) ? cleanup.evidencePaths.filter((entry) => typeof entry === "string") : [],
+    retain: cleanup.retain === true,
+  };
+}
+
 /** Build one immutable, read-only status view from canonical task and team records. */
 export function createStatusModel(project, canonical = {}, options = {}) {
   const freshness = freshnessFor(canonical.tracker);
   const state = canonical.state && typeof canonical.state === "object" ? canonical.state : {};
-  const tasks = normalizeTasks(canonical.tasks).map((task) => ({ ...task, runtime: runtimeFor(state, task.id) }));
+  const tasks = normalizeTasks(canonical.tasks).map((task) => ({ ...task, runtime: runtimeFor(state, task.id), cleanup: cleanupFor(state, task.id) }));
   const teams = (canonical.registry?.teams || []).map((team) => ({
     id: value(team, "team id", "id") || "unknown",
     name: value(team, "name") || "Unnamed team",
@@ -117,11 +140,16 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     status: normalizeStatus(value(team, "status")),
     model: value(team, "model") || "unknown",
     effort: value(team, "effort") || "unknown",
+    assignments: value(team, "tasks") || "unknown",
   }));
-  const activity = {
-    active: tasks.filter((task) => (task.runtime?.compute || task.status) === "active" || ["in_progress", "working"].includes(task.status)).length,
-    parked: tasks.filter((task) => task.status === "parked" || task.runtime?.compute === "parked").length,
-    paused: tasks.filter((task) => task.status === "paused" || task.runtime?.compute === "paused").length,
+  const unavailable = freshness.status === "unavailable" || freshness.status === "unknown";
+  const execution = (task) => task.runtime?.compute && task.runtime.compute !== "unknown"
+    ? task.runtime.compute
+    : ["active", "in_progress", "working"].includes(task.status) ? "active" : ["parked", "paused"].includes(task.status) ? task.status : "unknown";
+  const activity = unavailable ? { active: null, parked: null, paused: null, ready: null, capacity: null } : {
+    active: tasks.filter((task) => execution(task) === "active").length,
+    parked: tasks.filter((task) => execution(task) === "parked").length,
+    paused: tasks.filter((task) => execution(task) === "paused").length,
     ready: tasks.filter((task) => task.status === "ready").length,
     capacity: capacityFor(options.capacity ?? state.capacity),
   };
@@ -133,7 +161,11 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     activity,
     teams,
     tasks,
-    run: { paused: typeof state.run?.paused === "boolean" ? state.run.paused : null },
+    run: {
+      paused: typeof state.run?.paused === "boolean" ? state.run.paused : null,
+      current: typeof state.run?.id === "string" ? state.run.id : typeof state.run?.current === "string" ? state.run.current : "unknown",
+      blockers: Array.isArray(state.run?.blockers) ? state.run.blockers.filter((entry) => typeof entry === "string") : [],
+    },
     state: {
       integration: state.integration?.status ? { status: state.integration.status } : { status: "unknown" },
       release: state.release?.status ? { status: state.release.status } : { status: "unknown" },
@@ -147,5 +179,15 @@ export async function readStatus(cwd, options = {}) {
   const load = options.loadCanonicalState || loadCanonicalState;
   const project = typeof cwd === "object" && cwd ? cwd : await resolve(cwd);
   if (!project?.active) throw new Error("An active Agent-Team project is required for status.");
-  return createStatusModel(project, await load(project), options);
+  try {
+    return createStatusModel(project, await load(project), options);
+  } catch (error) {
+    const previous = options.lastGood;
+    return createStatusModel(project, {
+      tracker: { kind: previous?.freshness?.source === "TASKS.md" ? "tasks" : "unknown", id: previous?.freshness?.source || "canonical tracker", path: previous?.freshness?.source || "canonical tracker", status: "unavailable", reason: String(error.message || error) },
+      registry: { projectId: previous?.project?.id || project.projectId, teams: previous?.teams || [] },
+      tasks: previous?.tasks || [],
+      state: previous?.state || {},
+    }, options);
+  }
 }

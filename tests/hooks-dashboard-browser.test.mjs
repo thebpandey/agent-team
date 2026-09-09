@@ -20,4 +20,8 @@ test("standalone browser fixture keeps keyboard controls, stale state, and mobil
   assert.match(html, /prefers-reduced-motion/);
   assert.match(html, /max-width: 600px/);
   assert.match(html, /Recorded compute state is not live process liveness/);
+  assert.match(html, /Task-count completion only; not estimated effort/);
+  assert.match(html, /Integration: unknown/);
+  assert.match(html, /Release: unknown/);
+  assert.match(html, /Progress confidence: not_applicable/);
 });

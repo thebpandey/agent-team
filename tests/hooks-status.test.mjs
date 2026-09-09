@@ -19,7 +19,7 @@ function canonical(overrides = {}) {
       taskRuntime: { PARKED: { compute: "parked", explicitPause: false, checkpointPath: ".agent-team/checkpoints/parked.json", resumeWhen: "READY", writer: { host: "local", pid: 44 } } },
     },
     tasks: [
-      { id: "PARENT", "requirement / acceptance": "Parent", owner: "T1", "depends on": "none", status: "in_progress", priority: "P1" },
+      { id: "PARENT", "requirement / acceptance": "Parent", owner: "T1", "depends on": "none", status: "in_progress", priority: "P1", "next action": "Delegate child" },
       { id: "CHILD", "requirement / acceptance": "Child", owner: "T1", "depends on": "PARENT", status: "completed", priority: "P1", parent: "PARENT" },
       { id: "READY", "requirement / acceptance": "Ready", owner: "", "depends on": "none", status: "ready", priority: "P2" },
       { id: "PARKED", "requirement / acceptance": "Parked", owner: "T1", "depends on": "READY", status: "parked", priority: "P2" },
@@ -37,18 +37,37 @@ test("status model keeps every task visible while counting only unique actionabl
   assert.deepEqual(model.progress, {
     status: "exact",
     total: 3,
-    completed: 0,
-    remaining: 3,
-    percentage: 0,
+    completed: 1,
+    remaining: 2,
+    percentage: 33,
     excluded: { cancelled: 1, deferred: 1 },
   });
   assert.deepEqual(model.activity, { active: 1, parked: 1, paused: 0, ready: 1, capacity: null });
-  assert.equal(model.tasks.find((task) => task.id === "CHILD").counted, false);
-  assert.equal(model.tasks.find((task) => task.id === "PARENT").counted, true);
+  assert.equal(model.tasks.find((task) => task.id === "CHILD").counted, true);
+  assert.equal(model.tasks.find((task) => task.id === "PARENT").counted, false);
+  assert.equal(model.tasks.find((task) => task.id === "PARENT").nextAction, "Delegate child");
   assert.deepEqual(model.tasks.find((task) => task.id === "PARKED").runtime, {
     compute: "parked", explicitPause: false, checkpointPath: ".agent-team/checkpoints/parked.json", resumeWhen: "READY", evidencePointers: [],
   });
   assert.equal(model.run.paused, true);
+});
+
+test("status model de-duplicates IDs, retains unapproved deferred work, and marks unknown status provisional", () => {
+  const model = createStatusModel(project, canonical({ tasks: [
+    { id: "PARENT", status: "in_progress" },
+    { id: "CHILD", status: "completed", parent: "PARENT" },
+    { id: "CHILD", status: "completed", parent: "PARENT" },
+    { id: "LATER", status: "deferred" },
+    { id: "MYSTERY", status: "vendor_waiting" },
+    { id: "APPROVED", status: "approved_deferred" },
+  ] }));
+  assert.equal(model.tasks.length, 6);
+  assert.equal(model.progress.total, 3);
+  assert.equal(model.progress.completed, 1);
+  assert.equal(model.progress.excluded.deferred, 1);
+  assert.equal(model.progress.status, "provisional");
+  assert.equal(model.tasks.filter((task) => task.id === "CHILD" && task.counted).length, 1);
+  assert.equal(model.tasks.find((task) => task.id === "LATER").counted, true);
 });
 
 test("status model uses supplied capacity rather than inferring it from unassigned work", () => {
@@ -69,6 +88,7 @@ test("status model represents unavailable and unknown sources without claiming e
   assert.equal(unavailable.freshness.status, "unavailable");
   assert.equal(unavailable.progress.status, "unknown");
   assert.equal(unavailable.progress.percentage, null);
+  assert.deepEqual(unavailable.activity, { active: null, parked: null, paused: null, ready: null, capacity: null });
   assert.equal(unknown.freshness.status, "unknown");
   assert.equal(unknown.progress.status, "unknown");
 });
@@ -91,4 +111,17 @@ test("readStatus delegates project resolution and canonical loading without muta
   assert.equal(result.project.id, "project-1");
   assert.equal(result.tasks[0].id, "PARENT");
   assert.equal(source.tasks.length, 6);
+});
+
+test("readStatus converts a canonical read failure into an unavailable model retaining supplied last-good rows", async () => {
+  const lastGood = createStatusModel(project, canonical());
+  const result = await readStatus("/project", {
+    resolveProject: async () => project,
+    loadCanonicalState: async () => { throw new Error("tracker backend timeout"); },
+    lastGood,
+  });
+  assert.equal(result.freshness.status, "unavailable");
+  assert.match(result.freshness.reason, /timeout/);
+  assert.equal(result.progress.status, "unknown");
+  assert.equal(result.tasks.length, 6);
 });
