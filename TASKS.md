@@ -20,6 +20,8 @@ No task is complete until implementation and applicable independent review/verif
 
 ## Evidence and execution notes
 
+- Currentf8d6942 full491/491 zero failures/skips/allrealoptins/12casematrix passed34.673s/a23f83458402f1d0. Nativev3 checkpoint/unknownPIDvisibility passed; resume safely refused oldcheckpoint mismatch. Narrowexplicitpaused suppliedcheckpoint preference fixed with preservedguards/parkedbehavior, RED2→GREEN75/Terrahighaccepted. Managedfixturecurrent. V3 boundedwait ended withoutsource/resumemutation; freshv4/v7 and reviewedCodexPTYcompact remain. Claudecompactaccepted. Finaldocs/mergedchecks/archive/publication stillopen; no push, no pendingtestapproval.
+
 - d6145c8 full487/487 zero failures/skips/allrealoptins/12casematrix passed33.730s/e0984bc70ac51fd6, packagepassed. Codexmanagedrefreshvalid/no conflicts; reviewedfixture-only legacy namespace reconstruction applied withoriginalhostevidence/preimage, taskpausedv4unchanged. Terrahostadapter/Solinteractivecompact preparations parallel, no newnativewriteruntilreview. Finalmergedchecks/archive/publication remain.
 
 - d6145c8 repairs native PIDnamespace false-stopped observation: actualhostengine1984145 visibleoutside/sandboxPID2hidden; RED5→GREEN99 +docs13 and Terra/highaccept. Captureobservernamespace; missing/mismatch/unreadable->unknown, onlymatchedview/boot/exactPIDstatabsence->stopped. Fullrealchecks running. Codexv2 remains pausedv4, no checkpoint/sourcechanges; host-side native-request adapter underreview, originalevidencepreserved. Alltestsstandingauthorization; no push; finalnewrevisionarchivespending.
