@@ -5,6 +5,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { readFileSync } from 'node:fs';
+import { beadsEnvironment } from './tracker.mjs';
 
 const runFile = promisify(execFile);
 
@@ -196,11 +197,9 @@ export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDi
   });
   const trackerExecutable = tracker?.executable || bdPath;
   const trackerId = tracker?.id || null;
-  const environment = { ...process.env };
-  delete environment.BEADS_DB;
-  delete environment.BEADS_DIR;
-  const options = { cwd: projectRoot, timeoutMs: Math.min(Math.max(1, timeoutMs), 5000), maxOutputBytes: Math.min(Math.max(1024, maxOutputBytes), 256 * 1024), env: { ...environment, BEADS_DIR: tracker?.path ?? path.join(projectRoot, '.beads') } };
-  const graphOptions = { ...options, cwd: stagingDirectory, env: { ...environment, BEADS_DIR: path.join(stagingDirectory, '.beads') } };
+  const environment = beadsEnvironment({ root: projectRoot, tracker: { ...tracker, path: tracker?.path ?? path.join(projectRoot, '.beads') } });
+  const options = { cwd: projectRoot, timeoutMs: Math.min(Math.max(1, timeoutMs), 5000), maxOutputBytes: Math.min(Math.max(1024, maxOutputBytes), 256 * 1024), env: environment };
+  const graphOptions = { ...options, cwd: stagingDirectory, env: beadsEnvironment({ root: stagingDirectory, tracker: { path: path.join(stagingDirectory, '.beads') } }, environment) };
   const exportFile = path.join(stagingDirectory, ".beads", "issues.jsonl");
   async function capability() {
     if (!selected || !termsAcknowledged) return { status: "not_selected", reason: !selected ? "Optional Beads graph is not selected." : "Operator terms acknowledgement is required.", attribution };
