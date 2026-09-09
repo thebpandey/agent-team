@@ -146,6 +146,20 @@ if (process.argv[2] === "writer") {
     assert.deepEqual(taskEligibility(value.canonical, { ...options, capacity: { limit: 2, active: 1, reservedReview: 1 } }).eligible, []);
   });
 
+  for (const visibility of ["different_namespace", "legacy_namespace_missing"]) {
+    test(`an absent PID with ${visibility} is unknown, not a stopped writer`, async () => {
+      const { captureWriterIdentity, inspectWriterIdentity } = await api();
+      const worker = spawn(process.execPath, [fileURLToPath(import.meta.url), "writer"], { stdio: ["ignore", "pipe", "ignore"] });
+      await new Promise((resolve) => worker.stdout.once("data", resolve));
+      let writer;
+      try { writer = await captureWriterIdentity(worker.pid); }
+      finally { const stopped = new Promise((resolve) => worker.once("exit", resolve)); worker.kill("SIGTERM"); await stopped; }
+      if (visibility === "different_namespace") writer.pidNamespace = "pid:[0]";
+      else delete writer.pidNamespace;
+      assert.deepEqual(await inspectWriterIdentity(writer), { status: "unknown", reason: "pid_visibility_unavailable" });
+    });
+  }
+
   test("parking requires a stopped matching writer, retains claim and gates, and frees independent admission", async () => {
     const { transitionTask, captureWriterIdentity, inspectWriterIdentity, taskEligibility } = await api();
     const value = await fixture();
@@ -166,6 +180,13 @@ if (process.argv[2] === "writer") {
       assert.equal((await transitionTask(value.project, park)).reason, "writer_not_stopped");
       const stopped = new Promise((resolve) => worker.once("exit", resolve)); worker.kill("SIGTERM"); await stopped;
       assert.equal((await inspectWriterIdentity(writer)).status, "stopped");
+      const savedState = await readFile(value.project.paths.state, "utf8");
+      const hiddenWriter = { ...writer, pidNamespace: "pid:[0]" };
+      const hiddenState = JSON.parse(savedState);
+      hiddenState.taskRuntime["AT-001"].writer = hiddenWriter;
+      await writeFile(value.project.paths.state, JSON.stringify(hiddenState));
+      assert.equal((await transitionTask(value.project, { ...park, writer: hiddenWriter })).reason, "writer_not_stopped");
+      await writeFile(value.project.paths.state, savedState);
       const wrongCheckpoint = await writeCheckpoint(value.project, { eventId: "wrong-scope", sessionId: "other-session", taskIds: ["AT-001"], worktree: value.root, revision: value.revision, nextAction: "Wrong session." });
       assert.equal((await transitionTask(value.project, { ...park, checkpointPath: wrongCheckpoint.path })).reason, "checkpoint_identity_mismatch");
       assert.equal((await transitionTask(value.project, park)).status, "applied");

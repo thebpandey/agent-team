@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, readlink, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs";
@@ -34,25 +34,30 @@ function pendingAffectsTask(entry, task, canonical, project) {
   });
 }
 
-/** Bind a local writer to boot and process-start identity; a PID alone is insufficient. */
+/** Record the observer's PID namespace: a sandbox can hide a still-live host writer. */
 export async function captureWriterIdentity(pid = process.pid) {
-  const [stat, bootId] = await Promise.all([readFile(`/proc/${pid}/stat`, "utf8"), readFile("/proc/sys/kernel/random/boot_id", "utf8")]);
+  const [stat, bootId, pidNamespace] = await Promise.all([readFile(`/proc/${pid}/stat`, "utf8"), readFile("/proc/sys/kernel/random/boot_id", "utf8"), readlink("/proc/self/ns/pid")]);
   const startTime = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[19];
   if (!startTime) throw new Error("Writer start identity is unavailable.");
-  return { pid, startTime, bootId: bootId.trim(), host: os.hostname() };
+  return { pid, startTime, bootId: bootId.trim(), host: os.hostname(), pidNamespace };
 }
 
 export async function inspectWriterIdentity(writer) {
   if (!writer || !Number.isInteger(writer.pid) || !writer.startTime || !writer.bootId || writer.host !== os.hostname()) return { status: "unknown", reason: "identity_unavailable" };
+  const hidden = () => ({ status: "unknown", reason: "pid_visibility_unavailable" });
+  if (typeof writer.pidNamespace !== "string" || !/^pid:\[\d+\]$/.test(writer.pidNamespace)) return hidden();
+  try { if (await readlink("/proc/self/ns/pid") !== writer.pidNamespace) return hidden(); }
+  catch { return hidden(); }
   let bootObserved = false;
   try {
     const bootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
     if (bootId !== writer.bootId) return { status: "unknown", reason: "boot_changed" };
     bootObserved = true;
     const current = await captureWriterIdentity(writer.pid);
+    if (current.pidNamespace !== writer.pidNamespace) return hidden();
     return current.startTime === writer.startTime ? { status: "active" } : { status: "unknown", reason: "pid_reused" };
   } catch (error) {
-    return bootObserved && error.code === "ENOENT" ? { status: "stopped" } : { status: "unknown", reason: "probe_unavailable" };
+    return bootObserved && error.code === "ENOENT" && error.path === `/proc/${writer.pid}/stat` ? { status: "stopped" } : { status: "unknown", reason: "probe_unavailable" };
   }
 }
 

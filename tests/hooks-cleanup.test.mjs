@@ -64,7 +64,7 @@ test("cleanup reconciles removal after a lost state receipt without another dest
   assert.equal(recovered.result.reconciled, true);
 });
 
-for (const kind of ["tracked", "untracked", "ignored", "user_owned", "unknown_writer", "preview"]) {
+for (const kind of ["tracked", "untracked", "ignored", "user_owned", "unknown_writer", "different_pid_namespace", "missing_pid_namespace", "preview"]) {
   test(`cleanup retains ${kind} resources`, async () => {
     const value = await fixture();
     if (kind === "tracked") await writeFile(path.join(value.feature, "src/owned.js"), "user change\n");
@@ -75,6 +75,8 @@ for (const kind of ["tracked", "untracked", "ignored", "user_owned", "unknown_wr
     }
     if (kind === "user_owned") value.state.cleanup["AT-001"].resourceOwner = "user";
     if (kind === "unknown_writer") value.state.cleanup["AT-001"].writer = { pid: process.pid };
+    if (kind === "different_pid_namespace") value.writer.pidNamespace = "pid:[0]";
+    if (kind === "missing_pid_namespace") delete value.writer.pidNamespace;
     if (kind === "preview") value.state.cleanup["AT-001"].previewRequired = true;
     await writeFile(value.project.paths.state, JSON.stringify(value.state));
     const result = await cleanup(value.project, value.request);
