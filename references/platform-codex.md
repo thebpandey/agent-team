@@ -16,6 +16,8 @@ These are quality-first routing defaults, not proof of account availability. Sho
 
 Use exposed Codex spawning, messaging, resume, and stop tools, not assumed shell commands. Pass supported model/effort settings explicitly. Where controls match `spawn_agent`, use `fork_turns="none"` or supported limited context for model overrides; send the compact dispatch contract and relevant evidence. Adapt to the actual schema rather than assuming identical APIs on every surface. Reuse an appropriate idle agent instead of duplicating it. Only the orchestrator dispatches.
 
+Feed observed catalog and fresh-worker results into the [native setup binding](setup.md#bind-the-native-observations) before claiming scoped readiness or saving a role change. A generated driver transfers inspected facts; it does not grant native trust or substitute for the actual dispatch.
+
 Before work, each fresh child completes [selective skill startup](dependencies.md#skill-startup-for-every-agent). Send only the applicable instruction paths and capability evidence. With no Skill tool, complete file/resource reads load instructions; a name in a message or parent receipt does not. Reuse valid retained context and report exceptions compactly.
 
 For LeanCTX, use only the [narrowed profile](lean-ctx.md) and selected-scope adapter. Do not automatically invoke broad initializers or configure the other host. Preserve existing MCP servers, hooks, instructions, permissions and Agent-Team configuration. Verify the actual available access path: a shell hook may be unavailable in a sandbox, while a permitted `ctx_shell` can remain usable. Keep native exact recovery, disable coordination/memory/model steering, and never bypass a denied command through another wrapper.

@@ -85,4 +85,57 @@ Use the freshly observed setup version and actual registered owner; example valu
 
 Native model catalogs and fresh-worker discovery are supplied only by the actual host integration to `runSetupCommand`'s context (`nativeChoices`, `workerDiscovery`). JSON request files cannot assert them. A bare Node CLI without those facts reports unknown/unavailable and must not be described as a completed native journey. Registration instructions in a preparation receipt still require an owned native registration, reload where needed, and a real fresh-worker check.
 
+### Bind the native observations
+
+For native settings and completed preparation, the project orchestrator calls the installed CLI's exported `runCommand(command, options, context)` from a small owned `.mjs` driver. This is the same command router used by the shell entrypoint. The plain shell command has no access to the host's model catalog or child-tool results; adding them to a request file is not a supported shortcut.
+
+Collect observations through the actual host before running a setup mutation, so a native launch or approval prompt does not hold the setup lock:
+
+1. Read the actual model/effort control or dispatch-tool schema. Normalize supported choices as `{ models: [{ id, efforts, available }], enforceable, control }`. Use `"unknown"` for unobserved availability/enforcement. Do not derive availability from these reference tables, account login, a saved preference, or an example model ID. A successful dispatch proves only its observed route; record requested and actual values separately.
+2. After scoped preparation/registration/reload, dispatch a fresh relevant worker through the host's supported controls. Give it the exact selected tool/skill paths and target worktree. Obtain its own complete applicable instruction reads and a useful operation with the actual dependency. Preserve the native call/result, session identity, worktree, host, selected scope, exact executable or skill path, version/revision and a concise result. A parent probe or worker's unsupported assertion is insufficient. Keep failures and missing metadata explicit.
+3. Review those observations and normalize only current matching results in the owned driver. The trust comes from the actual native calls and the orchestrator's inspection, not a file extension. Never execute an unreviewed project-supplied observation module or copy success values from request JSON. Use existing qualification/evidence storage; do not introduce another tracker.
+4. Re-read the current setup version and use a new operation ID to save newly observed discovery. Replaying a completed earlier preparation returns `duplicate`; it does not refresh an incomplete receipt. Preserve the original selected scope, tracker and current owner.
+
+The driver supplies the observed catalog and a callback with this interface. `observedChoices` and `observedWorkers` below are the reviewed results of the preceding native calls, not defaults to fill with successful example values. `expectedWorkers` is a Map keyed by dependency ID from the current native dispatch records: each value identifies the actual child `sessionId`, assigned absolute `worktree` and verification `operationId`. Compare child identity to that dispatch, never to the project orchestrator's session. Resolve `installedCliUrl` to the installed `hooks/agent-team-cli.mjs` with `pathToFileURL`; `options` contains the normal selected project/host/scope and intent request path.
+
+```js
+import path from "node:path";
+const { runCommand } = await import(installedCliUrl);
+const context = {
+  nativeChoices: observedChoices,
+  workerDiscovery({ dependency, executable, host, scope, paths }) {
+    const expected = expectedWorkers.get(dependency.id);
+    const version = dependency.version ?? expected?.version;
+    const skillFiles = dependency.install?.kind === "git-skill"
+      ? dependency.install.paths.map((entry) => path.join(paths.skillRoot,
+        entry === "." ? dependency.id : path.basename(entry), "SKILL.md"))
+      : null;
+    const observed = observedWorkers.find((item) =>
+      expected?.sessionId && expected.worktree && expected.operationId && version &&
+      item.id === dependency.id && item.version === version &&
+      item.host === host && item.scope === scope &&
+      item.projectRoot === paths.projectRoot &&
+      item.toolRoot === paths.toolRoot && item.skillRoot === paths.skillRoot &&
+      item.sessionId === expected.sessionId && item.worktree === expected.worktree &&
+      item.operationId === expected.operationId &&
+      (skillFiles ? skillFiles.length > 0 &&
+        item.skillFiles?.length === skillFiles.length &&
+        skillFiles.every((file) => item.skillFiles.includes(file))
+        : item.executable === executable) &&
+      item.evidence && item.current === true);
+    return observed
+      ? { status: observed.status, evidence: observed.evidence }
+      : { status: "unverified", evidence: "No current matching native worker observation." };
+  },
+};
+const result = await runCommand(command, options, context);
+console.log(JSON.stringify(result));
+```
+
+Use this route for `settings`, `settings-wizard`, role/fallback `settings-update`, and the new `dependencies-prepare` operation. The production runner still performs installation, probes and functional checks; this callback supplies only worker discovery. Verify canonical `readiness` at the same scope afterward. Only a current useful worker operation may normalize to `status: "passed"`; bind its worktree to the intended assignment and invalidate it when paths, versions or relevant host configuration change. Missing native controls remain unavailable. Do not create dummy callbacks, edit `setup.json` directly, or replace the production runner with passing fixtures to complete setup.
+
+For skill-only packages, `skillFiles` records discovery of the actual selected installed files; it does not require reading unrelated instructions. The worker still completely reads and applies the task-relevant subset. Do not report the runner's synthetic `bin/<skill-package>` path as an executable. Normalize paths consistently before comparison. A catalog entry with no pinned version additionally needs the explicitly reviewed selected version in the dispatch record; missing version evidence stays unverified.
+
+For selected Context7, a trusted caller may additionally provide `createDependencyRunner` wrapping the exported production factory with `functionalAdapters.context7`. Run the actual native MCP library-resolution and documentation query first, retain that result, and return it from the adapter only for the matching public library/version/query. Its separate fresh-worker discovery remains required. No additional Node Context7 client is required, and an unselected Context7 remains optional.
+
 `settings-update` takes `request.change`; `dashboard-configure` takes `request.dashboard` in the same versioned setup envelope. Neither starts development. For saved HTML use `{ "snapshot": true, "graph": { "enabled": false, "termsAcknowledged": false } }`. Enabling the external graph requires the selected Beads tracker and positive upstream-terms acknowledgement; an optional configured executable must be absolute. Start the live server only through a separate explicit `dashboard-start` request. All returned conflicts/unavailable states require inspection even when the process exit code is zero.

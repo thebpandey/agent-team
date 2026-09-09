@@ -36,6 +36,7 @@ Save effective choices and their source in the canonical run record. Future sett
 ## Editing flow
 
 1. Read receipt, current revision and actual host capability catalog.
+   Use the [native setup binding](setup.md#bind-the-native-observations) for the exported command API; bare shell CLI settings cannot discover a host model catalog or validate a new role route by itself.
 2. Show the requested setting/role with current/recommended choices. Use a numbered fallback when native controls are unavailable.
 3. Validate the draft and chosen model's supported effort. Include Back and Cancel where relevant.
 4. Re-read under exclusive writer ownership, detect concurrent changes and save only intended fields atomically.
