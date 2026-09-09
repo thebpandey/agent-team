@@ -63,11 +63,14 @@ export function renderDashboard(model) {
 <script id="dashboard-data" type="application/json">${jsonForScript(model)}</script><script>${snapshotScript}</script></main></body></html>`;
 }
 
-async function atomicWrite(destination, content) {
-  await mkdir(path.dirname(destination), { recursive: true });
+async function atomicWrite(destination, content, budget) {
+  budget?.check();
+  await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
   const temporary = `${destination}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, content, "utf8");
+    budget?.check();
+    await writeFile(temporary, content, { encoding: 'utf8', mode: 0o600, ...(budget ? { signal: budget.signal } : {}) });
+    budget?.check();
     await rename(temporary, destination);
   } finally {
     await rm(temporary, { force: true });
@@ -85,7 +88,7 @@ function contentFingerprint(model) {
 }
 
 /** Explicit dashboard refresh writer. It publishes only derived files and shares concurrent refresh work. */
-export function createSnapshotPublisher({ destination, derive, render = renderDashboard }) {
+export function createSnapshotPublisher({ destination, derive, render = renderDashboard, budget }) {
   if (!destination || typeof derive !== "function" || typeof render !== "function") throw new Error("Snapshot publisher requires destination, derive, and render.");
   let fingerprint = null;
   let inFlight = null;
@@ -94,15 +97,16 @@ export function createSnapshotPublisher({ destination, derive, render = renderDa
   let stale = false;
   let initialized = false;
   const metadata = `${destination}.dashboard-meta.json`;
+  const bounded = (action) => budget ? budget.run(action) : action();
   const digest = html => createHash('sha256').update(html).digest('hex');
   const metadataFor = html => `${JSON.stringify({ schemaVersion: 1, fingerprint, lastGood, lastModel, stale, htmlDigest: digest(html) })}\n`;
   async function restoreFingerprint() {
     if (initialized) return;
     initialized = true;
     try {
-      const saved = JSON.parse(await readFile(metadata, "utf8"));
+      const saved = JSON.parse(await bounded(() => readFile(metadata, "utf8")));
       if (saved.schemaVersion === 1 && saved.lastModel && typeof saved.lastModel === 'object' && contentFingerprint(saved.lastModel) === saved.fingerprint) {
-        const html = await readFile(destination, 'utf8');
+        const html = await bounded(() => readFile(destination, 'utf8'));
         const matches = typeof saved.htmlDigest === 'string' && digest(html) === saved.htmlDigest;
         fingerprint = matches ? saved.fingerprint : null;
         lastGood = saved.lastGood || null;
@@ -117,28 +121,29 @@ export function createSnapshotPublisher({ destination, derive, render = renderDa
     if (inFlight) return inFlight;
     inFlight = (async () => {
       try {
-        await restoreFingerprint();
-        const model = await derive();
+        await bounded(restoreFingerprint);
+        const model = await bounded(derive);
+        budget?.check();
         if (model instanceof Error) throw model;
         if (["unavailable", "unknown"].includes(model?.freshness?.status)) throw new Error(model.freshness.reason || `Canonical tracker is ${model.freshness.status}.`);
         const source = contentFingerprint(model);
         if (source === fingerprint && !stale) return { status: "unchanged", destination, lastGood };
         const html = render(model);
-        await atomicWrite(destination, html);
+        await bounded(() => atomicWrite(destination, html, budget));
         fingerprint = source;
         lastModel = model;
         stale = false;
         lastGood = { destination, refreshedAt: new Date().toISOString() };
-        await atomicWrite(metadata, metadataFor(html));
+        await bounded(() => atomicWrite(metadata, metadataFor(html), budget));
         return { status: "published", destination, lastGood };
       } catch (error) {
         stale = true;
-        if (lastModel) {
+        if (lastModel && !budget?.signal.aborted && (budget?.remaining() ?? 1) > 0) {
           try {
             const staleModel = { ...lastModel, freshness: { ...lastModel.freshness, status: "stale", reason: String(error.message || error) } };
             const html = render(staleModel);
-            await atomicWrite(destination, html);
-            await atomicWrite(metadata, metadataFor(html));
+            await bounded(() => atomicWrite(destination, html, budget));
+            await bounded(() => atomicWrite(metadata, metadataFor(html), budget));
           } catch {
             // A failed stale-marker write must never replace the last usable snapshot.
           }

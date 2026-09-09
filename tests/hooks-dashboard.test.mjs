@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { createBeadsGraphAdapter, createBeadsGraphCommandAdapter, createLoopbackDashboard, createSnapshotPublisher, renderDashboard } from "../hooks/lib/dashboard.mjs";
+import { createEventBudget } from '../hooks/lib/budget.mjs';
 
 const model = Object.freeze({
   project: { id: "project-1", root: "/project" },
@@ -29,6 +30,22 @@ function request(port, { method = "GET", route = "/", headers = {} } = {}) {
     req.end();
   });
 }
+
+test('snapshot publication respects the caller deadline and keeps private derived files', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'agent-team-snapshot-budget-'));
+  const destination = path.join(root, 'dashboard/index.html');
+  const budget = createEventBudget(10);
+  try {
+    const publisher = createSnapshotPublisher({ destination, budget,
+      derive: () => new Promise((resolve) => setTimeout(() => resolve(model), 50)) });
+    assert.notEqual((await publisher.refresh()).status, 'published');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await assert.rejects(readFile(destination), { code: 'ENOENT' });
+    await createSnapshotPublisher({ destination, derive: async () => model }).refresh();
+    assert.equal((await stat(destination)).mode & 0o777, 0o600);
+    assert.equal((await stat(`${destination}.dashboard-meta.json`)).mode & 0o777, 0o600);
+  } finally { budget.close(); await rm(root, { recursive: true, force: true }); }
+});
 
 test("dashboard render is a standalone snapshot with escaped embedded data", () => {
   const html = renderDashboard(model);
