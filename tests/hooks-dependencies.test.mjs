@@ -242,9 +242,9 @@ test("pinned preparation plans target the selected scope and avoid broad initial
     file: "npm",
     args: ["install", "--global", "--prefix", paths.toolRoot, "--no-audit", "--no-fund", "@playwright/cli@0.1.19"],
   });
-  assert.deepEqual(playwright.install.slice(1).map(({ args }) => args), [
-    ["--help"], ["install", "--skills=agents"], ["install-browser", "chromium"],
-  ]);
+  assert.deepEqual(playwright.install.slice(1), []);
+  assert.deepEqual(playwright.browserInstall.args, ["install-browser", "chromium"]);
+  assert.equal(playwright.browserInstall.env.PLAYWRIGHT_BROWSERS_PATH, path.join(paths.toolRoot, "playwright-browsers"));
   assert.equal(playwright.functional.id, "browser-interaction");
   assert.ok(playwright.functional.steps.some((step) => step.includes("click")));
   assert.deepEqual(impeccable.install.at(-1).args, ["install", "-y", "--providers=claude", "--scope=project", "--no-hooks"]);
