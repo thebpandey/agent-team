@@ -28,7 +28,9 @@ Apply shared worktree ownership, CONTEXT.md, tracking, verification, release, an
 
 ## Lifecycle hooks
 
-The current edition can register the shared [lifecycle hook system](hooks.md) in `~/.codex/hooks.json`. The authoritative Codex skill path is `~/.agents/skills/agent-team`. Codex has no reliable local skill-activation event, so health reports that dimension as unsupported. Do not infer activation from reading `SKILL.md`. Use the native `/hooks` trust flow when Codex requires it; the installer never fabricates trust.
+The current edition can register the shared [lifecycle hook system](hooks.md) in `~/.codex/hooks.json` for user scope or `<project>/.codex/hooks.json` for project scope. The corresponding skill is under `~/.agents/skills/agent-team` or `<project>/.agents/skills/agent-team`; use the selected installation's receipt and pass its exact applicable instruction paths to workers. Codex has no reliable local skill-activation event, so health reports that dimension as unsupported. Do not infer activation from reading `SKILL.md`. Use the native `/hooks` trust flow when Codex requires it; the installer never fabricates trust.
+
+Before dispatch from a linked worktree, inspect the actual native hook sources, trust, and resolved commands there. A project installation in the primary checkout does not prove that a linked native session loads it. Codex runs matching hooks from multiple sources; project hooks do not replace user hooks. A different globally installed Agent-Team version can therefore still affect the session. Report a scope/version conflict and resolve the selected installation within existing authorization before dispatch; do not disable protection or update another scope implicitly. See [Codex hook discovery](https://learn.chatgpt.com/docs/hooks).
 
 LeanCTX initialization and Agent-Team hook installation are separate additive operations. Snapshot both configurations first. After either operation, verify every prior hook group and MCP server still exists and run both health checks. Neither installer may replace the other's arrays or settings objects.
 

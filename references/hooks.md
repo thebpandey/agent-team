@@ -54,7 +54,7 @@ Checkpoints cannot guarantee a final write after abrupt termination. A timestamp
 
 ## Install and operate
 
-The installer puts the authoritative Codex skill at `~/.agents/skills/agent-team` and the Claude copy at `~/.claude/skills/agent-team`. It also manages the bundled current role definitions under `~/.claude/agents`. It installs missing roles and updates unchanged managed roles with backups. It reports a conflict and preserves a customized role. It does not touch `legacy/claude-v3`.
+For user scope, the installer puts the Codex skill at `~/.agents/skills/agent-team`, the Claude copy at `~/.claude/skills/agent-team`, and Claude role definitions under `~/.claude/agents`. For project scope, these directories are relative to the selected project root instead of home. Resolve the applicable skill and hook paths from that installation's receipt; do not substitute a different globally installed version. The installer adds missing roles and updates unchanged managed roles with backups. It reports a conflict and preserves a customized role. It does not touch `legacy/claude-v3`.
 
 One scope-specific lock covers skill, role, configuration, backup, and receipt mutations. A failed transaction reconciles only its own changes. The installer does not mark an unowned source checkout for deletion. Uninstall removes a copied package only when its complete managed file set still matches the receipt. It preserves changed targets and reports conflicts. Legacy discovery copies are recoverably backed up under the installation receipt. Handler-level ownership, not a substring or whole-group claim, controls update/removal inside mixed hook groups. A second identical install does not duplicate handlers or backups.
 
