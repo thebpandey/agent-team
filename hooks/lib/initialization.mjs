@@ -8,7 +8,7 @@ import { loadCanonicalState, loadCanonicalTracker, validateOperationMappings } f
 import { withDirectoryLock } from "./lock.mjs";
 import { resolveProject } from "./project.mjs";
 import { captureWriterIdentity, inspectWriterIdentity, taskEligibility } from "./task-transitions.mjs";
-import { resolveTracker } from "./tracker.mjs";
+import { resolveTracker, trackerFingerprint as fingerprintTracker } from "./tracker.mjs";
 
 const run = promisify(execFile);
 const hash = (source) => createHash("sha256").update(source).digest("hex");
@@ -19,9 +19,30 @@ const validId = (value) => typeof value === "string" && /^[\w.:-]{1,128}$/.test(
 const strings = (value) => Array.isArray(value) && value.length > 0 && value.length <= 100 && value.every((item) => typeof item === "string" && item.trim() && item.length <= 4096);
 const decision = (status, reason, extra = {}) => ({ status, ready: false, reason, ...extra });
 const relative = (value) => typeof value === "string" && value && value.length <= 256 && !path.isAbsolute(value) && !value.split(/[\\/]/).includes("..") && !/[\r\n\0|]/.test(value);
-const completeState = (state) => state?.schemaVersion === 1 && state.operationMappings && typeof state.run?.paused === "boolean"
-  && Array.isArray(state.run.taskIds) && typeof state.integration?.authorized === "boolean" && typeof state.release?.authorized === "boolean"
-  && typeof state.release?.autoDeploy === "boolean" && typeof state.completion?.requirementsReconciled === "boolean";
+function completeState(state, { taskIds, integrationOwner, branch }) {
+  const booleanFields = (record, fields) => record && fields.every((field) => typeof record[field] === "boolean");
+  if (state?.schemaVersion !== 1 || !Number.isSafeInteger(state.stateVersion) || state.stateVersion < 0
+    || !["finite", "continuous"].includes(state.run?.mode) || typeof state.run.paused !== "boolean"
+    || !Array.isArray(state.run.taskIds) || new Set(state.run.taskIds).size !== state.run.taskIds.length
+    || state.run.taskIds.some((id) => !validId(id) || !taskIds.includes(id))
+    || !booleanFields(state.integration, ["authorized", "paused", "hold"])
+    || !validId(integrationOwner) || state.integration.ownerSessionId !== integrationOwner || state.integration.baseRef !== branch
+    || !booleanFields(state.release, ["authorized", "autoDeploy", "hold"]) || state.release.ownerSessionId !== integrationOwner
+    || !booleanFields(state.completion, ["requirementsReconciled"]) || !Array.isArray(state.completion.checks)
+    || state.completion.checks.some((check) => !check || typeof check.name !== "string" || !check.name.trim()
+      || !["pending", "passed", "failed", "skipped", "blocked", "unavailable"].includes(check.status)
+      || (check.status === "passed" && (typeof check.revision !== "string" || !check.revision)))) return false;
+  if (!Object.hasOwn(state, "operationMappings")) return false;
+  try { validateOperationMappings(state.operationMappings); return true; } catch { return false; }
+}
+
+function registryIdentity(source) {
+  const field = (label) => {
+    const matches = source?.match(new RegExp(`^${label}:[ \\t]*([^\\r\\n]+)$`, "gm")) ?? [];
+    return matches.length === 1 ? matches[0].slice(label.length + 1).trim() : undefined;
+  };
+  return { projectId: field("Project"), projectOwner: field("Project owner"), integrationOwner: field("Integration owner") };
+}
 
 function validateRequest(request) {
   if (!request || Buffer.byteLength(JSON.stringify(request)) > 32768) return "invalid_request";
@@ -92,20 +113,23 @@ export async function initializeProject(projectPath, request, options = {}) {
       const writer = await captureWriterIdentity().catch(() => undefined);
       // Serialize recovery separately; never infer orphanhood from a timestamp or PID alone.
       await withDirectoryLock(path.join(locks, "setup-recovery.lock"), { kind: "initialization_lock_recovery", pid: process.pid, writer }, async () => {
+        for (const recoverPath of [lockPath, path.join(locks, "state.lock")]) {
         let stat;
-        try { stat = await bounded(() => lstat(lockPath)); } catch (error) { if (error.code === "ENOENT") return; throw error; }
+        try { stat = await bounded(() => lstat(recoverPath)); } catch (error) { if (error.code === "ENOENT") continue; throw error; }
         if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("unsafe_setup_lock");
-        const ownerPath = path.join(lockPath, "owner.json");
+        const ownerPath = path.join(recoverPath, "owner.json");
         const ownerSource = await read(ownerPath);
-        if (!ownerSource) return;
+        if (!ownerSource) continue;
         const owner = JSON.parse(ownerSource);
-        if (owner.kind !== "project_initialization" || (await bounded(() => inspectWriterIdentity(owner.writer))).status !== "stopped") return;
-        const entries = await bounded(() => readdir(lockPath));
-        if (entries.length !== 1 || entries[0] !== "owner.json" || await read(ownerPath) !== ownerSource) return;
+        if (owner.kind !== "project_initialization" || (await bounded(() => inspectWriterIdentity(owner.writer))).status !== "stopped") continue;
+        const entries = await bounded(() => readdir(recoverPath));
+        if (entries.length !== 1 || entries[0] !== "owner.json" || await read(ownerPath) !== ownerSource) continue;
         budget.check();
-        await rm(lockPath, { recursive: true });
+        await rm(recoverPath, { recursive: true });
+        }
       }, { budget });
       return withDirectoryLock(lockPath, { kind: "project_initialization", projectId: request.projectId, ownerSessionId: request.ownerSessionId, operationId: request.operationId, pid: process.pid, writer }, async () => {
+        return withDirectoryLock(path.join(locks, "state.lock"), { kind: "project_initialization", operationId: request.operationId, pid: process.pid, writer }, async () => {
         const current = await resolveProject(projectPath, { budget });
         if (current.root !== root || current.commonDirectory !== found.commonDirectory) return decision("conflict", "project_identity_changed");
         const tracker = resolveTracker(root, request.tracker);
@@ -118,10 +142,8 @@ export async function initializeProject(projectPath, request, options = {}) {
         const setupSource = await read(paths.setup);
         const setup = setupSource ? JSON.parse(setupSource) : undefined;
         const teamsSource = await read(paths.teams);
-        const ownerMatches = teamsSource?.match(/^Project owner:[ \t]*([^\r\n]+)$/gm) ?? [];
-        const projectMatches = teamsSource?.match(/^Project:[ \t]*([^\r\n]+)$/gm) ?? [];
-        const recordedOwner = ownerMatches.length === 1 ? ownerMatches[0].split(":").slice(1).join(":").trim() : undefined;
-        const recordedProject = projectMatches.length === 1 ? projectMatches[0].split(":").slice(1).join(":").trim() : undefined;
+        const identity = registryIdentity(teamsSource);
+        const { projectOwner: recordedOwner, projectId: recordedProject } = identity;
         if ((setup || teamsSource !== undefined) && (!validId(recordedOwner) || recordedProject !== request.projectId)) return decision("conflict", "existing_owner_unavailable");
         if (recordedOwner && recordedOwner !== request.ownerSessionId) return decision("conflict", "existing_owner_conflict");
         if (setup && (setup.skill !== "agent-team" || setup.projectId !== request.projectId)) return decision("conflict", "existing_project_conflict");
@@ -135,10 +157,12 @@ export async function initializeProject(projectPath, request, options = {}) {
         const finish = async (status) => {
           for (const file of [paths.setup, paths.teams, paths.state]) if (await read(file) === undefined) return decision("unavailable", "required_records_missing");
           const canonical = await loadCanonicalState({ ...project, setup: JSON.parse(await read(paths.setup)) }, { ...options, budget });
-          if (!completeState(canonical.state)) return decision("unavailable", "required_state_facts_missing");
           if (canonical.tracker.status !== "current") return decision("unavailable", "tracker_unavailable", { tracker: canonical.tracker });
-          const taskIds = request.plan.tasks?.map(({ id }) => id) ?? canonical.tasks.map(({ id }) => id);
-          const eligible = taskEligibility(canonical, { scopeTaskIds: taskIds }).eligible;
+          const observedIdentity = registryIdentity(await read(paths.teams));
+          if (observedIdentity.projectOwner !== request.ownerSessionId || observedIdentity.projectId !== request.projectId) return decision("conflict", "existing_owner_conflict");
+          const taskIds = canonical.tasks.map(({ id }) => id);
+          if (!completeState(canonical.state, { taskIds, integrationOwner: observedIdentity.integrationOwner, branch: request.plan.branch })) return decision("unavailable", "required_state_facts_missing");
+          const eligible = taskEligibility(canonical, { scopeTaskIds: canonical.state.run.taskIds }).eligible;
           return { status, ready: eligible.length > 0, ...(eligible.length ? {} : { reason: "no_eligible_task" }), projectRoot: root,
             taskIds, tracker: canonical.tracker, version: JSON.parse(await read(paths.setup)).version, eligibleTaskIds: eligible.map(({ id }) => id) };
         };
@@ -160,37 +184,45 @@ export async function initializeProject(projectPath, request, options = {}) {
         }
         if (request.source === "standalone" && tracker.kind !== "markdown") return decision("unavailable", "tracker_initialization_required");
         const created = new Map();
+        // Fingerprint the exact bytes whose authority was validated, not a later read.
+        const preserved = new Map([[paths.teams, teamsSource], [paths.state, await read(paths.state)], [paths.operationMappings, await read(paths.operationMappings)]]);
         let tasks;
         let trackerFingerprint = null;
         if (request.source === "standalone") {
           created.set(paths.tasks, taskTable(request.plan.tasks));
           tasks = request.plan.tasks;
         } else {
-          if (tracker.kind === "markdown" && await read(paths.tasks) === undefined) return decision("unavailable", "tracker_unavailable");
+          if (tracker.kind === "markdown") {
+            const source = await read(paths.tasks);
+            if (source === undefined) return decision("unavailable", "tracker_unavailable");
+            preserved.set(paths.tasks, source);
+          }
           const selected = await loadCanonicalTracker(project, { ...options, budget });
           if (selected.tracker.status !== "current") return decision("unavailable", "tracker_unavailable", { tracker: selected.tracker });
           trackerFingerprint = selected.tracker.fingerprint;
+          if (tracker.kind === "markdown" && fingerprintTracker(tracker, preserved.get(paths.tasks)) !== trackerFingerprint) return decision("conflict", "tracker_changed_during_initialization");
           tasks = selected.tasks;
-          if (request.plan.tasks?.some(({ id }) => !tasks.some((task) => task.id === id))) return decision("conflict", "existing_task_identity_conflict");
+          if (request.plan.tasks && (request.plan.tasks.length !== tasks.length || request.plan.tasks.some(({ id }) => !tasks.some((task) => task.id === id)))) return decision("conflict", "existing_task_identity_conflict");
         }
         if (journal && journal.trackerFingerprint !== trackerFingerprint) return decision("conflict", "tracker_changed_during_initialization");
-        const taskIds = request.plan.tasks?.map(({ id }) => id) ?? tasks.map(({ id }) => id);
+        const taskIds = tasks.map(({ id }) => id);
         const teams = `# Agent-Team teams\nProject: ${request.projectId}\nProject owner: ${request.ownerSessionId}\nIntegration owner: ${request.ownerSessionId}\n\n| Team ID | Name | Session | Worktree | Branch | Owned paths | Tasks | Status |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n`;
         const initialState = { schemaVersion: 1, stateVersion: 0, run: { mode: "finite", taskIds, paused: false },
           integration: { ownerSessionId: request.ownerSessionId, authorized: false, baseRef: request.plan.branch, paused: false, hold: false },
           release: { ownerSessionId: request.ownerSessionId, authorized: false, autoDeploy: false, hold: true },
           completion: { requirementsReconciled: false, checks: [] }, operationMappings: { providers: {}, shell: [] } };
         for (const [file, source] of [[paths.teams, teams], [paths.state, json(initialState)]]) {
-          if (journal?.createPaths.includes(file) || await read(file) === undefined) created.set(file, source);
+          if (journal?.createPaths.includes(file) || preserved.get(file) === undefined) created.set(file, source);
         }
-        const state = JSON.parse(created.get(paths.state) ?? await read(paths.state));
-        if (!completeState(state)) return decision("unavailable", "required_state_facts_missing");
+        const state = JSON.parse(created.get(paths.state) ?? preserved.get(paths.state));
+        const integrationOwner = created.has(paths.teams) ? request.ownerSessionId : identity.integrationOwner;
+        if (!completeState(state, { taskIds, integrationOwner, branch: request.plan.branch })) return decision("unavailable", "required_state_facts_missing");
         const mappings = validateOperationMappings(state.operationMappings);
-        if (journal?.createPaths.includes(paths.operationMappings) || await read(paths.operationMappings) === undefined) created.set(paths.operationMappings,
+        if (journal?.createPaths.includes(paths.operationMappings) || preserved.get(paths.operationMappings) === undefined) created.set(paths.operationMappings,
           json({ schemaVersion: 1, kind: "agent-team-operation-mapping-cache", authoritative: false, projectId: request.projectId, sourcePath: ".agent-team/state.json", operationMappings: mappings }));
         const records = {};
         for (const file of [...new Set([...created.keys(), paths.teams, paths.state, paths.operationMappings, ...(tracker.kind === "markdown" ? [paths.tasks] : [])])]) {
-          records[file] = hash(created.get(file) ?? await read(file));
+          records[file] = hash(created.get(file) ?? preserved.get(file));
         }
         if (!journal) {
           journal = { schemaVersion: 1, kind: "project_initialization", projectId: request.projectId, ownerSessionId: request.ownerSessionId,
@@ -202,6 +234,11 @@ export async function initializeProject(projectPath, request, options = {}) {
           if (existing !== undefined && hash(existing) !== hash(source)) return decision("conflict", "initialization_record_conflict");
           if (existing === undefined) await publish(file, source);
         }
+        if (request.source === "existing") {
+          const latest = await loadCanonicalTracker(project, { ...options, budget });
+          if (latest.tracker.status !== "current") return decision("unavailable", "tracker_unavailable", { tracker: latest.tracker });
+          if (latest.tracker.fingerprint !== trackerFingerprint) return decision("conflict", "tracker_changed_during_initialization");
+        }
         for (const [file, fingerprint] of Object.entries(journal.records)) if (hash(await read(file) ?? "") !== fingerprint) return decision("conflict", "initialization_records_changed");
         if ((await read(paths.setup)) !== setupSource) return decision("conflict", "setup_changed_during_initialization");
         const { tasks: _tasks, ...plan } = request.plan;
@@ -211,6 +248,7 @@ export async function initializeProject(projectPath, request, options = {}) {
         budget.check();
         await rm(journalPath, { force: true });
         return finish("applied");
+        }, { budget });
       }, { budget });
     });
   } catch (error) { return decision("unavailable", error.code === "EVENT_DEADLINE" || budget.signal.aborted ? "deadline" : "initialization_unavailable"); }

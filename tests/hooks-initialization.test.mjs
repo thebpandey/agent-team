@@ -179,6 +179,75 @@ if (process.argv[2] === "initialize-worker") {
     assert.equal(result.reason, "required_state_facts_missing");
   });
 
+  test("adoption rejects each malformed authority fact without publishing setup", async (t) => {
+    const mutations = {
+      stateVersion: (state) => { state.stateVersion = -1; },
+      runMode: (state) => { state.run.mode = "anything"; },
+      runIdentity: (state) => { state.run.taskIds = ["missing-task"]; },
+      duplicateIdentity: (state) => { state.run.taskIds.push(state.run.taskIds[0]); },
+      integrationOwner: (state) => { delete state.integration.ownerSessionId; },
+      integrationHold: (state) => { delete state.integration.hold; },
+      integrationPause: (state) => { delete state.integration.paused; },
+      baseBranch: (state) => { state.integration.baseRef = "different-branch"; },
+      releaseOwner: (state) => { delete state.release.ownerSessionId; },
+      releaseHold: (state) => { delete state.release.hold; },
+      completionChecks: (state) => { state.completion.checks = "passed"; },
+      malformedCheck: (state) => { state.completion.checks = [null]; },
+    };
+    for (const [name, mutate] of Object.entries(mutations)) await t.test(name, async () => {
+      const value = await fixture();
+      await initialize(value.root, value.request);
+      const project = await resolveProject(value.root);
+      const state = JSON.parse(await readFile(project.paths.state, "utf8"));
+      mutate(state);
+      const source = JSON.stringify(state);
+      await writeFile(project.paths.state, source);
+      await rm(project.paths.setup);
+      const result = await initialize(value.root, { ...value.request, source: "existing" });
+      assert.equal(result.ready, false, name);
+      assert.equal(result.reason, "required_state_facts_missing", name);
+      await assert.rejects(access(project.paths.setup), { code: "ENOENT" });
+      assert.equal(await readFile(project.paths.state, "utf8"), source);
+    });
+  });
+
+  test("existing-plan adoption cannot silently omit canonical tracker task IDs", async () => {
+    const value = await fixture();
+    value.request.plan.tasks.push({ id: "AT-002", title: "Preserve remaining work", status: "ready" });
+    await initialize(value.root, value.request);
+    const project = await resolveProject(value.root);
+    const source = await readFile(project.paths.tasks, "utf8");
+    await rm(project.paths.setup);
+    const result = await initialize(value.root, { ...value.request, source: "existing", plan: { ...value.request.plan, tasks: [{ id: "AT-001" }] } });
+    assert.equal(result.status, "conflict");
+    assert.equal(result.reason, "existing_task_identity_conflict");
+    await assert.rejects(access(project.paths.setup), { code: "ENOENT" });
+    assert.equal(await readFile(project.paths.tasks, "utf8"), source);
+  });
+
+  test("validated owner and tracker snapshots cannot change before setup publication", async (t) => {
+    for (const change of ["owner", "tracker"]) await t.test(change, async () => {
+      const value = await fixture();
+      await initialize(value.root, value.request);
+      const project = await resolveProject(value.root);
+      await rm(project.paths.setup);
+      await mkdir(path.join(value.root, ".beads"));
+      const before = await readFile(project.paths.teams, "utf8");
+      let reads = 0;
+      const result = await initialize(value.root, { ...value.request, source: "existing", tracker: { kind: "beads", executable: "/selected/bin/bd" } }, {
+        runBeads: async () => {
+          reads += 1;
+          if (change === "owner" && reads === 1) await writeFile(project.paths.teams, before.replace("Project owner: owner-session", "Project owner: other-owner"));
+          return { stdout: JSON.stringify([{ id: "AT-001", title: change === "tracker" && reads > 1 ? "Changed after validation" : "Original task", status: "open", assignee: "", dependency_count: 0 }]) };
+        },
+      });
+      assert.equal(result.status, "conflict", JSON.stringify(result));
+      assert.equal(result.ready, false);
+      await assert.rejects(access(project.paths.setup), { code: "ENOENT" });
+      if (change === "owner") assert.match(await readFile(project.paths.teams, "utf8"), /Project owner: other-owner/);
+    });
+  });
+
   test("actual killed initializer is resumable only after verifying its stopped lock writer", async () => {
     const value = await fixture();
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "crash-worker", value.root, JSON.stringify(value.request)], { stdio: ["ignore", "pipe", "pipe"] });
