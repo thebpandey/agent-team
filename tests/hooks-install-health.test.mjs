@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -36,6 +37,10 @@ async function homeFixture() {
 
 function agentTeamGroups(config) {
   return Object.values(config.hooks ?? {}).flat().filter((group) => group.hooks?.some(({ command = "" }) => command.includes("agent-team-hook.mjs")));
+}
+
+function fileGuard(contents) {
+  return { kind: "file", digest: createHash("sha256").update(contents).digest("hex") };
 }
 
 test("target resolution rejects missing or ambiguous metadata and never guesses both", async () => {
@@ -810,6 +815,71 @@ test("recovery preserves a user replacement created after abrupt termination", a
   assert.equal(await readFile(path.join(interruptedBackup, "original.txt"), "utf8"), "original ownership\n");
 });
 
+test("restore-file recovery accepts an intact preimage at either idempotent crash point", async (t) => {
+  // The same intact original is observable before the forward write and after a completed undo.
+  for (const recoveryPoint of ["before config write", "after restore before journal cleanup"]) {
+    await t.test(recoveryPoint, async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-restore-preimage-"));
+      temporary.push(home);
+      const stateRoot = path.join(home, ".agent-team-hooks");
+      const configPath = path.join(home, ".codex", "hooks.json");
+      const backup = path.join(stateRoot, "backups", recoveryPoint.startsWith("before") ? "before" : "after", "config", "hooks.json");
+      const original = `${JSON.stringify({ sentinel: recoveryPoint, hooks: {} }, null, 2)}\n`;
+      const postimage = `${JSON.stringify({ sentinel: "installer postimage", hooks: {} }, null, 2)}\n`;
+      await mkdir(path.dirname(configPath), { recursive: true });
+      await mkdir(path.dirname(backup), { recursive: true });
+      await writeFile(configPath, original);
+      await writeFile(backup, original);
+      await writeFile(path.join(stateRoot, "transaction.json"), `${JSON.stringify({
+        schemaVersion: 1,
+        transactionId: `restore-preimage-${recoveryPoint.replaceAll(" ", "-")}`,
+        operation: "install",
+        status: "active",
+        undo: [{
+          kind: "restore_file",
+          target: configPath,
+          backup,
+          preimageGuard: fileGuard(original),
+          targetGuard: fileGuard(postimage),
+        }],
+      }, null, 2)}\n`);
+
+      const result = await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+
+      assert.equal(result.recovery?.action, "rolled_back");
+      assert.equal(JSON.parse(await readFile(configPath, "utf8")).sentinel, recoveryPoint);
+      await assert.rejects(readFile(path.join(stateRoot, "transaction.json")), { code: "ENOENT" });
+    });
+  }
+});
+
+test("a dead stale-lock recovery claimant is reclaimed without displacing a new owner", async () => {
+  // Killing the claimant after its exclusive claim is written must not strand the install lock.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-dead-recovery-claim-"));
+  temporary.push(home);
+  const stateRoot = path.join(home, ".agent-team-hooks");
+  const lockPath = path.join(stateRoot, "install.lock");
+  const child = spawn(process.execPath, ["-e", `
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const lockPath = path.join(process.argv[1], ".agent-team-hooks", "install.lock");
+    fs.mkdirSync(lockPath, { recursive: true });
+    fs.writeFileSync(path.join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, operation: "install", acquiredAt: "2026-09-06T12:00:00.000Z", lockToken: "stale-owner" }) + "\\n");
+    fs.writeFileSync(path.join(lockPath, "recovery.json"), JSON.stringify({ pid: process.pid, operation: "install", acquiredAt: "2026-09-06T12:00:01.000Z", lockToken: "dead-claimant" }) + "\\n");
+    process.kill(process.pid, "SIGKILL");
+  `, home], { stdio: "ignore" });
+  const signal = await new Promise((resolve) => child.once("exit", (_code, exitSignal) => resolve(exitSignal)));
+  assert.equal(signal, "SIGKILL");
+
+  const results = await Promise.all([
+    installPackage({ sourceRoot, home, host: "codex", scope: "user", now: new Date("2026-09-06T12:01:00.000Z") }),
+    installPackage({ sourceRoot, home, host: "codex", scope: "user", now: new Date("2026-09-06T12:01:01.000Z") }),
+  ]);
+
+  assert.equal(results.filter(({ changed }) => changed).length, 1);
+  await assert.rejects(readFile(lockPath), { code: "ENOENT" });
+});
+
 test("recovery rejects an out-of-scope journal without applying it", async () => {
   // A writable journal is recovery evidence, not authority to mutate an arbitrary path.
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-invalid-journal-home-"));
@@ -917,4 +987,40 @@ test("installer updates a previously managed Claude role and backs up its prior 
 
   assert.match(installed, /Managed update marker/);
   assert.equal(result.backups.some(({ kind }) => kind === "claude_agent"), true);
+});
+
+test("mixed-host update retains unavailable Claude ownership while updating Codex", async () => {
+  // A selected host that cannot accept a package update must retain all of its existing receipt records.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-mixed-unavailable-home-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-mixed-unavailable-source-"));
+  temporary.push(home, changedSource);
+
+  // Seed an identical, unowned Claude package, then install both hosts so only its package is pre-existing.
+  await installPackage({ sourceRoot, home, host: "claude-code", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
+  await rm(path.join(home, ".agent-team-hooks"), { force: true, recursive: true });
+  await rm(path.join(home, ".claude", "settings.json"), { force: true });
+  await rm(path.join(home, ".claude", "agents"), { force: true, recursive: true });
+  await installPackage({ sourceRoot, home, host: "both", scope: "user", now: new Date("2026-09-06T12:01:00.000Z") });
+  const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
+  const before = JSON.parse(await readFile(receiptPath, "utf8"));
+  const claudeConfigPath = path.join(home, ".claude", "settings.json");
+  const claudeConfig = await readFile(claudeConfigPath, "utf8");
+
+  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  const addedFile = "references/mixed-host-update.md";
+  await writeFile(path.join(changedSource, addedFile), "changed package\n");
+  const manifestPath = path.join(changedSource, "hooks", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.files.push(addedFile);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const result = await installPackage({ sourceRoot: changedSource, home, host: "both", scope: "user", now: new Date("2026-09-06T12:02:00.000Z") });
+  const after = JSON.parse(await readFile(receiptPath, "utf8"));
+
+  assert.equal(result.conflicts.some(({ runtime, reason }) => runtime === "claude" && reason === "preexisting_target"), true);
+  assert.equal(await readFile(path.join(home, ".agents", "skills", "agent-team", addedFile), "utf8"), "changed package\n");
+  assert.equal(await readFile(claudeConfigPath, "utf8"), claudeConfig);
+  assert.deepEqual(after.handlers.filter(({ runtime }) => runtime === "claude"), before.handlers.filter(({ runtime }) => runtime === "claude"));
+  assert.deepEqual(after.claudeAgents, before.claudeAgents);
+  assert.deepEqual(after.targets.filter(({ runtime }) => runtime === "claude"), before.targets.filter(({ runtime }) => runtime === "claude"));
 });

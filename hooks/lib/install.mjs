@@ -322,6 +322,7 @@ async function applyUndo(action) {
   }
   if (action.kind === "restore_file") {
     if (!(await present(action.backup))) return null;
+    if (action.preimageGuard && await guardMatches(action.target, action.preimageGuard)) return null;
     if (!(await guardMatches(action.target, action.targetGuard))) {
       return { kind: "recovery", target: action.target, reason: "post_crash_resource_changed" };
     }
@@ -412,11 +413,28 @@ function sameLockOwner(left, right) {
   return left?.pid === right?.pid && left?.operation === right?.operation && left?.acquiredAt === right?.acquiredAt;
 }
 
+async function liveRecoveryClaims(lockPath) {
+  const claims = [];
+  let entries;
+  try {
+    entries = await readdir(lockPath);
+  } catch (error) {
+    if (error.code === "ENOENT") return claims;
+    throw error;
+  }
+  for (const name of entries) {
+    if (name !== "recovery.json" && !/^recovery\.[0-9a-f-]+\.json$/.test(name)) continue;
+    const claim = await readJson(path.join(lockPath, name), null);
+    if (Number.isInteger(claim?.pid) && claim.pid > 0 && processIsAlive(claim.pid)) claims.push({ name, claim });
+  }
+  return claims;
+}
+
 async function withRecoverableInstallLock(stateRoot, metadata, callback, { timeoutMs = 5000 } = {}) {
   const lockPath = path.join(stateRoot, "install.lock");
   const ownerPath = path.join(lockPath, "owner.json");
-  const recoveryPath = path.join(lockPath, "recovery.json");
   const owner = { ...metadata, lockToken: randomUUID() };
+  const recoveryPath = path.join(lockPath, `recovery.${owner.lockToken}.json`);
   const started = Date.now();
   await mkdir(stateRoot, { recursive: true, mode: 0o700 });
   while (true) {
@@ -430,22 +448,22 @@ async function withRecoverableInstallLock(stateRoot, metadata, callback, { timeo
       if (error.code !== "EEXIST") throw error;
       const observed = await readJson(ownerPath, null);
       if (Number.isInteger(observed?.pid) && observed.pid > 0 && !processIsAlive(observed.pid)) {
-        let claim;
         try {
-          claim = await open(recoveryPath, "wx", 0o600);
+          const claim = await open(recoveryPath, "wx", 0o600);
           await claim.writeFile(`${JSON.stringify(owner)}\n`);
           await claim.close();
         } catch (claimError) {
           if (claimError.code !== "EEXIST") throw claimError;
         }
-        if (claim) {
-          const current = await readJson(ownerPath, null);
-          if (sameLockOwner(observed, current) && !processIsAlive(current.pid)) {
-            await atomicJson(ownerPath, owner);
-            await rm(recoveryPath, { force: true });
-            break;
-          }
-          await rm(recoveryPath, { force: true });
+        const current = await readJson(ownerPath, null);
+        const claims = await liveRecoveryClaims(lockPath);
+        const liveLegacyClaim = claims.find(({ name }) => name === "recovery.json");
+        const elected = claims.filter(({ name, claim }) => name !== "recovery.json" && typeof claim.lockToken === "string")
+          .sort((left, right) => left.claim.lockToken.localeCompare(right.claim.lockToken))[0];
+        if (!liveLegacyClaim && elected && sameLockOwner(elected.claim, owner)
+          && sameLockOwner(observed, current) && !processIsAlive(current.pid)) {
+          await atomicJson(ownerPath, owner);
+          break;
         }
       }
       if (Date.now() - started >= timeoutMs) throw error;
@@ -620,10 +638,13 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
       changed = true;
     }
 
-    const claudeAgents = selected.runtimes.includes("claude") ? [] : [...(previousReceipt?.claudeAgents ?? [])];
-    const handlerReceipts = (previousReceipt?.handlers ?? []).filter((entry) => !selected.runtimes.includes(entry.runtime));
-    const handlerConflictReceipts = (previousReceipt?.handlerConflicts ?? []).filter((entry) => !selected.runtimes.includes(entry.runtime));
-    const resourceConflictReceipts = (previousReceipt?.resourceConflicts ?? []).filter((entry) => !selected.runtimes.includes(entry.runtime));
+    const claudeAgents = selected.runtimes.includes("claude") && !unavailableRuntimes.has("claude")
+      ? []
+      : [...(previousReceipt?.claudeAgents ?? [])];
+    const retainedRuntime = (runtime) => !selected.runtimes.includes(runtime) || unavailableRuntimes.has(runtime);
+    const handlerReceipts = (previousReceipt?.handlers ?? []).filter((entry) => retainedRuntime(entry.runtime));
+    const handlerConflictReceipts = (previousReceipt?.handlerConflicts ?? []).filter((entry) => retainedRuntime(entry.runtime));
+    const resourceConflictReceipts = (previousReceipt?.resourceConflicts ?? []).filter((entry) => retainedRuntime(entry.runtime));
     for (const sourceFile of selected.runtimes.includes("claude") && !unavailableRuntimes.has("claude") ? manifest.files.filter((file) => file.startsWith("assets/claude-agents/") && file.endsWith(".md")) : []) {
       const target = path.join(runtimePaths({ home, ...selected }, "claude").agentsRoot, path.basename(sourceFile));
       const source = path.join(sourceRoot, sourceFile);
@@ -647,7 +668,13 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
       if (currentDigest) {
         const backup = path.join(backupRoot, "claude-agents", path.basename(target));
         await mkdir(path.dirname(backup), { recursive: true });
-        await addUndo({ kind: "restore_file", target, backup, targetGuard: { kind: "file", digest: desiredDigest } });
+        await addUndo({
+          kind: "restore_file",
+          target,
+          backup,
+          preimageGuard: await resourceGuard(target),
+          targetGuard: { kind: "file", digest: desiredDigest },
+        });
         await copyFile(target, backup);
         backups.push({ kind: "claude_agent", target, backup, purpose: "update_snapshot", transactionId });
       } else {
@@ -679,7 +706,7 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
         if (configPresent) {
           const backup = path.join(backupRoot, "config", runtime === "codex" ? "hooks.json" : "settings.json");
           await mkdir(path.dirname(backup), { recursive: true });
-          await addUndo({ kind: "restore_file", target: configPath, backup, targetGuard: mergedGuard });
+          await addUndo({ kind: "restore_file", target: configPath, backup, preimageGuard: await resourceGuard(configPath), targetGuard: mergedGuard });
           await copyFile(configPath, backup);
           backups.push({ kind: "config", target: configPath, backup, purpose: "update_snapshot", transactionId });
         } else {
@@ -716,7 +743,7 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
       if (previousReceipt) {
         const backup = path.join(backupRoot, "receipt", "install.json");
         await mkdir(path.dirname(backup), { recursive: true });
-        await addUndo({ kind: "restore_file", target: receiptPath, backup, targetGuard: receiptGuard });
+        await addUndo({ kind: "restore_file", target: receiptPath, backup, preimageGuard: await resourceGuard(receiptPath), targetGuard: receiptGuard });
         await copyFile(receiptPath, backup);
       } else {
         await addUndo({ kind: "remove_path", path: receiptPath, guard: receiptGuard });
@@ -794,7 +821,7 @@ async function uninstallLocked({ home, selected }, stateRoot) {
         if (configPresent) {
           const backup = path.join(removalRoot, "config", runtime === "codex" ? "hooks.json" : "settings.json");
           await mkdir(path.dirname(backup), { recursive: true });
-          await addUndo({ kind: "restore_file", target: configPath, backup, targetGuard: cleanedGuard });
+          await addUndo({ kind: "restore_file", target: configPath, backup, preimageGuard: await resourceGuard(configPath), targetGuard: cleanedGuard });
           await copyFile(configPath, backup);
         } else {
           await addUndo({ kind: "remove_path", path: configPath, guard: cleanedGuard });
@@ -903,6 +930,7 @@ async function uninstallLocked({ home, selected }, stateRoot) {
       kind: "restore_file",
       target: receiptPath,
       backup: receiptBackup,
+      preimageGuard: await resourceGuard(receiptPath),
       targetGuard: nextReceiptText ? textGuard(nextReceiptText) : { kind: "absent" },
     });
     await copyFile(receiptPath, receiptBackup);
