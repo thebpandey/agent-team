@@ -20,6 +20,8 @@ No task is complete until implementation and applicable independent review/verif
 
 ## Evidence and execution notes
 
+- Merged25fa801 full491pass/zero skips/160.215s archived16e34c8c060af400, archivespassed/hash6472208e.../independentauditaccepted. Test-onlyfixtureisolationfix nowrequired beforepublication:14recursivewhole-checkoutcopies replaced bytrackedworkingfiles, syntheticregressionRED→GREEN63/Terrahighaccepted. Affectedtemporarycopiescleanupconfirmednamesonly; privateprofilesneverinreleasearchives. Nativequalificationunchanged; newexactmergedsuite/archive remain. Nothingpublished.
+
 - All nativegatesaccepted, includingCodex2cf403c semanticcheckpointv2/freshrecovery and realcompact/same-sessiontool-freerecall; consolidated private receipts retain everyfailure/scope/adapterlimitation. Fourfinaldocs accepted/docs13/packagepassed. Fullmergedsuite/archive/publicationremain. Runtime dirtyCONTEXT and featureworktrees retained due incompleteprocessvisibility; no destructivecleanup. GlobalLeanCTXoriginalhashunchanged.
 
 - Userreportslimitsreset; Solcompact/Terra lifecycleandreview resumed. LeanCTXrootverified, integrationf8d6942clean/full491/packagepassed. Finalnativegates/docs/mergedchecks/archive/publication remain; no pendingapproval.
