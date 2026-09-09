@@ -121,6 +121,8 @@ Mandatory capabilities and selected defaults are prepared automatically on first
 
 A file existing on disk is not proof that a tool works or that a fresh worker can access it. Setup reports **installed → detected → functional → available to worker** separately. Ordinary failures are diagnosed and repaired; an unavailable required gate remains pending.
 
+Canonical initialization records the approved owner, full task IDs, selected tracker and branch before any dispatch. It does not certify native capabilities. The agent then uses scoped preparation/readiness and targeted settings helpers; user-level dependency readiness is distinct from project-owned settings. See the [agent-run setup examples and request contracts](references/setup.md#bundled-setup-helpers). Users do not need to compose these JSON requests themselves.
+
 ### Prepared tools and official repositories
 
 | Component | Default | Why it is included |

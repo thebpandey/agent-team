@@ -68,7 +68,7 @@ node hooks/agent-team-cli.mjs install --host codex --scope user
 node hooks/agent-team-cli.mjs health --project /path/to/project
 node hooks/agent-team-cli.mjs audit --tracker /path/to/.agent-team/TASKS.md --mistakes /path/to/MISTAKES.md
 node hooks/agent-team-cli.mjs build-artifacts --output /safe/output
-node hooks/agent-team-cli.mjs check-artifacts --archive /safe/output/agent-team-6.5.0.zip
+node hooks/agent-team-cli.mjs check-artifacts --archive /safe/output/agent-team-7.0.0.zip
 node hooks/agent-team-cli.mjs uninstall --host codex --scope user
 ```
 
@@ -84,6 +84,10 @@ These are Node helpers from [the official Agent-Team package](https://github.com
 
 | Helper after `node hooks/agent-team-cli.mjs` | Contract |
 | --- | --- |
+| `project-initialize --project /path/to/project --request /path/to/request.json` | Create/adopt approved canonical records with exact owner, branch and complete tracker IDs. Reports canonical readiness separately from native/dependency readiness. |
+| `settings`, `settings-wizard`, `settings-update` | Require project/host/project-scope selectors. Read overview or compatible role menus; mutations require the versioned setup envelope described in [setup](setup.md). |
+| `dependencies`, `dependencies-prepare`, `readiness` | Require project/host and selected user/project capability scope. Installation is not proof of functional or fresh-worker access. |
+| `dashboard-configure` | Save explicit snapshot/optional graph preferences under setup ownership/version checks; never starts a server or installs bv. |
 | `status --project /path/to/project` | Read all tasks/teams, freshness, exact canonical owner values and observed setup/operational versions. No tests or writes. |
 | `usage --project /path/to/project` | Read existing per-agent usage receipts. Missing data is unknown. Optional `--receipt /path/to/receipts.json` reads an explicit bounded regular file. |
 | `recovery --project /path/to/project --session session-id` | Read the session's recovery packet. Add `--task task-id`, `--worktree /path` or `--include-git true` when relevant. Never resumes work. |
@@ -113,6 +117,8 @@ Mutation request files are schema-versioned JSON, at most 256 KiB, and must be r
 ```
 
 Replace every example value with observed facts. `status.versions.operational` and `status.freshness.fingerprint` supply transition preconditions; `task.canonicalOwner` preserves Beads' empty unassigned owner, unlike the human display label. Never guess a zero version after an unavailable read. Re-read on conflict; do not reuse an operation ID with different intent. JSON identity fields are not authentication and cannot override the registered canonical owner.
+
+Versions are separate: initialization/settings/preparation use the setup version; task/gate/cleanup mutations use the operational version; checkpoint writes use that session's checkpoint version from recovery. Zero is valid only for an actually absent initial record, not an unreadable record. The [setup guide](setup.md#bundled-setup-helpers) documents its distinct envelope and trusted-host context boundary.
 
 Ordinary conflict/unavailable outcomes are structured results, not completion. Inspect `status` and `reason` even if the process exits zero. A successful or replayed mutation can refresh an explicitly enabled snapshot without repeating its tracker effect. Supported checkpoint and canonical-file post-tool events also refresh opted-in snapshots under the existing event deadline. Dashboard failure never changes the policy decision or task authority; expired writes preserve the last usable file.
 

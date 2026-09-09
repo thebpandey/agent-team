@@ -9,9 +9,11 @@ import { promisify } from "node:util";
 import { auditEffectiveness } from "./lib/telemetry.mjs";
 import { buildArtifacts, checkArtifacts } from "./lib/artifacts.mjs";
 import { getHealth } from "./lib/health.mjs";
+import { initializeProject } from "./lib/initialization.mjs";
 import { installPackage, rollbackPackage, uninstallPackage } from "./lib/install.mjs";
 import { checkInstalledPackage, checkPackage } from "./lib/package-validator.mjs";
-import { runWorkflowCommand, workflowCommandFlags } from "./lib/workflow-cli.mjs";
+import { runSetupCommand, setupCommandFlags } from "./lib/setup-cli.mjs";
+import { readRequestEnvelope, runWorkflowCommand, workflowCommandFlags } from "./lib/workflow-cli.mjs";
 
 const run = promisify(execFile);
 
@@ -25,7 +27,9 @@ const commandFlags = {
   "check-installed-package": new Set(["source"]),
   "check-artifacts": new Set(["source", "archive", "revision"]),
   "build-artifacts": new Set(["source", "output", "revision"]),
+  "project-initialize": new Set(["project", "request"]),
   ...workflowCommandFlags,
+  ...setupCommandFlags,
 };
 
 function flags(command, args) {
@@ -84,7 +88,17 @@ export async function runCommand(command, options, context = {}) {
     await mkdir(outputDirectory, { recursive: true });
     return buildArtifacts({ sourceRoot, outputDirectory, sourceRevision: options.revision ?? await gitRevision(sourceRoot) });
   }
+  if (command === "project-initialize") {
+    if (typeof options.project !== "string" || !options.project.trim()) throw new Error("--project is required.");
+    const envelope = await readRequestEnvelope(options.request);
+    const result = await initializeProject(path.resolve(options.project), {
+      ...envelope.request, ownerSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion,
+    });
+    return { ...result, canonicalReady: result.ready, ready: false,
+      ...(["applied", "duplicate"].includes(result.status) ? { nextAction: "Prepare selected dependencies and run readiness for the actual host and capability scope. Native trust and discovery remain separate." } : {}) };
+  }
   if (workflowCommandFlags[command]) return runWorkflowCommand(command, options, context);
+  if (setupCommandFlags[command]) return runSetupCommand(command, options, context);
   throw new Error(`Unknown command: ${command ?? "missing"}`);
 }
 

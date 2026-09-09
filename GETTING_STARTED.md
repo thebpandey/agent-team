@@ -100,6 +100,8 @@ Preparation is not universal instruction loading. Each role reads only the compl
 
 ## 6. Inspect and change settings
 
+Creating the canonical project records is separate from passing dependency and native-host readiness. Keep the final setup summary: it identifies the owner, selected tracker, remaining checks and any reload/trust step. The agent should never call a saved installation preference proof of fresh-worker access.
+
 Ask:
 
 ```text

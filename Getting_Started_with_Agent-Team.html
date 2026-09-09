@@ -321,6 +321,7 @@ Claude: /agent-team setup</pre>
           </div>
           <h3>What happens automatically</h3>
           <p>Setup reuses compatible tools, shows a short grouped preparation summary, and installs missing mandatory and selected default components within the approved scope. It verifies useful operations before marking capabilities ready. It does not ask you to approve each already-selected plugin again.</p>
+          <p>The agent first saves your approved plan, real project owner and selected tracker together. Existing task IDs and the integration branch are preserved. That creates the project records; it does <em>not</em> mean browser tools, native hooks or fresh-agent discovery have passed. Setup reports those checks separately and tells you exactly what remains.</p>
           <div class="command">
             <div class="command-meta"><span>Setup prompt • official sources included</span><button class="copy" type="button">Copy prompt</button></div>
             <pre>Run Agent-Team setup from https://github.com/thebpandey/agent-team for this project. Reuse the approved Project Kickoff handoff or existing plan and preserve the current canonical branch and tracker. If neither exists, help me define one ready task and its acceptance criteria.
@@ -378,6 +379,7 @@ Keep optional Context7 and the web dashboard off unless I select them. Install p
             <pre>Show Agent-Team settings and the role/model/effort overview. I want to change only the developer role for this host. Offer supported model choices with short explanations, then compatible effort choices. Keep the other host's preferences and every unrelated setting. Let me cancel without saving. Tell me what will apply to future runs and what is actually enforced now.</pre>
           </div>
           <p>For a complete review, say “Open Agent-Team's full settings wizard.” Settings affect future starts; they do not silently alter agents already running.</p>
+          <p>Role choices must come from the actual host. If model or effort information is unavailable, the agent keeps your saved preference and marks enforcement unknown; a menu or configuration file is not proof that a child used that model.</p>
         </div>
       </details>
 
@@ -428,6 +430,15 @@ If I select the Beads graph provider, use the separately referenced https://gith
             <li><strong>3 · Show the snapshot</strong>Click a graph node, or use Enter/Space, to filter tasks. The all-task list remains available without a graph.</li>
           </ol>
           <p><strong>Third-party attribution:</strong> <a href="https://github.com/Dicklesworthstone/beads_viewer">beads_viewer</a> is Jeffrey Emanuel's independently maintained software. Its <a href="https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE">complete license and disclaimers</a> include an OpenAI/Anthropic restriction rider; attribution alone does not establish eligibility. Agent-Team references it separately and does not rebrand or redistribute its engine as unrestricted MIT. The built-in dashboard also works with the selected Markdown tracker, without Beads or bv.</p>
+          <div class="command">
+            <div class="command-meta"><span>Agent-run helper reference • <a href="https://github.com/thebpandey/agent-team">Agent-Team</a>; graph only with selected <a href="https://github.com/Dicklesworthstone/beads_viewer">beads_viewer</a></span><button class="copy" type="button">Copy commands</button></div>
+            <pre># Run from the complete installed Agent-Team package; replace the project path.
+node hooks/agent-team-cli.mjs status --project /absolute/project/root
+node hooks/agent-team-cli.mjs dashboard-snapshot --project /absolute/project/root
+# Optional foreground viewer; Ctrl-C stops it. No server is started by the two commands above.
+node hooks/agent-team-cli.mjs dashboard-start --project /absolute/project/root --port 0</pre>
+          </div>
+          <p>Ask the agent to enable automatic snapshots through the versioned dashboard setting. The one-time snapshot command does not enable future refreshes. A graph is attempted only when explicitly enabled, its terms have been acknowledged and Beads is the selected tracker; graph failures preserve the normal task view.</p>
         </div>
       </details>
 

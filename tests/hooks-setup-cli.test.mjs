@@ -92,6 +92,21 @@ test("menus use programmatic native facts and refresh the selected model's effor
   assert.deepEqual(efforts.choices.filter(({ id }) => !["back", "cancel"].includes(id)).map(({ id }) => id), ["low"]);
 });
 
+test("dependency inspection reports scope mismatch without presenting another scope's ready counts", async (t) => {
+  const value = await fixture(t);
+  for (const recordedScope of ["user", "project"]) {
+    value.setup.dependencies.hosts.codex.scope = recordedScope;
+    await writeFile(value.setupPath, JSON.stringify(value.setup));
+    const before = await readFile(value.setupPath, "utf8");
+    const scope = recordedScope === "user" ? "project" : "user";
+    assert.deepEqual(await value.invoke("dependencies", { scope }), {
+      status: "unavailable", reason: "dependency_scope_mismatch", host: "codex", scope, recordedScope,
+    });
+    assert.equal((await value.invoke("dependencies", { scope: recordedScope })).receipts.length, 2);
+    assert.equal(await readFile(value.setupPath, "utf8"), before);
+  }
+});
+
 test("settings changes use canonical owner/version and semantic operation identity", async (t) => {
   const { runSetupCommand } = await import(modulePath);
   const value = await fixture(t);

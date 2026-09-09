@@ -208,7 +208,14 @@ export async function runSetupCommand(command, options = {}, context = {}) {
     const request = fields(envelope?.request ?? {}, ["draft"], "request");
     return buildSettingsWizard({ setup: project.setup, host: options.host, nativeChoices, draft: validateDraft(request.draft ?? {}) });
   }
-  if (command === "dependencies") return inspectDependencies({ setup: project.setup, host: options.host });
+  if (command === "dependencies") {
+    const result = inspectDependencies({ setup: project.setup, host: options.host });
+    if (result.scope !== "unknown" && result.scope !== options.scope) return {
+      status: "unavailable", reason: "dependency_scope_mismatch", host: options.host,
+      scope: options.scope, recordedScope: result.scope,
+    };
+    return result;
+  }
   if (command === "readiness") {
     if (project.active) {
       if (envelope) throw new Error("Active project readiness uses canonical records; --request is ineffective.");

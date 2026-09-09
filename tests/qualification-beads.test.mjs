@@ -8,6 +8,7 @@ import test from 'node:test';
 import { policyFixture } from './hook-test-helpers.mjs';
 import { resolveProject } from '../hooks/lib/project.mjs';
 import { loadCanonicalState } from '../hooks/lib/canonical-state.mjs';
+import { beadsEnvironment } from '../hooks/lib/tracker.mjs';
 
 const run = promisify(execFile);
 
@@ -23,8 +24,9 @@ test('selected real Beads supports canonical worktree reads, claims and fresh ex
   const fixture = await policyFixture(path.join(root, 'repo'));
   const legacyTracker = await readFile(path.join(fixture.root, '.agent-team/TASKS.md'), 'utf8');
   const beadsDirectory = path.join(fixture.root, '.beads');
-  const env = { ...process.env, BEADS_DIR: beadsDirectory, BD_NON_INTERACTIVE: '1',
-    PATH: `${path.dirname(executable)}${path.delimiter}${process.env.PATH}` };
+  const env = beadsEnvironment({ root: fixture.root, tracker: { path: beadsDirectory } }, {
+    ...process.env, BD_NON_INTERACTIVE: '1', PATH: `${path.dirname(executable)}${path.delimiter}${process.env.PATH}`,
+  });
   const bd = args => run(executable, args, {
     cwd: fixture.root, env, encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024,
   });

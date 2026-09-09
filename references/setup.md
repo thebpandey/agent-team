@@ -49,3 +49,40 @@ Read-only status and health do not enter setup, write a receipt, repair a cache 
 Recommended setup shows current/recommended values together and accepts a grouped choice. Change one setting or role directly when requested. Run the complete wizard only when explicitly chosen. Save validated changes atomically, preserve concurrent edits and apply them to future runs only.
 
 Authentication, administrator permission and native hook trust are separate host/user actions, not implied by a saved installation preference. Reload does not prove hooks ran: distinguish installed, registered, trusted/unknown, supported and exercised states.
+
+## Bundled setup helpers
+
+The orchestrator uses the complete installed [Agent-Team package](https://github.com/thebpandey/agent-team), not invented native host subcommands. Users can simply say “Agent-Team setup.” These helpers do not spawn agents or replace native trust controls.
+
+1. Adopt approved facts with `project-initialize --project /absolute/project --request /absolute/initialization.json`. The request uses the workflow envelope from [hooks](hooks.md): `schemaVersion: 1`, actual `actorSessionId`, expected setup version and a `request` body containing `projectId`, unique `operationId`, `source` (`standalone` or `existing`), selected `tracker`, and `plan`.
+2. The plan contains `scope`, nonempty `acceptance`, existing integration `branch`, nonempty `verification`, `authority.ownedPaths`, and canonical task IDs. Standalone tasks also include title/status/dependencies. Existing adoption preserves the complete selected tracker; a subset is a conflict, not permission to hide tasks. Existing Beads must already be initialized through its supported setup; this helper never invents a database or a fallback tracker.
+3. `canonicalReady` means canonical records and eligible tasks exist. The CLI still reports `ready: false` until a separate scoped readiness check. It never treats initialization as dependency or native-host certification.
+4. Inspect dependencies, prepare selected components, verify real host discovery, then inspect readiness. Settings belong to the canonical project; dependency scope can be user or project. Match the readiness scope to the prepared capability scope.
+
+From the installed package, agent-run examples are:
+
+```bash
+node hooks/agent-team-cli.mjs dependencies --project /absolute/project --host codex --scope user
+node hooks/agent-team-cli.mjs dependencies-prepare --project /absolute/project --host codex --scope user --request /absolute/preparation.json
+node hooks/agent-team-cli.mjs readiness --project /absolute/project --host codex --scope user
+node hooks/agent-team-cli.mjs settings --project /absolute/project --host codex --scope project
+node hooks/agent-team-cli.mjs settings --project /absolute/project --host codex --scope project --role developer
+```
+
+For Claude Code select `--host claude-code`. Do not install both hosts by inference. A dependency preparation request has this separate setup-mutation envelope:
+
+```json
+{
+  "schemaVersion": 1,
+  "expectedVersion": 1,
+  "operationId": "prepare-selected-components-unique-id",
+  "writer": { "id": "actual-project-owner-session", "role": "project_orchestrator" },
+  "request": { "selections": {} }
+}
+```
+
+Use the freshly observed setup version and actual registered owner; example values are not authority. Empty selections retain mandatory/current default choices and remembered declines. Optional selections are explicit. Safe user preparation uses managed user tool/skill locations; project preparation stays in the canonical project. A linked feature worktree never becomes another configuration authority.
+
+Native model catalogs and fresh-worker discovery are supplied only by the actual host integration to `runSetupCommand`'s context (`nativeChoices`, `workerDiscovery`). JSON request files cannot assert them. A bare Node CLI without those facts reports unknown/unavailable and must not be described as a completed native journey. Registration instructions in a preparation receipt still require an owned native registration, reload where needed, and a real fresh-worker check.
+
+`settings-update` takes `request.change`; `dashboard-configure` takes `request.dashboard` in the same versioned setup envelope. Neither starts development. For saved HTML use `{ "snapshot": true, "graph": { "enabled": false, "termsAcknowledged": false } }`. Enabling the external graph requires the selected Beads tracker and positive upstream-terms acknowledgement; an optional configured executable must be absolute. Start the live server only through a separate explicit `dashboard-start` request. All returned conflicts/unavailable states require inspection even when the process exit code is zero.

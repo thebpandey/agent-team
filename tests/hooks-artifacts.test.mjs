@@ -20,7 +20,7 @@ async function artifacts() {
   return { outputDirectory, built };
 }
 
-test("the extracted universal CLI completes every host and scope lifecycle outside the source checkout", async () => {
+test("source and extracted universal CLIs complete every host and scope lifecycle in isolated targets", async (t) => {
   // Importing the source installer, skipping a selector, or losing update/uninstall effects must break this consumer matrix.
   const { built } = await artifacts();
   const extracted = await mkdtemp(path.join(os.tmpdir(), "agent team extracted "));
@@ -52,10 +52,17 @@ test("the extracted universal CLI completes every host and scope lifecycle outsi
     ["claude-code", "project"],
     ["both", "project"],
   ]) {
-    {
+    for (const [distribution, entryRoot] of [["source", sourceRoot], ["archive", packageRoot]]) {
+      t.diagnostic(`${distribution} ${host} ${scope}`);
       const home = await mkdtemp(path.join(os.tmpdir(), "agent team zip home "));
       const projectRoot = await mkdtemp(path.join(os.tmpdir(), "agent team zip project "));
       temporary.push(home, projectRoot);
+      await run("git", ["init", "-q", "-b", "main", projectRoot]);
+      const initialization = path.join(projectRoot, "initialization-request.json");
+      await writeFile(initialization, JSON.stringify({ schemaVersion: 1, actorSessionId: "zip-owner", expectedVersion: 0,
+        request: { projectId: "zip-project", operationId: "zip-initialize", source: "standalone", tracker: { kind: "markdown", path: "TASKS.md" },
+          plan: { scope: "Verify the installed package", acceptance: ["Helpers run from the installed package"], branch: "main",
+            verification: ["node --test"], authority: { ownedPaths: ["src/**"] }, tasks: [{ id: "ZIP-1", title: "Installed helper qualification", status: "ready" }] } } }));
       const configs = {
         user: {
           codex: path.join(home, ".codex", "hooks.json"),
@@ -76,7 +83,7 @@ test("the extracted universal CLI completes every host and scope lifecycle outsi
           selectedPath === configPath && (host === "both" || runtime === (host === "claude-code" ? "claude" : host))));
       const protectedBytes = new Map(await Promise.all(protectedPaths.map(async (configPath) => [configPath, await readFile(configPath, "utf8")])));
       const selectors = ["--home", home, "--host", host, "--scope", scope, ...(scope === "project" ? ["--project", projectRoot] : [])];
-      const cli = path.join(packageRoot, "hooks", "agent-team-cli.mjs");
+      const cli = path.join(entryRoot, "hooks", "agent-team-cli.mjs");
       const updatedCli = path.join(updatedRoot, "hooks", "agent-team-cli.mjs");
 
       const installed = JSON.parse((await run(process.execPath, [cli, "install", ...selectors])).stdout);
@@ -95,8 +102,22 @@ test("the extracted universal CLI completes every host and scope lifecycle outsi
         const configured = JSON.parse(await readFile(configs[scope][runtime], "utf8"));
         assert.equal(configured.sentinel, path.basename(configs[scope][runtime]));
         assert.ok(Object.values(configured.hooks).flat().some((group) => group.hooks.some(({ command = "" }) => command.includes("agent-team-hook.mjs"))));
+        const installedCli = path.join(target, "hooks", "agent-team-cli.mjs");
+        const initialized = JSON.parse((await run(process.execPath, [installedCli, "project-initialize", "--project", projectRoot, "--request", initialization])).stdout);
+        assert.ok(["applied", "duplicate"].includes(initialized.status), JSON.stringify(initialized));
+        assert.equal(initialized.canonicalReady, true);
+        assert.equal(initialized.ready, false);
+        const selectedHost = runtime === "claude" ? "claude-code" : "codex";
+        const overview = JSON.parse((await run(process.execPath, [installedCli, "settings", "--project", projectRoot, "--host", selectedHost, "--scope", "project"])).stdout);
+        assert.ok(overview.roles.length > 0);
+        const readiness = JSON.parse((await run(process.execPath, [installedCli, "readiness", "--project", projectRoot, "--host", selectedHost, "--scope", scope])).stdout);
+        assert.equal(readiness.projectInitialization.required, false);
+        assert.equal(readiness.readyForDispatch, false, "extracted files do not prove native dependencies ready");
+        const status = JSON.parse((await run(process.execPath, [installedCli, "status", "--project", projectRoot])).stdout);
+        assert.deepEqual(status.tasks.map(({ id }) => id), ["ZIP-1"]);
       }
       for (const [configPath, bytes] of protectedBytes) assert.equal(await readFile(configPath, "utf8"), bytes);
+      assert.match(await readFile(path.join(projectRoot, "TASKS.md"), "utf8"), /ZIP-1/);
 
       const uninstalled = JSON.parse((await run(process.execPath, [updatedCli, "uninstall", ...selectors])).stdout);
       assert.equal(uninstalled.status, "uninstalled");

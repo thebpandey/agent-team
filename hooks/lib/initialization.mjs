@@ -201,7 +201,7 @@ export async function initializeProject(projectPath, request, options = {}) {
           if (setup.initialization.operationId !== request.operationId || setup.initialization.signature !== signature) return decision("conflict", "initialization_identity_conflict");
           return finish("duplicate");
         }
-        if (setup && (!Number.isInteger(expectedVersion) || expectedVersion !== (setup.version ?? 0))) return decision("conflict", "stale_setup_version");
+        if ((setup || expectedVersion !== undefined) && (!Number.isInteger(expectedVersion) || expectedVersion !== (setup?.version ?? 0))) return decision("conflict", "stale_setup_version");
         const journalPath = path.join(stateRoot, ".setup-initialization.json");
         const journalSource = await read(journalPath);
         let journal = journalSource ? JSON.parse(journalSource) : undefined;
