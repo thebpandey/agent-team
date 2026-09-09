@@ -129,6 +129,31 @@ test("bounded checkpoint index archives immutable receipts and retains old repla
   assert.ok(Buffer.byteLength(await readFile(latest.path, "utf8")) <= 32768);
 });
 
+test("interrupted archive publication leaves no partial immutable receipt and later events keep replay protection", async () => {
+  const value = await fixture();
+  let latest;
+  for (let index = 0; index < 128; index += 1) latest = await writeCheckpoint(value.project, { eventId: `publication-${index}`, sessionId: "developer-session", taskIds: ["AT-001"], nextAction: `Action ${index}.` });
+  const before = await readFile(latest.path, "utf8");
+  const wanted = { eventId: "publication-next", sessionId: "developer-session", taskIds: ["AT-001"], nextAction: "Continue after interruption." };
+  await assert.rejects(writeCheckpoint(value.project, wanted, { receiptFilesystem: { writeFile: async (file, _source, options) => {
+    await writeFile(file, '{"signature":', options);
+    throw Object.assign(new Error("interrupted archive write"), { code: "ABORT_ERR" });
+  } } }), /interrupted archive/);
+  assert.equal(await readFile(latest.path, "utf8"), before);
+  const receiptRoot = path.join(value.project.paths.checkpoints, ".receipts");
+  assert.equal((await readdir(receiptRoot, { recursive: true })).some((name) => name.endsWith(".json") || name.endsWith(".tmp")), false);
+  assert.equal((await writeCheckpoint(value.project, wanted)).status, "applied");
+  const relative = (await readdir(receiptRoot, { recursive: true })).find((name) => name.endsWith(".json"));
+  const archive = path.join(receiptRoot, relative);
+  const immutable = await readFile(archive, "utf8");
+  // Simulate publication succeeding before an interrupted hot-index replacement.
+  await writeFile(latest.path, before);
+  assert.equal((await writeCheckpoint(value.project, wanted)).status, "applied");
+  assert.equal(await readFile(archive, "utf8"), immutable);
+  assert.equal((await writeCheckpoint(value.project, { eventId: "publication-0", sessionId: "developer-session", taskIds: ["AT-001"], nextAction: "Action 0." })).status, "duplicate");
+  assert.equal((await writeCheckpoint(value.project, { eventId: "publication-0", sessionId: "developer-session", taskIds: ["AT-001"], nextAction: "Changed replay." })).reason, "operation_identity_reused");
+});
+
 test("deadline while waiting for a lock never runs its mutation after the lock is released", async () => {
   const value = await fixture();
   const lock = path.join(value.project.paths.locks, "held.lock");

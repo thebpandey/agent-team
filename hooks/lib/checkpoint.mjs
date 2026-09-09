@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { withDirectoryLock } from "./lock.mjs";
@@ -59,7 +59,7 @@ async function existing(file) {
 }
 
 /** Save a small factual recovery record without storing the native hook payload. */
-export async function writeCheckpoint(project, input, { now = new Date(), timeoutMs = 1000, budget, expectedVersion, actorSessionId } = {}) {
+export async function writeCheckpoint(project, input, { now = new Date(), timeoutMs = 1000, budget, expectedVersion, actorSessionId, receiptFilesystem = {} } = {}) {
   if (!project.active) return { created: false, skipped: "inactive" };
   if (actorSessionId !== undefined && actorSessionId !== input.sessionId) return { status: "conflict", reason: "checkpoint_owner_required" };
   if (Buffer.byteLength(JSON.stringify(input)) > 32768) return { status: "conflict", reason: "checkpoint_too_large" };
@@ -97,13 +97,17 @@ export async function writeCheckpoint(project, input, { now = new Date(), timeou
       budget?.check();
       await bounded(() => mkdir(receiptDirectory, { recursive: true, mode: 0o700 }));
       const archive = path.join(receiptDirectory, `${oldestKey}.json`);
+      const archiveTemporary = `${archive}.${process.pid}.${randomUUID()}.tmp`;
       try {
         budget?.check();
-        await bounded(() => writeFile(archive, `${JSON.stringify(oldest)}\n`, { flag: "wx", mode: 0o600, ...(budget ? { signal: budget.signal } : {}) }));
+        await bounded(() => (receiptFilesystem.writeFile ?? writeFile)(archiveTemporary, `${JSON.stringify(oldest)}\n`, { flag: "wx", mode: 0o600, ...(budget ? { signal: budget.signal } : {}) }));
+        budget?.check();
+        // Same-directory hard-link publication is atomic and never replaces an immutable receipt.
+        await bounded(() => link(archiveTemporary, archive));
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
         if (JSON.stringify(await bounded(() => existing(archive))) !== JSON.stringify(oldest)) return { status: "conflict", reason: "checkpoint_receipt_conflict", created: false };
-      }
+      } finally { await rm(archiveTemporary, { force: true }); }
       delete receipts[oldestKey];
     }
     const checkpoint = checkpointData(input, previous, now);
