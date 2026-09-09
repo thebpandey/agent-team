@@ -1,11 +1,13 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { withDirectoryLock } from "./lock.mjs";
+import { identityFor, loadCanonicalState } from "./canonical-state.mjs";
 
 const fields = [
   "eventId", "sessionId", "eventKind", "projectId", "teamId", "skillRevision", "worktree", "branch",
   "revision", "trackerPath", "mistakesPath", "taskIds", "evidence", "nextAction", "decisionNotes", "pendingOperations",
+  "sourcePointers", "uncertainty", "scope", "writer", "evidenceRevision", "resumeWhen",
 ];
 
 function safeId(value) {
@@ -28,13 +30,17 @@ function redact(value, key = "") {
 }
 
 function checkpointData(input, previous, now) {
-  const output = { schemaVersion: 1 };
+  const sameScope = previous?.taskIds === undefined || JSON.stringify(input.taskIds ?? []) === JSON.stringify(previous.taskIds);
+  const output = { schemaVersion: 1, version: (previous?.version ?? 0) + 1 };
   for (const field of fields) {
     const value = input[field];
     if (value !== undefined && value !== "") output[field] = redact(value, field);
-    else if ((field === "nextAction" || field === "decisionNotes") && previous?.[field]) output[field] = redact(previous[field], field);
+    else if (sameScope && ["nextAction", "decisionNotes", "sourcePointers", "uncertainty", "scope", "pendingOperations", "resumeWhen", "writer", "evidence", "evidenceRevision"].includes(field) && previous?.[field]) output[field] = redact(previous[field], field);
   }
   output.updatedAt = now.toISOString();
+  if (previous && previous.taskIds === undefined && (previous.nextAction || previous.decisionNotes)) {
+    output.uncertainty = [...new Set([...(output.uncertainty ?? []), "Legacy authored notes lack task attribution."])];
+  }
   return output;
 }
 
@@ -48,10 +54,18 @@ async function existing(file) {
 }
 
 /** Save a small factual recovery record without storing the native hook payload. */
-export async function writeCheckpoint(project, input, { now = new Date(), timeoutMs = 1000, budget } = {}) {
+export async function writeCheckpoint(project, input, { now = new Date(), timeoutMs = 1000, budget, expectedVersion, actorSessionId } = {}) {
   if (!project.active) return { created: false, skipped: "inactive" };
+  if (actorSessionId !== undefined && actorSessionId !== input.sessionId) return { status: "conflict", reason: "checkpoint_owner_required" };
+  if (Buffer.byteLength(JSON.stringify(input)) > 32768) return { status: "conflict", reason: "checkpoint_too_large" };
+  const bounded = (action) => budget ? budget.run(action) : action();
+  if (actorSessionId !== undefined) {
+    if (!Number.isInteger(expectedVersion) || !input.eventId) return { status: "conflict", reason: "checkpoint_version_and_operation_required" };
+    const canonical = await loadCanonicalState(project, { includeTasks: false, budget });
+    if (identityFor(canonical.registry, actorSessionId).role === "unknown") return { status: "conflict", reason: "checkpoint_owner_required" };
+  }
   budget?.check();
-  await mkdir(project.paths.checkpoints, { recursive: true, mode: 0o700 });
+  await bounded(() => mkdir(project.paths.checkpoints, { recursive: true, mode: 0o700 }));
   const file = path.join(project.paths.checkpoints, `${safeId(input.sessionId)}.json`);
   const lock = path.join(project.paths.locks, `checkpoint-${safeId(input.sessionId)}.lock`);
 
@@ -60,9 +74,24 @@ export async function writeCheckpoint(project, input, { now = new Date(), timeou
     sessionId: input.sessionId,
     acquiredAt: now.toISOString(),
   }, async () => {
-    const previous = await existing(file);
-    if (input.eventId && previous?.eventId === input.eventId) return { created: false, path: file, checkpoint: previous };
+    const previous = await bounded(() => existing(file));
+    if (previous?.sessionId && previous.sessionId !== input.sessionId) return { status: "conflict", reason: "checkpoint_identity_collision" };
+    if (input.eventId && previous?.eventId === input.eventId) return { status: "duplicate", created: false, path: file, checkpoint: previous, version: previous.version };
+    if (expectedVersion !== undefined && expectedVersion !== (previous?.version ?? 0)) return { status: "conflict", reason: "stale_version", created: false, path: file, version: previous?.version ?? 0 };
     const checkpoint = checkpointData(input, previous, now);
+    checkpoint.sourceEvidence = [];
+    for (const pointer of checkpoint.sourcePointers ?? []) {
+      if (input.sourcePointers === undefined) {
+        checkpoint.sourceEvidence.push(previous?.sourceEvidence?.find((entry) => entry.path === pointer.path) ?? { path: pointer.path, fingerprint: null });
+        continue;
+      }
+      // Hash original records, never infer or summarize unwritten decisions.
+      try {
+        const source = await bounded(() => readFile(path.resolve(project.root, pointer.path)));
+        checkpoint.sourceEvidence.push({ path: pointer.path, fingerprint: createHash("sha256").update(source).digest("hex") });
+      } catch { checkpoint.sourceEvidence.push({ path: pointer.path, fingerprint: null }); }
+    }
+    if (Buffer.byteLength(JSON.stringify(checkpoint)) > 32768) return { status: "conflict", reason: "checkpoint_too_large" };
     const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
     try {
       budget?.check();
@@ -72,6 +101,6 @@ export async function writeCheckpoint(project, input, { now = new Date(), timeou
     } finally {
       await rm(temporary, { force: true });
     }
-    return { created: true, path: file, checkpoint };
+    return { status: "applied", created: true, path: file, checkpoint, version: checkpoint.version };
   }, { timeoutMs, budget });
 }

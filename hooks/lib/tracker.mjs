@@ -10,8 +10,11 @@ const run = promisify(execFile);
 export function resolveTracker(root, selection) {
   const selected = selection === undefined ? { kind: "markdown", path: ".agent-team/TASKS.md" } : selection;
   if (selected?.kind === "beads") {
+    if (selected.executable !== undefined && (typeof selected.executable !== "string" || !path.isAbsolute(selected.executable) || selected.executable.includes("\0"))) {
+      return { kind: "unknown", id: `invalid:${root}`, path: null, reason: "invalid_selection" };
+    }
     const location = path.join(root, ".beads");
-    return { kind: "beads", id: `beads:${location}`, path: location };
+    return { kind: "beads", id: `beads:${location}`, path: location, executable: selected.executable ?? "bd", executableSource: selected.executable ? "selected" : "legacy_path" };
   }
   if (selected?.kind === "markdown" && ["TASKS.md", ".agent-team/TASKS.md"].includes(selected.path)) {
     const location = path.join(root, selected.path);
@@ -33,7 +36,7 @@ export async function readTracker(project, { runBeads = run, budget } = {}) {
     let source;
     let tasks;
     if (selected.kind === "beads") {
-      const result = await runBeads("bd", ["list", "--all", "--limit", "0", "--json", "--readonly"], {
+      const result = await runBeads(selected.executable ?? "bd", ["list", "--all", "--limit", "0", "--json", "--readonly"], {
         cwd: project.root, encoding: "utf8", timeout: budget?.timeout(1500) ?? 1500,
         maxBuffer: 1024 * 1024, ...(budget ? { signal: budget.signal } : {}),
         // A host/worktree environment must not redirect the selected project authority.
@@ -47,7 +50,15 @@ export async function readTracker(project, { runBeads = run, budget } = {}) {
         || new Set(rows.map(({ id }) => id)).size !== rows.length) throw Object.assign(new Error("Invalid Beads rows"), { code: "INVALID_RESPONSE" });
       tasks = rows.map((row) => ({ id: row.id, owner: row.assignee ?? "", status: row.status,
         "requirement / acceptance": row.acceptance_criteria ?? row.description ?? row.title,
-        "revision / evidence": row.notes ?? "", "next action": "", updatedAt: row.updated_at }));
+        "revision / evidence": row.notes ?? "", "next action": "", updatedAt: row.updated_at,
+        ...(Number.isInteger(row.priority) ? { priority: row.priority } : {}),
+        ...(typeof row.parent === "string" && row.parent ? { parent: row.parent } : {}),
+        dependencies: Array.isArray(row.dependencies) ? row.dependencies
+          .filter((dep) => dep?.type === "blocks" && typeof dep.depends_on_id === "string")
+          .map((dep) => dep.depends_on_id) : [],
+        dependencyEvidence: (row.dependency_count === 0 || Array.isArray(row.dependencies)
+          && row.dependencies.every((dep) => typeof dep?.depends_on_id === "string" && ["blocks", "parent-child", "related"].includes(dep.type))) ? "current" : "unavailable",
+      }));
     } else {
       source = await readFile(selected.path, { encoding: "utf8", ...(budget ? { signal: budget.signal } : {}) });
       if (Buffer.byteLength(source) > 1024 * 1024) throw Object.assign(new Error("Tracker exceeds 1 MiB"), { code: "INVALID_RESPONSE" });
