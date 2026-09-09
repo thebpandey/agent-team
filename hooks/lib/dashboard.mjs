@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { readFileSync } from 'node:fs';
 import { beadsEnvironment } from './tracker.mjs';
+import { createEventBudget } from './budget.mjs';
 
 const runFile = promisify(execFile);
 
@@ -219,46 +220,67 @@ export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDi
   const outputLimit = Math.min(Math.max(1024, maxOutputBytes), 256 * 1024);
   const reserve = Math.max(0, Number.isFinite(reserveMs) ? reserveMs : 0);
   const sharedSignal = budget?.signal && signal ? AbortSignal.any([budget.signal, signal]) : budget?.signal ?? signal;
-  function options(cwd, env) {
-    if (sharedSignal?.aborted) return null;
-    try { budget?.check(); } catch { return null; }
-    const remaining = budget ? budget.remaining() - reserve : commandLimit;
+  function options(cwd, env, phase) {
+    if (phase.signal.aborted) return null;
+    try { phase.check(); budget?.check(); } catch { return null; }
+    const remaining = phase.remaining();
     if (remaining <= 0) return null;
-    return { cwd, timeoutMs: Math.max(1, Math.min(commandLimit, remaining)), maxOutputBytes: outputLimit, env, ...(sharedSignal ? { signal: sharedSignal } : {}) };
+    return { cwd, timeoutMs: Math.max(1, Math.min(commandLimit, remaining)), maxOutputBytes: outputLimit, env, signal: phase.signal };
   }
-  async function command(executable, args, cwd = projectRoot, env = environment) {
-    const commandOptions = options(cwd, env);
+  async function command(phase, executable, args, cwd = projectRoot, env = environment) {
+    const commandOptions = options(cwd, env, phase);
     return commandOptions ? runCommand(executable, args, commandOptions) : { status: "timeout", output: "Dashboard graph budget exhausted." };
+  }
+  async function boundedPhase(action) {
+    const phase = createEventBudget(Math.max(0, (budget ? budget.remaining() - reserve : commandLimit)));
+    const phaseSignal = sharedSignal ? AbortSignal.any([phase.signal, sharedSignal]) : phase.signal;
+    let abort;
+    try {
+      phaseSignal.throwIfAborted();
+      return await Promise.race([
+        phase.run(() => action({ ...phase, signal: phaseSignal })),
+        new Promise((_, reject) => {
+          abort = () => reject(phaseSignal.reason ?? new Error("Graph request cancelled."));
+          phaseSignal.addEventListener("abort", abort, { once: true });
+        }),
+      ]);
+    } catch (error) {
+      return { status: "unavailable", reason: String(error.message || error), graph: null, attribution };
+    } finally {
+      if (abort) phaseSignal.removeEventListener("abort", abort);
+      phase.close();
+    }
   }
   const graphEnvironment = beadsEnvironment({ root: stagingDirectory, tracker: { path: path.join(stagingDirectory, '.beads') } }, environment);
   const exportFile = path.join(stagingDirectory, ".beads", "issues.jsonl");
-  async function capability() {
+  async function capability(phase) {
     if (!selected || !termsAcknowledged) return { status: "not_selected", reason: !selected ? "Optional Beads graph is not selected." : "Operator terms acknowledgement is required.", attribution };
     if (tracker?.kind !== "beads" || typeof tracker.id !== 'string' || !tracker.id || typeof trackerExecutable !== 'string' || !trackerExecutable) return { status: "unavailable", reason: "A selected canonical Beads tracker and executable are required.", attribution };
-    const trackerVersion = await command(trackerExecutable, ["--version"]);
+    const trackerVersion = await command(phase, trackerExecutable, ["--version"]);
     if (trackerVersion.status !== "completed") return { status: "unavailable", reason: `Selected tracker version check: ${trackerVersion.status}`, attribution };
-    const version = await command(bvPath, ["--version"]);
+    const version = await command(phase, bvPath, ["--version"]);
     if (version.status !== "completed") return { status: "unavailable", reason: `bv version check: ${version.status}`, attribution };
-    const robot = await command(bvPath, ["--robot-help"]);
+    const robot = await command(phase, bvPath, ["--robot-help"]);
     if (robot.status !== "completed" || !/robot-graph/i.test(robot.output) || !/graph-format/i.test(robot.output) || !/no-hooks/i.test(robot.output)) return { status: "unavailable", reason: "bv robot graph capability is unavailable.", attribution };
     return { status: "available", version: version.output.trim(), trackerVersion: trackerVersion.output.trim(), attribution };
   }
   return Object.freeze({
     attribution,
-    capability,
+    capability: () => boundedPhase(capability),
     async refresh() {
-      const available = await capability();
+      return boundedPhase(async (phase) => {
+      const available = await capability(phase);
       if (available.status !== "available") return { ...available, graph: null };
       try {
-        budget?.check();
-        if (signal?.aborted) return { status: "unavailable", reason: "Graph request cancelled.", graph: null, attribution };
+        phase.check();
+        if (phase.signal.aborted) return { status: "unavailable", reason: "Graph request cancelled.", graph: null, attribution };
         await ensureDirectory(path.dirname(exportFile), { recursive: true, mode: 0o700 });
       } catch (error) {
         return { status: "unavailable", reason: `Graph staging directory: ${String(error.message || error)}`, graph: null, attribution };
       }
-      const exported = await command(trackerExecutable, ["export", "-o", exportFile]);
+      const exported = await command(phase, trackerExecutable, ["export", "-o", exportFile]);
       if (exported.status !== "completed") return { status: "unavailable", reason: `Canonical bd export: ${exported.status}`, graph: null, attribution };
-      const rendered = await command(bvPath, ["--robot-graph", "--graph-format=json", "--no-hooks"], stagingDirectory, graphEnvironment);
+      const rendered = await command(phase, bvPath, ["--robot-graph", "--graph-format=json", "--no-hooks"], stagingDirectory, graphEnvironment);
       if (rendered.status !== "completed") return { status: "unavailable", reason: `bv graph: ${rendered.status}`, graph: null, attribution };
       try {
         const payload = JSON.parse(rendered.output);
@@ -279,6 +301,7 @@ export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDi
       } catch (error) {
         return { status: "unavailable", reason: String(error.message || error), graph: null, attribution };
       }
+      });
     },
   });
 }

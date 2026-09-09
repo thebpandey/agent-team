@@ -341,6 +341,30 @@ test("structured graph accepts isolated and empty nodes but rejects invalid adja
   assert.match(directoryFailure.reason, /staging/i);
 });
 
+test("stalled graph staging preserves publication time and cannot run later command stages", { timeout: 1000 }, async () => {
+  const budget = createEventBudget(350);
+  let finishStaging;
+  const commands = [];
+  const started = Date.now();
+  try {
+    const result = await createBeadsGraphCommandAdapter({
+      projectRoot: "/project", tracker: { kind: "beads", id: "beads:/project/.beads", executable: "/selected/bd" },
+      selected: true, termsAcknowledged: true, budget, reserveMs: 150,
+      ensureDirectory: () => new Promise((resolve) => { finishStaging = resolve; }),
+      runCommand: async (_command, args) => {
+        commands.push(args[0]);
+        return { status: "completed", output: "--robot-graph --graph-format --no-hooks" };
+      },
+    }).refresh();
+    assert.equal(result.status, "unavailable");
+    assert.ok(Date.now() - started < 300, "staging must return before the overall deadline");
+    assert.ok(budget.remaining() >= 80, "base view still has a publication reserve");
+    finishStaging();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(commands, ["--version", "--version", "--robot-help"]);
+  } finally { finishStaging?.(); budget.close(); }
+});
+
 test("actual graph commands share the request deadline and cancellation boundary", async (t) => {
   for (const boundary of ["budget", "signal"]) {
     await t.test(boundary, async () => {
@@ -369,7 +393,8 @@ test("actual graph commands share the request deadline and cancellation boundary
         assert.equal(result.status, "unavailable");
         assert.ok(Date.now() - started < 700, `${boundary} must stop the actual command promptly`);
         await new Promise((resolve) => setTimeout(resolve, 220));
-        assert.doesNotMatch(await readFile(log, "utf8"), /--robot-help:completed/);
+        const output = await readFile(log, "utf8").catch((error) => { if (error.code === "ENOENT") return ""; throw error; });
+        assert.doesNotMatch(output, /--robot-help:completed/);
       } finally {
         if (timer) clearTimeout(timer);
         budget.close();
