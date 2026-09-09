@@ -704,6 +704,11 @@ async function leanCtxFunctional(executable, paths) {
   env.XDG_DATA_HOME = path.join(root, "xdg-data");
   env.XDG_STATE_HOME = path.join(root, "xdg-state");
   env.XDG_CACHE_HOME = path.join(root, "xdg-cache");
+  env.XDG_RUNTIME_DIR = path.join(root, "xdg-runtime");
+  // Explicit upstream pins take precedence over XDG and legacy layout detection.
+  for (const kind of ["CONFIG", "DATA", "STATE", "CACHE"]) {
+    env[`LEAN_CTX_${kind}_DIR`] = path.join(env[`XDG_${kind}_HOME`], "lean-ctx");
+  }
   try {
     const read = await command(executable, ["read", fixture], { cwd: root, env });
     return read.status === "passed" && read.stdout?.includes("readinessLeanCtxMarker")

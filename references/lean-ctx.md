@@ -20,6 +20,8 @@ LeanCTX currently keys persistent state by project. That does not prove isolatio
 
 The following is the compatibility profile, not an instruction to overwrite a global config. Apply only through the selected scope's verified adapter; inspect effective precedence and preserve unrelated keys and user changes:
 
+For an owned process-local profile, set `LEAN_CTX_CONFIG_DIR` to the directory containing its `config.toml`, and set `LEAN_CTX_DATA_DIR`, `LEAN_CTX_STATE_DIR`, `LEAN_CTX_CACHE_DIR` and `XDG_RUNTIME_DIR` to separate owned directories. The explicit LeanCTX directory variables override inherited pins and legacy layout detection; XDG category variables alone do not. Pass them through the actual child process or MCP server environment, then check that process's `lean-ctx config path`. A tool wrapper's advertised environment field is not evidence that it forwarded those values. This establishes category routing, not a blanket filesystem sandbox; retain the narrowed tool contract and verify applicable behavior.
+
 ```toml
 shell_activation = "agents-only"
 shell_hook_mode = "rewrite"

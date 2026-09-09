@@ -409,13 +409,27 @@ test("selective skill installation preflights every destination before copying",
   await assert.rejects(readFile(path.join(skillRoot, "first", "SKILL.md")), { code: "ENOENT" });
 });
 
-test("default LeanCTX gate performs only a narrow isolated read", async () => {
+test("default LeanCTX gate overrides inherited directory pins for its narrow read", async (t) => {
   const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
   const { CATALOG_BY_ID } = await import("../hooks/lib/dependency-catalog.mjs");
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-leanctx-"));
+  const keys = ["LEAN_CTX_CONFIG_DIR", "LEAN_CTX_DATA_DIR", "LEAN_CTX_STATE_DIR", "LEAN_CTX_CACHE_DIR", "XDG_RUNTIME_DIR"];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  for (const key of keys) process.env[key] = path.join(directory, "unrelated", key);
+  t.after(() => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  });
   const executable = path.join(directory, "lean-ctx-fixture.mjs");
   await writeFile(executable, `#!/usr/bin/env node
+import path from 'node:path';
 if (process.argv[2] !== "read") process.exit(9);
+for (const key of ${JSON.stringify(["LEAN_CTX_CONFIG_DIR", "LEAN_CTX_DATA_DIR", "LEAN_CTX_STATE_DIR", "LEAN_CTX_CACHE_DIR", "XDG_RUNTIME_DIR"])}) {
+  const relative = path.relative(process.cwd(), process.env[key] ?? '/');
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) process.exit(8);
+}
 process.stdout.write("readinessLeanCtxMarker\\n");
 `);
   await chmod(executable, 0o755);
@@ -429,6 +443,7 @@ process.stdout.write("readinessLeanCtxMarker\\n");
 
   assert.equal(result.status, "passed");
   assert.match(result.evidence, /narrow read.*readinessLeanCtxMarker/i);
+  for (const key of keys) assert.equal(process.env[key], path.join(directory, "unrelated", key));
 });
 
 test("default Impeccable gate verifies all three documented detector exits", async () => {
