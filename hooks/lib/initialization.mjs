@@ -25,6 +25,7 @@ function completeState(state, { taskIds, integrationOwner, branch }) {
     || !["finite", "continuous"].includes(state.run?.mode) || typeof state.run.paused !== "boolean"
     || !Array.isArray(state.run.taskIds) || new Set(state.run.taskIds).size !== state.run.taskIds.length
     || state.run.taskIds.some((id) => !validId(id) || !taskIds.includes(id))
+    || (state.stateVersion === 0 && state.run.taskIds.length !== taskIds.length)
     || !booleanFields(state.integration, ["authorized", "paused", "hold"])
     || !validId(integrationOwner) || state.integration.ownerSessionId !== integrationOwner || state.integration.baseRef !== branch
     || !booleanFields(state.release, ["authorized", "autoDeploy", "hold"]) || state.release.ownerSessionId !== integrationOwner
@@ -56,6 +57,26 @@ function validateRequest(request) {
   if (request.source === "standalone" && (!Array.isArray(plan.tasks) || !plan.tasks.length)) return "actionable_tasks_missing";
   if (plan.tasks !== undefined && (!Array.isArray(plan.tasks) || plan.tasks.length > 100 || new Set(plan.tasks.map((task) => task?.id)).size !== plan.tasks.length
     || plan.tasks.some((task) => !validId(task?.id)))) return "invalid_task_identity";
+  return undefined;
+}
+
+/** Structural readiness only; neither a receipt nor a caller identity proves native host trust. */
+export function initializationRecordProblem(setup, canonical, { validateTracker = false } = {}) {
+  const receipt = setup?.initialization;
+  const ids = setup?.plan?.taskIds;
+  const owner = canonical?.registry?.projectOwner;
+  if (setup?.schemaVersion !== 1 || setup.skill !== "agent-team" || !Number.isSafeInteger(setup.version) || setup.version < 1
+    || receipt?.status !== "complete" || !validId(receipt.operationId) || !/^[a-f0-9]{64}$/.test(receipt.signature ?? "")
+    || !["standalone", "existing"].includes(receipt.source) || !Array.isArray(ids) || new Set(ids).size !== ids.length
+    || validateRequest({ projectId: setup.projectId, ownerSessionId: owner, operationId: receipt.operationId,
+      source: "existing", tracker: setup.tracker, plan: { ...setup.plan, tasks: ids?.map((id) => ({ id })) } })) return "invalid_initialization_receipt";
+  if (canonical.registry.projectId !== setup.projectId) return "existing_owner_conflict";
+  if (!completeState(canonical.state, { taskIds: ids, integrationOwner: canonical.registry.integrationOwner, branch: setup.plan.branch })) return "required_state_facts_missing";
+  if (validateTracker) {
+    if (canonical.tracker?.status !== "current") return "tracker_unavailable";
+    const actual = canonical.tasks.map(({ id }) => id);
+    if (ids.length !== actual.length || ids.some((id) => !actual.includes(id))) return "existing_task_identity_conflict";
+  }
   return undefined;
 }
 
@@ -156,15 +177,17 @@ export async function initializeProject(projectPath, request, options = {}) {
         catch { if (await git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]) !== request.plan.branch) return decision("conflict", "integration_branch_unavailable"); }
         const finish = async (status) => {
           for (const file of [paths.setup, paths.teams, paths.state]) if (await read(file) === undefined) return decision("unavailable", "required_records_missing");
-          const canonical = await loadCanonicalState({ ...project, setup: JSON.parse(await read(paths.setup)) }, { ...options, budget });
+          const committed = JSON.parse(await read(paths.setup));
+          const canonical = await loadCanonicalState({ ...project, setup: committed }, { ...options, budget });
+          const problem = initializationRecordProblem(committed, canonical, { validateTracker: true });
+          if (problem) return decision("unavailable", problem);
           if (canonical.tracker.status !== "current") return decision("unavailable", "tracker_unavailable", { tracker: canonical.tracker });
           const observedIdentity = registryIdentity(await read(paths.teams));
           if (observedIdentity.projectOwner !== request.ownerSessionId || observedIdentity.projectId !== request.projectId) return decision("conflict", "existing_owner_conflict");
           const taskIds = canonical.tasks.map(({ id }) => id);
-          if (!completeState(canonical.state, { taskIds, integrationOwner: observedIdentity.integrationOwner, branch: request.plan.branch })) return decision("unavailable", "required_state_facts_missing");
           const eligible = taskEligibility(canonical, { scopeTaskIds: canonical.state.run.taskIds }).eligible;
           return { status, ready: eligible.length > 0, ...(eligible.length ? {} : { reason: "no_eligible_task" }), projectRoot: root,
-            taskIds, tracker: canonical.tracker, version: JSON.parse(await read(paths.setup)).version, eligibleTaskIds: eligible.map(({ id }) => id) };
+            taskIds, tracker: canonical.tracker, version: committed.version, eligibleTaskIds: eligible.map(({ id }) => id) };
         };
         if (setup?.initialization) {
           if (setup.initialization.operationId !== request.operationId || setup.initialization.signature !== signature) return decision("conflict", "initialization_identity_conflict");

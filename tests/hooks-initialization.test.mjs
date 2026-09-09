@@ -225,6 +225,46 @@ if (process.argv[2] === "initialize-worker") {
     assert.equal(await readFile(project.paths.tasks, "utf8"), source);
   });
 
+  test("duplicate initialization rejects incomplete or inconsistent setup receipts", async (t) => {
+    for (const field of ["status", "planIds", "version", "initialRunIds"]) await t.test(field, async () => {
+      const value = await fixture();
+      value.request.plan.tasks.push({ id: "AT-002", title: "Remaining work", status: "ready" });
+      await initialize(value.root, value.request);
+      const project = await resolveProject(value.root);
+      const setup = JSON.parse(await readFile(project.paths.setup, "utf8"));
+      if (field === "status") setup.initialization.status = "pending";
+      if (field === "planIds") setup.plan.taskIds = ["AT-001"];
+      if (field === "version") setup.version = -1;
+      if (field === "initialRunIds") {
+        const state = JSON.parse(await readFile(project.paths.state, "utf8"));
+        state.run.taskIds = ["AT-001"];
+        await writeFile(project.paths.state, JSON.stringify(state));
+      }
+      await writeFile(project.paths.setup, JSON.stringify(setup));
+      const before = await readFile(project.paths.setup, "utf8");
+      const result = await initialize(value.root, value.request);
+      assert.equal(result.ready, false, JSON.stringify(result));
+      assert.notEqual(result.status, "duplicate");
+      assert.equal(await readFile(project.paths.setup, "utf8"), before);
+    });
+  });
+
+  test("duplicate initialization preserves a later finite run scope without losing the full approved plan", async () => {
+    const value = await fixture();
+    value.request.plan.tasks.push({ id: "AT-002", title: "Remaining work", status: "ready" });
+    await initialize(value.root, value.request);
+    const project = await resolveProject(value.root);
+    const state = JSON.parse(await readFile(project.paths.state, "utf8"));
+    state.stateVersion = 1;
+    state.run.taskIds = ["AT-002"];
+    await writeFile(project.paths.state, JSON.stringify(state));
+    const result = await initialize(value.root, value.request);
+    assert.equal(result.status, "duplicate");
+    assert.deepEqual(result.taskIds, ["AT-001", "AT-002"]);
+    assert.deepEqual(result.eligibleTaskIds, ["AT-002"]);
+    assert.deepEqual(JSON.parse(await readFile(project.paths.state, "utf8")).run.taskIds, ["AT-002"]);
+  });
+
   test("validated owner and tracker snapshots cannot change before setup publication", async (t) => {
     for (const change of ["owner", "tracker"]) await t.test(change, async () => {
       const value = await fixture();
