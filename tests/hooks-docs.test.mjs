@@ -32,7 +32,10 @@ test("GitHub release publication remains tag-driven and checked", async () => {
 test("installation docs keep canonical release provenance and complete checksum examples", async () => {
   const manifest = JSON.parse(await read("hooks/manifest.json"));
   const readme = await read("README.md");
-  assert.ok(readme.includes("github.com/thebpandey/agent-team/releases/tag/v" + manifest.version));
+  if (readme.includes("**unpublished local preview**")) {
+    assert.match(readme, /native-host qualification and publication are pending/i);
+    assert.match(readme, /Published v6\.5\.0.*releases\/tag\/v6\.5\.0/);
+  } else assert.ok(readme.includes("github.com/thebpandey/agent-team/releases/tag/v" + manifest.version));
   assert.match(readme, /github\.com\/thebpandey\/agent-team\/releases\/latest/);
   assert.match(readme, /\.agent-team-source\.json/);
   assert.match(readme, /shasum -a 256/);

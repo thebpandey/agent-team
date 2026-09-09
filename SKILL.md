@@ -1,7 +1,7 @@
 ---
 name: agent-team
 metadata:
-  version: "6.5.0"
+  version: "7.0.0"
 description: Use when coordinating development in Codex or Claude Code, continuing Agent-Team tasks, or requesting agent-team setup, settings, start, status, pause, resume, review, or release.
 ---
 

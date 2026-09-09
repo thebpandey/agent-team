@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "agent-team",
-  "version": "6.5.0",
+  "version": "7.0.0",
   "repository": "https://github.com/thebpandey/agent-team",
   "rootFiles": [
     "CHANGELOG.md",
@@ -34,6 +34,7 @@
     "assets/claude-agents/agent-team-visual-tester.md",
     "assets/dashboard/dashboard.css",
     "assets/dashboard/dashboard.js",
+    "assets/diagrams/README.md",
     "assets/diagrams/release-recovery.mmd",
     "assets/diagrams/release-recovery.png",
     "assets/diagrams/release-recovery.svg",

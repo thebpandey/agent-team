@@ -240,7 +240,7 @@ See [recovery](references/recovery.md), [canonical state](references/state.md), 
 
 ## Source, versions and updates
 
-The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **6.5.0**; `metadata.version` in `SKILL.md` is authoritative. [Published v6.5.0](https://github.com/thebpandey/agent-team/releases/tag/v6.5.0) is the baseline, not certification of this unreleased preview. See the [latest official release](https://github.com/thebpandey/agent-team/releases/latest) and [changelog](CHANGELOG.md).
+The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.0.0**; `metadata.version` in `SKILL.md` is authoritative. This is an **unpublished local preview**, not a released build. [Published v6.5.0](https://github.com/thebpandey/agent-team/releases/tag/v6.5.0) is the baseline. The new major version distinguishes the explicit host/scope installer and revised setup contract; it does not imply native qualification has passed. See the [latest official release](https://github.com/thebpandey/agent-team/releases/latest) and [changelog](CHANGELOG.md).
 
 Use an identified authorized revision and the complete package. Universal archives have an `agent-team/` prefix and include `SKILL.md`, `README.md`, `LICENSE`, `CHANGELOG.md`, `agents/`, `references/`, `assets/` and `hooks/`. External dependencies and model access are not bundled. Inactive `legacy/` and maintenance tests are excluded. Provenance lives in `.agent-team-source.json`; verify the exact revision and checksum.
 
@@ -249,8 +249,8 @@ Maintainer reference, from a qualified committed source revision:
 ```bash
 node hooks/agent-team-cli.mjs check-package
 node hooks/agent-team-cli.mjs build-artifacts --revision <full-commit-id> --output ../agent-team-artifacts
-node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --archive ../agent-team-artifacts/agent-team-6.5.0.zip
-sha256sum ../agent-team-artifacts/agent-team-6.5.0.zip
+node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --archive ../agent-team-artifacts/agent-team-7.0.0.zip
+sha256sum ../agent-team-artifacts/agent-team-7.0.0.zip
 ```
 
 On macOS, use `shasum -a 256` on the same exact archive. These are local build instructions, not a claim that a universal preview release asset is already published. Change the version consistently before releasing altered contents; never replace an existing released version with different files.
