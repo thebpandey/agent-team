@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { CATALOG_BY_ID, DEPENDENCY_CATALOG } from "./dependency-catalog.mjs";
 import { mutateSetup } from "./settings.mjs";
 import { beadsEnvironment } from "./tracker.mjs";
+import { createEventBudget } from "./budget.mjs";
 
 const exec = promisify(execFile);
 const HOSTS = new Set(["codex", "claude-code"]);
@@ -768,23 +769,66 @@ async function serenaFunctional(executable, paths) {
   }
 }
 
-async function playwrightFunctional(executable, paths, execute = command) {
+async function playwrightFunctional(executable, paths, budget) {
+  const eventBudget = budget ?? createEventBudget(120_000);
+  eventBudget.check();
+  const remaining = eventBudget.remaining();
+  const reserve = Math.min(1000, Math.max(250, Math.floor(remaining / 3)));
+  if (remaining < reserve + 100) {
+    if (!budget) eventBudget.close();
+    return { status: "failed", evidence: "Insufficient event time for a Playwright action and owned-session cleanup reserve; no session was opened." };
+  }
+  const actionClock = createEventBudget(remaining - reserve);
+  const actionBudget = {
+    ...actionClock,
+    signal: AbortSignal.any([eventBudget.signal, actionClock.signal]),
+    check() { eventBudget.check(); actionClock.check(); },
+  };
   const session = `agent-team-${randomUUID()}`;
   const url = "data:text/html,<button%20id='activate'%20onclick=\"document.body.dataset.ready='yes'\">Activate</button>";
   const options = { cwd: paths.projectRoot, env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: path.join(paths.toolRoot, "playwright-browsers"), NO_UPDATE_NOTIFIER: "1" } };
-  const opened = await execute(executable, [`-s=${session}`, "open", url], options);
-  if (opened.status !== "passed") return opened;
+  const execute = (args) => command(executable, [`-s=${session}`, ...args], { ...options, budget: actionBudget });
+  let outcome;
+  let actionError;
+  let cleanup;
   try {
-    const clicked = await execute(executable, [`-s=${session}`, "click", "#activate"], options);
-    if (clicked.status !== "passed") return clicked;
-    const checked = await execute(executable, [`-s=${session}`, "eval", "document.body.dataset.ready"], options);
-    return checked.status === "passed" && checked.stdout?.includes("yes")
-      ? { status: "passed", evidence: "Launched an isolated browser, clicked the fixture, and observed its state change." }
-      : { status: "failed", evidence: "Browser interaction did not produce the expected page state." };
+    // Even an interrupted open may have created a persistent session daemon.
+    outcome = await execute(["open", url]);
+    if (outcome.status === "passed") outcome = await execute(["click", "#activate"]);
+    if (outcome.status === "passed") {
+      const checked = await execute(["eval", "document.body.dataset.ready"]);
+      outcome = checked.status === "passed" && checked.stdout?.includes("yes")
+        ? { status: "passed", evidence: "Launched an isolated browser, clicked the fixture, and observed its state change." }
+        : { status: "failed", evidence: "Browser interaction did not produce the expected page state." };
+    }
+  } catch (error) {
+    actionError = error;
   } finally {
-    // Cleanup uses the same deadline: it cannot start or linger after expiry.
-    await execute(executable, [`-s=${session}`, "close"], options);
+    actionClock.close();
+    // Cancellation stops actions, but the reserved time remains available only
+    // for closing this exact owned session, never for global browser cleanup.
+    const cleanupClock = createEventBudget(Math.min(reserve, eventBudget.remaining()));
+    try {
+      const closed = await command(executable, [`-s=${session}`, "close"], { ...options, budget: cleanupClock });
+      cleanup = {
+        status: closed.status === "passed" ? "close_command_passed" : "unverified", session,
+        evidence: closed.status === "passed" ? "Exact-session close command succeeded." : evidence(closed),
+      };
+    } catch (error) {
+      cleanup = { status: "unverified", session, evidence: error.message };
+    } finally {
+      cleanupClock.close();
+      if (!budget) eventBudget.close();
+    }
   }
+  try { eventBudget.check(); } catch (error) { actionError ??= error; }
+  const cleanupMessage = `Owned Playwright session ${session} cleanup: ${cleanup.status}. ${cleanup.evidence ?? "Session termination was not verified."}`;
+  if (actionError) {
+    actionError.cleanup = cleanup;
+    actionError.message = `${actionError.message} ${cleanupMessage}`;
+    throw actionError;
+  }
+  return { ...outcome, status: cleanup.status === "unverified" ? "failed" : outcome.status, cleanup, evidence: `${evidence(outcome) ?? ""} ${cleanupMessage}`.trim() };
 }
 
 /** Execute pinned installers in candidate-managed paths. Callers may replace only external probes in tests. */
@@ -840,7 +884,7 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       if (check === "skill-discovery") return verifySkillFiles(dependency, paths);
       if (check === "symbol-operation") return serenaFunctional(executable, paths);
       if (check === "positive-negative-structural-pattern") return astGrepFunctional(executable, paths);
-      if (check === "browser-interaction") return playwrightFunctional(executable, paths, execute);
+      if (check === "browser-interaction") return playwrightFunctional(executable, paths, budget);
       if (check === "narrow-read-recovery") return leanCtxFunctional(executable, paths);
       if (check === "detector-exit-contract") return impeccableFunctional(executable, paths);
       if (check === "atomic-tracker-write") return beadsFunctional(executable, paths);

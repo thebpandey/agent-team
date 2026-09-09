@@ -329,11 +329,17 @@ for (const hangingAction of ['open', 'click', 'eval', 'close', 'failure-close'])
     const late = path.join(f.root, 'late-functional-success');
     const calls = path.join(f.root, 'functional-calls');
     await writeFile(f.dependency.executable, `#!/usr/bin/env node\n// Labelled fake browser command; no browser/native CLI is used.\nimport { appendFileSync, writeFileSync } from 'node:fs';\nconst action = process.argv.find(arg => ['open', 'click', 'eval', 'close'].includes(arg));\nappendFileSync(${JSON.stringify(calls)}, action + '\\n');\nif (${JSON.stringify(hangingAction)} === 'failure-close' && action === 'click') process.exit(9);\nif (action === ${JSON.stringify(hangingAction === 'failure-close' ? 'close' : hangingAction)}) setTimeout(() => writeFileSync(${JSON.stringify(late)}, 'late'), 700);\nelse if (action === 'eval') console.log('yes');\n`);
-    const budget = createEventBudget(250);
+    const budget = createEventBudget(600);
     const started = performance.now();
     try {
-      await assert.rejects(f.runner({ dependency: f.dependency, phase: 'functional', check: 'browser-interaction', budget }), { code: 'EVENT_DEADLINE' });
-      assert.ok(performance.now() - started < 600, 'functional child must stop at the caller deadline');
+      const operation = f.runner({ dependency: f.dependency, phase: 'functional', check: 'browser-interaction', budget });
+      if (hangingAction === 'close' || hangingAction === 'failure-close') {
+        const result = await operation;
+        assert.equal(result.status, 'failed');
+        assert.equal(result.cleanup.status, 'unverified');
+        assert.match(result.evidence, /cleanup: unverified/);
+      } else await assert.rejects(operation, { code: 'EVENT_DEADLINE' });
+      assert.ok(performance.now() - started < 750, 'functional child must stop within the caller deadline and scheduling tolerance');
       const completedCalls = await readFile(calls, 'utf8');
       await new Promise(resolve => setTimeout(resolve, 800));
       await assert.rejects(readFile(late), { code: 'ENOENT' });
@@ -341,3 +347,59 @@ for (const hangingAction of ['open', 'click', 'eval', 'close', 'failure-close'])
     } finally { budget.close(); }
   });
 }
+
+for (const interruptedAction of ['open', 'click', 'eval', 'cancel', 'cleanup-failure']) {
+  test(`persistent owned session cleanup is reported within the original budget after ${interruptedAction}`, async (t) => {
+    const f = await fixture(t);
+    const sessionFile = path.join(f.root, 'persistent-session');
+    const closeLog = path.join(f.root, 'closed-session');
+    const actionStarted = path.join(f.root, 'action-started');
+    await writeFile(f.dependency.executable, `#!/usr/bin/env node\n// Persistent-session model: client exit does not remove the session.\nimport { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';\nconst action = process.argv.find(arg => ['open','click','eval','close'].includes(arg));\nconst session = process.argv.find(arg => arg.startsWith('-s='));\nif (action === 'open') writeFileSync(${JSON.stringify(sessionFile)}, session);\nif (action === 'close') {\n  if (${JSON.stringify(interruptedAction)} === 'cleanup-failure') process.exit(9);\n  if (!existsSync(${JSON.stringify(sessionFile)}) || readFileSync(${JSON.stringify(sessionFile)}, 'utf8') !== session) process.exit(9);\n  unlinkSync(${JSON.stringify(sessionFile)}); writeFileSync(${JSON.stringify(closeLog)}, session);\n} else if (action === ${JSON.stringify(['cancel', 'cleanup-failure'].includes(interruptedAction) ? 'click' : interruptedAction)}) {\n  writeFileSync(${JSON.stringify(actionStarted)}, action); setTimeout(() => {}, 1200);\n} else if (action === 'eval') console.log('yes');\n`);
+    const setupPath = path.join(f.root, 'setup.json');
+    const originalSetup = JSON.stringify({ skill: 'agent-team', projectId: 'p', version: 1, tracker: { kind: 'markdown', path: 'TASKS.md' } });
+    await writeFile(setupPath, originalSetup);
+    const baseBudget = createEventBudget(800);
+    const controller = new AbortController();
+    const budget = interruptedAction === 'cancel' ? {
+      ...baseBudget,
+      signal: AbortSignal.any([baseBudget.signal, controller.signal]),
+      check() { baseBudget.check(); if (controller.signal.aborted) throw Object.assign(new Error('Explicit fixture cancellation'), { code: 'EVENT_DEADLINE' }); },
+    } : baseBudget;
+    let poll;
+    if (interruptedAction === 'cancel') poll = setInterval(() => { if (existsSync(actionStarted)) controller.abort(); }, 5);
+    const started = performance.now();
+    try {
+      const operation = interruptedAction === 'click' ? prepareDependencies({
+        setupPath, expectedVersion: 1, operationId: 'persistent-cleanup', writer: { id: 'owner', role: 'project_orchestrator' },
+        loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: [] }, budget,
+        runner: async request => request.dependency.id === 'playwright-cli' && request.phase === 'functional'
+          ? f.runner({ ...request, dependency: f.dependency }) : { status: 'passed', version: request.dependency.version },
+      }) : f.runner({ dependency: f.dependency, phase: 'functional', check: 'browser-interaction', budget });
+      await assert.rejects(operation, error => {
+        assert.equal(error.code, 'EVENT_DEADLINE');
+        assert.equal(error.cleanup?.status, interruptedAction === 'cleanup-failure' ? 'unverified' : 'close_command_passed');
+        assert.match(error.message, interruptedAction === 'cleanup-failure' ? /cleanup: unverified/ : /cleanup: close_command_passed/);
+        return true;
+      });
+      assert.ok(performance.now() - started < 800, 'owned cleanup must finish before the original deadline');
+      assert.ok(baseBudget.remaining() > 0);
+      assert.equal(await readFile(setupPath, 'utf8'), originalSetup);
+      if (interruptedAction === 'cleanup-failure') assert.match(await readFile(sessionFile, 'utf8'), /^-s=agent-team-/);
+      else {
+        await assert.rejects(readFile(sessionFile), { code: 'ENOENT' });
+        assert.match(await readFile(closeLog, 'utf8'), /^-s=agent-team-/);
+      }
+    } finally { clearInterval(poll); baseBudget.close(); }
+  });
+}
+
+test('insufficient cleanup reserve refuses to open any Playwright session', async (t) => {
+  const f = await fixture(t);
+  const budget = createEventBudget(100);
+  try {
+    const result = await f.runner({ dependency: f.dependency, phase: 'functional', check: 'browser-interaction', budget });
+    assert.equal(result.status, 'failed');
+    assert.match(result.evidence, /cleanup reserve/i);
+    await assert.rejects(readFile(f.log), { code: 'ENOENT' });
+  } finally { budget.close(); }
+});
