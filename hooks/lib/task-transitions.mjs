@@ -235,7 +235,8 @@ export async function transitionTask(project, request, options = {}) {
         if (!(["parked", "paused"].includes(runtime.compute))) return conflict("task_not_parked");
         if ((await bounded(() => inspectWriterIdentity(runtime.writer))).status !== "stopped") return conflict("previous_writer_not_stopped");
         if ((await bounded(() => inspectWriterIdentity(request.writer))).status !== "active") return conflict("new_writer_unverified");
-        const checkpointPath = runtime.checkpointPath ?? (runtime.compute === "paused" && request.explicitResume === true ? request.checkpointPath : undefined);
+        const checkpointPath = runtime.compute === "paused" && request.explicitResume === true
+          ? request.checkpointPath ?? runtime.checkpointPath : runtime.checkpointPath;
         if (typeof checkpointPath !== "string" || !checkpointPath) return conflict("checkpoint_required");
         const checkpoint = await checkpointForTask(checkpointPath);
         if (checkpoint.status === "conflict") return checkpoint;

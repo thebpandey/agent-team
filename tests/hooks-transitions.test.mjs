@@ -278,6 +278,44 @@ if (process.argv[2] === "writer") {
       expectedFingerprint: canonical.tracker.fingerprint, prerequisiteEvidence, writer: await module.captureWriterIdentity() } };
   }
 
+  for (const supplied of ["current", "wrong_session", "stale_evidence"]) {
+    test(`explicit paused resume validates the supplied ${supplied} checkpoint after session replacement`, async () => {
+      const { transitionTask } = await api();
+      const value = await parkedFixture();
+      assert.equal((await transitionTask(value.project, { ...value.resume, action: "pause", operationId: "pause-before-session-replacement" })).status, "applied");
+      const teams = await readFile(value.project.paths.teams, "utf8");
+      await writeFile(value.project.paths.teams, teams.replace("developer-session", "replacement-session"));
+      const checkpoint = await writeCheckpoint(value.project, { eventId: `replacement-${supplied}`,
+        sessionId: supplied === "wrong_session" ? "unregistered-session" : "replacement-session",
+        taskIds: ["AT-001"], worktree: value.feature, revision: value.revision,
+        evidenceRevision: supplied === "stale_evidence" ? "a".repeat(40) : value.revision,
+        nextAction: "Resume approved work in the replacement session." });
+      const canonical = await loadCanonicalState(value.project);
+      const before = await readFile(value.project.paths.state, "utf8");
+      const result = await transitionTask(value.project, { ...value.resume, explicitResume: true,
+        expectedVersion: canonical.state.stateVersion, expectedFingerprint: canonical.tracker.fingerprint, checkpointPath: checkpoint.path });
+      if (supplied === "current") {
+        assert.equal(result.status, "applied", JSON.stringify(result));
+        const runtime = (await loadCanonicalState(value.project)).state.taskRuntime["AT-001"];
+        assert.equal(runtime.checkpointPath, checkpoint.path);
+        assert.equal(runtime.compute, "active");
+        assert.equal(runtime.explicitPause, false);
+      } else {
+        assert.equal(result.reason, supplied === "wrong_session" ? "checkpoint_identity_mismatch" : "stale_resume_evidence");
+        assert.equal(await readFile(value.project.paths.state, "utf8"), before);
+      }
+    });
+  }
+
+  test("parked resume retains its stored checkpoint despite a supplied replacement", async () => {
+    const { transitionTask } = await api();
+    const value = await parkedFixture();
+    const checkpoint = await writeCheckpoint(value.project, { eventId: "unregistered-replacement", sessionId: "other-session",
+      taskIds: ["AT-001"], worktree: value.feature, revision: value.revision, evidenceRevision: value.revision, nextAction: "Wrong session." });
+    assert.equal((await transitionTask(value.project, { ...value.resume, explicitResume: true, checkpointPath: checkpoint.path })).status, "applied");
+    assert.equal((await loadCanonicalState(value.project)).state.taskRuntime["AT-001"].checkpointPath, value.checkpoint.path);
+  });
+
   for (const change of ["original_source", "dirty_git", "new_head", "evidence_revision"]) {
     test(`resume holds ${change} evidence changes before tracker or runtime mutation`, async () => {
       const { transitionTask } = await api();
