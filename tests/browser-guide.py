@@ -41,6 +41,9 @@ def run(guide: Path, output: Path):
                     summary.focus()
                     summary.press("Enter")
                     assert page.locator(f"#{section}").get_attribute("open") is not None
+                    assert page.locator("body").evaluate(
+                        "el => document.documentElement.scrollWidth <= window.innerWidth"
+                    ), f"Open {section} section overflows viewport"
                     summary.press("Enter")
                     assert page.locator(f"#{section}").get_attribute("open") is None
                 page.locator("#setup > summary").click()
@@ -50,6 +53,10 @@ def run(guide: Path, output: Path):
                 assert not errors, errors
                 assert not remote_requests, remote_requests
                 page.screenshot(path=str(output / f"guide-{width}x{height}.png"), full_page=True)
+                page.locator("#setup > summary").click()
+                page.locator("#dashboard > summary").click()
+                expect(page.locator("#dashboard .flow li")).to_have_count(3)
+                page.locator("#dashboard").screenshot(path=str(output / f"guide-dashboard-{width}x{height}.png"))
                 results.append({"viewport": [width, height], "status": "passed", "consoleErrors": errors,
                                 "remoteRequests": remote_requests})
                 context.close()

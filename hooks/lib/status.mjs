@@ -44,6 +44,7 @@ function normalizeTasks(rows) {
       status,
       priority: value(row, "priority") || "unknown",
       owner: value(row, "owner", "team", "team id") || "unassigned",
+      canonicalOwner: typeof row.owner === 'string' ? row.owner : null,
       dependencies: dependencies(row),
       parentId: parentId || null,
       nextAction: value(row, "next action", "next_action") || null,
@@ -132,6 +133,7 @@ function cleanupFor(state, taskId) {
 export function createStatusModel(project, canonical = {}, options = {}) {
   const freshness = freshnessFor(canonical.tracker);
   const state = canonical.state && typeof canonical.state === "object" ? canonical.state : {};
+  const version = (candidate) => Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : null;
   const tasks = normalizeTasks(canonical.tasks).map((task) => ({ ...task, runtime: runtimeFor(state, task.id), cleanup: cleanupFor(state, task.id) }));
   const teams = (canonical.registry?.teams || []).map((team) => ({
     id: value(team, "team id", "id") || "unknown",
@@ -159,6 +161,10 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     project: { id: canonical.registry?.projectId || project?.projectId || "unknown", root: project?.root || null },
     mode: options.mode === "live" ? "live" : "snapshot",
     freshness,
+    versions: {
+      operational: freshness.status === 'current' ? version(state.stateVersion ?? 0) : null,
+      setup: project?.setup && freshness.status === 'current' ? version(project.setup.version ?? 0) : null,
+    },
     progress: progressFor(tasks, freshness),
     activity,
     teams,

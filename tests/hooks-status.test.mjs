@@ -5,6 +5,17 @@ import { createStatusModel, readStatus } from "../hooks/lib/status.mjs";
 
 const project = { projectId: "project-1", root: "/project", active: true };
 
+test('status exposes observed mutation versions and exact empty ownership without turning unknown into zero', () => {
+  const source = canonical();
+  source.state.stateVersion = 4;
+  const model = createStatusModel({ ...project, setup: { version: 7 } }, source);
+  assert.deepEqual(model.versions, { operational: 4, setup: 7 });
+  const unassigned = model.tasks.find(({ id }) => id === 'READY');
+  assert.equal(unassigned.owner, 'unassigned');
+  assert.equal(unassigned.canonicalOwner, '');
+  assert.deepEqual(createStatusModel(project, canonical({ tracker: { status: 'unavailable' } })).versions, { operational: null, setup: null });
+});
+
 test('readStatus forwards one abortable deadline through project and canonical reads', async () => {
   const controller = new AbortController();
   let seen;
