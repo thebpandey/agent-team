@@ -52,6 +52,12 @@ export function renderDashboard(model) {
   const percentage = Number.isFinite(progress.percentage) && progress.percentage >= 0 && progress.percentage <= 100 ? `${progress.percentage}%` : "N/A";
   const live = model.mode === "live";
   const graph = model.graph?.status === "available" && model.graph?.adjacency ? model.graph : null;
+  const graphRepository = graph?.attribution?.repository;
+  const graphLicense = graph?.attribution?.license;
+  const graphProvider = graph?.attribution?.provider;
+  const graphAttribution = graphRepository && graphLicense && graphProvider
+    ? ` External graph attribution: <a href="${escapeHtml(graphRepository)}">beads_viewer by ${escapeHtml(graphProvider)}</a> · <a href="${escapeHtml(graphLicense)}">license terms</a>.`
+    : "";
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent-Team status</title><style>${snapshotCss}</style></head>
 <body><a class="skip-link" href="#tasks">Skip to tasks</a><main id="dashboard" tabindex="-1">
@@ -59,7 +65,7 @@ export function renderDashboard(model) {
 <section aria-labelledby="overview-title"><h2 id="overview-title">Overview</h2><div class="summary"><article><span>Completion</span><strong>${percentage}</strong><small>${escapeHtml(progress.completed ?? "?")} complete · ${escapeHtml(progress.remaining ?? "?")} remaining</small></article><article><span>Recorded work</span><strong>${escapeHtml(model.activity?.active ?? "?")}</strong><small>${escapeHtml(model.activity?.parked ?? "?")} parked · ${escapeHtml(model.activity?.paused ?? "?")} paused · ${escapeHtml(model.activity?.ready ?? "?")} ready</small></article><article><span>Capacity</span><strong>${escapeHtml(model.activity?.capacity ?? "Unknown")}</strong><small>Supplied scheduler capacity; not inferred here.</small></article></div><p>Progress confidence: ${escapeHtml(progress.status || "unknown")}. Task-count completion only; not estimated effort. Excluded: ${escapeHtml(progress.excluded?.cancelled ?? "?")} cancelled, ${escapeHtml(progress.excluded?.deferred ?? "?")} approved-deferred.</p><p>Current run: ${escapeHtml(model.run?.current || "unknown")} (${escapeHtml(model.run?.scope?.status || "unknown")} scope). Admissions are ${model.run?.paused === true ? "paused" : model.run?.paused === false ? "not paused" : "unknown"}. Integration: ${escapeHtml(model.state?.integration?.status || "unknown")}. Release: ${escapeHtml(model.state?.release?.status || "unknown")}. Recorded compute state is not live process liveness.</p><p>Blockers: ${escapeHtml(model.run?.blockerStatus === "unknown" ? "unknown" : model.run?.blockers?.join(", ") || "none recorded")}.</p></section>
 <section id="tasks" aria-labelledby="tasks-title"><div class="section-heading"><div><h2 id="tasks-title">All tasks</h2><p>${escapeHtml(model.tasks?.length ?? 0)} rows; counts exclude cancelled and approved-deferred work.</p></div><button type="button" id="refresh" aria-describedby="refresh-help">${live ? "Refresh local status" : "Reload saved snapshot"}</button></div><p id="refresh-help" class="helper">${live ? "Refresh reads current local records through the enabled loopback helper." : "A file snapshot reloads its saved data; it cannot query project records."}</p><div class="controls"><label for="task-search">Search tasks</label><input id="task-search" type="search" autocomplete="off" placeholder="ID, owner, status…"><label for="task-status">Status</label><select id="task-status"><option value="">All statuses</option></select></div><div class="table-wrap" tabindex="0"><table><thead><tr><th>ID</th><th>Task</th><th>Status</th><th>Recorded state</th><th>Priority</th><th>Owner</th><th>Dependencies</th><th>Next action</th><th>Evidence</th></tr></thead><tbody id="task-rows">${taskRows(model.tasks || [])}</tbody></table></div><p id="results" aria-live="polite"></p></section>
 <details><summary>Teams and roles</summary><ul>${(model.teams || []).map((team) => `<li><strong>${escapeHtml(team.name)}</strong> · ${escapeHtml(team.role)} · ${escapeHtml(team.model)} / ${escapeHtml(team.effort)} · ${escapeHtml(team.status)} · assignments: ${escapeHtml(team.assignments || "unknown")} · updated: ${escapeHtml(team.updatedAt || "unknown")}</li>`).join("") || "<li>Team metadata is unknown.</li>"}</ul></details>
-<details ${graph ? "open" : ""}><summary>Dependency representation</summary>${graph ? `<p>Optional graph from a canonical Beads export (${escapeHtml(graph.format)}); it does not control tasks. External provider: <a href="https://github.com/Dicklesworthstone/beads_viewer">beads_viewer by Jeffrey Emanuel</a>, under its <a href="https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE">complete license, including the OpenAI/Anthropic rider</a>. Referenced separately, not vendored or relicensed.</p>${graphSvg(graph.adjacency)}<pre aria-label="Dependency graph text" style="max-width:100%;overflow-x:auto;overflow-wrap:anywhere;white-space:pre-wrap">${escapeHtml(graphText(graph.adjacency))}</pre>` : "<p>Each task row lists prerequisite task IDs in the Dependencies column. A graph is unavailable unless separately generated from a current Beads export.</p>"}</details>
+<details ${graph ? "open" : ""}><summary>Dependency representation</summary>${graph ? `<p>Optional graph from a canonical Beads export (${escapeHtml(graph.format)}); it does not control tasks.${graphAttribution}</p>${graphSvg(graph.adjacency)}<pre aria-label="Dependency graph text" style="max-width:100%;overflow-x:auto;overflow-wrap:anywhere;white-space:pre-wrap">${escapeHtml(graphText(graph.adjacency))}</pre>` : "<p>Each task row lists prerequisite task IDs in the Dependencies column. A graph is unavailable unless separately generated from a current Beads export.</p>"}</details>
 <script id="dashboard-data" type="application/json">${jsonForScript(model)}</script><script>${snapshotScript}</script></main></body></html>`;
 }
 
@@ -191,7 +197,7 @@ async function boundedCommand(command, args, { cwd, timeoutMs, maxOutputBytes, e
     const { stdout, stderr } = await runFile(command, args, { cwd, env, signal, encoding: "utf8", timeout: timeoutMs, maxBuffer: maxOutputBytes });
     return { status: "completed", output: stdout.slice(0, maxOutputBytes), diagnostics: stderr.slice(0, maxOutputBytes) };
   } catch (error) {
-    return { status: error.killed ? "timeout" : error.code === "ENOENT" ? "unavailable" : "failed", output: `${error.stdout || ""}${error.stderr || error.message || ""}`.slice(0, maxOutputBytes) };
+    return { status: error.killed || error.code === "ABORT_ERR" || signal?.aborted ? "timeout" : error.code === "ENOENT" ? "unavailable" : "failed", output: `${error.stdout || ""}${error.stderr || error.message || ""}`.slice(0, maxOutputBytes) };
   }
 }
 
@@ -199,7 +205,7 @@ async function boundedCommand(command, args, { cwd, timeoutMs, maxOutputBytes, e
  * Optional documented bd → bv graph boundary. Selection and terms acknowledgement
  * are caller-controlled; this does not install, vendor, or invoke interactive bv.
  */
-export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDirectory = path.join(projectRoot || ".", ".agent-team", "dashboard", "beads"), selected = false, termsAcknowledged = false, runCommand = boundedCommand, ensureDirectory = mkdir, bdPath = "bd", bvPath = "bv", timeoutMs = 5000, maxOutputBytes = 256 * 1024 }) {
+export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDirectory = path.join(projectRoot || ".", ".agent-team", "dashboard", "beads"), selected = false, termsAcknowledged = false, runCommand = boundedCommand, ensureDirectory = mkdir, bdPath = "bd", bvPath = "bv", timeoutMs = 5000, maxOutputBytes = 256 * 1024, budget, signal, reserveMs = 0 }) {
   if (!projectRoot || typeof runCommand !== "function") throw new Error("Beads command adapter requires projectRoot and runCommand.");
   const attribution = Object.freeze({
     repository: "https://github.com/Dicklesworthstone/beads_viewer",
@@ -209,17 +215,31 @@ export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDi
   const trackerExecutable = tracker?.executable || bdPath;
   const trackerId = tracker?.id || null;
   const environment = beadsEnvironment({ root: projectRoot, tracker: { ...tracker, path: tracker?.path ?? path.join(projectRoot, '.beads') } });
-  const options = { cwd: projectRoot, timeoutMs: Math.min(Math.max(1, timeoutMs), 5000), maxOutputBytes: Math.min(Math.max(1024, maxOutputBytes), 256 * 1024), env: environment };
-  const graphOptions = { ...options, cwd: stagingDirectory, env: beadsEnvironment({ root: stagingDirectory, tracker: { path: path.join(stagingDirectory, '.beads') } }, environment) };
+  const commandLimit = Math.min(Math.max(1, timeoutMs), 5000);
+  const outputLimit = Math.min(Math.max(1024, maxOutputBytes), 256 * 1024);
+  const reserve = Math.max(0, Number.isFinite(reserveMs) ? reserveMs : 0);
+  const sharedSignal = budget?.signal && signal ? AbortSignal.any([budget.signal, signal]) : budget?.signal ?? signal;
+  function options(cwd, env) {
+    if (sharedSignal?.aborted) return null;
+    try { budget?.check(); } catch { return null; }
+    const remaining = budget ? budget.remaining() - reserve : commandLimit;
+    if (remaining <= 0) return null;
+    return { cwd, timeoutMs: Math.max(1, Math.min(commandLimit, remaining)), maxOutputBytes: outputLimit, env, ...(sharedSignal ? { signal: sharedSignal } : {}) };
+  }
+  async function command(executable, args, cwd = projectRoot, env = environment) {
+    const commandOptions = options(cwd, env);
+    return commandOptions ? runCommand(executable, args, commandOptions) : { status: "timeout", output: "Dashboard graph budget exhausted." };
+  }
+  const graphEnvironment = beadsEnvironment({ root: stagingDirectory, tracker: { path: path.join(stagingDirectory, '.beads') } }, environment);
   const exportFile = path.join(stagingDirectory, ".beads", "issues.jsonl");
   async function capability() {
     if (!selected || !termsAcknowledged) return { status: "not_selected", reason: !selected ? "Optional Beads graph is not selected." : "Operator terms acknowledgement is required.", attribution };
     if (tracker?.kind !== "beads" || typeof tracker.id !== 'string' || !tracker.id || typeof trackerExecutable !== 'string' || !trackerExecutable) return { status: "unavailable", reason: "A selected canonical Beads tracker and executable are required.", attribution };
-    const trackerVersion = await runCommand(trackerExecutable, ["--version"], options);
+    const trackerVersion = await command(trackerExecutable, ["--version"]);
     if (trackerVersion.status !== "completed") return { status: "unavailable", reason: `Selected tracker version check: ${trackerVersion.status}`, attribution };
-    const version = await runCommand(bvPath, ["--version"], options);
+    const version = await command(bvPath, ["--version"]);
     if (version.status !== "completed") return { status: "unavailable", reason: `bv version check: ${version.status}`, attribution };
-    const robot = await runCommand(bvPath, ["--robot-help"], options);
+    const robot = await command(bvPath, ["--robot-help"]);
     if (robot.status !== "completed" || !/robot-graph/i.test(robot.output) || !/graph-format/i.test(robot.output) || !/no-hooks/i.test(robot.output)) return { status: "unavailable", reason: "bv robot graph capability is unavailable.", attribution };
     return { status: "available", version: version.output.trim(), trackerVersion: trackerVersion.output.trim(), attribution };
   }
@@ -230,13 +250,15 @@ export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDi
       const available = await capability();
       if (available.status !== "available") return { ...available, graph: null };
       try {
+        budget?.check();
+        if (signal?.aborted) return { status: "unavailable", reason: "Graph request cancelled.", graph: null, attribution };
         await ensureDirectory(path.dirname(exportFile), { recursive: true, mode: 0o700 });
       } catch (error) {
         return { status: "unavailable", reason: `Graph staging directory: ${String(error.message || error)}`, graph: null, attribution };
       }
-      const exported = await runCommand(trackerExecutable, ["export", "-o", exportFile], options);
+      const exported = await command(trackerExecutable, ["export", "-o", exportFile]);
       if (exported.status !== "completed") return { status: "unavailable", reason: `Canonical bd export: ${exported.status}`, graph: null, attribution };
-      const rendered = await runCommand(bvPath, ["--robot-graph", "--graph-format=json", "--no-hooks"], graphOptions);
+      const rendered = await command(bvPath, ["--robot-graph", "--graph-format=json", "--no-hooks"], stagingDirectory, graphEnvironment);
       if (rendered.status !== "completed") return { status: "unavailable", reason: `bv graph: ${rendered.status}`, graph: null, attribution };
       try {
         const payload = JSON.parse(rendered.output);
@@ -252,7 +274,7 @@ export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDi
           if (!edge || typeof edge.from !== "string" || typeof edge.to !== "string" || !ids.has(edge.from) || !ids.has(edge.to)) throw new Error("Invalid graph edge.");
           return { from: edge.from, to: edge.to, type: typeof edge.type === "string" ? edge.type.slice(0, 128) : "depends on" };
         });
-        if (nodes.length > 256 || edges.length > 1024 || Buffer.byteLength(JSON.stringify({ nodes, edges })) > options.maxOutputBytes) throw new Error("Oversized graph output.");
+        if (nodes.length > 256 || edges.length > 1024 || Buffer.byteLength(JSON.stringify({ nodes, edges })) > outputLimit) throw new Error("Oversized graph output.");
         return { status: "available", graph: { status: "available", format: "json", adjacency: { nodes, edges }, source: { trackerId, exportFile, dataHash: typeof payload.data_hash === "string" ? payload.data_hash : null } }, attribution };
       } catch (error) {
         return { status: "unavailable", reason: String(error.message || error), graph: null, attribution };

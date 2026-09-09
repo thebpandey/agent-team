@@ -14,6 +14,8 @@ import { policyFixture } from "./hook-test-helpers.mjs";
 const run = promisify(execFile);
 const cli = path.resolve(import.meta.dirname, "../hooks/agent-team-cli.mjs");
 const boundedBeads = path.resolve(import.meta.dirname, "fixtures/bounded-beads-cli.mjs");
+const dashboardBd = path.resolve(import.meta.dirname, "fixtures/bounded-dashboard-bd.mjs");
+const dashboardBv = path.resolve(import.meta.dirname, "fixtures/bounded-dashboard-bv.mjs");
 const temporary = [];
 
 test.afterEach(async () => Promise.all(temporary.splice(0).map((target) => rm(target, { force: true, recursive: true }))));
@@ -36,6 +38,20 @@ async function requestFile(value, name, envelope) {
 async function invoke(command, ...args) {
   const { stdout } = await run(process.execPath, [cli, command, ...args], { encoding: "utf8", timeout: 5000 });
   return JSON.parse(stdout);
+}
+
+async function invokeWithEnvironment(environment, command, ...args) {
+  const { stdout } = await run(process.execPath, [cli, command, ...args], { encoding: "utf8", timeout: 5000, env: { ...process.env, ...environment } });
+  return JSON.parse(stdout);
+}
+
+async function configureDashboardGraph(value, graph) {
+  const setupPath = path.join(value.root, ".agent-team", "setup.json");
+  const setup = JSON.parse(await readFile(setupPath, "utf8"));
+  setup.tracker = { kind: "beads", executable: dashboardBd };
+  setup.dashboard = { ...(setup.dashboard || {}), graph };
+  await writeFile(setupPath, JSON.stringify(setup));
+  return setupPath;
 }
 
 async function invokeFailure(command, ...args) {
@@ -210,6 +226,113 @@ test("dashboard snapshot uses the fixed path and configured refresh remains opt-
   await writeFile(setupPath, JSON.stringify(setup));
   const configured = await module.refreshConfiguredDashboard(await resolveProject(unconfigured.feature));
   assert.equal(configured.status, "published");
+});
+
+test("actual dashboard snapshot CLI derives the explicitly configured Beads graph with attribution", async () => {
+  const value = await fixture();
+  const log = path.join(value.root, "bounded-bv.log");
+  await configureDashboardGraph(value, { enabled: true, termsAcknowledged: true, executable: dashboardBv });
+
+  const result = await invokeWithEnvironment({ AGENT_TEAM_BOUNDED_GRAPH_LOG: log }, "dashboard-snapshot", "--project", value.feature);
+  const html = await readFile(result.destination, "utf8");
+
+  assert.equal(result.status, "published");
+  assert.match(html, /AT-GRAPH-A/);
+  assert.match(html, /AT-GRAPH-A --blocks--&gt; AT-GRAPH-B/);
+  assert.match(html, /beads_viewer by Jeffrey Emanuel/);
+  assert.match(html, /"attribution":\{"repository":/);
+  assert.match(await readFile(log, "utf8"), /--robot-graph/);
+});
+
+test("dashboard CLI never invokes bv when graph selection or terms acknowledgement is absent", async () => {
+  for (const graph of [
+    { enabled: false, termsAcknowledged: true, executable: dashboardBv },
+    { enabled: true, termsAcknowledged: false, executable: dashboardBv },
+    { enabled: true, termsAcknowledged: true, executable: "relative-bv" },
+  ]) {
+    const value = await fixture();
+    const log = path.join(value.root, "bounded-bv.log");
+    await configureDashboardGraph(value, graph);
+    const result = await invokeWithEnvironment({ AGENT_TEAM_BOUNDED_GRAPH_LOG: log }, "dashboard-snapshot", "--project", value.feature);
+    const html = await readFile(result.destination, "utf8");
+    assert.match(html, /AT-GRAPH-A/);
+    assert.doesNotMatch(html, /<svg /);
+    await assert.rejects(access(log), { code: "ENOENT" });
+  }
+});
+
+test("dashboard CLI preserves the complete task view when optional graph rendering fails", async () => {
+  const value = await fixture();
+  await configureDashboardGraph(value, { enabled: true, termsAcknowledged: true, executable: dashboardBv });
+
+  const result = await invokeWithEnvironment({ AGENT_TEAM_BOUNDED_GRAPH_MODE: "failed" }, "dashboard-snapshot", "--project", value.feature);
+  const html = await readFile(result.destination, "utf8");
+
+  assert.equal(result.status, "published");
+  assert.match(html, /Graph source task/);
+  assert.match(html, /Graph dependent task/);
+  assert.doesNotMatch(html, /<svg /);
+  assert.match(html, /"graph":\{"status":"unavailable"/);
+});
+
+test("dashboard snapshot publishes the base task view before an optional graph deadline", async () => {
+  const value = await fixture();
+  const log = path.join(value.root, "bounded-bv.log");
+  await configureDashboardGraph(value, { enabled: true, termsAcknowledged: true, executable: dashboardBv });
+
+  const result = await invokeWithEnvironment({ AGENT_TEAM_BOUNDED_GRAPH_MODE: "slow", AGENT_TEAM_BOUNDED_GRAPH_LOG: log }, "dashboard-snapshot", "--project", value.feature);
+  const html = await readFile(result.destination, "utf8");
+
+  assert.equal(result.status, "published");
+  assert.match(html, /Graph source task/);
+  assert.match(html, /Graph dependent task/);
+  assert.doesNotMatch(html, /<svg /);
+  assert.match(await readFile(log, "utf8"), /--robot-help/);
+  await new Promise((resolve) => setTimeout(resolve, 220));
+  assert.doesNotMatch(await readFile(log, "utf8"), /--robot-help:completed/);
+});
+
+test("live dashboard re-resolves graph configuration for each open or refresh", async () => {
+  const value = await fixture();
+  const setupPath = await configureDashboardGraph(value, { enabled: false, termsAcknowledged: false, executable: dashboardBv });
+  const log = path.join(value.root, "bounded-bv.log");
+  const child = spawn(process.execPath, [cli, "dashboard-start", "--project", value.feature, "--port", "0"], {
+    stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENT_TEAM_BOUNDED_GRAPH_LOG: log },
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const listening = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`dashboard did not start: ${stderr}`)), 3000);
+    child.stdout.on("data", () => {
+      const line = stdout.split("\n").find(Boolean);
+      if (line) { clearTimeout(timeout); resolve(JSON.parse(line)); }
+    });
+  });
+  const get = () => new Promise((resolve, reject) => {
+    http.get(listening.url, (response) => {
+      let source = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { source += chunk; });
+      response.on("end", () => resolve(source));
+    }).on("error", reject);
+  });
+  try {
+    const setup = JSON.parse(await readFile(setupPath, "utf8"));
+    setup.dashboard.graph = { enabled: true, termsAcknowledged: true, executable: dashboardBv };
+    await writeFile(setupPath, JSON.stringify(setup));
+    assert.match(await get(), /AT-GRAPH-A --blocks--&gt; AT-GRAPH-B/);
+    const before = await readFile(log, "utf8");
+    setup.dashboard.graph.termsAcknowledged = false;
+    await writeFile(setupPath, JSON.stringify(setup));
+    const refreshed = await get();
+    assert.doesNotMatch(refreshed, /<svg /);
+    assert.equal(await readFile(log, "utf8"), before);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((resolve) => child.once("exit", resolve));
+  }
 });
 
 test('a successful CLI transition refreshes an opted-in snapshot without a separate regeneration command', async () => {

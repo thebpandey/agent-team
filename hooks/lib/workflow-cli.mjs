@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { loadCanonicalState } from "./canonical-state.mjs";
 import { writeCheckpoint } from "./checkpoint.mjs";
 import { cleanupDevelopmentWorktree } from "./cleanup.mjs";
-import { createLoopbackDashboard, createSnapshotPublisher } from "./dashboard.mjs";
+import { createBeadsGraphCommandAdapter, createLoopbackDashboard, createSnapshotPublisher } from "./dashboard.mjs";
 import { resolveProject } from "./project.mjs";
 import { inspectRecovery } from "./recovery.mjs";
 import { readStatus } from "./status.mjs";
@@ -149,12 +149,72 @@ function snapshotDestination(project) {
   return path.join(project.root, ".agent-team", "dashboard", "index.html");
 }
 
-async function publishDashboard(project, { budget } = {}) {
-  return createSnapshotPublisher({
-    destination: snapshotDestination(project),
-    budget,
-    derive: () => readStatus(project, { budget }),
-  }).refresh();
+function signalBudget(base, externalSignal) {
+  if (!externalSignal) return base;
+  const signal = AbortSignal.any([base.signal, externalSignal]);
+  return {
+    ...base,
+    signal,
+    check() { signal.throwIfAborted(); base.check(); },
+    timeout(cap) { this.check(); return base.timeout(cap); },
+    async run(action) {
+      this.check();
+      let abort;
+      try {
+        return await Promise.race([base.run(action), new Promise((_, reject) => {
+          abort = () => reject(signal.reason ?? new Error("Dashboard request cancelled."));
+          signal.addEventListener("abort", abort, { once: true });
+        })]);
+      } finally { signal.removeEventListener("abort", abort); }
+    },
+  };
+}
+
+/** Derive base status first, then add an explicitly selected, display-only graph within the same deadline. */
+export async function deriveDashboard(project, options = {}) {
+  const baseBudget = options.budget ?? createEventBudget(options.deadlineMs ?? 1500);
+  const budget = signalBudget(baseBudget, options.signal);
+  try {
+    const location = typeof project === "string" ? project : project?.cwd ?? project?.root;
+    const fresh = await budget.run(() => resolveProject(location, { budget }));
+    if (!fresh.active) throw new Error(`Active Agent-Team project required: ${fresh.reason}.`);
+    const model = await readStatus(fresh, { budget });
+    const configured = fresh.setup?.dashboard?.graph;
+    if (configured?.enabled !== true || configured?.termsAcknowledged !== true) return model;
+    if (configured.executable !== undefined && (typeof configured.executable !== "string" || !path.isAbsolute(configured.executable) || configured.executable.includes("\0"))) {
+      return { ...model, graph: { status: "unavailable", reason: "Configured graph executable must be an absolute path." } };
+    }
+    const adapter = createBeadsGraphCommandAdapter({
+      projectRoot: fresh.root,
+      tracker: fresh.tracker,
+      selected: true,
+      termsAcknowledged: true,
+      bdPath: fresh.tracker?.executable ?? "bd",
+      bvPath: configured.executable ?? "bv",
+      budget,
+      signal: budget.signal,
+      reserveMs: options.reserveMs ?? 100,
+    });
+    const result = await adapter.refresh();
+    return result.status === "available"
+      ? { ...model, graph: { ...result.graph, attribution: result.attribution } }
+      : { ...model, graph: { status: "unavailable", reason: result.reason, attribution: result.attribution } };
+  } finally {
+    if (!options.budget) baseBudget.close();
+  }
+}
+
+async function publishDashboard(project, { budget: callerBudget } = {}) {
+  const budget = callerBudget ?? createEventBudget(1500);
+  try {
+    return await createSnapshotPublisher({
+      destination: snapshotDestination(project),
+      budget,
+      derive: () => deriveDashboard(project, { budget }),
+    }).refresh();
+  } finally {
+    if (!callerBudget) budget.close();
+  }
 }
 
 /** Refresh only when the shared setup explicitly opts into automatic snapshots. */
@@ -171,7 +231,7 @@ async function runDashboard(project, options, context) {
   const dashboard = createLoopbackDashboard({
     assetsDirectory,
     port,
-    readModel: ({ signal, deadlineMs }) => readStatus(project, { signal, deadlineMs }),
+    readModel: ({ signal, deadlineMs }) => deriveDashboard(project, { signal, deadlineMs }),
   });
   let stop;
   const stopped = new Promise((resolve) => {
