@@ -5,6 +5,21 @@ import { createStatusModel, readStatus } from "../hooks/lib/status.mjs";
 
 const project = { projectId: "project-1", root: "/project", active: true };
 
+test('readStatus forwards one abortable deadline through project and canonical reads', async () => {
+  const controller = new AbortController();
+  let seen;
+  const result = await readStatus('/project', {
+    signal: controller.signal, deadlineMs: 20,
+    resolveProject: async (_cwd, { budget } = {}) => { assert.ok(budget, 'project lookup needs the shared budget'); seen = budget; return project; },
+    loadCanonicalState: async (_project, { budget } = {}) => {
+      assert.equal(budget, seen);
+      return new Promise((_resolve, reject) => budget.signal.addEventListener('abort', () => reject(new Error('read cancelled')), { once: true }));
+    },
+  });
+  assert.equal(result.freshness.status, 'unavailable');
+  assert.equal(seen.signal.aborted, true);
+});
+
 function canonical(overrides = {}) {
   return {
     tracker: { kind: "tasks", id: "TASKS.md", path: "TASKS.md", status: "current", fingerprint: "abc", observedAt: "2026-09-08T12:00:00.000Z" },

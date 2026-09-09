@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { promisify } from "node:util";
+import { readFileSync } from 'node:fs';
 
 const runFile = promisify(execFile);
 
@@ -20,36 +21,38 @@ function taskRows(tasks) {
 }
 
 function graphSvg(dot) {
-  const edges = [...String(dot).matchAll(/["']?([A-Za-z0-9_.:-]+)["']?\s*->\s*["']?([A-Za-z0-9_.:-]+)["']?/g)].slice(0, 48).map((match) => [match[1], match[2]]);
-  const nodes = [...new Set(edges.flat())].slice(0, 32);
+  const allEdges = [...String(dot).matchAll(/["']?([A-Za-z0-9_.:-]+)["']?\s*->\s*["']?([A-Za-z0-9_.:-]+)["']?/g)].map((match) => [match[1], match[2]]);
+  const allNodes = [...new Set(allEdges.flat())];
+  const nodes = allNodes.slice(0, 32);
+  const edges = allEdges.filter(([from, to]) => nodes.includes(from) && nodes.includes(to)).slice(0, 48);
   if (!nodes.length) return "<p>Graph data has no safe, renderable edges; the textual graph remains available below.</p>";
-  const width = 760;
+  const width = 800;
   const height = Math.max(180, Math.ceil(nodes.length / 4) * 120);
-  const point = (node) => { const index = nodes.indexOf(node); return { x: 110 + (index % 4) * 210, y: 70 + Math.floor(index / 4) * 110 }; };
-  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Interactive dependency graph. Use the task table for keyboard filtering and full dependency text."><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#75ff57"/></marker></defs>${edges.map(([from, to]) => { const a = point(from); const b = point(to); return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#5da892" stroke-width="2" marker-end="url(#arrow)"/>`; }).join("")}${nodes.map((node) => { const p = point(node); return `<g tabindex="0"><circle cx="${p.x}" cy="${p.y}" r="35" fill="#07513b" stroke="#75ff57"/><text x="${p.x}" y="${p.y + 5}" text-anchor="middle" fill="#fff">${escapeHtml(node)}</text><title>${escapeHtml(node)}</title></g>`; }).join("")}</svg>`;
+  const point = (node) => { const index = nodes.indexOf(node); return { x: 85 + (index % 4) * 205, y: 70 + Math.floor(index / 4) * 110 }; };
+  const excerpt = allNodes.length > nodes.length || allEdges.length > edges.length;
+  return `<p>${excerpt ? `Visual excerpt: ${nodes.length} of ${allNodes.length} nodes, ${edges.length} of ${allEdges.length} edges. ` : ''}Select a node with click, Enter or Space to filter tasks. Full dependency text is available below.</p><svg style="display:block;width:100%;height:auto" viewBox="0 0 ${width} ${height}" role="group" aria-label="Dependency graph"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#75ff57"/></marker></defs>${edges.map(([from, to]) => { const a = point(from); const b = point(to); return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#5da892" stroke-width="2" marker-end="url(#arrow)"/>`; }).join("")}${nodes.map((node) => { const p = point(node); return `<g tabindex="0" role="button" aria-label="Filter task ${escapeHtml(node)}" data-graph-task="${escapeHtml(node)}"><circle cx="${p.x}" cy="${p.y}" r="35" fill="#07513b" stroke="#75ff57"/><text x="${p.x}" y="${p.y + 5}" text-anchor="middle" fill="#fff">${escapeHtml(node)}</text><title>${escapeHtml(node)}</title></g>`; }).join("")}</svg>`;
 }
 
 // Keep the distributed assets/dashboard files in sync with these snapshot-safe copies.
-const snapshotCss = `:root { color-scheme: dark; --surface: #063b2d; --surface-raised: #07513b; --ink: #fff; --muted: #c9ded6; --accent: #75ff57; --line: #5da892; --focus: #fff36b; font-family: ui-sans-serif, system-ui, sans-serif; }
-* { box-sizing: border-box; } body { margin: 0; min-width: 0; background: #021f18; color: var(--ink); font-size: 16px; line-height: 1.5; } main { width: min(1120px, calc(100% - 2rem)); margin: auto; padding: 2rem 0 3rem; } .hero, section, details { background: var(--surface); border: 1px solid var(--line); border-radius: 1rem; padding: 1.25rem; margin-block: 1rem; } .eyebrow { color: var(--accent); font-size: .8rem; font-weight: 800; letter-spacing: .12em; margin: 0; } h1, h2 { line-height: 1.15; } h1 { font-size: clamp(2rem, 7vw, 3.6rem); margin: .25rem 0; } h2 { margin-top: 0; } .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; } .summary article { background: var(--surface-raised); border-radius: .75rem; padding: 1rem; } .summary span, small { display: block; color: var(--muted); } .summary strong { color: var(--accent); display: block; font-size: 2rem; } .section-heading { display: flex; justify-content: space-between; align-items: start; gap: 1rem; } .controls { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-block: 1rem; } .controls label { font-weight: 700; } .controls input, .controls select, button { min-height: 44px; border: 1px solid var(--line); border-radius: .4rem; padding: .55rem .7rem; font: inherit; } .controls input, .controls select { background: #fff; color: #10221b; } button { background: var(--accent); color: #062519; font-weight: 800; } button:disabled { opacity: .75; } .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: .5rem; } table { min-width: 700px; width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: .75rem; vertical-align: top; border-bottom: 1px solid color-mix(in srgb, var(--line), transparent 50%); } th { color: var(--accent); } details summary { cursor: pointer; font-weight: 800; } .helper, #results { color: var(--muted); } .skip-link { position: fixed; left: .5rem; top: .5rem; transform: translateY(-200%); background: var(--focus); color: #000; padding: .5rem; z-index: 1; } .skip-link:focus { transform: translateY(0); } :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; } @media (max-width: 600px) { main { width: min(100% - 1rem, 1120px); padding-top: 1rem; } .summary { grid-template-columns: 1fr; } .section-heading { display: block; } .section-heading button { width: 100%; } } @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }`;
+const snapshotCss = readFileSync(new URL('../../assets/dashboard/dashboard.css', import.meta.url), 'utf8');
 
-const snapshotScript = `(() => { const search = document.querySelector("#task-search"); const filter = document.querySelector("#task-status"); const rows = [...document.querySelectorAll("#task-rows tr")]; const results = document.querySelector("#results"); for (const status of [...new Set(rows.map((row) => row.dataset.status))].sort()) { const option = document.createElement("option"); option.value = status; option.textContent = status; filter?.append(option); } function apply() { const query = search?.value.trim().toLowerCase() || ""; const status = filter?.value || ""; let visible = 0; for (const row of rows) { const show = (!query || row.dataset.search.includes(query)) && (!status || row.dataset.status === status); row.hidden = !show; if (show) visible += 1; } if (results) results.textContent = visible + " task" + (visible === 1 ? "" : "s") + " shown."; } search?.addEventListener("input", apply); filter?.addEventListener("change", apply); document.querySelector("#refresh")?.addEventListener("click", () => location.reload()); apply(); })();`;
+const snapshotScript = readFileSync(new URL('../../assets/dashboard/dashboard.js', import.meta.url), 'utf8');
 
 /** Render a standalone, local-only snapshot. The browser reads embedded data and never reads the tracker. */
 export function renderDashboard(model) {
   const progress = model.progress || {};
   const freshness = model.freshness || {};
-  const percentage = progress.percentage === null ? "N/A" : `${progress.percentage}%`;
+  const percentage = Number.isFinite(progress.percentage) && progress.percentage >= 0 && progress.percentage <= 100 ? `${progress.percentage}%` : "N/A";
   const live = model.mode === "live";
   const graph = model.graph?.status === "available" && typeof model.graph?.content === "string" ? model.graph : null;
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent-Team status</title><style>${snapshotCss}</style></head>
 <body><a class="skip-link" href="#tasks">Skip to tasks</a><main id="dashboard" tabindex="-1">
-<header class="hero"><p class="eyebrow">${live ? "LOCAL LIVE STATUS" : "LOCAL STATUS SNAPSHOT"}</p><h1>${escapeHtml(model.project?.id || "Agent-Team")}</h1><p id="freshness" role="status">Source: ${escapeHtml(freshness.source || "unknown")} · ${escapeHtml(freshness.status || "unknown")}${freshness.observedAt ? ` · ${escapeHtml(freshness.observedAt)}` : ""}</p></header>
+<header class="hero"><p class="eyebrow">${live ? "LOCAL LIVE STATUS" : "LOCAL STATUS SNAPSHOT"}</p><h1>${escapeHtml(model.project?.id || "Agent-Team")}</h1><p id="freshness" role="status">Source: ${escapeHtml(freshness.source || "unknown")} · ${escapeHtml(freshness.status || "unknown")}${freshness.observedAt ? ` · ${escapeHtml(freshness.observedAt)}` : ""}${freshness.reason ? ` · ${escapeHtml(freshness.reason)}` : ''}</p></header>
 <section aria-labelledby="overview-title"><h2 id="overview-title">Overview</h2><div class="summary"><article><span>Completion</span><strong>${percentage}</strong><small>${escapeHtml(progress.completed ?? "?")} complete · ${escapeHtml(progress.remaining ?? "?")} remaining</small></article><article><span>Recorded work</span><strong>${escapeHtml(model.activity?.active ?? "?")}</strong><small>${escapeHtml(model.activity?.parked ?? "?")} parked · ${escapeHtml(model.activity?.paused ?? "?")} paused · ${escapeHtml(model.activity?.ready ?? "?")} ready</small></article><article><span>Capacity</span><strong>${escapeHtml(model.activity?.capacity ?? "Unknown")}</strong><small>Supplied scheduler capacity; not inferred here.</small></article></div><p>Progress confidence: ${escapeHtml(progress.status || "unknown")}. Task-count completion only; not estimated effort. Excluded: ${escapeHtml(progress.excluded?.cancelled ?? "?")} cancelled, ${escapeHtml(progress.excluded?.deferred ?? "?")} approved-deferred.</p><p>Current run: ${escapeHtml(model.run?.current || "unknown")} (${escapeHtml(model.run?.scope?.status || "unknown")} scope). Admissions are ${model.run?.paused === true ? "paused" : model.run?.paused === false ? "not paused" : "unknown"}. Integration: ${escapeHtml(model.state?.integration?.status || "unknown")}. Release: ${escapeHtml(model.state?.release?.status || "unknown")}. Recorded compute state is not live process liveness.</p><p>Blockers: ${escapeHtml(model.run?.blockerStatus === "unknown" ? "unknown" : model.run?.blockers?.join(", ") || "none recorded")}.</p></section>
 <section id="tasks" aria-labelledby="tasks-title"><div class="section-heading"><div><h2 id="tasks-title">All tasks</h2><p>${escapeHtml(model.tasks?.length ?? 0)} rows; counts exclude cancelled and approved-deferred work.</p></div><button type="button" id="refresh" aria-describedby="refresh-help">${live ? "Refresh local status" : "Reload saved snapshot"}</button></div><p id="refresh-help" class="helper">${live ? "Refresh reads current local records through the enabled loopback helper." : "A file snapshot reloads its saved data; it cannot query project records."}</p><div class="controls"><label for="task-search">Search tasks</label><input id="task-search" type="search" autocomplete="off" placeholder="ID, owner, status…"><label for="task-status">Status</label><select id="task-status"><option value="">All statuses</option></select></div><div class="table-wrap" tabindex="0"><table><thead><tr><th>ID</th><th>Task</th><th>Status</th><th>Recorded state</th><th>Priority</th><th>Owner</th><th>Dependencies</th><th>Next action</th><th>Evidence</th></tr></thead><tbody id="task-rows">${taskRows(model.tasks || [])}</tbody></table></div><p id="results" aria-live="polite"></p></section>
 <details><summary>Teams and roles</summary><ul>${(model.teams || []).map((team) => `<li><strong>${escapeHtml(team.name)}</strong> · ${escapeHtml(team.role)} · ${escapeHtml(team.model)} / ${escapeHtml(team.effort)} · ${escapeHtml(team.status)} · assignments: ${escapeHtml(team.assignments || "unknown")} · updated: ${escapeHtml(team.updatedAt || "unknown")}</li>`).join("") || "<li>Team metadata is unknown.</li>"}</ul></details>
-<details ${graph ? "open" : ""}><summary>Dependency representation</summary>${graph ? `<p>Fresh optional Beads graph (${escapeHtml(graph.format)}); it is derived from the canonical export and does not control tasks.</p>${graphSvg(graph.content)}<pre aria-label="Dependency graph text" style="max-width:100%;overflow-x:auto;overflow-wrap:anywhere;white-space:pre-wrap">${escapeHtml(graph.content)}</pre>` : "<p>Each task row lists prerequisite task IDs in the Dependencies column. A graph is unavailable unless separately generated from a current Beads export.</p>"}</details>
+<details ${graph ? "open" : ""}><summary>Dependency representation</summary>${graph ? `<p>Optional graph from a canonical Beads export (${escapeHtml(graph.format)}); it does not control tasks. External provider: <a href="https://github.com/Dicklesworthstone/beads_viewer">beads_viewer by Jeffrey Emanuel</a>, under its <a href="https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE">complete license, including the OpenAI/Anthropic rider</a>. Referenced separately, not vendored or relicensed.</p>${graphSvg(graph.content)}<pre aria-label="Dependency graph text" style="max-width:100%;overflow-x:auto;overflow-wrap:anywhere;white-space:pre-wrap">${escapeHtml(graph.content)}</pre>` : "<p>Each task row lists prerequisite task IDs in the Dependencies column. A graph is unavailable unless separately generated from a current Beads export.</p>"}</details>
 <script id="dashboard-data" type="application/json">${jsonForScript(model)}</script><script>${snapshotScript}</script></main></body></html>`;
 }
 
@@ -84,16 +87,20 @@ export function createSnapshotPublisher({ destination, derive, render = renderDa
   let stale = false;
   let initialized = false;
   const metadata = `${destination}.dashboard-meta.json`;
+  const digest = html => createHash('sha256').update(html).digest('hex');
+  const metadataFor = html => `${JSON.stringify({ schemaVersion: 1, fingerprint, lastGood, lastModel, stale, htmlDigest: digest(html) })}\n`;
   async function restoreFingerprint() {
     if (initialized) return;
     initialized = true;
     try {
       const saved = JSON.parse(await readFile(metadata, "utf8"));
-      if (typeof saved.fingerprint === "string" && await readFile(destination, "utf8")) {
-        fingerprint = saved.fingerprint;
+      if (saved.schemaVersion === 1 && saved.lastModel && typeof saved.lastModel === 'object' && contentFingerprint(saved.lastModel) === saved.fingerprint) {
+        const html = await readFile(destination, 'utf8');
+        const matches = typeof saved.htmlDigest === 'string' && digest(html) === saved.htmlDigest;
+        fingerprint = matches ? saved.fingerprint : null;
         lastGood = saved.lastGood || null;
         lastModel = saved.lastModel && typeof saved.lastModel === "object" ? saved.lastModel : null;
-        stale = saved.stale === true;
+        stale = saved.stale === true || !matches;
       }
     } catch {
       // First generation and invalid derived metadata are both safely regenerated.
@@ -115,15 +122,16 @@ export function createSnapshotPublisher({ destination, derive, render = renderDa
         lastModel = model;
         stale = false;
         lastGood = { destination, refreshedAt: new Date().toISOString() };
-        await atomicWrite(metadata, `${JSON.stringify({ fingerprint, lastGood, lastModel, stale })}\n`);
+        await atomicWrite(metadata, metadataFor(html));
         return { status: "published", destination, lastGood };
       } catch (error) {
         stale = true;
         if (lastModel) {
           try {
             const staleModel = { ...lastModel, freshness: { ...lastModel.freshness, status: "stale", reason: String(error.message || error) } };
-            await atomicWrite(destination, render(staleModel));
-            await atomicWrite(metadata, `${JSON.stringify({ fingerprint, lastGood, lastModel, stale })}\n`);
+            const html = render(staleModel);
+            await atomicWrite(destination, html);
+            await atomicWrite(metadata, metadataFor(html));
           } catch {
             // A failed stale-marker write must never replace the last usable snapshot.
           }
@@ -166,9 +174,9 @@ export function createBeadsGraphAdapter({ exportCurrent, renderGraph }) {
   });
 }
 
-async function boundedCommand(command, args, { cwd, timeoutMs, maxOutputBytes }) {
+async function boundedCommand(command, args, { cwd, timeoutMs, maxOutputBytes, env, signal }) {
   try {
-    const { stdout, stderr } = await runFile(command, args, { cwd, encoding: "utf8", timeout: timeoutMs, maxBuffer: maxOutputBytes });
+    const { stdout, stderr } = await runFile(command, args, { cwd, env, signal, encoding: "utf8", timeout: timeoutMs, maxBuffer: maxOutputBytes });
     return { status: "completed", output: stdout.slice(0, maxOutputBytes), diagnostics: stderr.slice(0, maxOutputBytes) };
   } catch (error) {
     return { status: error.killed ? "timeout" : error.code === "ENOENT" ? "unavailable" : "failed", output: `${error.stdout || ""}${error.stderr || error.message || ""}`.slice(0, maxOutputBytes) };
@@ -188,12 +196,15 @@ export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDi
   });
   const trackerExecutable = tracker?.executable || bdPath;
   const trackerId = tracker?.id || null;
-  const options = { cwd: projectRoot, timeoutMs: Math.min(Math.max(1, timeoutMs), 5000), maxOutputBytes: Math.min(Math.max(1024, maxOutputBytes), 256 * 1024), env: { PATH: process.env.PATH || "" } };
-  const graphOptions = { ...options, cwd: stagingDirectory };
+  const environment = { ...process.env };
+  delete environment.BEADS_DB;
+  delete environment.BEADS_DIR;
+  const options = { cwd: projectRoot, timeoutMs: Math.min(Math.max(1, timeoutMs), 5000), maxOutputBytes: Math.min(Math.max(1024, maxOutputBytes), 256 * 1024), env: { ...environment, BEADS_DIR: tracker?.path ?? path.join(projectRoot, '.beads') } };
+  const graphOptions = { ...options, cwd: stagingDirectory, env: { ...environment, BEADS_DIR: path.join(stagingDirectory, '.beads') } };
   const exportFile = path.join(stagingDirectory, ".beads", "issues.jsonl");
   async function capability() {
     if (!selected || !termsAcknowledged) return { status: "not_selected", reason: !selected ? "Optional Beads graph is not selected." : "Operator terms acknowledgement is required.", attribution };
-    if (tracker && tracker.kind !== "beads") return { status: "unavailable", reason: "Selected tracker is not Beads.", attribution };
+    if (tracker?.kind !== "beads" || typeof tracker.id !== 'string' || !tracker.id || typeof trackerExecutable !== 'string' || !trackerExecutable) return { status: "unavailable", reason: "A selected canonical Beads tracker and executable are required.", attribution };
     const trackerVersion = await runCommand(trackerExecutable, ["--version"], options);
     if (trackerVersion.status !== "completed") return { status: "unavailable", reason: `Selected tracker version check: ${trackerVersion.status}`, attribution };
     const version = await runCommand(bvPath, ["--version"], options);

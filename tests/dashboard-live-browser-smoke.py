@@ -14,7 +14,10 @@ with sync_playwright() as playwright:
     page.get_by_role("button", name="Refresh local status").click()
     page.wait_for_load_state("networkidle")
     assert page.get_by_text("live-2").is_visible()
-    assert page.get_by_role("img", name="Interactive dependency graph. Use the task table for keyboard filtering and full dependency text.").is_visible()
+    assert page.get_by_role("group", name="Dependency graph", exact=True).is_visible()
+    page.get_by_role("button", name="Filter task LIVE", exact=True).focus()
+    page.keyboard.press("Space")
+    assert page.locator("#task-rows tr:not([hidden]) th").text_content() == "LIVE"
     pathlib.Path(sys.argv[1]).parent.mkdir(parents=True, exist_ok=True)
     page.screenshot(path=sys.argv[1], full_page=True)
     browser.close()

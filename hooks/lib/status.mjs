@@ -1,5 +1,6 @@
 import { loadCanonicalState } from "./canonical-state.mjs";
 import { resolveProject } from "./project.mjs";
+import { createEventBudget } from "./budget.mjs";
 
 const completed = new Set(["completed", "complete", "done", "closed"]);
 const excluded = new Map([
@@ -182,11 +183,30 @@ export function createStatusModel(project, canonical = {}, options = {}) {
 export async function readStatus(cwd, options = {}) {
   const resolve = options.resolveProject || resolveProject;
   const load = options.loadCanonicalState || loadCanonicalState;
-  const project = typeof cwd === "object" && cwd ? cwd : await resolve(cwd);
-  if (!project?.active) throw new Error("An active Agent-Team project is required for status.");
+  const base = options.budget ?? createEventBudget(options.deadlineMs ?? 1500);
+  const signal = options.signal ? AbortSignal.any([base.signal, options.signal]) : base.signal;
+  const budget = {
+    ...base, signal,
+    check() { signal.throwIfAborted(); base.check(); },
+    timeout(cap) { this.check(); return base.timeout(cap); },
+    async run(action) {
+      this.check();
+      let abort;
+      try {
+        return await Promise.race([base.run(action), new Promise((_, reject) => {
+          abort = () => reject(signal.reason ?? new Error('Status read aborted.'));
+          signal.addEventListener('abort', abort, { once: true });
+        })]);
+      } finally { signal.removeEventListener('abort', abort); }
+    },
+  };
+  let project = typeof cwd === "object" && cwd ? cwd : null;
   try {
-    return createStatusModel(project, await load(project), options);
+    project ??= await budget.run(() => resolve(cwd, { budget }));
+    if (!project?.active) throw new Error("An active Agent-Team project is required for status.");
+    return createStatusModel(project, await budget.run(() => load(project, { budget })), options);
   } catch (error) {
+    if (!project?.active) throw error;
     const previous = options.lastGood;
     return createStatusModel(project, {
       tracker: { kind: previous?.freshness?.source === "TASKS.md" ? "tasks" : "unknown", id: previous?.freshness?.source || "canonical tracker", path: previous?.freshness?.source || "canonical tracker", status: "unavailable", reason: String(error.message || error) },
@@ -194,5 +214,5 @@ export async function readStatus(cwd, options = {}) {
       tasks: previous?.tasks || [],
       state: previous?.state || {},
     }, options);
-  }
+  } finally { if (!options.budget) base.close(); }
 }

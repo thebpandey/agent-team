@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -40,6 +40,35 @@ test("dashboard render is a standalone snapshot with escaped embedded data", () 
   assert.doesNotMatch(html, /<\/script><img/i);
   assert.match(html, /\\u003c\/script\\u003e/);
   assert.doesNotMatch(html, /https?:\/\//);
+});
+
+test('dependency graph provides keyboard-operable task selection and labels a bounded visual excerpt', () => {
+  const dot = `digraph { ${Array.from({ length: 40 }, (_, i) => `AT-${i} -> AT-${i + 1}`).join('; ')} }`;
+  const html = renderDashboard({ ...model, graph: { status: 'available', format: 'dot', content: dot } });
+  assert.match(html, /role="button"[^>]*aria-label="Filter task AT-0"/);
+  assert.match(html, /data-graph-task="AT-0"/);
+  assert.match(html, /Visual excerpt: 32 of 41 nodes/);
+  assert.match(html, /keydown/);
+});
+
+test('actual command boundary pins canonical export and isolates bv routing from inherited environment', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'agent-team-graph-boundary-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const beads = path.join(directory, '.beads');
+  await mkdir(beads);
+  const bd = path.join(directory, 'selected-bd');
+  const bv = path.join(directory, 'selected-bv');
+  await writeFile(bd, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nif (process.argv[2] === '--version') console.log('fixture-bd'); else writeFileSync(process.argv[process.argv.indexOf('-o') + 1], JSON.stringify({ dir: process.env.BEADS_DIR, db: process.env.BEADS_DB ?? null }));\n`);
+  await writeFile(bv, `#!${process.execPath}\nimport { readFileSync } from 'node:fs';\nif (process.argv[2] === '--version') console.log('fixture-bv'); else if (process.argv[2] === '--robot-help') console.log('--robot-graph --graph-format --no-hooks'); else { const input = JSON.parse(readFileSync('.beads/issues.jsonl', 'utf8')); console.log(JSON.stringify({graph: 'digraph { A -> B }', probe: input})); }\n`);
+  await chmod(bd, 0o700); await chmod(bv, 0o700);
+  const oldDir = process.env.BEADS_DIR, oldDb = process.env.BEADS_DB;
+  t.after(() => { if (oldDir === undefined) delete process.env.BEADS_DIR; else process.env.BEADS_DIR = oldDir; if (oldDb === undefined) delete process.env.BEADS_DB; else process.env.BEADS_DB = oldDb; });
+  process.env.BEADS_DIR = path.join(directory, 'wrong-project'); process.env.BEADS_DB = path.join(directory, 'wrong.db');
+  const adapter = createBeadsGraphCommandAdapter({ projectRoot: directory, tracker: { kind: 'beads', id: `beads:${beads}`, path: beads, executable: bd }, bvPath: bv, selected: true, termsAcknowledged: true });
+  const result = await adapter.refresh();
+  assert.equal(result.status, 'available', result.reason);
+  const exported = JSON.parse(await readFile(result.graph.source.exportFile, 'utf8'));
+  assert.deepEqual(exported, { dir: beads, db: null });
 });
 
 test("snapshot publisher skips stable inputs and retains last good snapshot after a failed refresh", async () => {
@@ -135,6 +164,17 @@ test("snapshot publisher serializes concurrent refreshes and atomically replaces
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
+});
+
+test('publisher never trusts a content receipt when its HTML was replaced independently', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'agent-team-dashboard-receipt-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const destination = path.join(directory, 'index.html');
+  await createSnapshotPublisher({ destination, derive: async () => model }).refresh();
+  await writeFile(destination, '<html>unrelated or interrupted publication</html>');
+  const restarted = createSnapshotPublisher({ destination, derive: async () => model });
+  assert.equal((await restarted.refresh()).status, 'published');
+  assert.match(await readFile(destination, 'utf8'), /All tasks/);
 });
 
 test("loopback helper rejects unsafe route, host, origin, and methods while serving only fixed assets", async () => {
@@ -248,7 +288,9 @@ test("documented Beads command adapter checks capabilities then refreshes canoni
   ]);
   assert.equal(calls.slice(0, 4).every((entry) => entry.options.cwd === "/project"), true);
   assert.equal(calls[4].options.cwd, "/project/.agent-team/dashboard/beads");
-  assert.equal(calls.every((entry) => entry.options.timeoutMs <= 5000 && entry.options.maxOutputBytes <= 256 * 1024 && !Object.hasOwn(entry.options.env, "BEADS_DIR") && !Object.hasOwn(entry.options.env, "BEADS_DB")), true);
+  assert.equal(calls.every((entry) => entry.options.timeoutMs <= 5000 && entry.options.maxOutputBytes <= 256 * 1024 && !Object.hasOwn(entry.options.env, "BEADS_DB")), true);
+  assert.equal(calls.slice(0, 4).every(entry => entry.options.env.BEADS_DIR === '/project/.beads'), true);
+  assert.equal(calls[4].options.env.BEADS_DIR, '/project/.agent-team/dashboard/beads/.beads');
   assert.equal(graph.graph.source.trackerId, "beads:/project/.beads");
   const graphHtml = renderDashboard({ ...model, graph: graph.graph });
   assert.match(graphHtml, /digraph \{ A -&gt; B \}/);
