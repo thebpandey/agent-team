@@ -223,7 +223,9 @@ export async function runSetupCommand(command, options = {}, context = {}) {
     setupPath: project.paths.setup, ...identity, budget: context.budget,
     loadRegistry: async () => {
       const fresh = await resolveProject(project.cwd ?? project.root, { budget: context.budget });
-      if (!fresh.active) return { projectOwner: null };
+      if (!fresh.active || fresh.root !== project.root || fresh.paths.setup !== project.paths.setup || fresh.projectId !== project.projectId) {
+        return { projectOwner: null };
+      }
       const canonical = await loadCanonicalState(fresh, { includeTasks: false, budget: context.budget });
       return initializationRecordProblem(fresh.setup, canonical, {
         projectRoot: fresh.root,
