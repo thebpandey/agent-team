@@ -269,6 +269,19 @@ if (process.argv[2] === "initialize-worker") {
     assert.equal(initializationRecordProblem(project.setup, { ...canonical, tracker: { ...canonical.tracker, status: "unavailable" } }, { projectRoot: project.root }), undefined);
   });
 
+  test("initialization receipt binds the tracker before outage-tolerant settings validation", async () => {
+    const value = await fixture();
+    await initialize(value.root, value.request);
+    const project = await resolveProject(value.root);
+    const { initializationRecordProblem } = await import(modulePath);
+    const setup = { ...project.setup, tracker: { kind: "beads", executable: "/selected/unavailable-bd" } };
+    await writeFile(project.paths.setup, JSON.stringify(setup));
+    const fresh = await resolveProject(value.root);
+    const canonical = await loadCanonicalState(fresh, { includeTasks: false });
+    assert.equal(initializationRecordProblem(fresh.setup, canonical, { projectRoot: fresh.root }), "initialization_tracker_changed");
+    assert.equal((await initialize(value.root, { ...value.request, tracker: setup.tracker })).status, "conflict");
+  });
+
   test("duplicate initialization preserves a later finite run scope without losing the full approved plan", async () => {
     const value = await fixture();
     value.request.plan.tasks.push({ id: "AT-002", title: "Remaining work", status: "ready" });
