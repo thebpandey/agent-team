@@ -1,8 +1,8 @@
 # Changelog
 
-## 7.0.0 - 2026-09-08
+## 7.0.0 - 2026-09-09
 
-Unreleased local preview. Native Codex/Claude discovery, hook trust and mandatory browser-CLI qualification remain required before publication. Local fixtures are not native-host certification.
+Version 7.0.0 adds explicit host/scope installation and the updated Agent-Team workflow for Codex and Claude Code.
 
 - Require explicit host/scope installation, ship one complete universal package, and preserve handler-level ownership during updates, interruption recovery and removal.
 - Keep the selected Beads or Markdown tracker authoritative; use versioned, idempotent claims, stopped-writer checkpoints, bounded repair and safe parking without a second task ledger.

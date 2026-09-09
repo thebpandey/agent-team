@@ -1,6 +1,6 @@
 # Project Kickoff + Agent-Team: first-time guide
 
-Local implementation preview: final native-host qualification and publication are pending. The [standalone dark-green HTML guide](Getting_Started_with_Agent-Team.html) contains the complete prompts, collapsible instructions and reference library. The [README](README.md) adds workflow flowcharts and an overview of automatic repair, settings and dashboard behavior.
+Agent-Team 7.0 uses one complete package for Codex and Claude Code. Installation lets you choose the host and whether to install for one project or your user account. The [standalone dark-green HTML guide](Getting_Started_with_Agent-Team.html) contains the complete prompts, collapsible instructions and reference library. The [README](README.md) adds workflow flowcharts and an overview of automatic repair, settings and dashboard behavior.
 
 These are prompts to paste into Codex or Claude Code—not Bash commands.
 

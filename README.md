@@ -2,7 +2,7 @@
 
 Created by [thebpandey](https://github.com/thebpandey). An orchestrator-led development skill for Codex and Claude Code: small parallel assignments, independent review, automatic repair of ordinary findings, and verified integration.
 
-> **Local implementation preview.** This checkout contains the approved workflow changes, but final native-host qualification and publication are pending. The published 6.5.0 release does not contain all the behavior described below. Do not treat fixture tests as native Codex/Claude certification.
+> **Version 7.0.0.** One complete package for Codex and Claude Code. Installation lets you choose the host and whether to install for one project or your user account; setup guides you through the required tool and hook checks.
 
 New here? Open the [standalone dark-green, collapsible HTML guide](Getting_Started_with_Agent-Team.html) in your browser, or read the [short Markdown guide](GETTING_STARTED.md). Both start with GitHub authentication and optional Project Kickoff.
 
@@ -242,7 +242,7 @@ See [recovery](references/recovery.md), [canonical state](references/state.md), 
 
 ## Source, versions and updates
 
-The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.0.0**; `metadata.version` in `SKILL.md` is authoritative. This is an **unpublished local preview**, not a released build. [Published v6.5.0](https://github.com/thebpandey/agent-team/releases/tag/v6.5.0) is the baseline. The new major version distinguishes the explicit host/scope installer and revised setup contract; it does not imply native qualification has passed. See the [latest official release](https://github.com/thebpandey/agent-team/releases/latest) and [changelog](CHANGELOG.md).
+The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.0.0**; `metadata.version` in `SKILL.md` is authoritative. Version [7.0.0](https://github.com/thebpandey/agent-team/releases/tag/v7.0.0) adds the explicit host/scope installer and revised setup contract. [v6.5.0](https://github.com/thebpandey/agent-team/releases/tag/v6.5.0) remains the previous release reference. Find published packages and checksums in the [latest official release](https://github.com/thebpandey/agent-team/releases/latest). See the [changelog](CHANGELOG.md).
 
 Use an identified authorized revision and the complete package. Universal archives have an `agent-team/` prefix and include `SKILL.md`, `README.md`, `LICENSE`, `CHANGELOG.md`, `agents/`, `references/`, `assets/` and `hooks/`. External dependencies and model access are not bundled. Inactive `legacy/` and maintenance tests are excluded. Provenance lives in `.agent-team-source.json`; verify the exact revision and checksum.
 
@@ -255,7 +255,7 @@ node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --arch
 sha256sum ../agent-team-artifacts/agent-team-7.0.0.zip
 ```
 
-On macOS, use `shasum -a 256` on the same exact archive. These are local build instructions, not a claim that a universal preview release asset is already published. Change the version consistently before releasing altered contents; never replace an existing released version with different files.
+On macOS, use `shasum -a 256` on the same exact archive. These commands reproduce and validate the versioned artifact from an identified revision; verify any published checksum against the exact GitHub release asset. Change the version consistently before releasing altered contents; never replace an existing released version with different files.
 
 For updates, inspect whether the installed copy is a Git clone, symlink or extracted package. Preserve local customizations and use the matching managed scope/host. Updating a source checkout does not update installed copies automatically. Reload the host and verify discovery afterward. Rollback/uninstall removes only matched owned resources and reports retained conflicts; it does not delete unrelated plugins.
 
