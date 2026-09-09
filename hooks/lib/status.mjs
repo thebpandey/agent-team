@@ -141,6 +141,7 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     model: value(team, "model") || "unknown",
     effort: value(team, "effort") || "unknown",
     assignments: value(team, "tasks") || "unknown",
+    updatedAt: value(team, "last update", "updated at", "updated") || null,
   }));
   const unavailable = freshness.status === "unavailable" || freshness.status === "unknown";
   const execution = (task) => task.runtime?.compute && task.runtime.compute !== "unknown"
@@ -165,6 +166,10 @@ export function createStatusModel(project, canonical = {}, options = {}) {
       paused: typeof state.run?.paused === "boolean" ? state.run.paused : null,
       current: typeof state.run?.id === "string" ? state.run.id : typeof state.run?.current === "string" ? state.run.current : "unknown",
       blockers: Array.isArray(state.run?.blockers) ? state.run.blockers.filter((entry) => typeof entry === "string") : [],
+      blockerStatus: Array.isArray(state.run?.blockers) ? "known" : "unknown",
+      scope: Array.isArray(state.run?.taskIds)
+        ? { status: "partial", taskIds: state.run.taskIds.filter((entry) => typeof entry === "string") }
+        : state.run ? { status: "full_project", taskIds: [] } : { status: "unknown", taskIds: [] },
     },
     state: {
       integration: state.integration?.status ? { status: state.integration.status } : { status: "unknown" },

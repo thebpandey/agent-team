@@ -97,6 +97,26 @@ test("snapshot publisher fingerprints content without collection timestamps and 
   }
 });
 
+test("publisher restart restores last-good data for stale markers and rewrites the same healthy content as current", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-dashboard-"));
+  const destination = path.join(directory, "index.html");
+  try {
+    let current = model;
+    const first = createSnapshotPublisher({ destination, derive: async () => current, render: renderDashboard });
+    await first.refresh();
+    current = new Error("backend timeout");
+    const afterRestartFailure = createSnapshotPublisher({ destination, derive: async () => current, render: renderDashboard });
+    await afterRestartFailure.refresh();
+    assert.match(await readFile(destination, "utf8"), /Source: TASKS\.md · stale/);
+    current = model;
+    const recovered = await afterRestartFailure.refresh();
+    assert.equal(recovered.status, "published");
+    assert.match(await readFile(destination, "utf8"), /Source: TASKS\.md · current/);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
 test("snapshot publisher serializes concurrent refreshes and atomically replaces output", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-dashboard-"));
   const destination = path.join(directory, "index.html");
@@ -207,14 +227,14 @@ test("optional Beads graph adapter requires a fresh canonical export and degrade
 test("documented Beads command adapter checks capabilities then refreshes canonical bd export before noninteractive bv graph", async () => {
   const calls = [];
   const adapter = createBeadsGraphCommandAdapter({
-    projectRoot: "/project",
+    projectRoot: "/project", tracker: { kind: "beads", id: "beads:/project/.beads", executable: "/selected/bd" }, stagingDirectory: "/project/.agent-team/dashboard/beads", ensureDirectory: async () => {},
     selected: true,
     termsAcknowledged: true,
     runCommand: async (command, args, options) => {
       calls.push({ command, args, options });
       if (args[0] === "--version") return { status: "completed", output: "bv 0.24.1" };
-      if (args[0] === "--robot-help") return { status: "completed", output: "--robot-graph --no-hooks" };
-      if (command === "bd") return { status: "completed", output: "" };
+      if (args[0] === "--robot-help") return { status: "completed", output: "--robot-graph --graph-format --no-hooks" };
+      if (command === "/selected/bd") return { status: "completed", output: "" };
       return { status: "completed", output: JSON.stringify({ graph: "digraph { A -> B }" }) };
     },
   });
@@ -222,11 +242,39 @@ test("documented Beads command adapter checks capabilities then refreshes canoni
   assert.equal(graph.status, "available");
   assert.equal(graph.graph.content, "digraph { A -> B }");
   assert.deepEqual(calls.map((entry) => [entry.command, entry.args]), [
-    ["bv", ["--version"]], ["bv", ["--robot-help"]],
-    ["bd", ["export", "-o", ".beads/issues.jsonl"]],
+    ["/selected/bd", ["--version"]], ["bv", ["--version"]], ["bv", ["--robot-help"]],
+    ["/selected/bd", ["export", "-o", "/project/.agent-team/dashboard/beads/.beads/issues.jsonl"]],
     ["bv", ["--robot-graph", "--graph-format=dot", "--no-hooks"]],
   ]);
-  assert.equal(calls.every((entry) => entry.options.cwd === "/project" && entry.options.timeoutMs <= 5000 && entry.options.maxOutputBytes <= 256 * 1024), true);
+  assert.equal(calls.slice(0, 4).every((entry) => entry.options.cwd === "/project"), true);
+  assert.equal(calls[4].options.cwd, "/project/.agent-team/dashboard/beads");
+  assert.equal(calls.every((entry) => entry.options.timeoutMs <= 5000 && entry.options.maxOutputBytes <= 256 * 1024 && !Object.hasOwn(entry.options.env, "BEADS_DIR") && !Object.hasOwn(entry.options.env, "BEADS_DB")), true);
+  assert.equal(graph.graph.source.trackerId, "beads:/project/.beads");
+  const graphHtml = renderDashboard({ ...model, graph: graph.graph });
+  assert.match(graphHtml, /digraph \{ A -&gt; B \}/);
+  assert.match(graphHtml, /<svg /);
   const unselected = await createBeadsGraphCommandAdapter({ projectRoot: "/project", runCommand: async () => { throw new Error("must not execute"); } }).refresh();
   assert.equal(unselected.status, "not_selected");
+});
+
+test("loopback preserves one aborted underlying collection across repeated timeout requests and stop", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-dashboard-"));
+  try {
+    await writeFile(path.join(directory, "dashboard.css"), "body{}\n");
+    await writeFile(path.join(directory, "dashboard.js"), "\n");
+    let calls = 0;
+    let aborted = 0;
+    const server = createLoopbackDashboard({ assetsDirectory: directory, deadlineMs: 10, readModel: ({ signal }) => new Promise((resolve) => { calls += 1; signal.addEventListener("abort", () => { aborted += 1; }); }), render: renderDashboard });
+    const { port } = await server.start();
+    try {
+      assert.equal((await request(port)).status, 503);
+      assert.equal((await request(port)).status, 503);
+      assert.equal(calls, 1);
+    } finally {
+      await server.stop();
+      assert.equal(aborted, 1);
+    }
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
 });

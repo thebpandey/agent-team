@@ -12,11 +12,12 @@ function canonical(overrides = {}) {
       projectId: "project-1",
       projectOwner: "owner",
       integrationOwner: "integrator",
-      teams: [{ "team id": "T1", name: "Platform", session: "agent-a", status: "in_progress", model: "gpt", effort: "high" }],
+      teams: [{ "team id": "T1", name: "Platform", session: "agent-a", status: "in_progress", model: "gpt", effort: "high", tasks: "PARENT, CHILD", "last update": "2026-09-08T12:00:00.000Z" }],
     },
     state: {
-      integration: { status: "passed" }, release: { status: "pending" }, run: { paused: true },
+      integration: { status: "passed" }, release: { status: "pending" },
       taskRuntime: { PARKED: { compute: "parked", explicitPause: false, checkpointPath: ".agent-team/checkpoints/parked.json", resumeWhen: "READY", writer: { host: "local", pid: 44 } } },
+      run: { paused: true, id: "run-1", taskIds: ["PARENT", "CHILD"] },
     },
     tasks: [
       { id: "PARENT", "requirement / acceptance": "Parent", owner: "T1", "depends on": "none", status: "in_progress", priority: "P1", "next action": "Delegate child" },
@@ -50,6 +51,9 @@ test("status model keeps every task visible while counting only unique actionabl
     compute: "parked", explicitPause: false, checkpointPath: ".agent-team/checkpoints/parked.json", resumeWhen: "READY", evidencePointers: [],
   });
   assert.equal(model.run.paused, true);
+  assert.equal(model.run.current, "run-1");
+  assert.deepEqual(model.run.scope, { status: "partial", taskIds: ["PARENT", "CHILD"] });
+  assert.equal(model.teams[0].updatedAt, "2026-09-08T12:00:00.000Z");
 });
 
 test("status model de-duplicates IDs, retains unapproved deferred work, and marks unknown status provisional", () => {

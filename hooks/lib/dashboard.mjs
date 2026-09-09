@@ -16,7 +16,17 @@ function escapeHtml(value) {
 }
 
 function taskRows(tasks) {
-  return tasks.map((task) => `<tr data-status="${escapeHtml(task.status)}" data-search="${escapeHtml([task.id, task.label, task.owner, task.priority, task.dependencies.join(" "), task.nextAction, task.evidence].join(" ").toLowerCase())}"><th scope="row">${escapeHtml(task.id)}</th><td>${escapeHtml(task.label)}</td><td>${escapeHtml(task.status)}</td><td>${escapeHtml(task.runtime?.compute || "not recorded")}</td><td>${escapeHtml(task.priority)}</td><td>${escapeHtml(task.owner)}</td><td>${escapeHtml(task.dependencies.join(", ") || "None")}</td><td>${escapeHtml(task.nextAction || "Unknown")}</td><td>${escapeHtml(task.evidence || task.cleanup?.evidencePaths?.join(", ") || "Unknown")}</td></tr>`).join("");
+  return tasks.map((task) => `<tr data-status="${escapeHtml(task.status)}" data-search="${escapeHtml([task.id, task.label, task.owner, task.priority, task.dependencies.join(" "), task.nextAction, task.evidence].join(" ").toLowerCase())}"><th scope="row">${escapeHtml(task.id)}</th><td>${escapeHtml(task.label)}</td><td>${escapeHtml(task.status)}</td><td>${escapeHtml(task.runtime?.compute || "not recorded")}</td><td>${escapeHtml(task.priority)}</td><td>${escapeHtml(task.owner)}</td><td>${escapeHtml(task.dependencies.join(", ") || "None")}</td><td>${escapeHtml(task.nextAction || "Unknown")}</td><td><details><summary>View</summary>${escapeHtml(task.evidence || task.cleanup?.evidencePaths?.join(", ") || "Unknown")}</details></td></tr>`).join("");
+}
+
+function graphSvg(dot) {
+  const edges = [...String(dot).matchAll(/["']?([A-Za-z0-9_.:-]+)["']?\s*->\s*["']?([A-Za-z0-9_.:-]+)["']?/g)].slice(0, 48).map((match) => [match[1], match[2]]);
+  const nodes = [...new Set(edges.flat())].slice(0, 32);
+  if (!nodes.length) return "<p>Graph data has no safe, renderable edges; the textual graph remains available below.</p>";
+  const width = 760;
+  const height = Math.max(180, Math.ceil(nodes.length / 4) * 120);
+  const point = (node) => { const index = nodes.indexOf(node); return { x: 110 + (index % 4) * 210, y: 70 + Math.floor(index / 4) * 110 }; };
+  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Interactive dependency graph. Use the task table for keyboard filtering and full dependency text."><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#75ff57"/></marker></defs>${edges.map(([from, to]) => { const a = point(from); const b = point(to); return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#5da892" stroke-width="2" marker-end="url(#arrow)"/>`; }).join("")}${nodes.map((node) => { const p = point(node); return `<g tabindex="0"><circle cx="${p.x}" cy="${p.y}" r="35" fill="#07513b" stroke="#75ff57"/><text x="${p.x}" y="${p.y + 5}" text-anchor="middle" fill="#fff">${escapeHtml(node)}</text><title>${escapeHtml(node)}</title></g>`; }).join("")}</svg>`;
 }
 
 // Keep the distributed assets/dashboard files in sync with these snapshot-safe copies.
@@ -35,11 +45,11 @@ export function renderDashboard(model) {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent-Team status</title><style>${snapshotCss}</style></head>
 <body><a class="skip-link" href="#tasks">Skip to tasks</a><main id="dashboard" tabindex="-1">
-<header class="hero"><p class="eyebrow">LOCAL STATUS SNAPSHOT</p><h1>${escapeHtml(model.project?.id || "Agent-Team")}</h1><p id="freshness" role="status">Source: ${escapeHtml(freshness.source || "unknown")} · ${escapeHtml(freshness.status || "unknown")}${freshness.observedAt ? ` · ${escapeHtml(freshness.observedAt)}` : ""}</p></header>
-<section aria-labelledby="overview-title"><h2 id="overview-title">Overview</h2><div class="summary"><article><span>Completion</span><strong>${percentage}</strong><small>${escapeHtml(progress.completed ?? "?")} complete · ${escapeHtml(progress.remaining ?? "?")} remaining</small></article><article><span>Recorded work</span><strong>${escapeHtml(model.activity?.active ?? "?")}</strong><small>${escapeHtml(model.activity?.parked ?? "?")} parked · ${escapeHtml(model.activity?.paused ?? "?")} paused · ${escapeHtml(model.activity?.ready ?? "?")} ready</small></article><article><span>Capacity</span><strong>${escapeHtml(model.activity?.capacity ?? "Unknown")}</strong><small>Supplied scheduler capacity; not inferred here.</small></article></div><p>Progress confidence: ${escapeHtml(progress.status || "unknown")}. Task-count completion only; not estimated effort. Excluded: ${escapeHtml(progress.excluded?.cancelled ?? "?")} cancelled, ${escapeHtml(progress.excluded?.deferred ?? "?")} approved-deferred.</p><p>Current run: ${escapeHtml(model.run?.current || "unknown")}. Admissions are ${model.run?.paused === true ? "paused" : model.run?.paused === false ? "not paused" : "unknown"}. Integration: ${escapeHtml(model.state?.integration?.status || "unknown")}. Release: ${escapeHtml(model.state?.release?.status || "unknown")}. Recorded compute state is not live process liveness.</p><p>Blockers: ${escapeHtml(model.run?.blockers?.join(", ") || "none recorded")}.</p></section>
+<header class="hero"><p class="eyebrow">${live ? "LOCAL LIVE STATUS" : "LOCAL STATUS SNAPSHOT"}</p><h1>${escapeHtml(model.project?.id || "Agent-Team")}</h1><p id="freshness" role="status">Source: ${escapeHtml(freshness.source || "unknown")} · ${escapeHtml(freshness.status || "unknown")}${freshness.observedAt ? ` · ${escapeHtml(freshness.observedAt)}` : ""}</p></header>
+<section aria-labelledby="overview-title"><h2 id="overview-title">Overview</h2><div class="summary"><article><span>Completion</span><strong>${percentage}</strong><small>${escapeHtml(progress.completed ?? "?")} complete · ${escapeHtml(progress.remaining ?? "?")} remaining</small></article><article><span>Recorded work</span><strong>${escapeHtml(model.activity?.active ?? "?")}</strong><small>${escapeHtml(model.activity?.parked ?? "?")} parked · ${escapeHtml(model.activity?.paused ?? "?")} paused · ${escapeHtml(model.activity?.ready ?? "?")} ready</small></article><article><span>Capacity</span><strong>${escapeHtml(model.activity?.capacity ?? "Unknown")}</strong><small>Supplied scheduler capacity; not inferred here.</small></article></div><p>Progress confidence: ${escapeHtml(progress.status || "unknown")}. Task-count completion only; not estimated effort. Excluded: ${escapeHtml(progress.excluded?.cancelled ?? "?")} cancelled, ${escapeHtml(progress.excluded?.deferred ?? "?")} approved-deferred.</p><p>Current run: ${escapeHtml(model.run?.current || "unknown")} (${escapeHtml(model.run?.scope?.status || "unknown")} scope). Admissions are ${model.run?.paused === true ? "paused" : model.run?.paused === false ? "not paused" : "unknown"}. Integration: ${escapeHtml(model.state?.integration?.status || "unknown")}. Release: ${escapeHtml(model.state?.release?.status || "unknown")}. Recorded compute state is not live process liveness.</p><p>Blockers: ${escapeHtml(model.run?.blockerStatus === "unknown" ? "unknown" : model.run?.blockers?.join(", ") || "none recorded")}.</p></section>
 <section id="tasks" aria-labelledby="tasks-title"><div class="section-heading"><div><h2 id="tasks-title">All tasks</h2><p>${escapeHtml(model.tasks?.length ?? 0)} rows; counts exclude cancelled and approved-deferred work.</p></div><button type="button" id="refresh" aria-describedby="refresh-help">${live ? "Refresh local status" : "Reload saved snapshot"}</button></div><p id="refresh-help" class="helper">${live ? "Refresh reads current local records through the enabled loopback helper." : "A file snapshot reloads its saved data; it cannot query project records."}</p><div class="controls"><label for="task-search">Search tasks</label><input id="task-search" type="search" autocomplete="off" placeholder="ID, owner, status…"><label for="task-status">Status</label><select id="task-status"><option value="">All statuses</option></select></div><div class="table-wrap" tabindex="0"><table><thead><tr><th>ID</th><th>Task</th><th>Status</th><th>Recorded state</th><th>Priority</th><th>Owner</th><th>Dependencies</th><th>Next action</th><th>Evidence</th></tr></thead><tbody id="task-rows">${taskRows(model.tasks || [])}</tbody></table></div><p id="results" aria-live="polite"></p></section>
-<details><summary>Teams and roles</summary><ul>${(model.teams || []).map((team) => `<li><strong>${escapeHtml(team.name)}</strong> · ${escapeHtml(team.role)} · ${escapeHtml(team.model)} / ${escapeHtml(team.effort)} · ${escapeHtml(team.status)} · assignments: ${escapeHtml(team.assignments || "unknown")}</li>`).join("") || "<li>Team metadata is unknown.</li>"}</ul></details>
-<details ${graph ? "open" : ""}><summary>Dependency representation</summary>${graph ? `<p>Fresh optional Beads graph (${escapeHtml(graph.format)}); it is derived from the canonical export and does not control tasks.</p><pre aria-label="Dependency graph text">${escapeHtml(graph.content)}</pre>` : "<p>Each task row lists prerequisite task IDs in the Dependencies column. A graph is unavailable unless separately generated from a current Beads export.</p>"}</details>
+<details><summary>Teams and roles</summary><ul>${(model.teams || []).map((team) => `<li><strong>${escapeHtml(team.name)}</strong> · ${escapeHtml(team.role)} · ${escapeHtml(team.model)} / ${escapeHtml(team.effort)} · ${escapeHtml(team.status)} · assignments: ${escapeHtml(team.assignments || "unknown")} · updated: ${escapeHtml(team.updatedAt || "unknown")}</li>`).join("") || "<li>Team metadata is unknown.</li>"}</ul></details>
+<details ${graph ? "open" : ""}><summary>Dependency representation</summary>${graph ? `<p>Fresh optional Beads graph (${escapeHtml(graph.format)}); it is derived from the canonical export and does not control tasks.</p>${graphSvg(graph.content)}<pre aria-label="Dependency graph text" style="max-width:100%;overflow-x:auto;overflow-wrap:anywhere;white-space:pre-wrap">${escapeHtml(graph.content)}</pre>` : "<p>Each task row lists prerequisite task IDs in the Dependencies column. A graph is unavailable unless separately generated from a current Beads export.</p>"}</details>
 <script id="dashboard-data" type="application/json">${jsonForScript(model)}</script><script>${snapshotScript}</script></main></body></html>`;
 }
 
@@ -82,6 +92,8 @@ export function createSnapshotPublisher({ destination, derive, render = renderDa
       if (typeof saved.fingerprint === "string" && await readFile(destination, "utf8")) {
         fingerprint = saved.fingerprint;
         lastGood = saved.lastGood || null;
+        lastModel = saved.lastModel && typeof saved.lastModel === "object" ? saved.lastModel : null;
+        stale = saved.stale === true;
       }
     } catch {
       // First generation and invalid derived metadata are both safely regenerated.
@@ -103,7 +115,7 @@ export function createSnapshotPublisher({ destination, derive, render = renderDa
         lastModel = model;
         stale = false;
         lastGood = { destination, refreshedAt: new Date().toISOString() };
-        await atomicWrite(metadata, `${JSON.stringify({ fingerprint, lastGood })}\n`);
+        await atomicWrite(metadata, `${JSON.stringify({ fingerprint, lastGood, lastModel, stale })}\n`);
         return { status: "published", destination, lastGood };
       } catch (error) {
         stale = true;
@@ -111,6 +123,7 @@ export function createSnapshotPublisher({ destination, derive, render = renderDa
           try {
             const staleModel = { ...lastModel, freshness: { ...lastModel.freshness, status: "stale", reason: String(error.message || error) } };
             await atomicWrite(destination, render(staleModel));
+            await atomicWrite(metadata, `${JSON.stringify({ fingerprint, lastGood, lastModel, stale })}\n`);
           } catch {
             // A failed stale-marker write must never replace the last usable snapshot.
           }
@@ -166,21 +179,28 @@ async function boundedCommand(command, args, { cwd, timeoutMs, maxOutputBytes })
  * Optional documented bd → bv graph boundary. Selection and terms acknowledgement
  * are caller-controlled; this does not install, vendor, or invoke interactive bv.
  */
-export function createBeadsGraphCommandAdapter({ projectRoot, selected = false, termsAcknowledged = false, runCommand = boundedCommand, bdPath = "bd", bvPath = "bv", timeoutMs = 5000, maxOutputBytes = 256 * 1024 }) {
+export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDirectory = path.join(projectRoot || ".", ".agent-team", "dashboard", "beads"), selected = false, termsAcknowledged = false, runCommand = boundedCommand, ensureDirectory = mkdir, bdPath = "bd", bvPath = "bv", timeoutMs = 5000, maxOutputBytes = 256 * 1024 }) {
   if (!projectRoot || typeof runCommand !== "function") throw new Error("Beads command adapter requires projectRoot and runCommand.");
   const attribution = Object.freeze({
     repository: "https://github.com/Dicklesworthstone/beads_viewer",
     license: "https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE",
     provider: "Jeffrey Emanuel",
   });
-  const options = { cwd: projectRoot, timeoutMs: Math.min(Math.max(1, timeoutMs), 5000), maxOutputBytes: Math.min(Math.max(1024, maxOutputBytes), 256 * 1024) };
+  const trackerExecutable = tracker?.executable || bdPath;
+  const trackerId = tracker?.id || null;
+  const options = { cwd: projectRoot, timeoutMs: Math.min(Math.max(1, timeoutMs), 5000), maxOutputBytes: Math.min(Math.max(1024, maxOutputBytes), 256 * 1024), env: { PATH: process.env.PATH || "" } };
+  const graphOptions = { ...options, cwd: stagingDirectory };
+  const exportFile = path.join(stagingDirectory, ".beads", "issues.jsonl");
   async function capability() {
     if (!selected || !termsAcknowledged) return { status: "not_selected", reason: !selected ? "Optional Beads graph is not selected." : "Operator terms acknowledgement is required.", attribution };
+    if (tracker && tracker.kind !== "beads") return { status: "unavailable", reason: "Selected tracker is not Beads.", attribution };
+    const trackerVersion = await runCommand(trackerExecutable, ["--version"], options);
+    if (trackerVersion.status !== "completed") return { status: "unavailable", reason: `Selected tracker version check: ${trackerVersion.status}`, attribution };
     const version = await runCommand(bvPath, ["--version"], options);
     if (version.status !== "completed") return { status: "unavailable", reason: `bv version check: ${version.status}`, attribution };
     const robot = await runCommand(bvPath, ["--robot-help"], options);
-    if (robot.status !== "completed" || !/robot-graph/i.test(robot.output)) return { status: "unavailable", reason: "bv robot graph capability is unavailable.", attribution };
-    return { status: "available", version: version.output.trim(), attribution };
+    if (robot.status !== "completed" || !/robot-graph/i.test(robot.output) || !/graph-format/i.test(robot.output) || !/no-hooks/i.test(robot.output)) return { status: "unavailable", reason: "bv robot graph capability is unavailable.", attribution };
+    return { status: "available", version: version.output.trim(), trackerVersion: trackerVersion.output.trim(), attribution };
   }
   return Object.freeze({
     attribution,
@@ -188,14 +208,15 @@ export function createBeadsGraphCommandAdapter({ projectRoot, selected = false, 
     async refresh() {
       const available = await capability();
       if (available.status !== "available") return { ...available, graph: null };
-      const exported = await runCommand(bdPath, ["export", "-o", ".beads/issues.jsonl"], options);
+      await ensureDirectory(path.dirname(exportFile), { recursive: true, mode: 0o700 });
+      const exported = await runCommand(trackerExecutable, ["export", "-o", exportFile], options);
       if (exported.status !== "completed") return { status: "unavailable", reason: `Canonical bd export: ${exported.status}`, graph: null, attribution };
-      const rendered = await runCommand(bvPath, ["--robot-graph", "--graph-format=dot", "--no-hooks"], options);
+      const rendered = await runCommand(bvPath, ["--robot-graph", "--graph-format=dot", "--no-hooks"], graphOptions);
       if (rendered.status !== "completed") return { status: "unavailable", reason: `bv graph: ${rendered.status}`, graph: null, attribution };
       try {
         const payload = JSON.parse(rendered.output);
         if (typeof payload.graph !== "string" || Buffer.byteLength(payload.graph) > options.maxOutputBytes) throw new Error("Missing or oversized graph output.");
-        return { status: "available", graph: { format: "dot", content: payload.graph }, attribution };
+        return { status: "available", graph: { status: "available", format: "dot", content: payload.graph, source: { trackerId, exportFile } }, attribution };
       } catch (error) {
         return { status: "unavailable", reason: String(error.message || error), graph: null, attribution };
       }
@@ -212,7 +233,7 @@ function validOrigin(origin, port) {
 }
 
 /** Create, but do not start, an opt-in loopback-only status viewer with a fixed route allowlist. */
-export function createLoopbackDashboard({ assetsDirectory, readModel, render = renderDashboard, deadlineMs: requestedDeadlineMs = 1000, maxOutputBytes: requestedMaxOutputBytes = 512 * 1024 }) {
+export function createLoopbackDashboard({ assetsDirectory, readModel, render = renderDashboard, port: requestedPort = 0, deadlineMs: requestedDeadlineMs = 1000, maxOutputBytes: requestedMaxOutputBytes = 512 * 1024 }) {
   if (!assetsDirectory || typeof readModel !== "function") throw new Error("Loopback dashboard requires assetsDirectory and readModel.");
   let server;
   let port;
@@ -222,22 +243,23 @@ export function createLoopbackDashboard({ assetsDirectory, readModel, render = r
   const assets = new Map([["/dashboard.css", ["dashboard.css", "text/css; charset=utf-8"]], ["/dashboard.js", ["dashboard.js", "application/javascript; charset=utf-8"]]]);
   const respond = (response, status, body, type = "text/plain; charset=utf-8") => response.writeHead(status, { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff" }).end(body);
   const collect = async () => {
-    if (collection) return collection;
-    collection = (async () => {
-      const controller = new AbortController();
-      let timer;
-      try {
-        const timed = new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("Status collection deadline exceeded.")); }, deadlineMs); });
-        const model = await Promise.race([readModel({ signal: controller.signal, deadlineMs, maxOutputBytes }), timed]);
-        const html = render({ ...model, mode: "live" });
-        if (Buffer.byteLength(html) > maxOutputBytes) throw new Error("Status output exceeds limit.");
-        return html;
-      } finally {
-        clearTimeout(timer);
-        collection = undefined;
-      }
-    })();
-    return collection;
+    if (collection) return collection.result;
+    const entry = { controller: new AbortController() };
+    entry.work = Promise.resolve().then(async () => {
+      const model = await readModel({ signal: entry.controller.signal, deadlineMs, maxOutputBytes });
+      const html = render({ ...model, mode: "live" });
+      if (Buffer.byteLength(html) > maxOutputBytes) throw new Error("Status output exceeds limit.");
+      return html;
+    });
+    entry.work.catch(() => {});
+    entry.result = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { entry.controller.abort(); reject(new Error("Status collection deadline exceeded.")); }, deadlineMs);
+      entry.work.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+    });
+    entry.result.catch(() => {});
+    collection = entry;
+    entry.work.finally(() => { if (collection === entry) collection = undefined; }).catch(() => {});
+    return entry.result;
   };
   return Object.freeze({
     async start() {
@@ -263,7 +285,7 @@ export function createLoopbackDashboard({ assetsDirectory, readModel, render = r
         }
       });
       server.keepAliveTimeout = deadlineMs;
-      await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+      await new Promise((resolve, reject) => { server.once("error", reject); server.listen(requestedPort, "127.0.0.1", resolve); });
       port = server.address().port;
       return { port };
     },
@@ -271,6 +293,7 @@ export function createLoopbackDashboard({ assetsDirectory, readModel, render = r
       if (!server) return;
       const closing = server;
       server = undefined;
+      collection?.controller.abort();
       await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => { closing.closeAllConnections?.(); resolve(); }, deadlineMs);
         closing.close((error) => { clearTimeout(timeout); error ? reject(error) : resolve(); });
