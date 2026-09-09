@@ -170,6 +170,13 @@ export async function transitionTask(project, request, options = {}) {
     }
     if (reconciled && request.action === "claim") {
       if (task.owner !== request.owner || task.status !== "in_progress") return conflict("claim_changed_after_interruption");
+      if (request.writer !== undefined) {
+        const runtime = state.taskRuntime?.[task.id] ?? {};
+        if (runtime.writer && digest(runtime.writer) !== digest(request.writer)) return conflict("writer_already_registered");
+        const observed = await bounded(() => inspectWriterIdentity(request.writer));
+        if (!["active", "stopped"].includes(observed.status)) return conflict("new_writer_unverified");
+        state.taskRuntime = { ...state.taskRuntime, [task.id]: { ...runtime, writer: request.writer, compute: observed.status, explicitPause: false } };
+      }
       if (state.pendingOperations) delete state.pendingOperations[request.operationId];
       return { state, result: { taskId: task.id, action: request.action, trackerFingerprint: canonical.tracker.fingerprint, reconciled: true } };
     }
@@ -193,6 +200,11 @@ export async function transitionTask(project, request, options = {}) {
       const eligibility = taskEligibility(canonical, { scopeTaskIds: state.run?.taskIds, capacity: request.capacity });
       if (!eligibility.eligible.some(({ id }) => id === task.id)) return conflict(eligibility.held.find(({ id }) => id === task.id)?.reason ?? "not_ready");
       if (!canonical.registry.teams.some((team) => team["team id"] === request.owner) && request.owner !== canonical.registry.projectOwner) return conflict("registered_owner_required");
+      if (request.writer !== undefined) {
+        if (runtime.writer) return conflict("writer_already_registered");
+        if ((await bounded(() => inspectWriterIdentity(request.writer))).status !== "active") return conflict("new_writer_unverified");
+        state.taskRuntime = { ...state.taskRuntime, [task.id]: { ...runtime, writer: request.writer, compute: "active", explicitPause: false } };
+      }
       changes = { owner: request.owner, status: "in_progress" };
     } else if (request.action === "pause") {
       changes = { status: "paused" };
@@ -214,7 +226,9 @@ export async function transitionTask(project, request, options = {}) {
         if (!(["parked", "paused"].includes(runtime.compute))) return conflict("task_not_parked");
         if ((await bounded(() => inspectWriterIdentity(runtime.writer))).status !== "stopped") return conflict("previous_writer_not_stopped");
         if ((await bounded(() => inspectWriterIdentity(request.writer))).status !== "active") return conflict("new_writer_unverified");
-        const checkpoint = await checkpointForTask(runtime.checkpointPath);
+        const checkpointPath = runtime.checkpointPath ?? (runtime.compute === "paused" && request.explicitResume === true ? request.checkpointPath : undefined);
+        if (typeof checkpointPath !== "string" || !checkpointPath) return conflict("checkpoint_required");
+        const checkpoint = await checkpointForTask(checkpointPath);
         if (checkpoint.status === "conflict") return checkpoint;
         if ((await inspectCheckpointEvidence(project, checkpoint, options)).status !== "current") return conflict("stale_resume_evidence");
         const pending = [...(checkpoint.pendingOperations ?? []), ...Object.values(state.pendingOperations ?? {})];
@@ -226,7 +240,7 @@ export async function transitionTask(project, request, options = {}) {
           if (prerequisite.status !== "passed" || prerequisite.taskId !== task.id || prerequisite.condition !== runtime.resumeWhen || prerequisite.revision !== checkpoint.revision) return conflict("resume_evidence_required");
         }
         changes = { status: "in_progress" };
-        state.taskRuntime = { ...state.taskRuntime, [task.id]: { ...runtime, compute: "active", writer: request.writer, explicitPause: false,
+        state.taskRuntime = { ...state.taskRuntime, [task.id]: { ...runtime, compute: "active", writer: request.writer, checkpointPath, explicitPause: false,
           ...(request.prerequisiteEvidence ? { prerequisiteEvidence: request.prerequisiteEvidence } : {}) } };
       }
     } else return conflict("unsupported_transition");

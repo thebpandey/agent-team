@@ -118,6 +118,7 @@ function validateMutation(command, envelope, project) {
     string(request.expectedOwner, "task-transition request.expectedOwner");
     if (!new Set(["claim", "pause", "park", "resume"]).has(request.action)) throw new Error("task-transition request.action is invalid.");
     if (request.action === "claim") requiredString(request.owner, "task-transition request.owner");
+    if (request.action === "claim" && request.writer !== undefined) writer(request.writer, "task-transition request.writer");
     if (["park", "resume"].includes(request.action)) writer(request.writer, "task-transition request.writer");
     if (request.action === "park") {
       const repair = record(request.repair, "task-transition request.repair");

@@ -101,7 +101,7 @@ function runtimeFor(state, taskId) {
   const runtime = state?.taskRuntime?.[taskId];
   if (!runtime || typeof runtime !== "object") return null;
   return {
-    compute: ["active", "parked", "paused"].includes(runtime.compute) ? runtime.compute : "unknown",
+    compute: ["active", "parked", "paused", "stopped"].includes(runtime.compute) ? runtime.compute : "unknown",
     explicitPause: runtime.explicitPause === true,
     checkpointPath: typeof runtime.checkpointPath === "string" ? runtime.checkpointPath : null,
     resumeWhen: typeof runtime.resumeWhen === "string" ? runtime.resumeWhen : null,

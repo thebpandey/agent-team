@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 
 import { loadCanonicalState } from "../hooks/lib/canonical-state.mjs";
 import { resolveProject } from "../hooks/lib/project.mjs";
+import { captureWriterIdentity } from "../hooks/lib/task-transitions.mjs";
 import { policyFixture } from "./hook-test-helpers.mjs";
 
 const run = promisify(execFile);
@@ -157,6 +158,22 @@ test("real CLI claims a canonical Beads task whose unassigned owner is the empty
 
   assert.equal(result.status, "applied");
   assert.equal((await loadCanonicalState(project)).tasks[0].owner, "TEAM-001");
+});
+
+test("real CLI records an observed claim writer and rejects malformed writer input", async () => {
+  const value = await fixture();
+  await writeFile(value.project.paths.tasks, (await readFile(value.project.paths.tasks, "utf8")).replace("| TEAM-001 | none | in_progress |", "| none | none | ready |"));
+  const canonical = await loadCanonicalState(value.project);
+  const writer = await captureWriterIdentity();
+  const body = { operationId: "cli-claim-writer", taskId: "AT-001", action: "claim", owner: "TEAM-001",
+    expectedOwner: "none", expectedFingerprint: canonical.tracker.fingerprint, writer };
+  const malformed = await requestFile(value, "malformed-claim-writer", envelope("owner-session", 0, { ...body, writer: {} }));
+  assert.match((await invokeFailure("task-transition", "--project", value.feature, "--request", malformed)).error, /request.writer/);
+  const claim = await requestFile(value, "claim-writer", envelope("owner-session", 0, body));
+  assert.equal((await invoke("task-transition", "--project", value.feature, "--request", claim)).status, "applied");
+  const current = await loadCanonicalState(value.project);
+  assert.deepEqual(current.state.taskRuntime["AT-001"].writer, writer);
+  assert.equal(current.tasks[0].owner, "TEAM-001");
 });
 
 test("request JSON must be a bounded regular file with valid schema, actor, version, and command fields", async () => {
