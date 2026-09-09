@@ -14,6 +14,8 @@ Confirm Codex from trusted runtime/tool metadata. Select its saved role profile 
 
 These are quality-first routing defaults, not proof of account availability. Show actual parent and child model/effort from exposed controls; a skill cannot change its parent. Use the user's approved available routing/fallback, preserving quality and reporting configured versus enforceable settings. Do not stall unrelated work solely because metadata is unavailable or silently substitute a weaker model.
 
+For Codex CLI sessions, launch each developer with `-C` set to its registered feature worktree. A shell tool's `workdir` and absolute edit paths do not change the native session's working directory; the ownership guard checks that session location as well as affected paths. Arrange canonical shared-tool and skill reads through the already-authorized narrow scope before dispatch. If access is denied, report it and stop the affected operation.
+
 Use exposed Codex spawning, messaging, resume, and stop tools, not assumed shell commands. Pass supported model/effort settings explicitly. Where controls match `spawn_agent`, use `fork_turns="none"` or supported limited context for model overrides; send the compact dispatch contract and relevant evidence. Adapt to the actual schema rather than assuming identical APIs on every surface. Reuse an appropriate idle agent instead of duplicating it. Only the orchestrator dispatches.
 
 Feed observed catalog and fresh-worker results into the [native setup binding](setup.md#bind-the-native-observations) before claiming scoped readiness or saving a role change. A generated driver transfers inspected facts; it does not grant native trust or substitute for the actual dispatch.
