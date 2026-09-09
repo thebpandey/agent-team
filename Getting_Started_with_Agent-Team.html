@@ -203,7 +203,7 @@
       <ol class="flow" aria-label="Workflow overview"><li><strong>1 · Prepare</strong>Host, GitHub access, complete packages, then native hook trust.</li><li><strong>2 · Plan</strong>Use Project Kickoff, adopt an existing plan, or define a ready task directly.</li><li><strong>3 · Build</strong>Agent-Team delegates independent work, repairs findings, verifies, and reports.</li></ol>
 
       <details id="github" open>
-        <summary><span class="step">01</span><span class="summary-copy"><b>Prepare GitHub access</b><span>Install Git and GitHub CLI, sign in safely, then verify private-repository access.</span></span></summary>
+        <summary><span class="step">01</span><span class="summary-copy"><b>Prepare GitHub access</b><span>Install Git and GitHub CLI, sign in safely, then verify required repository access.</span></span></summary>
         <div class="detail-body">
           <p>You need a signed-in Codex or Claude Code installation with suitable model access, Git, <a href="https://cli.github.com/" target="_blank" rel="noreferrer">GitHub CLI (<code>gh</code>)</a>, a browser, and <a href="https://nodejs.org/" target="_blank" rel="noreferrer">Node.js 24</a> for Agent-Team's helpers and hooks. Both skill repositories are publicly visible at the time of this guide, but visibility does not grant permission under their licenses. You also need GitHub access to the project you will work on.</p>
           <div class="grid">
@@ -233,7 +233,7 @@ I want to use https://github.com/thebpandey/project-kickoff and https://github.c
                 <div class="command-meta"><span>Prompt • <a href="https://github.com/thebpandey/project-kickoff" target="_blank" rel="noreferrer">Project Kickoff v0.3.0</a></span><button class="copy" type="button">Copy prompt</button></div>
                 <pre>At this project's confirmed Git root, install the complete Project Kickoff package from https://github.com/thebpandey/project-kickoff, pinned to release tag v0.3.0, using my authenticated GitHub CLI access. First inspect the project boundary and any existing .agents/skills/project-kickoff installation. If this is not the intended Git root, or the project needs Git initialization, stop and ask me before changing anything.
 
-Install the complete private package at .agents/skills/project-kickoff. Keep SKILL.md, README.md, CHANGELOG.md, LICENSE, agents/, references/, assets/, and scripts/ together. Add this private skill to the repository's local Git exclude, not the committed .gitignore, and verify it is ignored before later project commits. Do not overwrite a customized copy, change global configuration, or activate hooks. Verify that Codex discovers the installed Skill and tell me whether I must reload.</pre>
+Install the complete licensed package at .agents/skills/project-kickoff. Keep SKILL.md, README.md, CHANGELOG.md, LICENSE, agents/, references/, assets/, and scripts/ together. Keep this installation private using the repository's local Git exclude, not the committed .gitignore, and verify it is ignored before later project commits. Do not overwrite a customized copy, change global configuration, or activate hooks. Verify that Codex discovers the installed skill and tell me whether I must reload.</pre>
               </div>
             </section>
             <section class="card">
@@ -243,7 +243,7 @@ Install the complete private package at .agents/skills/project-kickoff. Keep SKI
                 <div class="command-meta"><span>Prompt • <a href="https://github.com/thebpandey/project-kickoff" target="_blank" rel="noreferrer">Project Kickoff v0.3.0</a></span><button class="copy" type="button">Copy prompt</button></div>
                 <pre>At this project's confirmed Git root, install the complete Project Kickoff package from https://github.com/thebpandey/project-kickoff, pinned to release tag v0.3.0, using my authenticated GitHub CLI access. First inspect the project boundary and any existing .claude/skills/project-kickoff installation. If this is not the intended Git root, or the project needs Git initialization, stop and ask me before changing anything.
 
-Install the complete private package at .claude/skills/project-kickoff. Keep SKILL.md, README.md, CHANGELOG.md, LICENSE, agents/, references/, assets/, and scripts/ together. Add this private skill to the repository's local Git exclude, not the committed .gitignore, and verify it is ignored before later project commits. Do not overwrite a customized copy, change global configuration, or activate hooks. Verify that Claude Code discovers the installed Skill and tell me whether I must reload.</pre>
+Install the complete licensed package at .claude/skills/project-kickoff. Keep SKILL.md, README.md, CHANGELOG.md, LICENSE, agents/, references/, assets/, and scripts/ together. Keep this installation private using the repository's local Git exclude, not the committed .gitignore, and verify it is ignored before later project commits. Do not overwrite a customized copy, change global configuration, or activate hooks. Verify that Claude Code discovers the installed skill and tell me whether I must reload.</pre>
               </div>
             </section>
           </div>
@@ -412,7 +412,7 @@ Keep optional Context7 and the web dashboard off unless I select them. Install p
         <div class="detail-body">
           <p>The dashboard complements Agent-Team status. It shows overall task-count progress, current teams and roles, and a dedicated searchable list of <strong>all tasks</strong> with statuses, owners, priorities and dependencies—not just tasks currently assigned to agents.</p>
           <div class="grid">
-            <section class="card"><h3>Saved HTML · simplest</h3><p>Open the generated local page. Agent-Team refreshes the saved snapshot after meaningful task transitions; reloading the file reads that saved version. The page cannot execute tools or query Beads itself. No server is required.</p></section>
+            <section class="card"><h3>Saved HTML · simplest</h3><p>Open <code>.agent-team/dashboard/index.html</code> in the canonical project. When automatic snapshots are enabled, Agent-Team refreshes the file after meaningful task transitions. Reloading reads that saved version; it cannot execute tools or query Beads. No server is required.</p></section>
             <section class="card"><h3>Live refresh · opt-in</h3><p>A small Node helper listens only on your machine. Opening the page or selecting Refresh obtains current records. No build/dev framework, cloud database, task controls or public hosting is involved.</p></section>
           </div>
           <div class="command">
@@ -422,7 +422,12 @@ Keep optional Context7 and the web dashboard off unless I select them. Install p
 If I select the Beads graph provider, use the separately referenced https://github.com/Dicklesworthstone/beads_viewer by Jeffrey Emanuel and first show its complete license: https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE. Refresh the export from my actual Beads database before generating its graph. Keep the normal task/status view available if the optional provider is unavailable.</pre>
           </div>
           <aside class="note"><strong>Know what is current.</strong> Check the source and refresh time. Missing or failed reads are unknown/stale, not zero completed tasks. Cancelled and approved-deferred tasks are separated; summary parents and children are not double-counted. A task percentage is not an estimate of effort. Recorded agent activity is not proof that an agent is still running.</aside>
-          <p><strong>Third-party attribution:</strong> beads_viewer is Jeffrey Emanuel's independently maintained software. Its license includes an OpenAI/Anthropic restriction rider; attribution alone does not establish eligibility. Agent-Team references it separately and does not rebrand or redistribute its engine as unrestricted MIT. The Markdown dashboard does not require Beads or bv.</p>
+          <ol class="flow" aria-label="How optional graph refresh works">
+            <li><strong>1 · Read the authority</strong>The selected Beads database owns task state. Export fresh data into isolated rendering storage.</li>
+            <li><strong>2 · Read graph data</strong>The optional bv adapter requests JSON adjacency with hooks disabled. It does not copy or rebrand the TUI engine.</li>
+            <li><strong>3 · Show the snapshot</strong>Click a graph node, or use Enter/Space, to filter tasks. The all-task list remains available without a graph.</li>
+          </ol>
+          <p><strong>Third-party attribution:</strong> <a href="https://github.com/Dicklesworthstone/beads_viewer">beads_viewer</a> is Jeffrey Emanuel's independently maintained software. Its <a href="https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE">complete license and disclaimers</a> include an OpenAI/Anthropic restriction rider; attribution alone does not establish eligibility. Agent-Team references it separately and does not rebrand or redistribute its engine as unrestricted MIT. The built-in dashboard also works with the selected Markdown tracker, without Beads or bv.</p>
         </div>
       </details>
 
