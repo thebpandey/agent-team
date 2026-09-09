@@ -19,6 +19,9 @@ const validId = (value) => typeof value === "string" && /^[\w.:-]{1,128}$/.test(
 const strings = (value) => Array.isArray(value) && value.length > 0 && value.length <= 100 && value.every((item) => typeof item === "string" && item.trim() && item.length <= 4096);
 const decision = (status, reason, extra = {}) => ({ status, ready: false, reason, ...extra });
 const relative = (value) => typeof value === "string" && value && value.length <= 256 && !path.isAbsolute(value) && !value.split(/[\\/]/).includes("..") && !/[\r\n\0|]/.test(value);
+const trackerSelection = (tracker) => tracker?.kind === "beads"
+  ? { kind: "beads", executable: tracker.executable ?? "bd" }
+  : { kind: tracker?.kind, path: tracker?.path };
 function completeState(state, { taskIds, integrationOwner, branch }) {
   const booleanFields = (record, fields) => record && fields.every((field) => typeof record[field] === "boolean");
   if (state?.schemaVersion !== 1 || !Number.isSafeInteger(state.stateVersion) || state.stateVersion < 0
@@ -75,6 +78,7 @@ export function initializationRecordProblem(setup, canonical, { projectRoot, val
   const selected = resolveTracker(projectRoot, setup.tracker);
   if (selected.reason || !canonical.tracker || canonical.tracker.reason === "invalid_selection"
     || Object.entries(selected).some(([key, value]) => canonical.tracker[key] !== value)) return "invalid_tracker_selection";
+  if (!receipt.trackerSelection || stable(receipt.trackerSelection) !== stable(trackerSelection(setup.tracker))) return "initialization_tracker_changed";
   if (!completeState(canonical.state, { taskIds: ids, integrationOwner: canonical.registry.integrationOwner, branch: setup.plan.branch })) return "required_state_facts_missing";
   if (validateTracker) {
     if (canonical.tracker?.status !== "current") return "tracker_unavailable";
@@ -270,7 +274,7 @@ export async function initializeProject(projectPath, request, options = {}) {
         if ((await read(paths.setup)) !== setupSource) return decision("conflict", "setup_changed_during_initialization");
         const { tasks: _tasks, ...plan } = request.plan;
         const completed = { ...setup, schemaVersion: 1, version: (setup?.version ?? 0) + 1, skill: "agent-team", projectId: request.projectId,
-          tracker: request.tracker, plan: { ...setup?.plan, ...plan, taskIds }, initialization: { status: "complete", operationId: request.operationId, signature, source: request.source } };
+          tracker: request.tracker, plan: { ...setup?.plan, ...plan, taskIds }, initialization: { status: "complete", operationId: request.operationId, signature, source: request.source, trackerSelection: trackerSelection(request.tracker) } };
         await publish(paths.setup, json(completed), setupSource !== undefined);
         budget.check();
         await rm(journalPath, { force: true });
