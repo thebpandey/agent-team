@@ -1,5 +1,11 @@
 # Changelog
 
+## 7.0.1 - 2026-09-09
+
+Version 7.0.1 is a maintenance update for the 7.0.0 package.
+
+- Normalize release archive file modes to portable `0644` files and `0755` executables, and cross-check locally built archives against CI mode expectations so checksums and extracted permissions are reproducible across environments.
+
 ## 7.0.0 - 2026-09-09
 
 Version 7.0.0 adds explicit host/scope installation and the updated Agent-Team workflow for Codex and Claude Code.

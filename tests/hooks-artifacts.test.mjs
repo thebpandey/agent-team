@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -28,7 +28,7 @@ test("source and extracted universal CLIs complete every host and scope lifecycl
   temporary.push(extracted, updated);
 
   assert.equal(built.archives.length, 1);
-  assert.equal(path.basename(built.archives[0]), "agent-team-7.0.0.zip");
+  assert.equal(path.basename(built.archives[0]), "agent-team-7.0.1.zip");
   await run("unzip", ["-q", built.archives[0], "-d", extracted]);
   const packageRoot = path.join(extracted, "agent-team");
   const updatedRoot = path.join(updated, "agent-team");
@@ -142,6 +142,37 @@ test("artifact validation reports source-only checks as not applicable", async (
   assert.equal(result.status, "not_applicable");
 });
 
+test("archive permissions and validation are independent of checkout write permissions", async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), "agent-team-artifact-modes-"));
+  temporary.push(fixture);
+  await mkdir(path.join(fixture, "hooks"));
+  const manifest = JSON.parse(await readFile(path.join(sourceRoot, "hooks", "manifest.json"), "utf8"));
+  manifest.files = ["note.txt", "tool.mjs"];
+  await writeFile(path.join(fixture, "hooks", "manifest.json"), JSON.stringify(manifest));
+  await writeFile(path.join(fixture, "note.txt"), "fixture text\n");
+  await writeFile(path.join(fixture, "tool.mjs"), "#!/usr/bin/env node\n");
+  const builds = [];
+  for (const [label, noteMode, toolMode] of [["standard", 0o644, 0o755], ["group-writable", 0o664, 0o775]]) {
+    await chmod(path.join(fixture, "note.txt"), noteMode);
+    await chmod(path.join(fixture, "tool.mjs"), toolMode);
+    const outputDirectory = path.join(fixture, label);
+    await mkdir(outputDirectory);
+    const built = await buildArtifacts({ sourceRoot: fixture, outputDirectory, sourceRevision: "mode-fixture" });
+    builds.push(built.archives[0]);
+    assert.equal((await stat(path.join(fixture, "note.txt"))).mode & 0o777, noteMode);
+    assert.equal((await stat(path.join(fixture, "tool.mjs"))).mode & 0o777, toolMode);
+  }
+  assert.deepEqual(await readFile(builds[0]), await readFile(builds[1]));
+  for (const archive of builds) {
+    const modes = new Map((await readZip(archive)).map(({ name, mode }) => [name, mode]));
+    assert.equal(modes.get("agent-team/note.txt"), 0o100644);
+    assert.equal(modes.get("agent-team/tool.mjs"), 0o100755);
+    assert.equal(modes.get(manifest.artifacts.metadata), 0o100644);
+    const result = await checkArtifacts({ sourceRoot: fixture, archives: [archive], expectedRevision: "mode-fixture" });
+    assert.equal(result.status, "passed", result.errors.join("\n"));
+  }
+});
+
 test("the reproducible universal archive matches the manifest and source", async () => {
   // This test catches platform payload drift and nondeterministic archive output.
   const first = await artifacts();
@@ -164,7 +195,7 @@ test("archives identify the canonical repository and pinned release source", asy
     const source = JSON.parse(entries.find(({ name }) => name === "agent-team/.agent-team-source.json").data.toString("utf8"));
     assert.deepEqual(source.hosts, ["codex", "claude-code"]);
     assert.equal(source.repository, "https://github.com/thebpandey/agent-team");
-    assert.equal(source.releaseTag, "v7.0.0");
+    assert.equal(source.releaseTag, "v7.0.1");
     assert.equal(source.sourceRevision, "fixture-revision");
   }
 });

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "agent-team",
-  "version": "7.0.0",
+  "version": "7.0.1",
   "repository": "https://github.com/thebpandey/agent-team",
   "rootFiles": [
     "CHANGELOG.md",

@@ -118,7 +118,8 @@ async function expectedEntries(sourceRoot, manifest, sourceRevision) {
     entries.push({
       name: `${manifest.artifacts.prefix}${file}`,
       data: await readFile(source),
-      mode: (await stat(source)).mode,
+      // Checkout umasks must not change release bytes; preserve executability only.
+      mode: (await stat(source)).mode & 0o111 ? 0o100755 : 0o100644,
     });
   }
   entries.push({
