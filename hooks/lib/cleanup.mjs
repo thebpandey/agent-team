@@ -27,7 +27,19 @@ export async function cleanupDevelopmentWorktree(project, request, options = {})
     if (target === project.root || within(target, project.root)) return retained("retain_canonical_checkout");
     if (JSON.stringify(gate.writer) !== JSON.stringify(request.expectedWriter)
       || (await bounded(() => inspectWriterIdentity(gate.writer))).status !== "stopped") return retained("retain_writer_not_stopped");
-    if (!canonical.registry.teams.some((team) => path.resolve(project.root, team.worktree ?? "") === target)) return retained("retain_unregistered_worktree");
+    const tracker = await loadCanonicalTracker(project, options);
+    if (tracker.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable" };
+    const task = tracker.tasks.find((entry) => entry.id === request.taskId);
+    if (!gate.taskOwner || task?.owner !== gate.taskOwner) return retained("retain_task_owner_changed");
+    const assignedTeams = canonical.registry.teams.filter((team) => path.resolve(project.root, team.worktree ?? "") === target);
+    if (!assignedTeams.some((team) => team["team id"] === task.owner && team.tasks?.split(/\s*,\s*/).includes(task.id))) return retained("retain_unregistered_worktree");
+    if (assignedTeams.some((team) => team.tasks?.split(/\s*,\s*/).some((id) => id && id !== task.id))
+      || tracker.tasks.some((other) => other.id !== task.id && assignedTeams.some((team) => team["team id"] === other.owner))
+      || Object.entries(state.taskRuntime ?? {}).some(([id, runtime]) => id !== task.id && runtime.worktree && path.resolve(project.root, runtime.worktree) === target)) return retained("retain_other_task_assignment");
+    const runtime = state.taskRuntime?.[task.id];
+    if (!runtime || JSON.stringify(runtime.writer) !== JSON.stringify(gate.writer)
+      || runtime.worktree && path.resolve(project.root, runtime.worktree) !== target
+      || (await bounded(() => inspectWriterIdentity(runtime.writer))).status !== "stopped") return retained("retain_current_writer_not_stopped");
     const pending = state.pendingOperations?.[request.operationId];
     const exists = await bounded(() => access(target).then(() => true, (error) => error.code === "ENOENT" ? false : Promise.reject(error)));
     if (!exists && pending?.kind === "worktree_cleanup" && pending.worktree === target && pending.revision === gate.revision) {
@@ -41,8 +53,6 @@ export async function cleanupDevelopmentWorktree(project, request, options = {})
     if (await bounded(() => realpath(target)) !== target) return retained("retain_symlink_worktree");
     const registered = (await git(project.root, ["worktree", "list", "--porcelain"])).stdout.includes(`worktree ${target}\n`);
     if (!registered) return retained("retain_unregistered_worktree");
-    const tracker = await loadCanonicalTracker(project, options);
-    if (tracker.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable" };
     if (!tracker.tasks.some((task) => task.id === request.taskId && ["verified", "integrated", "deployed", "closed", "done"].includes(task.status))) return retained("retain_unverified_task");
     if (gate.verification?.status !== "passed" || gate.verification.revision !== gate.revision || !gate.integrationRef) return retained("retain_unverified_revision");
     if ((await git(target, ["rev-parse", "HEAD"])).stdout.trim() !== gate.revision) return retained("retain_changed_revision");

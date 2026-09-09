@@ -6,6 +6,8 @@ import path from "node:path";
 import os from "node:os";
 import { loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs";
 import { withDirectoryLock } from "./lock.mjs";
+import { inspectCheckpointEvidence } from "./recovery.mjs";
+import { beadsEnvironment } from "./tracker.mjs";
 
 const digest = (value) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
 const operationSignature = ({ expectedVersion, expectedFingerprint, ...operation }) => digest(operation);
@@ -14,6 +16,23 @@ const conflict = (reason) => ({ status: "conflict", reason });
 const finished = new Set(["verified", "integrated", "deployed", "closed", "done"]);
 const unclaimed = new Set(["", "none", "unassigned", "-"]);
 const split = (value) => Array.isArray(value) ? value : String(value ?? "").split(/\s*,\s*/).filter((id) => id && !["none", "-"].includes(id));
+
+function pendingAffectsTask(entry, task, canonical, project) {
+  const taskIds = [...(entry.taskId ? [entry.taskId] : []), ...(Array.isArray(entry.taskIds) ? entry.taskIds : [])];
+  const resources = [entry.worktree, ...(Array.isArray(entry.resources) ? entry.resources : [])].filter((value) => typeof value === "string" && value);
+  if (entry.scope === "global" || entry.global === true || taskIds.includes(task.id) || (!taskIds.length && !resources.length)) return true;
+  const worktree = canonical.registry.teams.find((team) => team["team id"] === task.owner)?.worktree ?? project.worktreeRoot;
+  for (const id of taskIds) {
+    const other = canonical.tasks.find((candidate) => candidate.id === id);
+    const assigned = canonical.registry.teams.find((team) => team["team id"] === other?.owner)?.worktree;
+    if (assigned) resources.push(assigned);
+  }
+  return resources.some((resource) => {
+    const target = path.resolve(project.root, resource);
+    const current = path.resolve(project.root, worktree);
+    return target === current || target.startsWith(`${current}${path.sep}`) || current.startsWith(`${target}${path.sep}`);
+  });
+}
 
 /** Bind a local writer to boot and process-start identity; a PID alone is insufficient. */
 export async function captureWriterIdentity(pid = process.pid) {
@@ -78,7 +97,10 @@ export async function mutateOperationalState(project, request, mutator, options 
       operationId: request.operationId, actorSessionId: request.actorSessionId, pid: process.pid,
     }, async () => {
       const canonical = await loadCanonicalState(project, { includeTasks: false, budget });
-      if (request.actorSessionId !== canonical.registry.projectOwner) return conflict("project_owner_required");
+      const owner = canonical.registry.projectOwner;
+      if (typeof owner !== "string" || !/^[\w.:-]{1,128}$/.test(owner) || ["none", "unknown", "unassigned", "-"].includes(owner.toLowerCase())
+        || typeof request.actorSessionId !== "string" || !/^[\w.:-]{1,128}$/.test(request.actorSessionId)
+        || request.actorSessionId !== owner || !canonical.registry.projectId || canonical.registry.projectId !== project.projectId) return conflict("project_owner_required");
       const signature = operationSignature(request);
       const previous = canonical.state.operationReceipts?.[request.operationId];
       if (previous) return previous.signature === signature
@@ -130,12 +152,22 @@ function replaceTask(source, taskId, changes) {
 /** Claim or transition one task through the registered project owner. */
 export async function transitionTask(project, request, options = {}) {
   const bounded = (action) => options.budget ? options.budget.run(action) : action();
-  return mutateOperationalState(project, request, async (state, canonical) => {
+  return mutateOperationalState(project, request, async (state, canonical, { persistIntent }) => {
     Object.assign(canonical, await loadCanonicalTracker(project, options));
     if (canonical.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable", tracker: canonical.tracker };
     const task = canonical.tasks.find(({ id }) => id === request.taskId);
+    if (Object.entries(state.pendingOperations ?? {}).some(([id, entry]) => id !== request.operationId && entry.taskId === request.taskId
+      && ["uncertain", "pending", "unknown"].includes(entry.phase ?? entry.status))) return { status: "unavailable", reason: "pending_task_operation" };
     const marker = `[agent-team-operation:${request.operationId}:${operationSignature(request)}]`;
     const reconciled = task?.["revision / evidence"]?.includes(marker);
+    const pendingIntent = state.pendingOperations?.[request.operationId];
+    if (reconciled && pendingIntent?.changes) {
+      const status = canonical.tracker.kind === "beads" && ["paused", "parked"].includes(pendingIntent.changes.status) ? "deferred" : pendingIntent.changes.status;
+      if (task.owner !== (pendingIntent.changes.owner ?? request.expectedOwner) || task.status !== status) return conflict("task_changed_after_interruption");
+      if (pendingIntent.intendedRuntime) state.taskRuntime = { ...state.taskRuntime, [task.id]: pendingIntent.intendedRuntime };
+      delete state.pendingOperations[request.operationId];
+      return { state, result: { taskId: task.id, action: request.action, trackerFingerprint: canonical.tracker.fingerprint, reconciled: true } };
+    }
     if (reconciled && request.action === "claim") {
       if (task.owner !== request.owner || task.status !== "in_progress") return conflict("claim_changed_after_interruption");
       if (state.pendingOperations) delete state.pendingOperations[request.operationId];
@@ -184,8 +216,10 @@ export async function transitionTask(project, request, options = {}) {
         if ((await bounded(() => inspectWriterIdentity(request.writer))).status !== "active") return conflict("new_writer_unverified");
         const checkpoint = await checkpointForTask(runtime.checkpointPath);
         if (checkpoint.status === "conflict") return checkpoint;
+        if ((await inspectCheckpointEvidence(project, checkpoint, options)).status !== "current") return conflict("stale_resume_evidence");
         const pending = [...(checkpoint.pendingOperations ?? []), ...Object.values(state.pendingOperations ?? {})];
-        if (pending.some((entry) => ["unknown", "uncertain", "pending"].includes(entry.phase ?? entry.status))) return conflict("operation_reconciliation_required");
+        if (pending.some((entry) => ["unknown", "uncertain", "pending"].includes(entry.phase ?? entry.status)
+          && pendingAffectsTask(entry, task, canonical, project))) return conflict("operation_reconciliation_required");
         if (runtime.resumeWhen) {
           if (!request.prerequisiteEvidence) return conflict("resume_evidence_required");
           const prerequisite = JSON.parse(await bounded(() => readFile(request.prerequisiteEvidence, "utf8")));
@@ -211,12 +245,10 @@ export async function transitionTask(project, request, options = {}) {
         const args = request.action === "claim" ? ["update", task.id, "--claim", "--actor", request.owner]
           : ["update", task.id, "--status", nativeStatus, "--actor", request.actorSessionId];
         args.push("--append-notes", marker, "--json");
-        const intent = { ...canonical.state, stateVersion: (canonical.state.stateVersion ?? 0) + 1,
-          pendingOperations: { ...canonical.state.pendingOperations, [request.operationId]: { phase: "uncertain", kind: "tracker_transition", taskId: task.id, signature: operationSignature(request), ownerSessionId: request.actorSessionId } } };
-        await atomicWrite(project.paths.state, `${JSON.stringify(intent, null, 2)}\n`, options);
-        state.stateVersion = intent.stateVersion;
+        await persistIntent({ phase: "uncertain", kind: "tracker_transition", taskId: task.id, action: request.action, changes,
+          intendedRuntime: state.taskRuntime?.[task.id], worktree: canonical.registry.teams.find((team) => team["team id"] === task.owner)?.worktree });
         try {
-          await (options.runBeads ?? run)(project.tracker.executable ?? "bd", args, { cwd: project.root, env: { ...process.env, BEADS_DIR: project.tracker.path },
+          await (options.runBeads ?? run)(project.tracker.executable ?? "bd", args, { cwd: project.root, env: beadsEnvironment(project, options.environment),
             encoding: "utf8", timeout: options.budget?.timeout(1500) ?? 1500, maxBuffer: 1024 * 1024,
             ...(options.budget ? { signal: options.budget.signal } : {}) });
         } catch { return { status: "unavailable", reason: "tracker_write_uncertain" }; }

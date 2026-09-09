@@ -25,7 +25,8 @@ async function fixture() {
   await writeFile(evidencePath, JSON.stringify({ status: "passed", revision: value.revision, taskId: "AT-001" }));
   await writeFile(project.paths.tasks, (await readFile(project.paths.tasks, "utf8")).replace("in_progress", "verified"));
   value.state.cleanup = { "AT-001": { worktree: value.feature, revision: value.revision, integrationRef: "main", verification: { status: "passed", revision: value.revision },
-    writer, evidencePaths: [evidencePath], resourceOwner: "agent-team", previewRequired: false, retain: false } };
+    writer, taskOwner: "TEAM-001", evidencePaths: [evidencePath], resourceOwner: "agent-team", previewRequired: false, retain: false } };
+  value.state.taskRuntime = { "AT-001": { compute: "parked", writer, worktree: value.feature } };
   value.state.release.autoDeploy = false;
   await writeFile(project.paths.state, JSON.stringify(value.state));
   return { ...value, project, writer, evidencePath, request: { actorSessionId: "owner-session", operationId: "cleanup-one", expectedVersion: 0, taskId: "AT-001", expectedRevision: value.revision, worktree: value.feature, expectedWriter: writer } };
@@ -80,5 +81,21 @@ for (const kind of ["tracked", "untracked", "ignored", "user_owned", "unknown_wr
     assert.equal(result.status, "conflict");
     assert.match(result.reason, /retain|dirty|writer|preview|owner/);
     await access(value.feature);
+  });
+}
+
+for (const kind of ["replacement_writer", "changed_owner", "other_task", "other_runtime", "missing_runtime"]) {
+  test(`cleanup retains checkout when current ${kind} no longer matches the old cleanup assignment`, async () => {
+    const value = await fixture();
+    if (kind === "replacement_writer") value.state.taskRuntime["AT-001"].writer = await captureWriterIdentity();
+    if (kind === "changed_owner") await writeFile(value.project.paths.tasks, (await readFile(value.project.paths.tasks, "utf8")).replace("TEAM-001", "TEAM-NEW"));
+    if (kind === "other_task") await writeFile(value.project.paths.teams, (await readFile(value.project.paths.teams, "utf8")).replace("| AT-001 |", "| AT-001, AT-OTHER |"));
+    if (kind === "other_runtime") value.state.taskRuntime["AT-OTHER"] = { worktree: value.feature, compute: "active", writer: await captureWriterIdentity() };
+    if (kind === "missing_runtime") delete value.state.taskRuntime;
+    await writeFile(value.project.paths.state, JSON.stringify(value.state));
+    const result = await cleanup(value.project, value.request);
+    assert.equal(result.status, "conflict");
+    await access(value.feature);
+    await access(value.evidencePath);
   });
 }

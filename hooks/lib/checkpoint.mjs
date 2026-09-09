@@ -14,6 +14,11 @@ function safeId(value) {
   return String(value || "unknown").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 120);
 }
 
+const fingerprint = (value) => createHash("sha256").update(value).digest("hex");
+const operationSignature = (input) => fingerprint(JSON.stringify(Object.fromEntries(fields
+  .filter((field) => input[field] !== undefined && input[field] !== "")
+  .map((field) => [field, redact(input[field], field)]))));
+
 function redact(value, key = "") {
   if (/password|secret|token|credential|connection|string|raw.?sql|prompt|argument|content/i.test(key)) return "[REDACTED]";
   if (Array.isArray(value)) return value.map((entry) => redact(entry));
@@ -76,9 +81,33 @@ export async function writeCheckpoint(project, input, { now = new Date(), timeou
   }, async () => {
     const previous = await bounded(() => existing(file));
     if (previous?.sessionId && previous.sessionId !== input.sessionId) return { status: "conflict", reason: "checkpoint_identity_collision" };
-    if (input.eventId && previous?.eventId === input.eventId) return { status: "duplicate", created: false, path: file, checkpoint: previous, version: previous.version };
+    const receipts = { ...previous?.operationReceipts };
+    if (previous?.eventId && !receipts[fingerprint(String(previous.eventId))]) receipts[fingerprint(String(previous.eventId))] = { signature: null, version: previous.version ?? 0 };
+    const receiptKey = input.eventId ? fingerprint(String(input.eventId)) : null;
+    const receiptDirectory = path.join(project.paths.checkpoints, ".receipts", fingerprint(String(input.sessionId ?? "unknown")));
+    const signature = operationSignature(input);
+    const recorded = receiptKey && (receipts[receiptKey] ?? await bounded(() => existing(path.join(receiptDirectory, `${receiptKey}.json`))));
+    if (recorded) return recorded.signature === signature
+      ? { status: "duplicate", created: false, path: file, checkpoint: previous, version: previous.version, operationVersion: recorded.version }
+      : { status: "conflict", reason: "operation_identity_reused", created: false, path: file, version: previous.version };
     if (expectedVersion !== undefined && expectedVersion !== (previous?.version ?? 0)) return { status: "conflict", reason: "stale_version", created: false, path: file, version: previous?.version ?? 0 };
+    if (receiptKey && Object.keys(receipts).length >= 128) {
+      // Archive only already-committed receipts before evicting the bounded read index.
+      const [oldestKey, oldest] = Object.entries(receipts)[0];
+      budget?.check();
+      await bounded(() => mkdir(receiptDirectory, { recursive: true, mode: 0o700 }));
+      const archive = path.join(receiptDirectory, `${oldestKey}.json`);
+      try {
+        budget?.check();
+        await bounded(() => writeFile(archive, `${JSON.stringify(oldest)}\n`, { flag: "wx", mode: 0o600, ...(budget ? { signal: budget.signal } : {}) }));
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        if (JSON.stringify(await bounded(() => existing(archive))) !== JSON.stringify(oldest)) return { status: "conflict", reason: "checkpoint_receipt_conflict", created: false };
+      }
+      delete receipts[oldestKey];
+    }
     const checkpoint = checkpointData(input, previous, now);
+    checkpoint.operationReceipts = { ...receipts, ...(receiptKey ? { [receiptKey]: { signature, version: checkpoint.version } } : {}) };
     checkpoint.sourceEvidence = [];
     for (const pointer of checkpoint.sourcePointers ?? []) {
       if (input.sourcePointers === undefined) {
@@ -91,7 +120,7 @@ export async function writeCheckpoint(project, input, { now = new Date(), timeou
         checkpoint.sourceEvidence.push({ path: pointer.path, fingerprint: createHash("sha256").update(source).digest("hex") });
       } catch { checkpoint.sourceEvidence.push({ path: pointer.path, fingerprint: null }); }
     }
-    if (Buffer.byteLength(JSON.stringify(checkpoint)) > 32768) return { status: "conflict", reason: "checkpoint_too_large" };
+    if (Buffer.byteLength(`${JSON.stringify(checkpoint, null, 2)}\n`) > 32768) return { status: "conflict", reason: "checkpoint_too_large" };
     const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
     try {
       budget?.check();

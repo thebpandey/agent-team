@@ -25,8 +25,19 @@ test("explicit selected Beads executable is canonical across linked worktrees; i
   const linked = await resolveProject(value.feature);
   assert.deepEqual(main.tracker, linked.tracker);
   assert.equal(linked.tracker.executable, "/selected/bin/bd");
-  const current = await loadCanonicalState(linked, { runBeads: async (binary) => { assert.equal(binary, "/selected/bin/bd"); return beads(); } });
+  const environment = { ...process.env, BEADS_DB: "/wrong/db", BD_DB: "/wrong/other", BEADS_DOLT_SERVER_HOST: "wrong-host", BEADS_DOLT_SERVER_DATABASE: "wrong-database", BEADS_DOLT_SERVER_PASSWORD: "fixture-auth" };
+  const current = await loadCanonicalState(linked, { environment, runBeads: async (binary, _args, options) => {
+    assert.equal(binary, "/selected/bin/bd");
+    assert.equal(options.env.BEADS_DB, undefined);
+    assert.equal(options.env.BD_DB, undefined);
+    assert.equal(options.env.BEADS_DOLT_SERVER_HOST, undefined);
+    assert.equal(options.env.BEADS_DOLT_SERVER_DATABASE, undefined);
+    assert.equal(options.env.BEADS_DOLT_SERVER_PASSWORD, "fixture-auth");
+    assert.equal(options.env.BEADS_DIR, path.join(value.root, ".beads"));
+    return beads();
+  } });
   assert.equal(current.tracker.executableSource, "selected");
+  assert.equal(current.tracker.status, "current");
   for (const executable of ["bd", "", null]) {
     await writeFile(main.paths.setup, JSON.stringify({ skill: "agent-team", tracker: { kind: "beads", executable } }));
     const invalid = await loadCanonicalState(await resolveProject(value.feature));

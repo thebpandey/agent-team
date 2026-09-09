@@ -6,6 +6,19 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+/** Pin routing to selected project metadata, while preserving authentication/runtime settings. */
+export function beadsEnvironment(project, environment = process.env) {
+  const env = { ...environment };
+  const routing = ["DB", "DOLT_DATA_DIR", "DOLT_DATABASE", "DOLT_SERVER_DATABASE", "DOLT_HOST", "DOLT_PORT", "DOLT_SERVER_HOST",
+    "DOLT_SERVER_PORT", "DOLT_SERVER_SOCKET", "DOLT_SHARED_SERVER", "DOLT_SERVER_MODE", "SHARED_SERVER_DIR",
+    "ROUTING_MODE", "ROUTING_DEFAULT", "ROUTING_MAINTAINER", "ROUTING_CONTRIBUTOR"];
+  for (const key of routing) for (const prefix of ["BEADS_", "BD_"]) delete env[`${prefix}${key}`];
+  for (const key of ["GT_DOLT_DATA", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"]) delete env[key];
+  env.BEADS_DIR = project.tracker?.path ?? resolveTracker(project.root, project.setup?.tracker).path;
+  env.PWD = project.root;
+  return env;
+}
+
 /** Selection is explicit; only absent legacy selectors use the historical path. */
 export function resolveTracker(root, selection) {
   const selected = selection === undefined ? { kind: "markdown", path: ".agent-team/TASKS.md" } : selection;
@@ -28,7 +41,7 @@ export function trackerFingerprint(tracker, source) {
 }
 
 /** Read only the selected authority. Never synthesize a passing fallback ledger. */
-export async function readTracker(project, { runBeads = run, budget } = {}) {
+export async function readTracker(project, { runBeads = run, budget, environment } = {}) {
   const selected = project.tracker ?? resolveTracker(project.root, project.setup?.tracker);
   const tracker = { ...selected, status: "unavailable", fingerprint: null, observedAt: new Date().toISOString() };
   if (selected.reason) return { tracker, tasks: [], source: "" };
@@ -40,7 +53,7 @@ export async function readTracker(project, { runBeads = run, budget } = {}) {
         cwd: project.root, encoding: "utf8", timeout: budget?.timeout(1500) ?? 1500,
         maxBuffer: 1024 * 1024, ...(budget ? { signal: budget.signal } : {}),
         // A host/worktree environment must not redirect the selected project authority.
-        env: { ...process.env, BEADS_DIR: selected.path },
+        env: beadsEnvironment(project, environment),
       });
       source = result.stdout;
       const rows = JSON.parse(source);

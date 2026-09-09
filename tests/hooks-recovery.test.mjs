@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -78,6 +79,54 @@ test("semantic checkpoint rejects wrong actor and oversized packet before overwr
   const input = { eventId: "authored", sessionId: "developer-session", taskIds: ["AT-001"], nextAction: "Run owned tests." };
   assert.equal((await writeCheckpoint(value.project, input, { actorSessionId: "other-session", expectedVersion: 0 })).reason, "checkpoint_owner_required");
   assert.equal((await writeCheckpoint(value.project, { ...input, decisionNotes: "x".repeat(33000) }, { actorSessionId: "developer-session", expectedVersion: 0 })).reason, "checkpoint_too_large");
+});
+
+test("automatic checkpoint HEAD refresh cannot move verification authored at an older revision", async () => {
+  const value = await fixture();
+  await writeCheckpoint(value.project, { eventId: "verified-at-a", sessionId: "developer-session", taskIds: ["AT-001"], worktree: value.feature,
+    revision: value.revision, evidenceRevision: value.revision, nextAction: "Use original verification only for revision A." });
+  await writeFile(path.join(value.feature, "src/owned.js"), "export const updated = true;\n");
+  execFileSync("git", ["add", "src/owned.js"], { cwd: value.feature });
+  execFileSync("git", ["commit", "-qm", "new revision"], { cwd: value.feature });
+  const next = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.feature, encoding: "utf8" }).trim();
+  await writeCheckpoint(value.project, { eventId: "refresh-at-b", sessionId: "developer-session", taskIds: ["AT-001"], worktree: value.feature, revision: next });
+  const result = await inspectRecovery(value.project, { sessionId: "developer-session", taskId: "AT-001", includeGit: true });
+  assert.equal(result.evidenceRevision, value.revision);
+  assert.equal(result.revision, next);
+  assert.equal(result.evidenceStatus, "stale");
+  assert.equal(result.status, "stale");
+});
+
+test("checkpoint receipts reject changed semantics and older replay without restoring obsolete next actions", async () => {
+  const value = await fixture();
+  const first = { eventId: "first-semantic", sessionId: "developer-session", taskIds: ["AT-001"], nextAction: "First action." };
+  const second = { ...first, eventId: "second-semantic", nextAction: "Current action." };
+  await writeCheckpoint(value.project, first);
+  const latest = await writeCheckpoint(value.project, second);
+  const changed = await writeCheckpoint(value.project, { ...second, nextAction: "Changed operation identity." });
+  assert.equal(changed.status, "conflict");
+  assert.equal(changed.reason, "operation_identity_reused");
+  const replay = await writeCheckpoint(value.project, first);
+  assert.equal(replay.status, "duplicate");
+  const stored = JSON.parse(await readFile(latest.path, "utf8"));
+  assert.equal(stored.nextAction, "Current action.");
+  assert.equal(stored.version, latest.version);
+});
+
+test("bounded checkpoint index archives immutable receipts and retains old replay protection beyond 128 events", async () => {
+  const value = await fixture();
+  let latest;
+  for (let index = 0; index < 128; index += 1) latest = await writeCheckpoint(value.project, { eventId: `event-${index}`, sessionId: "developer-session", taskIds: ["AT-001"], nextAction: `Action ${index}.` });
+  const full = await writeCheckpoint(value.project, { eventId: "event-overflow", sessionId: "developer-session", taskIds: ["AT-001"], nextAction: "Continue without discarding old receipts." });
+  assert.equal(full.status, "applied");
+  const replay = await writeCheckpoint(value.project, { eventId: "event-0", sessionId: "developer-session", taskIds: ["AT-001"], nextAction: "Action 0." });
+  assert.equal(replay.status, "duplicate");
+  assert.equal(JSON.parse(await readFile(latest.path, "utf8")).nextAction, "Continue without discarding old receipts.");
+  const changedReplay = await writeCheckpoint(value.project, { eventId: "event-0", sessionId: "developer-session", taskIds: ["AT-001"], nextAction: "Changed past operation." });
+  assert.equal(changedReplay.reason, "operation_identity_reused");
+  assert.ok(Object.keys(JSON.parse(await readFile(latest.path, "utf8")).operationReceipts).length <= 128);
+  assert.ok((await readdir(path.join(value.project.paths.checkpoints, ".receipts"), { recursive: true })).some((entry) => entry.endsWith(".json")));
+  assert.ok(Buffer.byteLength(await readFile(latest.path, "utf8")) <= 32768);
 });
 
 test("deadline while waiting for a lock never runs its mutation after the lock is released", async () => {

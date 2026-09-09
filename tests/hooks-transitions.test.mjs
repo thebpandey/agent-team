@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -95,6 +95,25 @@ if (process.argv[2] === "writer") {
     assert.equal(renames, 0);
   });
 
+  test("missing, blank or malformed registry owner never grants an absent actor mutation authority", async () => {
+    const { mutateOperationalState } = await api();
+    for (const source of [null, "", "Project: project-1\nProject owner:   \n", "Project: project-1\nProject owner: not an identity\n"]) {
+      const value = await fixture();
+      if (source === null) await rm(value.project.paths.teams); else await writeFile(value.project.paths.teams, source);
+      let invoked = false;
+      const result = await mutateOperationalState(value.project, { operationId: "missing-authority", expectedVersion: 0 }, () => { invoked = true; return {}; });
+      assert.equal(result.status, "conflict");
+      assert.equal(result.reason, "project_owner_required");
+      assert.equal(invoked, false);
+    }
+    const value = await fixture();
+    await writeFile(value.project.paths.teams, "Project: project-1\nProject owner: none\n");
+    let invoked = false;
+    const placeholder = await mutateOperationalState(value.project, { operationId: "placeholder-authority", actorSessionId: "none", expectedVersion: 0 }, () => { invoked = true; return {}; });
+    assert.equal(placeholder.reason, "project_owner_required");
+    assert.equal(invoked, false);
+  });
+
   test("eligibility respects dependencies, finite scope, project pause and reserved review capacity", async () => {
     const { taskEligibility } = await api();
     const value = await fixture();
@@ -117,7 +136,7 @@ if (process.argv[2] === "writer") {
       assert.equal((await inspectWriterIdentity(writer)).status, "active");
       assert.equal((await inspectWriterIdentity({ ...writer, startTime: "reused" })).status, "unknown");
       await transitionTask(value.project, request(value, "claim-park"));
-      const checkpoint = await writeCheckpoint(value.project, { eventId: "park-checkpoint", sessionId: "developer-session", taskIds: ["AT-001"], worktree: value.feature, revision: value.revision, nextAction: "Wait for prerequisite.json, then rerun tests." });
+      const checkpoint = await writeCheckpoint(value.project, { eventId: "park-checkpoint", sessionId: "developer-session", taskIds: ["AT-001"], worktree: value.feature, revision: value.revision, evidenceRevision: value.revision, nextAction: "Wait for prerequisite.json, then rerun tests." });
       let canonical = await loadCanonicalState(value.project);
       canonical.state.taskRuntime = { "AT-001": { compute: "active", writer, explicitPause: false } };
       await writeFile(value.project.paths.state, JSON.stringify(canonical.state));
@@ -166,6 +185,73 @@ if (process.argv[2] === "writer") {
     }
     assert.equal((await loadCanonicalState(value.project)).tasks[0].status, "paused");
   });
+
+  async function parkedFixture() {
+    const module = await api();
+    const value = await fixture();
+    const worker = spawn(process.execPath, [fileURLToPath(import.meta.url), "writer"], { stdio: ["ignore", "pipe", "ignore"] });
+    await new Promise((resolve) => worker.stdout.once("data", resolve));
+    const writer = await module.captureWriterIdentity(worker.pid);
+    const stopped = new Promise((resolve) => worker.once("exit", resolve)); worker.kill("SIGTERM"); await stopped;
+    await module.transitionTask(value.project, request(value, "claim-for-resume"));
+    const sourcePath = path.join(value.root, "DESIGN.md");
+    await writeFile(sourcePath, "Approved original requirement.\n");
+    const checkpoint = await writeCheckpoint(value.project, { eventId: "resume-record", sessionId: "developer-session", taskIds: ["AT-001"],
+      worktree: value.feature, revision: value.revision, evidenceRevision: value.revision, nextAction: "Continue after API recovery.", sourcePointers: [{ kind: "constraint", path: sourcePath }] });
+    let canonical = await loadCanonicalState(value.project);
+    canonical.state.taskRuntime = { "AT-001": { compute: "active", writer } };
+    await writeFile(value.project.paths.state, JSON.stringify(canonical.state));
+    const park = { actorSessionId: "owner-session", operationId: "park-for-resume", taskId: "AT-001", expectedOwner: "TEAM-001", expectedVersion: canonical.state.stateVersion,
+      expectedFingerprint: canonical.tracker.fingerprint, action: "park", writer, checkpointPath: checkpoint.path, repair: { attempts: 1, maxAttempts: 1 }, resumeWhen: "api-restored" };
+    assert.equal((await module.transitionTask(value.project, park)).status, "applied");
+    canonical = await loadCanonicalState(value.project);
+    const prerequisiteEvidence = path.join(value.root, ".agent-team/prerequisite.json");
+    await writeFile(prerequisiteEvidence, JSON.stringify({ taskId: "AT-001", status: "passed", revision: value.revision, condition: "api-restored" }));
+    return { ...value, sourcePath, checkpoint, canonical, resume: { ...park, action: "resume", operationId: "resume", expectedVersion: canonical.state.stateVersion,
+      expectedFingerprint: canonical.tracker.fingerprint, prerequisiteEvidence, writer: await module.captureWriterIdentity() } };
+  }
+
+  for (const change of ["original_source", "dirty_git", "new_head", "evidence_revision"]) {
+    test(`resume holds ${change} evidence changes before tracker or runtime mutation`, async () => {
+      const { transitionTask } = await api();
+      const value = await parkedFixture();
+      if (change === "original_source") await writeFile(value.sourcePath, "Changed original requirement.\n");
+      if (["dirty_git", "new_head"].includes(change)) await writeFile(path.join(value.feature, "src/owned.js"), "export const changed = true;\n");
+      if (change === "new_head") {
+        execFileSync("git", ["add", "src/owned.js"], { cwd: value.feature });
+        execFileSync("git", ["commit", "-qm", "changed head"], { cwd: value.feature });
+      }
+      if (change === "evidence_revision") {
+        const checkpoint = JSON.parse(await readFile(value.checkpoint.path, "utf8"));
+        checkpoint.evidenceRevision = "a".repeat(40);
+        await writeFile(value.checkpoint.path, JSON.stringify(checkpoint));
+      }
+      const before = await readFile(value.project.paths.tasks, "utf8");
+      const result = await transitionTask(value.project, value.resume);
+      assert.equal(result.reason, "stale_resume_evidence");
+      assert.equal(await readFile(value.project.paths.tasks, "utf8"), before);
+      assert.equal((await loadCanonicalState(value.project)).state.taskRuntime["AT-001"].compute, "parked");
+    });
+  }
+
+  for (const scope of ["independent_task", "shared_worktree", "same_task", "global_unknown"]) {
+    test(`resume scopes ${scope} pending uncertainty without treating unrelated tasks as a project pause`, async () => {
+      const { transitionTask } = await api();
+      const value = await parkedFixture();
+      const entry = { phase: "uncertain", kind: "external_operation" };
+      if (scope === "independent_task") entry.taskId = "AT-002";
+      if (scope === "shared_worktree") { entry.taskId = "AT-OTHER"; entry.worktree = value.feature; }
+      if (scope === "same_task") entry.taskId = "AT-001";
+      value.canonical.state.pendingOperations = { "pending-operation": entry };
+      await writeFile(value.project.paths.state, JSON.stringify(value.canonical.state));
+      const result = await transitionTask(value.project, value.resume);
+      if (scope === "independent_task") assert.equal(result.status, "applied");
+      else {
+        assert.ok(["pending_task_operation", "operation_reconciliation_required"].includes(result.reason));
+        assert.equal((await loadCanonicalState(value.project)).state.taskRuntime["AT-001"].compute, "parked");
+      }
+    });
+  }
 
   test("interrupted claim reconciles the canonical operation marker without repeating the tracker write", async () => {
     const { transitionTask } = await api();
@@ -224,22 +310,61 @@ if (process.argv[2] === "writer") {
     const project = await resolveProject(value.feature);
     const row = { id: "AT-001", title: "Native task", status: "open", assignee: "", dependency_count: 0, priority: 1 };
     let writes = 0;
-    const runBeads = async (binary, args) => {
+    const environment = { ...process.env, BEADS_DB: "/wrong/db", BD_DB: "/wrong/db2", BEADS_DOLT_SERVER_PORT: "7777", BEADS_DOLT_SERVER_PASSWORD: "fixture-auth" };
+    const runBeads = async (binary, args, options) => {
       assert.equal(binary, "/selected/bin/bd");
+      assert.equal(options.env.BEADS_DB, undefined);
+      assert.equal(options.env.BD_DB, undefined);
+      assert.equal(options.env.BEADS_DOLT_SERVER_PORT, undefined);
+      assert.equal(options.env.BEADS_DOLT_SERVER_PASSWORD, "fixture-auth");
       if (args[0] === "list") return { stdout: JSON.stringify([row]) };
       assert.deepEqual(args.slice(0, 5), ["update", "AT-001", "--claim", "--actor", "TEAM-001"]);
       row.assignee = "TEAM-001"; row.status = "in_progress"; row.notes = args[args.indexOf("--append-notes") + 1]; writes += 1;
       throw Object.assign(new Error("connection lost after commit"), { killed: true });
     };
-    const canonical = await loadCanonicalState(project, { runBeads });
+    const canonical = await loadCanonicalState(project, { runBeads, environment });
     const wanted = { ...request(value, "native-claim"), expectedOwner: "", expectedFingerprint: canonical.tracker.fingerprint };
-    const unknown = await transitionTask(project, wanted, { runBeads });
+    const unknown = await transitionTask(project, wanted, { runBeads, environment });
     assert.equal(unknown.status, "unavailable");
     assert.equal(unknown.reason, "tracker_write_uncertain");
     const state = JSON.parse(await readFile(project.paths.state, "utf8"));
     assert.equal(state.pendingOperations["native-claim"].phase, "uncertain");
-    const recovered = await transitionTask(project, { ...wanted, expectedVersion: state.stateVersion }, { runBeads });
+    const recovered = await transitionTask(project, { ...wanted, expectedVersion: state.stateVersion }, { runBeads, environment });
     assert.equal(recovered.result.reconciled, true);
     assert.equal(writes, 1);
   });
+
+  for (const interruption of ["reply", "receipt"]) {
+    test(`interrupted Beads pause preserves explicit pause and holds competing task transition after lost ${interruption}`, async () => {
+      const { transitionTask } = await api();
+      const value = await fixture();
+      await writeFile(value.project.paths.setup, JSON.stringify({ skill: "agent-team", projectId: "project-1", tracker: { kind: "beads", writerMode: "single_owner", writerSessionId: "owner-session" } }));
+      const project = await resolveProject(value.feature);
+      const row = { id: "AT-001", title: "Native task", status: "in_progress", assignee: "TEAM-001", dependency_count: 0 };
+      let writes = 0; let stateWrites = 0;
+      const runBeads = async (_binary, args) => {
+        if (args[0] === "list") return { stdout: JSON.stringify([row]) };
+        row.status = args[args.indexOf("--status") + 1]; row.notes = args[args.indexOf("--append-notes") + 1]; writes += 1;
+        if (interruption === "reply") throw new Error("reply lost after native commit");
+        return { stdout: JSON.stringify([row]) };
+      };
+      const canonical = await loadCanonicalState(project, { runBeads });
+      const wanted = { actorSessionId: "owner-session", operationId: `pause-${interruption}`, expectedVersion: 0, taskId: "AT-001", expectedOwner: "TEAM-001", expectedFingerprint: canonical.tracker.fingerprint, action: "pause" };
+      const result = await transitionTask(project, wanted, { runBeads, filesystem: { rename: async (from, to) => {
+        if (to === project.paths.state && ++stateWrites === 2 && interruption === "receipt") throw new Error("receipt lost");
+        return rename(from, to);
+      } } });
+      assert.equal(result.status, "unavailable");
+      let current = await loadCanonicalState(project, { runBeads });
+      assert.equal(current.state.taskRuntime["AT-001"].explicitPause, true);
+      assert.equal(current.state.pendingOperations[wanted.operationId].action, "pause");
+      const competing = await transitionTask(project, { ...wanted, operationId: "competing-park", action: "park", expectedVersion: current.state.stateVersion, expectedFingerprint: current.tracker.fingerprint }, { runBeads });
+      assert.equal(competing.reason, "pending_task_operation");
+      const reconciled = await transitionTask(project, { ...wanted, expectedVersion: current.state.stateVersion }, { runBeads });
+      assert.equal(reconciled.result.reconciled, true);
+      current = await loadCanonicalState(project, { runBeads });
+      assert.equal(current.state.taskRuntime["AT-001"].explicitPause, true);
+      assert.equal(writes, 1);
+    });
+  }
 }

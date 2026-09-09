@@ -7,6 +7,34 @@ import { identityFor, loadCanonicalState, loadCanonicalTracker } from "./canonic
 
 const run = promisify(execFile);
 
+async function checkpointSources(project, checkpoint, budget) {
+  const result = [];
+  for (const pointer of checkpoint.sourcePointers ?? []) {
+    const recorded = checkpoint.sourceEvidence?.find((entry) => entry.path === pointer.path)?.fingerprint;
+    try {
+      const read = () => readFile(path.resolve(project.root, pointer.path));
+      const source = await (budget ? budget.run(read) : read());
+      const fingerprint = createHash("sha256").update(source).digest("hex");
+      result.push({ ...pointer, status: !recorded ? "unavailable" : recorded === fingerprint ? "current" : "stale" });
+    } catch { result.push({ ...pointer, status: "unavailable" }); }
+  }
+  return result;
+}
+
+/** Current original records and revision binding, also enforced by consequential resume. */
+export async function inspectCheckpointEvidence(project, checkpoint, { budget, probe = runBoundedProbe } = {}) {
+  const sourceEvidence = await checkpointSources(project, checkpoint, budget);
+  const [head, dirty] = await Promise.all([
+    probe("git", ["rev-parse", "HEAD"], { cwd: checkpoint.worktree, budget, timeoutMs: 500, maxOutputBytes: 256 }),
+    probe("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: checkpoint.worktree, budget, timeoutMs: 500, maxOutputBytes: 2048 }),
+  ]);
+  const unavailable = !checkpoint.evidenceRevision || head.status !== "available" || dirty.status !== "available"
+    || sourceEvidence.some(({ status }) => status === "unavailable");
+  const stale = sourceEvidence.some(({ status }) => status === "stale") || head.output.trim() !== checkpoint.evidenceRevision
+    || head.output.trim() !== checkpoint.revision || dirty.output.trim() !== "";
+  return { status: unavailable ? "unavailable" : stale ? "stale" : "current", evidenceRevision: checkpoint.evidenceRevision, sourceEvidence };
+}
+
 export async function runBoundedProbe(executable, args, { cwd, timeoutMs = 1000, maxOutputBytes = 4096, budget } = {}) {
   try {
     const { stdout, stderr } = await run(executable, args, { cwd, timeout: budget?.timeout(timeoutMs) ?? timeoutMs,
@@ -135,7 +163,8 @@ export async function inspectRecovery(project, {
   const finish = async (snapshot) => {
     if (!includeProbes && !includeGit) return snapshot;
     const facts = await factualSnapshot(project, sessionId, probe, { includeProbes, budget, canonical });
-    const stale = snapshot.revision && (facts.git.revision.value !== snapshot.revision || facts.git.dirty.entries.length > 0);
+    const binding = snapshot.evidenceRevision ?? snapshot.revision;
+    const stale = binding && (facts.git.revision.value !== binding || facts.git.dirty.entries.length > 0);
     return { ...snapshot, ...facts, ...(stale ? { status: "stale", evidenceStatus: "stale" } : {}) };
   };
   let names;
@@ -165,15 +194,7 @@ export async function inspectRecovery(project, {
   records.sort((left, right) => right.timestamp - left.timestamp);
   const latest = records[0];
   if (!latest) return finish({ status: "unavailable", reason: "checkpoint_invalid" });
-  const sourceEvidence = [];
-  for (const pointer of latest.sourcePointers ?? []) {
-    const recorded = latest.sourceEvidence?.find((entry) => entry.path === pointer.path)?.fingerprint;
-    try {
-      const source = await bounded(() => readFile(path.resolve(project.root, pointer.path)));
-      const fingerprint = createHash("sha256").update(source).digest("hex");
-      sourceEvidence.push({ ...pointer, status: !recorded ? "unavailable" : recorded === fingerprint ? "current" : "stale" });
-    } catch { sourceEvidence.push({ ...pointer, status: "unavailable" }); }
-  }
+  const sourceEvidence = await checkpointSources(project, latest, budget);
   let task;
   let currentPending = [];
   if (taskId) {
@@ -184,7 +205,8 @@ export async function inspectRecovery(project, {
         .map(([operationId, entry]) => ({ operationId, ...entry }));
     } catch { /* A missing authority is not reconstructed from hook metadata. */ }
   }
-  const sourceChanged = sourceEvidence.some(({ status }) => status === "stale");
+  const sourceChanged = sourceEvidence.some(({ status }) => status === "stale")
+    || latest.evidenceRevision && latest.revision !== latest.evidenceRevision;
   return finish({
     status: !sourceChanged && now.getTime() - latest.timestamp <= staleAfterMs ? "current" : "stale",
     evidenceStatus: sourceChanged ? "stale" : sourceEvidence.some(({ status }) => status === "unavailable") ? "unavailable" : "current",
@@ -193,6 +215,7 @@ export async function inspectRecovery(project, {
     path: latest.path,
     version: latest.version,
     revision: latest.revision,
+    evidenceRevision: latest.evidenceRevision,
     taskIds: latest.taskIds ?? [],
     nextAction: latest.nextAction,
     sourcePointers: latest.sourcePointers ?? [],
