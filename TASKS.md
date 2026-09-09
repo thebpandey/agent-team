@@ -20,6 +20,10 @@ No task is complete until implementation and applicable independent review/verif
 
 ## Evidence and execution notes
 
+- CodexPTY shutdownreceipt20:07:50Z:300.115s,2actions,78131bytes,deadlineTERMexit-15,errornull; driver/nativePIDsabsent, linkedsourceclean; compact/recallnotexecuted.
+
+- Accountusage limit halted bothSol andTerraagents; errorreports retry2026-09-14 20:25, timezoneunspecified. NativeCodexcompact session01a087c4-18e1-7053-9b4f-8f1480e298a3 completedhistoricalrecovery but usage modal appeared beforecompact; only2/8 queueactions, compact/recallunverified, noquotaresetconsumed. v4/v7 lifecyclehelpers reviewed/corrected, no v4provenance/launch established. Currentf8d6942 full491/packagepassed, integrationclean. Restoreaccountcapacity then resume native/reviewgates; finaldocs/mergedchecks/archive/publication remain. No push/tag/release.
+
 - Currentf8d6942 full491/491 zero failures/skips/allrealoptins/12casematrix passed34.673s/a23f83458402f1d0. Nativev3 checkpoint/unknownPIDvisibility passed; resume safely refused oldcheckpoint mismatch. Narrowexplicitpaused suppliedcheckpoint preference fixed with preservedguards/parkedbehavior, RED2→GREEN75/Terrahighaccepted. Managedfixturecurrent. V3 boundedwait ended withoutsource/resumemutation; freshv4/v7 and reviewedCodexPTYcompact remain. Claudecompactaccepted. Finaldocs/mergedchecks/archive/publication stillopen; no push, no pendingtestapproval.
 
 - d6145c8 full487/487 zero failures/skips/allrealoptins/12casematrix passed33.730s/e0984bc70ac51fd6, packagepassed. Codexmanagedrefreshvalid/no conflicts; reviewedfixture-only legacy namespace reconstruction applied withoriginalhostevidence/preimage, taskpausedv4unchanged. Terrahostadapter/Solinteractivecompact preparations parallel, no newnativewriteruntilreview. Finalmergedchecks/archive/publication remain.
