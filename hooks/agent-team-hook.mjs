@@ -176,6 +176,21 @@ async function runEvent(event, budget, runBeads, evidencePackageRoot) {
       decision.capabilities.checkpoint = "unavailable";
     }
   }
+  const changedCanonicalRecord = ['PostToolUse', 'PostToolBatch'].includes(event.event)
+    && event.operation.kind === 'file_change'
+    && event.operation.files.some((file) => [project.paths?.tasks, project.paths?.state, project.paths?.teams]
+      .includes(path.resolve(event.cwd, file.path)));
+  if (project.active && project.setup.dashboard?.snapshot === true
+    && (changedCanonicalRecord || decision.mutations.some((entry) => entry.kind === 'checkpoint' && entry.created))) {
+    try {
+      const { refreshConfiguredDashboard } = await budget.run(() => import('./lib/workflow-cli.mjs'));
+      const result = await budget.run(() => refreshConfiguredDashboard(project, { budget }));
+      decision.mutations.push({ kind: 'dashboard_snapshot', status: result.status });
+    } catch {
+      decision.capabilities.dashboardSnapshot = 'unavailable';
+      decision.messages.push('Agent-Team dashboard refresh is unavailable; task authority and policy decision are unchanged.');
+    }
+  }
   return { decision, output: adaptOutput(event.runtime, event.event, decision), evidenceRoot };
 }
 

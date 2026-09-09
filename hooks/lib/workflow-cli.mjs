@@ -12,6 +12,7 @@ import { inspectRecovery } from "./recovery.mjs";
 import { readStatus } from "./status.mjs";
 import { recordGateEvidence, taskEligibility, transitionTask } from "./task-transitions.mjs";
 import { readUsageReport } from "./usage.mjs";
+import { createEventBudget } from './budget.mjs';
 
 const requestLimit = 256 * 1024;
 const actorPattern = /^[\w.:-]{1,128}$/;
@@ -151,6 +152,7 @@ function snapshotDestination(project) {
 async function publishDashboard(project, { budget } = {}) {
   return createSnapshotPublisher({
     destination: snapshotDestination(project),
+    budget,
     derive: () => readStatus(project, { budget }),
   }).refresh();
 }
@@ -158,7 +160,10 @@ async function publishDashboard(project, { budget } = {}) {
 /** Refresh only when the shared setup explicitly opts into automatic snapshots. */
 export async function refreshConfiguredDashboard(project, options = {}) {
   if (project?.setup?.dashboard?.snapshot !== true) return { status: "skipped", reason: "not_configured" };
-  return publishDashboard(project, options);
+  const budget = options.budget ?? createEventBudget(1500);
+  try { return await publishDashboard(project, { budget }); }
+  catch (error) { return { status: 'unavailable', reason: String(error.message || error) }; }
+  finally { if (!options.budget) budget.close(); }
 }
 
 async function runDashboard(project, options, context) {
@@ -214,10 +219,15 @@ export async function runWorkflowCommand(command, options, context = {}) {
   if (["checkpoint", "task-transition", "gate-evidence", "cleanup"].includes(command)) {
     const envelope = await readRequestEnvelope(options.request);
     const request = validateMutation(command, envelope, project);
-    if (command === "checkpoint") return writeCheckpoint(project, request, { actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion });
-    if (command === "task-transition") return transitionTask(project, request);
-    if (command === "gate-evidence") return recordGateEvidence(project, request);
-    return cleanupDevelopmentWorktree(project, request);
+    const result = command === 'checkpoint'
+      ? await writeCheckpoint(project, request, { actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion })
+      : command === 'task-transition' ? await transitionTask(project, request)
+        : command === 'gate-evidence' ? await recordGateEvidence(project, request)
+          : await cleanupDevelopmentWorktree(project, request);
+    if (['applied', 'duplicate'].includes(result.status) && project.setup.dashboard?.snapshot === true) {
+      return { ...result, dashboard: await refreshConfiguredDashboard(project) };
+    }
+    return result;
   }
   if (command === "dashboard-snapshot") return publishDashboard(project);
   if (command === "dashboard-start") return runDashboard(project, options, context);

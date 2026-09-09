@@ -212,6 +212,25 @@ test("dashboard snapshot uses the fixed path and configured refresh remains opt-
   assert.equal(configured.status, "published");
 });
 
+test('a successful CLI transition refreshes an opted-in snapshot without a separate regeneration command', async () => {
+  const value = await fixture();
+  const setupPath = path.join(value.root, '.agent-team/setup.json');
+  const setup = JSON.parse(await readFile(setupPath, 'utf8'));
+  setup.dashboard = { snapshot: true };
+  await writeFile(setupPath, JSON.stringify(setup));
+  const canonical = await loadCanonicalState(value.project);
+  const request = await requestFile(value, 'snapshot-pause', envelope('owner-session', 0, {
+    operationId: 'snapshot-pause', taskId: 'AT-001', action: 'pause',
+    expectedFingerprint: canonical.tracker.fingerprint, expectedOwner: 'TEAM-001',
+  }));
+  const result = await invoke('task-transition', '--project', value.feature, '--request', request);
+  assert.equal(result.status, 'applied');
+  assert.equal(result.dashboard.status, 'published');
+  const html = await readFile(path.join(value.root, '.agent-team/dashboard/index.html'), 'utf8');
+  assert.match(html, /"status":"paused"/);
+  assert.equal((await invoke('task-transition', '--project', value.feature, '--request', request)).dashboard.status, 'unchanged');
+});
+
 test("dashboard start reports its loopback URL and stops cleanly on SIGINT or SIGTERM", async (t) => {
   for (const signal of ["SIGINT", "SIGTERM"]) {
     await t.test(signal, async () => {

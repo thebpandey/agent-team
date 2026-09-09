@@ -65,6 +65,19 @@ test('checkpoint events without native IDs remain distinct and complete batch ID
   assert.notEqual(normalizeEvent('claude', 'PostToolBatch', partial).eventId, normalizeEvent('claude', 'PostToolBatch', partial).eventId);
 });
 
+test('a factual checkpoint refreshes an explicitly enabled snapshot without changing task authority', async () => {
+  const value = await fixture();
+  const setupPath = path.join(value.root, '.agent-team/setup.json');
+  const setup = JSON.parse(await readFile(setupPath, 'utf8'));
+  setup.dashboard = { snapshot: true };
+  await writeFile(setupPath, JSON.stringify(setup));
+  const trackerPath = path.join(value.root, '.agent-team/TASKS.md');
+  const before = await readFile(trackerPath, 'utf8');
+  assert.equal(invoke('codex', 'PreCompact', { cwd: value.feature, session_id: 'developer-session' }, value.home).status, 0);
+  assert.match(await readFile(path.join(value.root, '.agent-team/dashboard/index.html'), 'utf8'), /LOCAL STATUS SNAPSHOT/);
+  assert.equal(await readFile(trackerPath, 'utf8'), before);
+});
+
 for (const blockedAt of ['discovery', 'recording']) {
   test(`optional hook evidence ${blockedAt} cannot turn a mapped denial into allow`, async () => {
     const value = await fixture();

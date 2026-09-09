@@ -69,6 +69,7 @@
     "hooks/lib/telemetry.mjs",
     "hooks/lib/tracker.mjs",
     "hooks/lib/usage.mjs",
+    "hooks/lib/workflow-cli.mjs",
     "references/acceptance-tests.md",
     "references/actions.md",
     "references/code-explanations.md",
