@@ -35,14 +35,14 @@ User-scope Codex configuration is `~/.codex/hooks.json`; Claude Code uses the `h
 | 9. Checkpoints | Automatic | Write a small atomic and idempotent record for supported compaction and interruption events. Preserve agent-authored next actions and decisions. Omit native payload data and redact common secret fields. |
 | 10. Completion | Enforce | Gate explicit final transitions against canonical task ownership, revision, checks, review, requirement evidence, and deployment/cleanup evidence only when each flag is in scope. Permit factual partial, blocked, and deferred outcomes. Ordinary `Stop`, status, questions, and interruption events do not complete a task. |
 | 11. Recurring cost | Advisory | Compare normalized schedule declarations and warn when a schedule is added or materially changed. Retained declarations do not warn when unrelated whole-file content changes. Report unknown live pricing as unknown. |
-| 12. Activation telemetry | Automatic | Log reliable Claude hook-visible activation paths globally by default. Add project/team correlation only when canonical project state is active, and omit it otherwise. Report Codex activation as unsupported instead of inferring it from a file read. |
+| 12. Activation telemetry | Automatic | Log reliable Claude hook-visible activation paths in the receipted installation scope; legacy unreceipted execution keeps user-scope logging. Add project/team correlation only from active canonical state. Report Codex skill activation as unsupported instead of inferring it from a file read. |
 | 13. Effectiveness audit | On demand | Bounded-read logs, the canonical tracker, and `MISTAKES.md`. Report unavailable or malformed sources and correlate stable task, team, and lesson IDs. This factual correlation does not prove policy effectiveness. |
 | 14. Package validation | CI and on demand | Check required files, version parity, local links, executable entry points, runtime registration, platform coverage, manifest inclusion, and policy IDs. |
 | 15. Artifact validation | On demand | Compare the one complete universal ZIP with the manifest, source bytes, and source revision. It contains both host adapters; installation selects the actual host and scope. Reject missing, stale, unexpected, duplicate, absolute, and path-escaping members. Source-only checks report not applicable. |
 
 ## Policy state and limits
 
-Policy activates only when Git metadata resolves a canonical project whose `.agent-team/setup.json` identifies Agent-Team. `.agent-team/TEAMS.md` and the canonical task tracker own identity and task status. `.agent-team/state.json` carries only machine-readable gate evidence and pointers that Markdown cannot safely express. It is not a second task ledger. `.agent-team/operation-mappings.json` is a schema-validated, non-authoritative cache derived only from validated canonical state. The cache is not a task ledger. It contains a project identity, a source path, an explicit non-authoritative marker, and validated mappings only.
+Policy activates only when Git metadata resolves a canonical project whose `.agent-team/setup.json` identifies Agent-Team. `.agent-team/TEAMS.md` and the canonical task tracker own identity and task status. `.agent-team/state.json` carries machine-readable run, gate, writer, pending-operation and usage evidence. It is not a second task ledger. `.agent-team/operation-mappings.json` is a schema-validated, non-authoritative cache derived only from validated canonical state. The cache is not a task ledger. It contains a project identity, a source path, an explicit non-authoritative marker, and validated mappings only.
 
 Shell recognition tokenizes documented command forms, including `git -C <repo> push` and unambiguous `mv` operands. Provider and Model Context Protocol (MCP) tools require an explicit operation mapping in operational state or the validated separate inventory. This explicit mapping coverage is not a universal security boundary. MCP means a configured external tool connection. Missing mappings, hosted tools that do not emit a hook, continued `write_stdin` input, shell aliases, generated commands, and a host process that is killed before its hook runs are blind spots.
 
@@ -75,6 +75,48 @@ node hooks/agent-team-cli.mjs uninstall --host codex --scope user
 Choose `--host claude-code` for Claude, or `--host both` only when explicitly wanted. Project scope also needs `--project /path/to/project`. `rollback` uses the same selected-host ownership removal contract as `uninstall`; it is not a version downgrade. Only receipted pre-install resources are candidates for restoration, not earlier managed update snapshots. Changed or unowned content is preserved and reported.
 
 Installation does not grant trust. `health` reports installed, registered, trusted, supported, and exercised as separate values, with per-event provenance and native support unknown until evidenced. With `--project`, it also reports a current, stale, missing, invalid, or unavailable-state mapping cache. Cache health reports that the cache is non-authoritative, comes from validated canonical state, and is only for fallback classification. Complete any native `/hooks` trust step yourself, then reload the host if it requires a new session. Approving hooks does not prove each event ran.
+
+For a project installation use `health --scope project --project /path/to/project`; the default health scope is user. Observed `packaged_entrypoint` transport evidence does not establish native trust, native support or skill activation. Anonymous lifecycle events receive distinct observation IDs; complete native batch IDs support replay detection without truncating later tool identities.
+
+## Agent-facing project helpers
+
+These are Node helpers from [the official Agent-Team package](https://github.com/thebpandey/agent-team), not native Codex/Claude terminal subcommands. Use them from the installed complete package. The user can keep using natural-language skill requests.
+
+| Helper after `node hooks/agent-team-cli.mjs` | Contract |
+| --- | --- |
+| `status --project /path/to/project` | Read all tasks/teams, freshness, exact canonical owner values and observed setup/operational versions. No tests or writes. |
+| `usage --project /path/to/project` | Read existing per-agent usage receipts. Missing data is unknown. Optional `--receipt /path/to/receipts.json` reads an explicit bounded regular file. |
+| `recovery --project /path/to/project --session session-id` | Read the session's recovery packet. Add `--task task-id`, `--worktree /path` or `--include-git true` when relevant. Never resumes work. |
+| `eligibility --project /path/to/project` | Read ready and held work under recorded scope/capacity; never claims or spawns a task. |
+| `checkpoint --project /path/to/project --request /path/to/request.json` | Save the session's versioned authored packet. Its expected version is the checkpoint version, not the operational-state version. |
+| `task-transition --project /path/to/project --request /path/to/request.json` | Claim, pause, park or resume through the canonical owner/version/identity checks. Does not terminate or spawn agents. |
+| `gate-evidence --project /path/to/project --request /path/to/request.json` | Bind a passed evidence artifact to the current exact revision and task set. Does not run tests or grant authorization. |
+| `cleanup --project /path/to/project --request /path/to/request.json` | Remove only the requested eligible verified worktree; uncertain or retained resources remain untouched. |
+| `dashboard-snapshot --project /path/to/project` | Generate `.agent-team/dashboard/index.html` once. This does not silently enable future snapshots. |
+| `dashboard-start --project /path/to/project --port 0` | Explicitly run the foreground loopback viewer. Reports its actual URL; Ctrl-C/SIGTERM stops this helper. A requested occupied port fails instead of moving silently. |
+
+Mutation request files are schema-versioned JSON, at most 256 KiB, and must be regular files. For example, the orchestrator can construct a pause request from freshly observed status:
+
+```json
+{
+  "schemaVersion": 1,
+  "actorSessionId": "registered-project-owner-session",
+  "expectedVersion": 4,
+  "request": {
+    "operationId": "pause-AT-001-unique-id",
+    "taskId": "AT-001",
+    "action": "pause",
+    "expectedFingerprint": "exact-current-tracker-fingerprint",
+    "expectedOwner": "TEAM-001"
+  }
+}
+```
+
+Replace every example value with observed facts. `status.versions.operational` and `status.freshness.fingerprint` supply transition preconditions; `task.canonicalOwner` preserves Beads' empty unassigned owner, unlike the human display label. Never guess a zero version after an unavailable read. Re-read on conflict; do not reuse an operation ID with different intent. JSON identity fields are not authentication and cannot override the registered canonical owner.
+
+Ordinary conflict/unavailable outcomes are structured results, not completion. Inspect `status` and `reason` even if the process exits zero. A successful or replayed mutation can refresh an explicitly enabled snapshot without repeating its tracker effect. Supported checkpoint and canonical-file post-tool events also refresh opted-in snapshots under the existing event deadline. Dashboard failure never changes the policy decision or task authority; expired writes preserve the last usable file.
+
+The original dashboard is server-free by default. Optional [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer), by Jeffrey Emanuel, retains its [complete upstream license and rider](https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE); do not vendor or relicense its engine. Its graph is derived from fresh selected Beads data, not a second tracker.
 
 Run unit and regression tests with:
 

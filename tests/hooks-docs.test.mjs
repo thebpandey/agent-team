@@ -116,7 +116,8 @@ test("feature requests and named starts retain distinct task-creation rules", as
 
 test("mapping cache and hook identities never become authority", async () => {
   const guide = await read("references/hooks.md");
-  assert.doesNotMatch(guide, /migrate-mappings|--session/i);
+  assert.doesNotMatch(guide, /migrate-mappings|health[^\n]*--session|mapping[^\n]*--session/i);
+  assert.match(guide, /recovery[^\n]*--session/i);
   for (const pattern of [
     /health --project/i, /missing or invalid.*fallback protection.*unavailable/i,
     /cache.*not.*task ledger/i, /non-authoritative.*validated canonical state/i,
