@@ -40,6 +40,7 @@ function eventHealth(runtime, config, records) {
     return [event, {
       registered: registered({ hooks: { [event]: config.hooks?.[event] ?? [] } }), supported, supportSource: "packaged_adapter", nativeSupport: "unknown", trusted: "unknown",
       exercise: !supported ? "unsupported" : record?.status === "failed" ? "failed" : record?.status === "passed" ? "exercised" : "unobserved",
+      ...(record ? { source: record.source ?? "recorded_transport", observedAt: record.observedAt } : {}),
     }];
   }));
 }
@@ -57,7 +58,7 @@ export async function recordHookEvidence(home, input, { budget, now = new Date()
       const records = await bounded(() => json(file));
       const key = `${input.runtime}:${input.event}`;
       if (records[key]?.eventId === input.eventId) return { status: "duplicate" };
-      records[key] = { status: input.status, eventId: String(input.eventId).slice(0, 128), sessionId: String(input.sessionId ?? "unknown").slice(0, 128), observedAt: now.toISOString() };
+      records[key] = { status: input.status, eventId: String(input.eventId).slice(0, 128), sessionId: String(input.sessionId ?? "unknown").slice(0, 128), observedAt: now.toISOString(), source: input.source === "packaged_entrypoint" ? "packaged_entrypoint" : "recorded_transport" };
       const temporary = `${file}.${randomUUID()}.tmp`;
       try {
         budget?.check();
@@ -70,17 +71,32 @@ export async function recordHookEvidence(home, input, { budget, now = new Date()
   } catch { return { status: "unavailable", reason: "evidence_write_unavailable" }; }
 }
 
+/** Only a receipted package may attribute observations to an installation. */
+export async function resolveHookEvidenceRoot(packageRoot, runtime) {
+  if (!['codex', 'claude'].includes(runtime)) return null;
+  const root = path.resolve(packageRoot, '../../..');
+  const expected = path.join(root, runtime === 'codex' ? '.agents' : '.claude', 'skills', 'agent-team');
+  if (path.resolve(packageRoot) !== expected) return null;
+  const receipt = await json(path.join(root, '.agent-team-hooks/install.json'));
+  return Array.isArray(receipt.targets) && receipt.targets.some((target) => target.runtime === runtime && target.path === expected) ? root : null;
+}
+
 /** Report each installation dimension separately. Trust stays unknown without native evidence. */
-export async function getHealth({ home, projectPath }) {
-  const events = await json(path.join(home, ".agent-team-hooks", "hook-events.json"));
-  const logs = await readActivationLogs(path.join(home, ".agent-team-hooks", "logs"));
-  const codexConfig = await json(path.join(home, ".codex", "hooks.json"));
-  const claudeConfig = await json(path.join(home, ".claude", "settings.json"));
+export async function getHealth({ home, projectPath, scope = 'user' }) {
+  if (!['user', 'project'].includes(scope)) throw new Error('Health scope must be user or project.');
+  if (scope === 'project' && !projectPath) throw new Error('Project-scope health requires a project path.');
+  const project = projectPath ? await resolveProject(projectPath) : null;
+  const root = scope === 'project' ? project.root : home;
+  const events = await json(path.join(root, ".agent-team-hooks", "hook-events.json"));
+  const logs = await readActivationLogs(path.join(root, ".agent-team-hooks", "logs"));
+  const codexConfig = await json(path.join(root, ".codex", "hooks.json"));
+  const claudeConfig = await json(path.join(root, ".claude", scope === 'project' ? "settings.local.json" : "settings.json"));
   const health = {
     status: "completed",
+    installation: { scope, root },
     runtimes: {
       codex: {
-        installed: await present(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")),
+        installed: await present(path.join(root, ".agents", "skills", "agent-team", "SKILL.md")),
         registered: registered(codexConfig),
         trusted: "unknown",
         activation: activationCapability("codex"),
@@ -88,7 +104,7 @@ export async function getHealth({ home, projectPath }) {
         events: eventHealth("codex", codexConfig, events),
       },
       claude: {
-        installed: await present(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")),
+        installed: await present(path.join(root, ".claude", "skills", "agent-team", "SKILL.md")),
         registered: registered(claudeConfig),
         trusted: "unknown",
         activation: activationCapability("claude"),
@@ -96,10 +112,9 @@ export async function getHealth({ home, projectPath }) {
         events: eventHealth("claude", claudeConfig, events),
       },
     },
-    legacyCodexCopy: await present(path.join(home, ".codex", "skills", "agent-team", "SKILL.md")),
+    legacyCodexCopy: await present(path.join(root, ".codex", "skills", "agent-team", "SKILL.md")),
   };
   if (projectPath) {
-    const project = await resolveProject(projectPath);
     health.operationMappings = project.active
       ? await operationMappingHealth(project)
       : { status: "inactive", fallbackProtection: "unavailable" };

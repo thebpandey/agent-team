@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -43,6 +43,28 @@ function invoke(runtime, event, payload, home) {
 function output(result) {
   return JSON.parse(result.stdout);
 }
+
+test('actual copied hook under a spaced installation path executes and records only its scoped transport', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'agent team hook consumer '));
+  temporary.push(directory);
+  const value = await policyFixture(path.join(directory, 'project'));
+  const packageRoot = path.join(value.root, '.agents/skills/agent-team');
+  await mkdir(packageRoot, { recursive: true });
+  await cp(path.dirname(hook), path.join(packageRoot, 'hooks'), { recursive: true });
+  await mkdir(path.join(value.root, '.agent-team-hooks'));
+  await writeFile(path.join(value.root, '.agent-team-hooks/install.json'), JSON.stringify({ targets: [{ runtime: 'codex', path: packageRoot }] }));
+  const isolatedHome = path.join(directory, 'home');
+  await mkdir(isolatedHome);
+  const result = spawnSync(process.execPath, [path.join(packageRoot, 'hooks/agent-team-hook.mjs'), '--runtime', 'codex', '--event', 'PreToolUse'], {
+    input: JSON.stringify({ cwd: value.feature, session_id: 'owner-session', tool_name: 'exec_command', tool_input: { cmd: 'git status --short' } }),
+    encoding: 'utf8', env: { ...process.env, HOME: isolatedHome },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.trim(), 'copied hook must execute its main function');
+  const events = JSON.parse(await readFile(path.join(value.root, '.agent-team-hooks/hook-events.json'), 'utf8'));
+  assert.equal(events['codex:PreToolUse'].source, 'packaged_entrypoint');
+  await assert.rejects(readFile(path.join(isolatedHome, '.agent-team-hooks/hook-events.json')), { code: 'ENOENT' });
+});
 
 function mappingDigest(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");

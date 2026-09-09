@@ -2,6 +2,8 @@
 import process from "node:process";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { normalizeEvent } from "./lib/event.mjs";
 import { identityFor, syncOperationMappingInventory } from "./lib/canonical-state.mjs";
 import { resolveProject } from "./lib/project.mjs";
@@ -12,6 +14,7 @@ import { evaluatePolicy, unavailableDecision } from "./lib/policy.mjs";
 import { activationRecordFor, appendActivationLog } from "./lib/telemetry.mjs";
 import { createEventBudget } from "./lib/budget.mjs";
 import { lintMessages } from "./lib/lint.mjs";
+import { recordHookEvidence, resolveHookEvidenceRoot } from './lib/health.mjs';
 
 function argument(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -61,10 +64,21 @@ function shouldRefreshOperationMappings(event, project) {
 }
 
 /** Run one normalized event through shared policy and bounded factual mutations. */
-export async function runNormalizedHook(event, { timeoutMs = 5000, runBeads } = {}) {
+export async function runNormalizedHook(event, { timeoutMs = 5000, runBeads, evidencePackageRoot } = {}) {
   const budget = createEventBudget(timeoutMs);
   try {
-    return await runEvent(event, budget, runBeads);
+    const evidenceRoot = evidencePackageRoot
+      ? await budget.run(() => resolveHookEvidenceRoot(evidencePackageRoot, event.runtime)) : null;
+    const result = await runEvent(event, budget, runBeads, evidenceRoot);
+    if (evidenceRoot) {
+      const evidence = await budget.run(() => recordHookEvidence(evidenceRoot, {
+        runtime: event.runtime, event: event.event, status: 'passed', eventId: event.eventId || randomUUID(),
+        sessionId: event.sessionId, source: 'packaged_entrypoint',
+      }, { budget }));
+      result.decision.mutations.push({ kind: 'hook_transport_evidence', status: evidence.status });
+      result.output = adaptOutput(event.runtime, event.event, result.decision);
+    }
+    return result;
   } catch (error) {
     const decision = unavailableDecision(event);
     decision.messages.push(error.code === "EVENT_DEADLINE" ? "Agent-Team event deadline exceeded; required evidence remains unavailable." : `Agent-Team hook unavailable: ${error.message}`);
@@ -74,7 +88,7 @@ export async function runNormalizedHook(event, { timeoutMs = 5000, runBeads } = 
   }
 }
 
-async function runEvent(event, budget, runBeads) {
+async function runEvent(event, budget, runBeads, evidenceRoot) {
   const project = await budget.run(() => resolveProject(event.cwd, { budget }));
   const progress = {};
   let decision;
@@ -113,7 +127,7 @@ async function runEvent(event, budget, runBeads) {
   const activation = activationRecordFor(event, project, identity);
   if (activation) {
     try {
-      const result = await budget.run(() => appendActivationLog(path.join(os.homedir(), ".agent-team-hooks", "logs"), activation, { budget }));
+      const result = await budget.run(() => appendActivationLog(path.join(evidenceRoot ?? os.homedir(), ".agent-team-hooks", "logs"), activation, { budget }));
       decision.mutations.push({ kind: "activation_log", recorded: result.recorded });
     } catch {
       decision.messages.push("Agent-Team activation logging is unavailable for this event.");
@@ -151,14 +165,14 @@ export async function runHook(runtime, eventName, payload) {
   return runNormalizedHook(normalizeEvent(runtime, eventName, payload));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   let event;
   try {
     const runtime = argument("runtime");
     const eventName = argument("event");
     const payload = await stdin();
     event = normalizeEvent(runtime, eventName, payload);
-    const { decision } = await runNormalizedHook(event);
+    const { decision } = await runNormalizedHook(event, { evidencePackageRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..') });
     const transport = adaptTransport(event.runtime, event.event, decision);
     if (transport.stdout) process.stdout.write(transport.stdout);
     if (transport.stderr) process.stderr.write(transport.stderr);

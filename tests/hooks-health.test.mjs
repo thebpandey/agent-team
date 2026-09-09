@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { getHealth } from "../hooks/lib/health.mjs";
 import * as healthTools from "../hooks/lib/health.mjs";
+import { policyFixture } from './hook-test-helpers.mjs';
 
 const temporary = [];
 test.afterEach(async () => Promise.all(temporary.splice(0).map((p) => rm(p, { recursive: true, force: true }))));
@@ -35,4 +36,25 @@ test("one exercised or failed hook event never promotes other events or establis
   assert.equal(health.runtimes.claude.events.PostToolBatch.exercise, "failed");
   assert.equal(health.runtimes.claude.events.SessionStart.exercise, "unobserved");
   assert.equal(health.runtimes.claude.events.PreToolUse.trusted, "unknown");
+});
+
+test('project-scope health reads that installation without promoting the user-scope host', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'agent-team-scoped-health-'));
+  temporary.push(directory);
+  const fixture = await policyFixture(path.join(directory, 'project'));
+  const home = path.join(directory, 'home');
+  await mkdir(home);
+  await mkdir(path.join(fixture.root, '.claude/skills/agent-team'), { recursive: true });
+  await writeFile(path.join(fixture.root, '.claude/skills/agent-team/SKILL.md'), 'fixture');
+  await writeFile(path.join(fixture.root, '.claude/settings.local.json'), JSON.stringify({ hooks: {
+    PreToolUse: [{ hooks: [{ type: 'command', command: 'node /managed/agent-team-hook.mjs --runtime claude --event PreToolUse' }] }],
+  } }));
+  await healthTools.recordHookEvidence(fixture.root, { runtime: 'claude', event: 'PreToolUse', status: 'passed', eventId: 'project-only' });
+  const health = await getHealth({ home, projectPath: fixture.feature, scope: 'project' });
+  assert.equal(health.installation.scope, 'project');
+  assert.equal(health.installation.root, fixture.root);
+  assert.equal(health.runtimes.claude.installed, true);
+  assert.equal(health.runtimes.claude.events.PreToolUse.exercise, 'exercised');
+  assert.equal((await getHealth({ home })).runtimes.claude.installed, false);
+  assert.equal((await getHealth({ home })).runtimes.claude.events.PreToolUse.exercise, 'unobserved');
 });
