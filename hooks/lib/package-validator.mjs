@@ -24,8 +24,7 @@ function localLinks(source) {
   return [...source.matchAll(/!?\[[^\]]*\]\(([^)]+)\)/g)].map((match) => match[1].trim().replace(/^<|>$/g, ""));
 }
 
-/** Check the installable package contract, local links, runtime declarations, and policy parity. */
-export async function checkPackage(root) {
+async function validatePackage(root, { source }) {
   const errors = [];
   let manifest;
   try {
@@ -34,16 +33,24 @@ export async function checkPackage(root) {
     return { status: "failed", errors: [`Cannot read hooks/manifest.json: ${error.message}`] };
   }
 
-  for (const file of manifest.files) if (!(await present(path.join(root, file)))) errors.push(`Missing manifest file: ${file}`);
-  if (!(await present(path.join(root, manifest.legacy.marker)))) errors.push(`Missing legacy archive marker: ${manifest.legacy.marker}`);
-  if (manifest.files.some((file) => file.startsWith(`${manifest.legacy.path}/`))) errors.push("Legacy files must not be in the current package manifest.");
-
-  const discovered = [...manifest.rootFiles];
-  for (const directory of manifest.includeRoots) {
-    if (await present(path.join(root, directory))) await filesUnder(root, directory, discovered);
+  for (const runtime of ["codex", "claude"]) {
+    if (!manifest.runtimeDeclarations?.[runtime]) errors.push(`Universal package manifest is missing the ${runtime} adapter declaration.`);
+    if (!manifest.requiredEvents?.[runtime]?.length) errors.push(`Universal package manifest is missing ${runtime} required events.`);
+    if (!manifest.registrationTargets?.[runtime]?.user || !manifest.registrationTargets?.[runtime]?.project) errors.push(`Universal package manifest is missing ${runtime} user/project registration targets.`);
   }
-  for (const file of discovered) if (!manifest.files.includes(file)) errors.push(`Current package file is absent from manifest: ${file}`);
-  for (const file of manifest.files) if (!discovered.includes(file)) errors.push(`Manifest path is outside current package roots: ${file}`);
+
+  for (const file of manifest.files) if (!(await present(path.join(root, file)))) errors.push(`Missing manifest file: ${file}`);
+  if (source) {
+    if (!(await present(path.join(root, manifest.legacy.marker)))) errors.push(`Missing legacy archive marker: ${manifest.legacy.marker}`);
+    if (manifest.files.some((file) => file.startsWith(`${manifest.legacy.path}/`))) errors.push("Legacy files must not be in the current package manifest.");
+
+    const discovered = [...manifest.rootFiles];
+    for (const directory of manifest.includeRoots) {
+      if (await present(path.join(root, directory))) await filesUnder(root, directory, discovered);
+    }
+    for (const file of discovered) if (!manifest.files.includes(file)) errors.push(`Current package file is absent from manifest: ${file}`);
+    for (const file of manifest.files) if (!discovered.includes(file)) errors.push(`Manifest path is outside current package roots: ${file}`);
+  }
 
   const skill = await readFile(path.join(root, "SKILL.md"), "utf8").catch(() => "");
   const readme = await readFile(path.join(root, "README.md"), "utf8").catch(() => "");
@@ -107,8 +114,20 @@ export async function checkPackage(root) {
     if (!ids.has(id)) errors.push(`Missing policy parity ID: ${id}`);
   }
 
-  for (const file of [".github/workflows/check-package.yml", ".github/workflows/release.yml", "tests/hooks-package.test.mjs", "tests/hooks-artifacts.test.mjs"]) {
-    if (!(await present(path.join(root, file)))) errors.push(`Missing validation support file: ${file}`);
+  if (source) {
+    for (const file of [".github/workflows/check-package.yml", ".github/workflows/release.yml", "tests/hooks-package.test.mjs", "tests/hooks-artifacts.test.mjs"]) {
+      if (!(await present(path.join(root, file)))) errors.push(`Missing validation support file: ${file}`);
+    }
   }
   return { status: errors.length ? "failed" : "passed", errors };
+}
+
+/** Check the source checkout, including source-only archive, test, and CI support. */
+export async function checkPackage(root) {
+  return validatePackage(root, { source: true });
+}
+
+/** Check only the files and behavior promised to an extracted package consumer. */
+export async function checkInstalledPackage(root) {
+  return validatePackage(root, { source: false });
 }

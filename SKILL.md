@@ -53,7 +53,7 @@ Continuous runs refill from authorized eligible tasks without new prompts. A pro
 
 ## Verify, retain and recover
 
-Tests prove the checked revision and environment only. Keep unavailable, failed, timed-out and unrun checks distinct. Read-only status/health never install, repair, checkpoint, dispatch or start servers.
+Tests prove the checked revision and environment only. Keep unavailable, failed, timed-out and unrun checks distinct. The [lifecycle hooks](references/hooks.md) add bounded enforcement and evidence. Read-only status/health never install, repair, checkpoint, dispatch or start servers.
 
 Cleanup and deployment are separate. After verified integration, reclaim only safely stopped, clean task-owned resources with retained evidence; preserve dirty/untracked/ignored user files and required previews. Publish only to the authorized destination through required gates.
 

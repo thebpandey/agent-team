@@ -1,3 +1,4 @@
+import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 
 const tokenFields = ['inputTokens', 'cachedInputTokens', 'outputTokens'];
@@ -98,7 +99,12 @@ export async function readUsageReport(project, { receiptPath, budgetPolicy = {} 
   if (sourcePath) {
     let handle;
     try {
-      handle = await open(sourcePath, 'r');
+      // A receipt is a bounded regular file, never a pipe waiting for a writer.
+      // Validate the opened handle so replacement between lookup and open cannot
+      // turn a status-only read into an unbounded FIFO wait.
+      handle = await open(sourcePath, constants.O_RDONLY | constants.O_NONBLOCK);
+      const metadata = await handle.stat();
+      if (!metadata.isFile() || metadata.size > 4 * 1024 * 1024) throw new Error('Invalid receipt file.');
       const buffer = Buffer.alloc(4 * 1024 * 1024 + 1);
       let length = 0;
       while (length < buffer.length) {

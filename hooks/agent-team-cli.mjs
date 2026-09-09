@@ -4,21 +4,37 @@ import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { auditEffectiveness } from "./lib/telemetry.mjs";
 import { buildArtifacts, checkArtifacts } from "./lib/artifacts.mjs";
 import { getHealth } from "./lib/health.mjs";
-import { installPackage, uninstallPackage } from "./lib/install.mjs";
-import { checkPackage } from "./lib/package-validator.mjs";
+import { installPackage, rollbackPackage, uninstallPackage } from "./lib/install.mjs";
+import { checkInstalledPackage, checkPackage } from "./lib/package-validator.mjs";
 
 const run = promisify(execFile);
 
-function flags(args) {
+const commandFlags = {
+  health: new Set(["home", "project"]),
+  audit: new Set(["home", "log", "tracker", "mistakes", "limit"]),
+  install: new Set(["source", "home", "host", "scope", "project"]),
+  uninstall: new Set(["home", "host", "scope", "project"]),
+  rollback: new Set(["home", "host", "scope", "project"]),
+  "check-package": new Set(["source"]),
+  "check-installed-package": new Set(["source"]),
+  "check-artifacts": new Set(["source", "archive", "revision"]),
+  "build-artifacts": new Set(["source", "output", "revision"]),
+};
+
+function flags(command, args) {
+  if (!commandFlags[command]) throw new Error(`Unknown command: ${command ?? "missing"}`);
   const output = { archive: [] };
   for (let index = 0; index < args.length; index += 1) {
-    if (!args[index].startsWith("--")) continue;
+    if (!args[index].startsWith("--")) throw new Error(`Unexpected positional argument: ${args[index]}`);
     const name = args[index].slice(2);
+    if (!commandFlags[command]?.has(name)) throw new Error(`Unsupported flag for ${command ?? "missing"}: --${name}`);
     const value = args[++index];
+    if (value === undefined || value.startsWith("--")) throw new Error(`Missing value for --${name}.`);
     if (name === "archive") output.archive.push(value);
     else output[name] = value;
   }
@@ -44,9 +60,17 @@ export async function runCommand(command, options) {
     mistakesPath: options.mistakes,
     maxRecords: Number(options.limit ?? 1000),
   });
-  if (command === "install") return installPackage({ sourceRoot, home });
-  if (["uninstall", "rollback"].includes(command)) return uninstallPackage({ home });
+  if (command === "install") {
+    if (options.scope === "user" && options.project) throw new Error("--project is ineffective with --scope user.");
+    return installPackage({ sourceRoot, home, host: options.host, scope: options.scope, projectRoot: options.project && path.resolve(options.project) });
+  }
+  if (["uninstall", "rollback"].includes(command)) {
+    if (options.scope === "user" && options.project) throw new Error("--project is ineffective with --scope user.");
+    const uninstall = command === "rollback" ? rollbackPackage : uninstallPackage;
+    return uninstall({ home, host: options.host, scope: options.scope, projectRoot: options.project && path.resolve(options.project) });
+  }
   if (command === "check-package") return checkPackage(sourceRoot);
+  if (command === "check-installed-package") return checkInstalledPackage(sourceRoot);
   if (command === "check-artifacts") return checkArtifacts({
     sourceRoot,
     archives: options.archive.map((file) => path.resolve(file)),
@@ -60,9 +84,9 @@ export async function runCommand(command, options) {
   throw new Error(`Unknown command: ${command ?? "missing"}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const result = await runCommand(process.argv[2], flags(process.argv.slice(3)));
+    const result = await runCommand(process.argv[2], flags(process.argv[2], process.argv.slice(3)));
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     if (result.status === "failed") process.exitCode = 1;
   } catch (error) {

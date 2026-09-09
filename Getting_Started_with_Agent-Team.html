@@ -77,13 +77,13 @@
     .status-card { padding: 1rem 1.1rem; border: 1px solid var(--line); border-radius: 12px; background: rgba(6, 26, 18, .8); color: var(--muted); }
     .status-card strong { display: block; color: var(--ink); }
     .quick-links { display: flex; flex-wrap: wrap; gap: .6rem; }
-    .chip { display: inline-flex; align-items: center; min-height: 42px; padding: .5rem .85rem; border: 1px solid var(--line); border-radius: 999px; background: rgba(10, 38, 25, .8); color: var(--ink); font-size: .9rem; text-decoration: none; }
+    .chip { display: inline-flex; align-items: center; min-height: 44px; padding: .5rem .85rem; border: 1px solid var(--line); border-radius: 999px; background: rgba(10, 38, 25, .8); color: var(--ink); font-size: .9rem; text-decoration: none; }
     .chip:hover { border-color: var(--emerald); color: var(--neon); }
 
     .layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 2rem; padding-bottom: 5rem; }
     nav { align-self: start; position: sticky; top: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(6, 26, 18, .86); backdrop-filter: blur(12px); }
     nav strong { display: block; margin-bottom: .5rem; color: var(--neon); font-size: .8rem; letter-spacing: .08em; text-transform: uppercase; }
-    nav a { display: block; padding: .35rem 0; color: var(--muted); font-size: .9rem; text-decoration: none; }
+    nav a { display: flex; align-items: center; min-height: 44px; padding: .35rem 0; color: var(--muted); font-size: .9rem; text-decoration: none; }
     nav a:hover { color: var(--neon); }
     main { min-width: 0; }
 
@@ -124,7 +124,7 @@
     .command-meta { display: flex; justify-content: space-between; gap: .75rem; align-items: center; padding: .65rem .85rem; border-bottom: 1px solid #16422c; color: var(--dim); font-size: .82rem; }
     .command-meta a { font-weight: 700; }
     pre { margin: 0; padding: 1rem; overflow: auto; color: #eaffec; font: 500 .84rem/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
-    .copy { border: 1px solid #3f9864; border-radius: 7px; padding: .35rem .6rem; background: #0b3a25; color: var(--ink); cursor: pointer; font: 700 .73rem/1 ui-monospace, monospace; }
+    .copy { min-height: 44px; min-width: 44px; border: 1px solid #3f9864; border-radius: 7px; padding: .5rem .7rem; background: #0b3a25; color: var(--ink); cursor: pointer; font: 700 .82rem/1.3 ui-monospace, monospace; }
     .copy:hover { background: #125335; color: var(--neon); }
     .copy[data-state="copied"] { border-color: var(--neon); color: var(--neon); }
     code { padding: .12rem .3rem; border-radius: 4px; background: rgba(146, 255, 114, .11); color: #d7ffca; font: .9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -139,13 +139,18 @@
     .reference-list small { display: block; margin-top: .15rem; color: var(--dim); }
     .footer { padding: 2rem 0; border-top: 1px solid var(--line); color: var(--dim); font-size: .9rem; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+    summary:focus-visible { outline-offset: -4px; }
+    p, li, td, pre, .summary-copy { overflow-wrap: anywhere; }
+    .flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; padding: 0; list-style: none; }
+    .flow li { margin: 0; padding: 1rem; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+    .flow strong { display: block; color: var(--neon); }
 
     @media (max-width: 820px) {
       .layout { grid-template-columns: 1fr; }
       nav { position: static; display: flex; gap: .75rem; overflow: auto; padding: .75rem; }
       nav strong { display: none; }
       nav a { flex: 0 0 auto; padding: .35rem .5rem; }
-      .hero-grid, .grid, .reference-list { grid-template-columns: 1fr; }
+      .hero-grid, .grid, .reference-list, .flow { grid-template-columns: 1fr; }
     }
     @media (max-width: 520px) {
       .shell { width: min(100% - 1rem, 1120px); }
@@ -164,7 +169,7 @@
   <header class="hero shell">
     <p class="eyebrow">Plan first. Delegate next.</p>
     <h1>Plan it first.<br>Then build with a <span>real team.</span></h1>
-    <p class="lede">A standalone, step-by-step guide for Project Kickoff and Agent-Team in Codex or Claude Code. Project Kickoff defines the work. Agent-Team delegates the approved work. Copy the prompts. Your agent does the local work after you approve it.</p>
+    <p class="lede">Project Kickoff helps you define the work. Agent-Team delegates, reviews, and verifies it. Copy the prompts into Codex or Claude Code; your agent handles the approved setup and development.</p>
     <div class="hero-grid">
       <div class="quick-links" aria-label="Quick links">
         <a class="chip" href="#github">GitHub access</a>
@@ -187,16 +192,20 @@
       <a href="#setup">05 Setup</a>
       <a href="#settings">06 Settings</a>
       <a href="#start">07 Start work</a>
+      <a href="#dashboard">08 Web dashboard</a>
+      <a href="#recovery">09 Continue safely</a>
       <a href="#reference">Reference library</a>
     </nav>
 
     <main id="guide">
       <p class="intro"><strong>Before you begin:</strong> Project Kickoff and Agent-Team are skills, not terminal programs. The blocks below are messages to paste into Codex or Claude Code. They are not Bash commands.</p>
+      <p class="note"><strong>Local implementation preview.</strong> These instructions are being updated with the approved release. Native-host qualification and publication are still pending; do not treat this local file as evidence that every feature is already released.</p>
+      <ol class="flow" aria-label="Workflow overview"><li><strong>1 · Prepare</strong>Host, GitHub access, complete packages, then native hook trust.</li><li><strong>2 · Plan</strong>Use Project Kickoff, adopt an existing plan, or define a ready task directly.</li><li><strong>3 · Build</strong>Agent-Team delegates independent work, repairs findings, verifies, and reports.</li></ol>
 
       <details id="github" open>
-        <summary><span class="step">01</span><span class="summary-copy"><b>Prepare GitHub access</b><span>Install Git and GitHub CLI, sign in safely, then verify private-repository access.</span></span></summary>
+        <summary><span class="step">01</span><span class="summary-copy"><b>Prepare GitHub access</b><span>Install Git and GitHub CLI, sign in safely, then verify required repository access.</span></span></summary>
         <div class="detail-body">
-          <p>You need Codex or Claude Code, Git, <a href="https://cli.github.com/" target="_blank" rel="noreferrer">GitHub CLI (<code>gh</code>)</a>, a browser, and a GitHub account that can read the private <a href="https://github.com/thebpandey/project-kickoff" target="_blank" rel="noreferrer">Project Kickoff</a> and <a href="https://github.com/thebpandey/agent-team" target="_blank" rel="noreferrer">Agent-Team</a> repositories. Node.js 24 is needed only for lifecycle hooks.</p>
+          <p>You need a signed-in Codex or Claude Code installation with suitable model access, Git, <a href="https://cli.github.com/" target="_blank" rel="noreferrer">GitHub CLI (<code>gh</code>)</a>, a browser, and <a href="https://nodejs.org/" target="_blank" rel="noreferrer">Node.js 24</a> for Agent-Team's helpers and hooks. Both skill repositories are publicly visible at the time of this guide, but visibility does not grant permission under their licenses. You also need GitHub access to the project you will work on.</p>
           <div class="grid">
             <div class="card"><h3>You provide</h3><p>GitHub repository access, browser approval, host sign-in, model access, and approval for machine changes.</p></div>
             <div class="card"><h3>Your agent can do</h3><p>Inspect software, explain an installation plan, install approved tools, configure Git, and verify access without showing secrets.</p></div>
@@ -205,9 +214,9 @@
             <div class="command-meta"><span>Prompt • requires <a href="https://cli.github.com/manual/gh_auth_login" target="_blank" rel="noreferrer">GitHub CLI</a> and a browser</span><button class="copy" type="button">Copy prompt</button></div>
             <pre>Check whether Git, GitHub CLI (gh), and Node.js 24 are available. Do not change anything yet. Report what is missing, the official installation method for this operating system, and every file or setting it would change.
 
-I need access to the private repositories https://github.com/thebpandey/project-kickoff and https://github.com/thebpandey/agent-team. If gh is missing, ask my permission before installing it. If it is not authenticated, guide me through browser-based GitHub sign-in. Do not ask me to paste a password, token, or secret into chat. Configure Git to use this account, then verify read access to both repositories. Stop and explain any access error.</pre>
+I want to use https://github.com/thebpandey/project-kickoff and https://github.com/thebpandey/agent-team under their applicable licenses. Check GitHub CLI authentication and repository access. If gh is missing, show me the official installation method and the required scope. Guide me through browser-based sign-in if needed. Do not ask me to paste a password, token, or secret into chat. Preserve other GitHub accounts and Git settings. Verify access to my project too; explain any missing repository permission or organization SSO approval.</pre>
           </div>
-          <aside class="note"><strong>Browser sign-in is yours to complete.</strong> Open the URL or enter the device code shown by GitHub CLI. The normal flow uses the system credential store when available. Installing <code>gh</code> does not give an account access to a private repository.</aside>
+          <aside class="note"><strong>Browser sign-in is yours to complete.</strong> Follow GitHub CLI's displayed URL and device code, select the intended account, and complete any organization SSO step. Ask the agent to verify <code>gh auth status</code> without displaying tokens. Installing <code>gh</code> does not grant repository permissions, and GitHub sign-in does not sign you into Codex or Claude Code.</aside>
         </div>
       </details>
 
@@ -215,7 +224,7 @@ I need access to the private repositories https://github.com/thebpandey/project-
         <summary><span class="step">02</span><span class="summary-copy"><b>Install and run Project Kickoff first</b><span>Define the product and implementation plan before Agent-Team delegates the work.</span></span></summary>
         <div class="detail-body">
           <p><a href="https://github.com/thebpandey/project-kickoff" target="_blank" rel="noreferrer">Project Kickoff</a> guides a new project, audits an existing project, or replans a major revision. It moves through discovery, approved planning, setup, and handoff. It asks one unresolved question at a time, creates approved product, design, and technical planning records, and prepares an Agent-Team handoff. It does <strong>not</strong> implement product features or start Agent-Team by itself.</p>
-          <aside class="note"><strong>Install it in the project you are planning.</strong> Project Kickoff is project-local: use <code>.agents/skills/project-kickoff</code> for Codex or <code>.claude/skills/project-kickoff</code> for Claude Code. Complete GitHub access first. You also need permission from the Skill owner to use its private repository.</aside>
+          <aside class="note"><strong>Recommended, not required by Agent-Team.</strong> Install Project Kickoff in the project you are planning: <code>.agents/skills/project-kickoff</code> for Codex or <code>.claude/skills/project-kickoff</code> for Claude Code. Its proprietary license requires the owner's permission even if you can view the repository. Keep the complete skill package out of your application's commits. If you already have an approved plan, skip to Agent-Team and ask it to adopt that plan.</aside>
           <div class="grid">
             <section class="card">
               <h3>Codex project install</h3>
@@ -224,7 +233,7 @@ I need access to the private repositories https://github.com/thebpandey/project-
                 <div class="command-meta"><span>Prompt • <a href="https://github.com/thebpandey/project-kickoff" target="_blank" rel="noreferrer">Project Kickoff v0.3.0</a></span><button class="copy" type="button">Copy prompt</button></div>
                 <pre>At this project's confirmed Git root, install the complete Project Kickoff package from https://github.com/thebpandey/project-kickoff, pinned to release tag v0.3.0, using my authenticated GitHub CLI access. First inspect the project boundary and any existing .agents/skills/project-kickoff installation. If this is not the intended Git root, or the project needs Git initialization, stop and ask me before changing anything.
 
-Install the complete private package at .agents/skills/project-kickoff. Keep SKILL.md, README.md, CHANGELOG.md, LICENSE, agents/, references/, assets/, and scripts/ together. Add this private skill to the repository's local Git exclude, not the committed .gitignore, and verify it is ignored before later project commits. Do not overwrite a customized copy, change global configuration, or activate hooks. Verify that Codex discovers the installed Skill and tell me whether I must reload.</pre>
+Install the complete licensed package at .agents/skills/project-kickoff. Keep SKILL.md, README.md, CHANGELOG.md, LICENSE, agents/, references/, assets/, and scripts/ together. Keep this installation private using the repository's local Git exclude, not the committed .gitignore, and verify it is ignored before later project commits. Do not overwrite a customized copy, change global configuration, or activate hooks. Verify that Codex discovers the installed skill and tell me whether I must reload.</pre>
               </div>
             </section>
             <section class="card">
@@ -234,7 +243,7 @@ Install the complete private package at .agents/skills/project-kickoff. Keep SKI
                 <div class="command-meta"><span>Prompt • <a href="https://github.com/thebpandey/project-kickoff" target="_blank" rel="noreferrer">Project Kickoff v0.3.0</a></span><button class="copy" type="button">Copy prompt</button></div>
                 <pre>At this project's confirmed Git root, install the complete Project Kickoff package from https://github.com/thebpandey/project-kickoff, pinned to release tag v0.3.0, using my authenticated GitHub CLI access. First inspect the project boundary and any existing .claude/skills/project-kickoff installation. If this is not the intended Git root, or the project needs Git initialization, stop and ask me before changing anything.
 
-Install the complete private package at .claude/skills/project-kickoff. Keep SKILL.md, README.md, CHANGELOG.md, LICENSE, agents/, references/, assets/, and scripts/ together. Add this private skill to the repository's local Git exclude, not the committed .gitignore, and verify it is ignored before later project commits. Do not overwrite a customized copy, change global configuration, or activate hooks. Verify that Claude Code discovers the installed Skill and tell me whether I must reload.</pre>
+Install the complete licensed package at .claude/skills/project-kickoff. Keep SKILL.md, README.md, CHANGELOG.md, LICENSE, agents/, references/, assets/, and scripts/ together. Keep this installation private using the repository's local Git exclude, not the committed .gitignore, and verify it is ignored before later project commits. Do not overwrite a customized copy, change global configuration, or activate hooks. Verify that Claude Code discovers the installed skill and tell me whether I must reload.</pre>
               </div>
             </section>
           </div>
@@ -249,13 +258,13 @@ Read-only audit:  $project-kickoff audit-only &lt;path&gt;
 Continue later:   $project-kickoff resume &lt;path&gt;
 Check progress:   $project-kickoff status &lt;path&gt;</pre>
           </div>
-          <p>During kickoff, approve each planning stage before the next begins. After its planning and setup phases, Project Kickoff selects one tracker, seeds the approved plan, prepares the exact <code>$agent-team start</code> or <code>/agent-team start</code> handoff, and stops. Continue with Agent-Team in step 07 only when you are ready to delegate implementation.</p>
+          <p>During kickoff, answer one question at a time and approve each planning stage. It creates approved product, design and implementation records, then prepares only the agreed scaffold. Its own setup asks before installing dependencies; Agent-Team's later first-run preparation policy is separate. Kickoff seeds your selected Beads or Markdown tracker, prepares the exact <code>$agent-team start</code> or <code>/agent-team start</code> handoff, and stops. Agent-Team reuses those decisions instead of interviewing you again.</p>
           <aside class="note"><strong>Optional Project Kickoff hooks:</strong> installation does not activate them. They need separate project approval, normal <code>/hooks</code> trust review, and Python 3.9 or later on Linux, macOS, or WSL. Keep the instruction-based workflow if those requirements are not met.</aside>
         </div>
       </details>
 
       <details id="install">
-        <summary><span class="step">03</span><span class="summary-copy"><b>Install Agent-Team from GitHub</b><span>After Project Kickoff, choose one host and install the complete package, never a lone SKILL.md file.</span></span></summary>
+        <summary><span class="step">03</span><span class="summary-copy"><b>Install Agent-Team from GitHub</b><span>One complete package. Select Codex or Claude Code; both hosts only when you ask.</span></span></summary>
         <div class="detail-body">
           <p>A user-wide install is the simplest choice. It makes Agent-Team available to all of your projects. The agent should inspect an existing copy first and preserve any local changes.</p>
           <div class="grid">
@@ -266,7 +275,7 @@ Check progress:   $project-kickoff status &lt;path&gt;</pre>
                 <div class="command-meta"><span>Prompt • requires <a href="https://cli.github.com/" target="_blank" rel="noreferrer">gh</a>, <a href="https://git-scm.com/" target="_blank" rel="noreferrer">Git</a>, and repository access</span><button class="copy" type="button">Copy prompt</button></div>
                 <pre>Install the complete Agent-Team skill from the main branch of https://github.com/thebpandey/agent-team using my authenticated GitHub CLI access. Inspect any existing installation, its source, and local changes first. Do not overwrite a customized installation or create a duplicate.
 
-For a user-wide Codex installation, use ~/.agents/skills/agent-team. Keep SKILL.md, references/, agents/, assets/, hooks/, README.md, and LICENSE together. If Node.js 24 is available and I approve, use the bundled managed installer to register lifecycle hooks. Preserve unrelated Codex settings and report every change. Verify discovery and tell me whether I must reload.</pre>
+Use the complete package's managed installer with host codex and user scope. It should install at ~/.agents/skills/agent-team and register only Codex hooks. Node.js 24 must be ready first. Preserve unrelated hooks, settings, and customized resources; do not install Claude Code components. Verify the installed package and report its exact revision, receipt, remaining checks, and reload/trust steps. Do not mark unobserved hooks as exercised.</pre>
               </div>
             </section>
             <section class="card">
@@ -276,10 +285,11 @@ For a user-wide Codex installation, use ~/.agents/skills/agent-team. Keep SKILL.
                 <div class="command-meta"><span>Prompt • requires <a href="https://cli.github.com/" target="_blank" rel="noreferrer">gh</a>, <a href="https://git-scm.com/" target="_blank" rel="noreferrer">Git</a>, and repository access</span><button class="copy" type="button">Copy prompt</button></div>
                 <pre>Install the complete Agent-Team skill from the main branch of https://github.com/thebpandey/agent-team using my authenticated GitHub CLI access. Inspect any existing installation, its source, and local changes first. Do not overwrite a customized installation or create a duplicate.
 
-For a user-wide Claude Code installation, use ~/.claude/skills/agent-team. For project scope, use .claude/skills/agent-team. Keep SKILL.md, references/, agents/, assets/, hooks/, README.md, and LICENSE together. If Node.js 24 is available and I approve, use the bundled managed installer to register lifecycle hooks and bundled Claude role definitions. Preserve unrelated settings and customized role definitions. Verify discovery and tell me whether I must reload.</pre>
+Use the complete package's managed installer with host claude-code and user scope. It should install at ~/.claude/skills/agent-team and register only Claude hooks and bundled role definitions. Node.js 24 must be ready first. Preserve unrelated hooks, settings, and customized roles; do not change Codex. Verify the installed package and report its exact revision, receipt, remaining checks, and reload/trust steps.</pre>
               </div>
             </section>
           </div>
+          <p><strong>Only this project?</strong> Add “Use project scope at this confirmed Git root” to your prompt. Codex uses <code>.agents/skills/agent-team</code> and <code>.codex/hooks.json</code>; Claude uses <code>.claude/skills/agent-team</code> and <code>.claude/settings.local.json</code>. Ask explicitly for both hosts only if you use both. The distribution is one complete ZIP, not separate host-only packages.</p>
         </div>
       </details>
 
@@ -289,9 +299,9 @@ For a user-wide Claude Code installation, use ~/.claude/skills/agent-team. For p
           <p>Close and reopen your host after the first install or an update. Then inspect the registered lifecycle hooks. Hooks add small checks, reminders, and recovery checkpoints. They do not replace review.</p>
           <div class="command">
             <div class="command-meta"><span>Prompt • requires the bundled <a href="https://github.com/thebpandey/agent-team/tree/main/hooks" target="_blank" rel="noreferrer">Agent-Team hooks</a></span><button class="copy" type="button">Copy prompt</button></div>
-            <pre>Open /hooks and show me the Agent-Team lifecycle hooks that were registered. Explain what each group does and whether the host reports it as trusted. Do not modify or approve hooks for me.</pre>
+            <pre>Explain the Agent-Team hooks registered from https://github.com/thebpandey/agent-team/tree/main/hooks, their paths, and any supported health evidence. I will open the native /hooks screen to review trust. Do not change trust settings, approve unknown hooks, or claim an unobserved event has passed.</pre>
           </div>
-          <aside class="warning note"><strong>Trust is a native host action.</strong> Review the paths the host shows. If you decide to trust all currently registered hooks, choose <strong>Trust all</strong> in the host’s own confirmation screen. An agent must not approve hooks for you.</aside>
+          <aside class="warning note"><strong>Type <code>/hooks</code> in the host yourself.</strong> Review the registered paths and commands. If the host offers <strong>Trust all</strong>, use it only after reviewing every affected entry; otherwise approve the intended entries individually. Telling an agent “trust all hooks” does not bypass native consent or organization policy. Reload again if the host requests it.</aside>
           <div class="command">
             <div class="command-meta"><span>Reference command • <a href="https://github.com/thebpandey/agent-team" target="_blank" rel="noreferrer">Agent-Team</a></span><button class="copy" type="button">Copy command</button></div>
             <pre>Codex:  $agent-team help
@@ -301,59 +311,80 @@ Claude: /agent-team help</pre>
       </details>
 
       <details id="setup">
-        <summary><span class="step">05</span><span class="summary-copy"><b>Run setup and choose dependencies</b><span>Setup checks tools, requests permission one dependency at a time, then opens settings.</span></span></summary>
+        <summary><span class="step">05</span><span class="summary-copy"><b>Run setup once</b><span>Reuse your plan and tracker. Prepare missing tools in the right order.</span></span></summary>
         <div class="detail-body">
-          <p>Run setup in the project where you want Agent-Team to work. It checks the host, project, installed skills, and saved setup record. It never gets blanket permission to install tools.</p>
+          <p>Run setup in your project's canonical checkout. Agent-Team can reuse Project Kickoff, adopt an existing approved plan, or start from a task you define directly. Project Kickoff is never a prerequisite.</p>
           <div class="command">
-            <div class="command-meta"><span>Reference command • <a href="https://github.com/thebpandey/agent-team" target="_blank" rel="noreferrer">Agent-Team</a></span><button class="copy" type="button">Copy command</button></div>
+            <div class="command-meta"><span>Chat commands • <a href="https://github.com/thebpandey/agent-team">Agent-Team</a></span><button class="copy" type="button">Copy commands</button></div>
             <pre>Codex:  $agent-team setup
 Claude: /agent-team setup</pre>
           </div>
+          <h3>What happens automatically</h3>
+          <p>Setup reuses compatible tools, shows a short grouped preparation summary, and installs missing mandatory and selected default components within the approved scope. It verifies useful operations before marking capabilities ready. It does not ask you to approve each already-selected plugin again.</p>
           <div class="command">
-            <div class="command-meta"><span>Prompt • references dependencies listed below</span><button class="copy" type="button">Copy prompt</button></div>
-            <pre>Run Agent-Team setup for this project. Check each dependency first. For every missing item, explain what it does, whether Agent-Team can install it automatically, its source and version, its scope, every file or configuration it would change, and whether it needs a separate approval. Ask me one dependency at a time. Do not install anything until I choose the displayed installation option. After dependency setup, continue to the complete settings wizard.</pre>
+            <div class="command-meta"><span>Setup prompt • official sources included</span><button class="copy" type="button">Copy prompt</button></div>
+            <pre>Run Agent-Team setup from https://github.com/thebpandey/agent-team for this project. Reuse the approved Project Kickoff handoff or existing plan and preserve the current canonical branch and tracker. If neither exists, help me define one ready task and its acceptance criteria.
+
+Prepare the mandatory tools:
+Serena — https://github.com/oraios/serena
+Microsoft Playwright CLI — https://github.com/microsoft/playwright-cli
+
+Prepare the selected defaults:
+ast-grep CLI — https://github.com/ast-grep/ast-grep
+LeanCTX (narrow context/output profile) — https://github.com/yvgude/lean-ctx
+Superpowers (selective procedures) — https://github.com/obra/superpowers
+Ponytail (local skills) — https://github.com/DietrichGebert/ponytail
+Impeccable (skill and detector, no blanket hooks) — https://github.com/pbakaus/impeccable
+React Best Practices (individual skill) — https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices
+
+Use Beads only if it is my selected tracker: https://github.com/gastownhall/beads
+Keep optional Context7 and the web dashboard off unless I select them. Install prerequisites before their tools, preserve custom settings, and report genuine sign-in, administrator, trust, or policy steps I must complete. Show all roles and their actual available model/effort choices. Do not claim a check passed unless it ran.</pre>
           </div>
-          <h3>Decision order</h3>
+          <h3>Prerequisite order and responsibility</h3>
           <table>
-            <thead><tr><th>Order</th><th>What it is</th><th>Who handles it</th></tr></thead>
+            <thead><tr><th>Order</th><th>Prepare</th><th>Who handles it</th></tr></thead>
             <tbody>
-              <tr><td>1</td><td>Git, <a href="https://cli.github.com/" target="_blank" rel="noreferrer">GitHub CLI</a>, GitHub access, and your host</td><td>Install/sign in before setup. Your agent can propose an install; you approve it.</td></tr>
-              <tr><td>2</td><td><a href="https://nodejs.org/" target="_blank" rel="noreferrer">Node.js 24</a></td><td>Needed for optional lifecycle hooks. Install it before hook registration, or skip hooks for now.</td></tr>
-              <tr><td>3</td><td><a href="https://github.com/thebpandey/agent-team" target="_blank" rel="noreferrer">Agent-Team</a></td><td>Install with the host prompt in step 03.</td></tr>
-              <tr><td>4</td><td><a href="https://github.com/DietrichGebert/ponytail" target="_blank" rel="noreferrer">Ponytail</a>, <a href="https://github.com/obra/superpowers" target="_blank" rel="noreferrer">Using-Superpowers</a>, <a href="https://github.com/gastownhall/beads" target="_blank" rel="noreferrer">Beads</a>, <a href="https://github.com/pbakaus/impeccable" target="_blank" rel="noreferrer">Impeccable</a></td><td>Recommended. Setup offers each missing tool after your explicit choice.</td></tr>
-              <tr><td>5</td><td><a href="https://github.com/yvgude/lean-ctx" target="_blank" rel="noreferrer">LeanCTX</a></td><td>Recommended context tool. It needs separate configuration and permission review. It does not choose the task tracker.</td></tr>
-              <tr><td>6</td><td>Optional design tools</td><td>Install only if a real UI task needs them. Full links are in the reference library.</td></tr>
+              <tr><td>1</td><td>Host, Git, <a href="https://cli.github.com/">gh</a>, account and repository access</td><td>You complete login/SSO and grant required access. The agent can inspect and install in an approved scope.</td></tr>
+              <tr><td>2</td><td><a href="https://nodejs.org/">Node.js 24</a> and npm</td><td>Before Agent-Team helpers, hook registration, or npm-distributed tools. System/admin changes may need you.</td></tr>
+              <tr><td>3</td><td>Complete <a href="https://github.com/thebpandey/agent-team">Agent-Team package</a>, then reload and trust</td><td>Managed installer handles selected host/scope. You make native trust decisions.</td></tr>
+              <tr><td>4</td><td><a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a>, managed Python, <a href="https://github.com/oraios/serena">Serena</a>, selected language-server prerequisites</td><td>First-run preparation installs supported prerequisites in order. Unavailable system requirements are reported specifically.</td></tr>
+              <tr><td>5</td><td><a href="https://github.com/microsoft/playwright-cli">Playwright CLI</a>, browser binaries and browser OS libraries</td><td>Agent prepares and tests an isolated browser. Required OS packages may need administrator access; backend projects still prepare this tool.</td></tr>
+              <tr><td>6</td><td>Selected default skills/CLIs and, if chosen, <a href="https://github.com/gastownhall/beads">Beads</a></td><td>Reuse compatible installations. No Rust/Bun build toolchain merely to obtain a supported prebuilt detector. A Beads server is not assumed necessary: inspect its backend.</td></tr>
+              <tr><td>7</td><td>Optional components</td><td>Only after you select them; missing optional tools do not block unrelated work.</td></tr>
             </tbody>
           </table>
-          <aside class="note"><strong>Tracker fallback:</strong> if any of Ponytail, Using-Superpowers, Beads, or Impeccable is unavailable or declined, Agent-Team continues with <code>.agent-team/TASKS.md</code>. Setup still works.</aside>
+          <aside class="note"><strong>One tracker stays authoritative.</strong> Use your selected Beads database, root <code>TASKS.md</code>, or designated <code>.agent-team/TASKS.md</code>. A tool outage does not migrate tasks. Prepared skills are loaded only by the roles and tasks that need their instructions—not all at once for every agent.</aside>
         </div>
       </details>
 
       <details id="settings">
-        <summary><span class="step">06</span><span class="summary-copy"><b>Configure or change project settings</b><span>Settings apply to future starts in this project. They do not change a run already in progress.</span></span></summary>
+        <summary><span class="step">06</span><span class="summary-copy"><b>See and change your settings</b><span>Choose from friendly menus; no model names or effort keywords to memorize.</span></span></summary>
         <div class="detail-body">
-          <p>Setup opens the complete settings wizard automatically. It asks one question at a time. Keep the defaults for the first run unless you have a specific reason to change them.</p>
+          <p>Start with the settings overview. It shows each role's purpose, model, effort, where the value came from, and whether the host can actually enforce it. Change one item directly; use the full wizard only when you want to review everything. Saved Codex and Claude preferences are kept separately.</p>
           <table>
-            <thead><tr><th>Setting</th><th>What it controls</th><th>First-run choice</th></tr></thead>
+            <thead><tr><th>Setting</th><th>Meaning</th><th>Default</th></tr></thead>
             <tbody>
-              <tr><td>Parallel teams</td><td>Independent teams working at once, from 1 to 6.</td><td>1</td></tr>
-              <tr><td>Continuous mode</td><td>Refills a finished slot with another ready task.</td><td>Off</td></tr>
-              <tr><td>Auto-deploy</td><td>Deploys verified work in batches. Release checks still apply.</td><td>Off</td></tr>
-              <tr><td>Deployment batch size</td><td>Completed top-level tasks per automatic deployment.</td><td>Follow the team limit</td></tr>
-              <tr><td>Role routing</td><td>Model and reasoning effort for orchestration, development, and review roles.</td><td>Keep host defaults</td></tr>
+              <tr><td>Parallel teams</td><td>Requested concurrent teams, 1–6. Actual host capacity and reviewer slots may reduce this.</td><td>1</td></tr>
+              <tr><td>Continuous mode</td><td>Refill capacity after verified integration or safe parking, while eligible authorized work remains.</td><td>Off</td></tr>
+              <tr><td>Auto-deploy</td><td>Release verified batches to an already authorized destination. Off does not prevent integration or eligible cleanup.</td><td>Off</td></tr>
+              <tr><td>Deployment batch</td><td>Completed top-level delivery tasks per release—not commits or child tasks.</td><td>Follow the effective team limit when no explicit size is saved</td></tr>
+              <tr><td>Quality/model profile</td><td>Quality-first defaults; balanced/economical choices keep the same acceptance checks. No silent downgrade.</td><td>Quality</td></tr>
+              <tr><td>Role model and effort</td><td>Per-host choices for orchestration, development, review and specialist roles. A saved value is not proof of live enforcement.</td><td>Supported host defaults</td></tr>
+              <tr><td>Usage budget</td><td>A soft limit suggests a cheaper strategy. An explicitly chosen hard limit requests a safe checkpoint, never skipped tests.</td><td>No hard limit unless you choose one</td></tr>
             </tbody>
           </table>
           <div class="command">
-            <div class="command-meta"><span>Prompt • requires <a href="https://github.com/thebpandey/agent-team" target="_blank" rel="noreferrer">Agent-Team</a></span><button class="copy" type="button">Copy prompt</button></div>
-            <pre>Run Agent-Team settings for this project. Show the current effective values and their sources. Walk me through each setting one at a time, including every role’s model and effort. Keep the current value unless I explicitly select a replacement. Save only after showing me the final summary.</pre>
+            <div class="command-meta"><span>Targeted settings prompt • <a href="https://github.com/thebpandey/agent-team">Agent-Team</a></span><button class="copy" type="button">Copy prompt</button></div>
+            <pre>Show Agent-Team settings and the role/model/effort overview. I want to change only the developer role for this host. Offer supported model choices with short explanations, then compatible effort choices. Keep the other host's preferences and every unrelated setting. Let me cancel without saving. Tell me what will apply to future runs and what is actually enforced now.</pre>
           </div>
+          <p>For a complete review, say “Open Agent-Team's full settings wizard.” Settings affect future starts; they do not silently alter agents already running.</p>
         </div>
       </details>
 
       <details id="start">
         <summary><span class="step">07</span><span class="summary-copy"><b>Start development with Agent-Team</b><span>Use Project Kickoff's approved handoff or another recorded task, then begin with one safe team.</span></span></summary>
         <div class="detail-body">
-          <p>A bare start selects one ready task from Beads or <code>.agent-team/TASKS.md</code>. A named start selects one existing task. For a new feature, ask Agent-Team to reconcile the work before it starts.</p>
+          <p>A bare start selects one ready task from your chosen Beads or Markdown tracker. A named start selects an existing task. For a new feature, describe its acceptance criteria and ask Agent-Team to reconcile it with existing work first. Independent teams use separate worktrees; review, integration and safe cleanup remain coordinated.</p>
           <div class="command">
             <div class="command-meta"><span>New-feature prompt • requires <a href="https://github.com/thebpandey/agent-team" target="_blank" rel="noreferrer">Agent-Team</a> and its selected tracker</span><button class="copy" type="button">Copy prompt</button></div>
             <pre>Use Agent-Team for this feature: &lt;describe the feature, acceptance criteria, constraints, and affected project&gt;. First check for duplicate or unfinished work. Create or reconcile the canonical task, show me the selected tracker and effective run settings, then start one team. Keep continuous mode and auto-deploy off for this first run. Verify the result and report every requirement as implemented, verified, deferred, or blocked. Do not deploy.</pre>
@@ -376,18 +407,58 @@ Claude: /agent-team setup</pre>
         </div>
       </details>
 
+      <details id="dashboard">
+        <summary><span class="step">08</span><span class="summary-copy"><b>See the whole project in a webpage</b><span>Optional, local, read-only. Teams, progress, all tasks, and dependencies.</span></span></summary>
+        <div class="detail-body">
+          <p>The dashboard complements Agent-Team status. It shows overall task-count progress, current teams and roles, and a dedicated searchable list of <strong>all tasks</strong> with statuses, owners, priorities and dependencies—not just tasks currently assigned to agents.</p>
+          <div class="grid">
+            <section class="card"><h3>Saved HTML · simplest</h3><p>Open <code>.agent-team/dashboard/index.html</code> in the canonical project. When automatic snapshots are enabled, Agent-Team refreshes the file after meaningful task transitions. Reloading reads that saved version; it cannot execute tools or query Beads. No server is required.</p></section>
+            <section class="card"><h3>Live refresh · opt-in</h3><p>A small Node helper listens only on your machine. Opening the page or selecting Refresh obtains current records. No build/dev framework, cloud database, task controls or public hosting is involved.</p></section>
+          </div>
+          <div class="command">
+            <div class="command-meta"><span>Dashboard prompt • <a href="https://github.com/thebpandey/agent-team">Agent-Team</a>, optional <a href="https://github.com/Dicklesworthstone/beads_viewer">beads_viewer</a></span><button class="copy" type="button">Copy prompt</button></div>
+            <pre>Enable Agent-Team's local HTML dashboard for this project using https://github.com/thebpandey/agent-team. Show overall progress, current teams and all tasks with statuses. Start with saved-snapshot mode and tell me the file path. Do not start a server or publish project data.
+
+If I select the Beads graph provider, use the separately referenced https://github.com/Dicklesworthstone/beads_viewer by Jeffrey Emanuel and first show its complete license: https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE. Refresh the export from my actual Beads database before generating its graph. Keep the normal task/status view available if the optional provider is unavailable.</pre>
+          </div>
+          <aside class="note"><strong>Know what is current.</strong> Check the source and refresh time. Missing or failed reads are unknown/stale, not zero completed tasks. Cancelled and approved-deferred tasks are separated; summary parents and children are not double-counted. A task percentage is not an estimate of effort. Recorded agent activity is not proof that an agent is still running.</aside>
+          <ol class="flow" aria-label="How optional graph refresh works">
+            <li><strong>1 · Read the authority</strong>The selected Beads database owns task state. Export fresh data into isolated rendering storage.</li>
+            <li><strong>2 · Read graph data</strong>The optional bv adapter requests JSON adjacency with hooks disabled. It does not copy or rebrand the TUI engine.</li>
+            <li><strong>3 · Show the snapshot</strong>Click a graph node, or use Enter/Space, to filter tasks. The all-task list remains available without a graph.</li>
+          </ol>
+          <p><strong>Third-party attribution:</strong> <a href="https://github.com/Dicklesworthstone/beads_viewer">beads_viewer</a> is Jeffrey Emanuel's independently maintained software. Its <a href="https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE">complete license and disclaimers</a> include an OpenAI/Anthropic restriction rider; attribution alone does not establish eligibility. Agent-Team references it separately and does not rebrand or redistribute its engine as unrestricted MIT. The built-in dashboard also works with the selected Markdown tracker, without Beads or bv.</p>
+        </div>
+      </details>
+
+      <details id="recovery">
+        <summary><span class="step">09</span><span class="summary-copy"><b>Continue with less repetition</b><span>Durable checkpoints protect decisions; independent work continues around real blockers.</span></span></summary>
+        <div class="detail-body">
+          <p>Agent-Team records task ownership, decisions, evidence, pending operations and the next action as work happens. A replacement agent reads a compact task packet linked to the original records. It does not rely on a chain of summaries or reload the entire conversation.</p>
+          <p>Ordinary test, lint and review findings are repaired within the approved task. If credentials, authority or an external dependency genuinely prevent progress, the orchestrator can safely park that task, retain its claim and worktree, and use released compute for another eligible task. Unknown writer liveness does not free a slot. Your explicit Pause stays in force until you resume.</p>
+          <div class="command">
+            <div class="command-meta"><span>Resume prompt • <a href="https://github.com/thebpandey/agent-team">Agent-Team</a></span><button class="copy" type="button">Copy prompt</button></div>
+            <pre>Resume Agent-Team for this project. Restore the selected tracker, original approved and rejected decisions, ownership, exact revision, verification evidence and next action. Reconcile any pending or uncertain external operation before retrying it. Respect explicit pauses. Continue the already-authorized implementation and repair ordinary findings automatically.</pre>
+          </div>
+          <aside class="note"><strong>Compaction is a fallback, not disabled.</strong> Small assignments and durable source-linked checkpoints reduce pressure and repeated context. They cannot guarantee zero compactions, eliminate all startup cost, or automatically replace the parent session after the host exits. Usage reports separate input, cached input, output, repair and time data; missing host/worker measurements remain unknown, with no invented savings.</aside>
+        </div>
+      </details>
+
       <details id="troubleshooting">
-        <summary><span class="step">?</span><span class="summary-copy"><b>Quick fixes</b><span>Most first-time failures are a missing session reload, repository access, or native trust choice.</span></span></summary>
+        <summary><span class="step">?</span><span class="summary-copy"><b>Quick fixes</b><span>Ask for the specific failed prerequisite—not a fresh installation of everything.</span></span></summary>
         <div class="detail-body">
           <table>
             <thead><tr><th>Problem</th><th>What to do</th></tr></thead>
             <tbody>
-              <tr><td>Agent-Team is not found</td><td>Start a new session, verify the installed path, and show Agent-Team help.</td></tr>
-              <tr><td>GitHub download fails</td><td>Ask the agent to show <code>gh</code> authentication status and the repository-access error without secrets. Confirm your account can read the private repository.</td></tr>
-              <tr><td>Hooks are untrusted</td><td>Open <code>/hooks</code>, review the Agent-Team entries, choose the native trust option yourself, then reload if asked.</td></tr>
-              <tr><td>Node.js is missing</td><td>Install Node.js 24 after reviewing the plan. Repeat hook registration or health checks. The skill can exist without hooks.</td></tr>
-              <tr><td>A recommended tool is skipped</td><td>Continue with <code>.agent-team/TASKS.md</code>.</td></tr>
-              <tr><td>Claude role definitions are missing</td><td>Run setup again and ask it to inspect/register bundled definitions without overwriting custom files. Restart Claude Code if needed.</td></tr>
+              <tr><td>Skill not found</td><td>Reload the host, inspect the selected host/scope path, and check help. Preserve customized copies; do not install duplicates.</td></tr>
+              <tr><td>GitHub access fails</td><td>Check <code>gh auth status</code> without secrets, the selected account, repository permission and organization SSO. GitHub and host login are separate.</td></tr>
+              <tr><td>Hooks untrusted or unobserved</td><td>Open native <code>/hooks</code>, review paths, and use the host's trust controls if you approve them. Unobserved means “not yet exercised,” not passed.</td></tr>
+              <tr><td>Node/browser/Serena prerequisite missing</td><td>Run setup to repair only that capability. Complete any specific system/admin step, then rerun its functional check.</td></tr>
+              <tr><td>Beads unavailable</td><td>Repair or report the selected backend. Keep its task authority; never create a silent Markdown replacement.</td></tr>
+              <tr><td>A helper is unavailable</td><td>Continue independent work that does not require it; keep affected verification pending. An optional component must not block everything.</td></tr>
+              <tr><td>Model unavailable or not enforced</td><td>Open targeted role settings and select a supported choice. Do not silently reduce quality or erase the other host's preferences.</td></tr>
+              <tr><td>Dashboard seems old</td><td>Read its freshness label. File reload reads a saved snapshot; request regeneration or explicitly enable local live refresh.</td></tr>
+              <tr><td>A command is policy-blocked</td><td>Respect the boundary. Do not ask an agent to disguise the command or bypass trust. Complete the required supported action in an authorized environment.</td></tr>
             </tbody>
           </table>
         </div>
@@ -395,40 +466,44 @@ Claude: /agent-team setup</pre>
 
       <section id="reference" aria-labelledby="reference-title">
         <p class="eyebrow">Reference library</p>
-        <h2 id="reference-title">Every source in one place</h2>
-        <p class="intro">These links are the sources named by the setup prompts. Agent-Team only needs the core set and the recommended tools. The design collection is optional and should be installed one tool at a time for a real UI need.</p>
+        <h2 id="reference-title">Official sources, grouped by purpose</h2>
+        <p class="intro">Use these repositories and their own license/install instructions. “Prepared by default” does not mean every agent loads every skill or that a missing optional tool blocks development.</p>
         <h3>Core, host, and access</h3>
         <ul class="reference-list">
-          <li><a href="https://github.com/thebpandey/agent-team" target="_blank" rel="noreferrer">Agent-Team<small>Source repository and releases</small></a></li>
-          <li><a href="https://github.com/thebpandey/project-kickoff" target="_blank" rel="noreferrer">Project Kickoff<small>Private project-planning skill and Agent-Team handoff</small></a></li>
-          <li><a href="https://cli.github.com/" target="_blank" rel="noreferrer">GitHub CLI<small>Install and authenticate <code>gh</code></small></a></li>
-          <li><a href="https://cli.github.com/manual/gh_auth_login" target="_blank" rel="noreferrer">GitHub CLI authentication<small>Browser, device-code, and credential-store flow</small></a></li>
-          <li><a href="https://git-scm.com/" target="_blank" rel="noreferrer">Git<small>Repository download and worktrees</small></a></li>
-          <li><a href="https://nodejs.org/" target="_blank" rel="noreferrer">Node.js<small>Version 24 for lifecycle hooks</small></a></li>
-          <li><a href="https://help.openai.com/en/articles/11369540-using-codex-with-chatgpt" target="_blank" rel="noreferrer">Codex<small>OpenAI account and Codex access</small></a></li>
-          <li><a href="https://code.claude.com/docs/en/skills" target="_blank" rel="noreferrer">Claude Code skills<small>Claude discovery and project scope</small></a></li>
-          <li><a href="https://help.openai.com/en/articles/20001256-plugins-in-chatgpt-and-codex" target="_blank" rel="noreferrer">Plugins in Codex<small>How plugins package skills and apps</small></a></li>
+          <li><a href="https://github.com/thebpandey/agent-team">Agent-Team<small>Complete package, releases and source</small></a></li>
+          <li><a href="https://github.com/thebpandey/project-kickoff">Project Kickoff<small>Optional planning skill; owner's license permission required</small></a></li>
+          <li><a href="https://cli.github.com/">GitHub CLI<small>Install gh</small></a></li>
+          <li><a href="https://cli.github.com/manual/gh_auth_login">GitHub authentication<small>Browser/device flow; never paste tokens into chat</small></a></li>
+          <li><a href="https://git-scm.com/">Git<small>Repositories and worktrees</small></a></li>
+          <li><a href="https://nodejs.org/">Node.js<small>Version 24 for Agent-Team helpers and hooks</small></a></li>
+          <li><a href="https://developers.openai.com/codex/">Codex documentation<small>Install, sign in and check host support</small></a></li>
+          <li><a href="https://code.claude.com/docs/en/overview">Claude Code documentation<small>Install, sign in and check host support</small></a></li>
+          <li><a href="https://developers.openai.com/codex/hooks">Codex hooks<small>Project/user sources and native trust</small></a></li>
+          <li><a href="https://code.claude.com/docs/en/hooks">Claude Code hooks<small>Native lifecycle support and settings</small></a></li>
         </ul>
-        <h3>Recommended Agent-Team tools</h3>
+        <h3>Mandatory preparation</h3>
         <ul class="reference-list">
-          <li><a href="https://github.com/DietrichGebert/ponytail" target="_blank" rel="noreferrer">Ponytail<small>Keep implementations focused and small</small></a></li>
-          <li><a href="https://github.com/obra/superpowers" target="_blank" rel="noreferrer">Using-Superpowers<small>Planning, build, debug, and verification procedures</small></a></li>
-          <li><a href="https://github.com/gastownhall/beads" target="_blank" rel="noreferrer">Beads<small>Task tracking and ownership</small></a></li>
-          <li><a href="https://github.com/pbakaus/impeccable" target="_blank" rel="noreferrer">Impeccable<small>UI/UX design and review guidance</small></a></li>
-          <li><a href="https://github.com/yvgude/lean-ctx" target="_blank" rel="noreferrer">LeanCTX<small>Compact code and shell context</small></a></li>
+          <li><a href="https://github.com/oraios/serena">Serena<small>Semantic code navigation; free language-server backend</small></a></li>
+          <li><a href="https://docs.astral.sh/uv/getting-started/installation/">uv<small>Serena's tool/Python prerequisite</small></a></li>
+          <li><a href="https://github.com/microsoft/playwright-cli">Microsoft Playwright CLI<small>Default browser automation, including backend-only projects</small></a></li>
         </ul>
-        <h3>Optional UI and design tools</h3>
+        <h3>Default-selected profiles and tracker</h3>
         <ul class="reference-list">
-          <li><a href="https://github.com/nextlevelbuilder/ui-ux-pro-max-skill" target="_blank" rel="noreferrer">UI UX Pro Max<small>Design-system and accessibility guidance used for this page</small></a></li>
-          <li><a href="https://github.com/ibelick/ui-skills" target="_blank" rel="noreferrer">UI Skills<small>Task-specific UI instruction collection</small></a></li>
-          <li><a href="https://ui.shadcn.com/docs/installation" target="_blank" rel="noreferrer">shadcn/ui<small>Reusable controls for supported apps</small></a></li>
-          <li><a href="https://github.com/magicuidesign/magicui" target="_blank" rel="noreferrer">Magic UI<small>Visual effects and components</small></a></li>
-          <li><a href="https://motion.dev/docs" target="_blank" rel="noreferrer">Motion<small>Purposeful UI motion</small></a></li>
-          <li><a href="https://github.com/DavidHDev/react-bits" target="_blank" rel="noreferrer">React Bits<small>React visual effects and controls</small></a></li>
-          <li><a href="https://github.com/Leonxlnx/taste-skill" target="_blank" rel="noreferrer">Taste Skill<small>Distinct visual-style guidance</small></a></li>
-          <li><a href="https://github.com/img2threejs/img2threejs" target="_blank" rel="noreferrer">img2threejs<small>Image-to-3D workflows</small></a></li>
-          <li><a href="https://github.com/VoltAgent/awesome-design-md" target="_blank" rel="noreferrer">Awesome DESIGN.md<small>Design reference collection</small></a></li>
-          <li><a href="https://bklit.com/docs/skills" target="_blank" rel="noreferrer">Bklit UI<small>Dashboard charts for compatible shadcn apps</small></a></li>
+          <li><a href="https://github.com/ast-grep/ast-grep">ast-grep CLI<small>Structural search; companion skill bundle not included</small></a></li>
+          <li><a href="https://github.com/yvgude/lean-ctx">LeanCTX<small>Narrow output/context profile; no proxy or second task authority</small></a></li>
+          <li><a href="https://github.com/obra/superpowers">Superpowers<small>Selective engineering procedures</small></a></li>
+          <li><a href="https://github.com/DietrichGebert/ponytail">Ponytail<small>Local simplicity/review skills; no MCP</small></a></li>
+          <li><a href="https://github.com/pbakaus/impeccable">Impeccable<small>UI skill and prebuilt detector; browser checks still required</small></a></li>
+          <li><a href="https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices">React Best Practices<small>Individual skill; load relevant React/Next rules only</small></a></li>
+          <li><a href="https://github.com/gastownhall/beads">Beads<small>Selected tracker only; retain the main bd implementation</small></a></li>
+        </ul>
+        <h3>Optional and maintainer tools</h3>
+        <ul class="reference-list">
+          <li><a href="https://github.com/upstash/context7">Context7<small>Optional version-specific library docs; external service/privacy considerations</small></a></li>
+          <li><a href="https://github.com/Dicklesworthstone/beads_viewer">beads_viewer · Jeffrey Emanuel<small>Optional referenced Beads dashboard provider; no white-label engine</small></a></li>
+          <li><a href="https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE">beads_viewer complete license<small>Includes the OpenAI/Anthropic restriction rider</small></a></li>
+          <li><a href="https://github.com/nextlevelbuilder/ui-ux-pro-max-skill">UI/UX Pro Max<small>Guide design/accessibility guidance; also considered by Project Kickoff</small></a></li>
+          <li><a href="https://github.com/JuliusBrussee/caveman">subagent-tax source<small>Optional maintainer diagnostic only; Caveman runtime is not integrated</small></a></li>
         </ul>
       </section>
     </main>
@@ -437,7 +512,14 @@ Claude: /agent-team setup</pre>
   <footer class="shell footer">Agent-Team first-time setup guide. Save this file locally and open it in any modern browser.</footer>
   <p class="sr-only" id="copy-status" aria-live="polite"></p>
   <script>
+    const revealTarget = () => {
+      const target = document.getElementById(location.hash.slice(1));
+      if (target?.tagName === 'DETAILS') target.open = true;
+    };
+    window.addEventListener('hashchange', revealTarget);
+    revealTarget();
     document.querySelectorAll('.copy').forEach((button) => {
+      const originalLabel = button.textContent;
       button.addEventListener('click', async () => {
         const text = button.closest('.command').querySelector('pre').innerText;
         try {
@@ -447,9 +529,14 @@ Claude: /agent-team setup</pre>
           document.querySelector('#copy-status').textContent = 'Copied to clipboard.';
         } catch {
           button.textContent = 'Select text';
+          const range = document.createRange();
+          range.selectNodeContents(button.closest('.command').querySelector('pre'));
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
           document.querySelector('#copy-status').textContent = 'Clipboard access was unavailable. Select the prompt text to copy it.';
         }
-        window.setTimeout(() => { button.textContent = button.textContent === 'Select text' ? 'Copy prompt' : 'Copy'; button.removeAttribute('data-state'); }, 1800);
+        window.setTimeout(() => { button.textContent = originalLabel; button.removeAttribute('data-state'); }, 1800);
       });
     });
   </script>

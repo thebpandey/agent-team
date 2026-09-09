@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { constants } from 'node:fs';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 const load = () => import('../hooks/lib/usage.mjs');
 
@@ -115,4 +118,23 @@ test('usage report reads existing receipts without writes, copying raw content, 
   const invalid = await readUsageReport(project);
   assert.equal(invalid.source.status, 'invalid');
   assert.equal(invalid.usage.totalTokens, null);
+});
+
+test('usage report rejects non-regular inputs without waiting for a FIFO writer', { skip: process.platform === 'win32', timeout: 2000 }, async t => {
+  const { readUsageReport } = await load();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'agent-team-usage-input-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fifo = path.join(root, 'receipts.pipe');
+  await promisify(execFile)('mkfifo', [fifo]);
+  // Let the negative baseline settle too; never strand a libuv open on timeout.
+  const release = setTimeout(async () => {
+    const writer = await open(fifo, constants.O_RDWR | constants.O_NONBLOCK);
+    await writer.close();
+  }, 500);
+  t.after(() => clearTimeout(release));
+  const started = performance.now();
+  const result = await readUsageReport(undefined, { receiptPath: fifo });
+  assert.ok(performance.now() - started < 400, 'non-regular input waited for a writer');
+  assert.equal(result.source.status, 'invalid');
+  assert.equal(result.usage.totalTokens, null);
 });
