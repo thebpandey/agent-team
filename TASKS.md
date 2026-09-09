@@ -20,6 +20,12 @@ No task is complete until implementation and applicable independent review/verif
 
 ## Evidence and execution notes
 
+- d6145c8 full487/487 zero failures/skips/allrealoptins/12casematrix passed33.730s/e0984bc70ac51fd6, packagepassed. Codexmanagedrefreshvalid/no conflicts; reviewedfixture-only legacy namespace reconstruction applied withoriginalhostevidence/preimage, taskpausedv4unchanged. Terrahostadapter/Solinteractivecompact preparations parallel, no newnativewriteruntilreview. Finalmergedchecks/archive/publication remain.
+
+- d6145c8 repairs native PIDnamespace false-stopped observation: actualhostengine1984145 visibleoutside/sandboxPID2hidden; RED5→GREEN99 +docs13 and Terra/highaccept. Captureobservernamespace; missing/mismatch/unreadable->unknown, onlymatchedview/boot/exactPIDstatabsence->stopped. Fullrealchecks running. Codexv2 remains pausedv4, no checkpoint/sourcechanges; host-side native-request adapter underreview, originalevidencepreserved. Alltestsstandingauthorization; no push; finalnewrevisionarchivespending.
+
+- User approved reviewedCodexv2 nativewrite scopes and explicitly grants standing authorization for all necessary tests without further input; stop only for user-only actions. Nativev2 actualworker01a087a3-8d27-7183-b8e0-5291216c37bd/PID1953314 live/linked, ownerrebind pending. Preserve all prior evidence and existing authority/safeguards; no repeatpermissionrequest. Originfetched/nochanges; GitHubtarget verified. Finalnative/mergedchecks remain before push.
+
 - Claude manualcompact/recall Terra/high ACCEPTED after receipt-only remediation: realPTY/candidatePreCompact/compact/tool-free exactrevision recall proven; nativeUUIDunknown/checkpointsideeffectsunverified/nativehostmetadatabehavior/deadlineexit143 retained. Allprocessesstopped/sourceclean. Codex remains pausedv4; reviewed v2 --add-dir launch awaiting specific writable-scope approval. No implementation mainmerge/push/tag/release.
 
 - Prepared/reviewed Codex v2launcher and4 lifecyclehelpers require explicit native --add-dir scope for canonicalfixture/privatehome; five syntaxchecks pass, no launch before approval. Existing taskpausedv4 and all failedartifacts preserved. Claude compact/recall completed; owneddeadlineTERM exit143/outer1 after singleCtrlDconfirmation, allprocessesstopped andsourceclean. Private v2qualificationreceipt Terra/highreview pending. Exact mainmerge/newrevision suite/archive/provenance checks precede authorized tagworkflow publication. No push.
