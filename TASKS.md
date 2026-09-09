@@ -10,13 +10,13 @@ No task is complete until implementation and applicable independent review/verif
 | ID | Task | Status | Priority | Owner | Dependencies | Acceptance / evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | AT-01 | Canonical tracker and actionable hook findings | integrated | P1 | root | none | 322bf89 repairs scoped outer-deadline regression; root exact-diff review and integrated 79/79 focused tests pass; manifest/full-suite/real-host gates remain open |
-| AT-02 | Universal package and exact installation ownership | in_progress | P1 | installation_implementation | none | F03/F04: independently extracted install/reinstall/update/uninstall, selected host/scope, mixed/custom hooks preserved |
-| AT-03 | Claims, parking, recovery, continuity and cleanup | in_progress | P1 | runtime_implementation | AT-01 | F07/F09/F10/F12/F17: RED tests/API preparation complete, production begun on 5822c45; prioritize any scoped review fixes |
-| AT-04 | Readiness, prepared dependencies and role settings | pending | P1 | unassigned | AT-02 | F05/F06/F08/F14, D01–D19: three entry paths, prepared catalog, persistent host routing, exact exclusions |
-| AT-05 | Compact status and optional web dashboard | in_progress | P2 | dashboard_implementation | AT-01, AT-03, AT-04 | Independent pure status/render/security work active; final role/writer bindings await producer APIs; real browser/bv gates separate |
-| AT-06 | Skill instructions, context efficiency and usage evidence | in_progress | P1 | root | AT-01, AT-03, AT-04 | Instruction baseline/candidate scenarios recorded; usage aggregation 4/4 initial tests pass; native metrics/integration still open |
-| AT-07 | Cross-host integration and release qualification | pending | P1 | unassigned | AT-01, AT-02, AT-03, AT-04, AT-05, AT-06 | F16 and all cross-cutting criteria: full suite, extracted matrix, real dependencies/hosts, recovery, browser and matched measurements |
-| AT-08 | User documentation and GitHub delivery | pending | P1 | root | AT-07 | README/HTML/Markdown guide and diagrams reflect verified behavior; attribution; reviewed clean commit pushed and remote verified |
+| AT-02 | Universal package and exact installation ownership | integrated | P1 | root | none | 639a1fb final scoped review accepted; independent6/6 permitted crash/ownership tests pass, dead-claim node-e fixture static only; merged integration5e735f3; final extracted matrix remains |
+| AT-03 | Claims, parking, recovery, continuity and cleanup | integrated | P1 | root | AT-01 | d312db4 resolves seven originals plus immutable archive interruption review; integrated at12114e2; root87/87 affected tests and actual selected bd qualification pass; CLI/producers/final native gates remain |
+| AT-04 | Readiness, prepared dependencies and role settings | in_review | P1 | installation_review | AT-02 | Final7e5e075 worker37focusedpass8opt-inskip; reported10realpass; independent review active; native Playwright/fresh-worker discovery and root initialization/CLI wiring remain |
+| AT-05 | Compact status and optional web dashboard | integrated | P2 | root | AT-01, AT-03, AT-04 | be4575e final scoped review accepted27/27, actual final JSON static/mobile/live browser passed; merged5e735f3; CLI/manifest/automatic refresh wiring remains |
+| AT-06 | Skill instructions, context efficiency and usage evidence | in_progress | P1 | root | AT-01, AT-03, AT-04 | d01efeb refreshed guides/selective instruction and docs assertions; usage7/7 incl FIFO safety, docs13/13; native metrics/CLI/producer integration still open |
+| AT-07 | Cross-host integration and release qualification | in_progress | P1 | root + installation_implementation | AT-01, AT-02, AT-03, AT-04, AT-05, AT-06 | CLI worker owns integration command surface; root hooks evidence/repeated lifecycle IDs59/59 after deadline repairacb7fb3; full suite/extracted/native/dependency/metrics gates remain |
+| AT-08 | User documentation and GitHub delivery | in_progress | P1 | root | AT-07 | README rewritten with prompt-first onboarding/green Mermaid flows; docs13/13, HTML/Markdown local-preview guides updated; final API alignment/version/qualification/publication remain |
 
 ## Evidence and execution notes
 
@@ -43,10 +43,16 @@ Follow-up: runtime_review resolved the five originals at 5822c45 and found one o
 
 AT-07 external verification constraint: native `codex` and `claude` launch commands are denied by the current command policy. Do not retry, wrap, change allowlists, or mark native journeys passed. Preserve this as an open publication gate while independent implementation and safe tests continue.
 
+AT-02 repair ledger: seven exact findings plus selector/partial-removal gaps in harness-artifacts/at-02-review.md. They remain required within AT-02, not deferred backlog: unowned resources, uninstall/update history, retired hooks, installed-source ownership, preexisting handler update, durable interruption recovery, actual extracted CLI matrix. Installer owner automatically repairs and returns for scoped review.
+
+AT-03/AT-05 follow-ups: harness-artifacts/at-03-review.md and at-05-review-followup.md. These are required repair work in their existing canonical tasks, not new approval requests.
+
+AT-07 real evidence: isolated selected bd 1.2.2 fixture passed canonical linked-worktree read, same-owner idempotent claim, conflicting claim rejection and fresh export. HTML guide passed actual isolated Chromium at 1440x1000, 375x812 and 812x375 with keyboard toggles and no external requests. Evidence in harness-artifacts/native-dependencies and guide-browser. Neither substitutes for native host or actual bv qualification.
+
 ## Current ownership
 
 - Integration: .worktrees/integration on codex/approved-decisions; root only.
 - AT-01: .worktrees/runtime on codex/runtime-foundations; agent /root/runtime_implementation, gpt-6-astra/high. Baseline a2c2c1f.
 - AT-02: .worktrees/installation on codex/installation-foundations; agent /root/installation_implementation, gpt-5.6-sol/high. Baseline a2c2c1f.
-- AT-05: .worktrees/dashboard on codex/status-dashboard; agent /root/dashboard_implementation, gpt-5.6-terra/high. Baseline a2c2c1f. Own new status/dashboard modules/assets/tests only.
+- AT-05: .worktrees/dashboard on codex/status-dashboard, clean idle be4575e; reviewed and merged. Installation worker now owns workflow CLI integration in its own worktree; root owns manifest, hook producers and documentation. Readiness worker owns new AT04 modules/tests in .worktrees/readiness.
 - Briefs and evidence: harness-artifacts/at-01-brief.md and at-02-brief.md; task reports at corresponding *-report.md paths. These are private implementation evidence, not a tracker.
