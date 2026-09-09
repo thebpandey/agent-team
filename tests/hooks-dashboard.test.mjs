@@ -8,6 +8,9 @@ import test from "node:test";
 import { createBeadsGraphAdapter, createBeadsGraphCommandAdapter, createLoopbackDashboard, createSnapshotPublisher, renderDashboard } from "../hooks/lib/dashboard.mjs";
 import { createEventBudget } from '../hooks/lib/budget.mjs';
 
+const boundedDashboardBd = path.resolve(import.meta.dirname, "fixtures/bounded-dashboard-bd.mjs");
+const boundedDashboardBv = path.resolve(import.meta.dirname, "fixtures/bounded-dashboard-bv.mjs");
+
 const model = Object.freeze({
   project: { id: "project-1", root: "/project" },
   freshness: { status: "current", source: "TASKS.md", observedAt: "2026-09-08T12:00:00.000Z" },
@@ -336,6 +339,71 @@ test("structured graph accepts isolated and empty nodes but rejects invalid adja
   const directoryFailure = await createBeadsGraphCommandAdapter({ ...base, ensureDirectory: async () => { throw new Error("read-only"); }, runCommand: run }).refresh();
   assert.equal(directoryFailure.status, "unavailable");
   assert.match(directoryFailure.reason, /staging/i);
+});
+
+test("stalled graph staging preserves publication time and cannot run later command stages", { timeout: 1000 }, async () => {
+  const budget = createEventBudget(350);
+  let finishStaging;
+  const commands = [];
+  const started = Date.now();
+  try {
+    const result = await createBeadsGraphCommandAdapter({
+      projectRoot: "/project", tracker: { kind: "beads", id: "beads:/project/.beads", executable: "/selected/bd" },
+      selected: true, termsAcknowledged: true, budget, reserveMs: 150,
+      ensureDirectory: () => new Promise((resolve) => { finishStaging = resolve; }),
+      runCommand: async (_command, args) => {
+        commands.push(args[0]);
+        return { status: "completed", output: "--robot-graph --graph-format --no-hooks" };
+      },
+    }).refresh();
+    assert.equal(result.status, "unavailable");
+    assert.ok(Date.now() - started < 300, "staging must return before the overall deadline");
+    assert.ok(budget.remaining() >= 80, "base view still has a publication reserve");
+    finishStaging();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(commands, ["--version", "--version", "--robot-help"]);
+  } finally { finishStaging?.(); budget.close(); }
+});
+
+test("actual graph commands share the request deadline and cancellation boundary", async (t) => {
+  for (const boundary of ["budget", "signal"]) {
+    await t.test(boundary, async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), `agent-team-graph-${boundary}-`));
+      await mkdir(path.join(directory, ".beads"));
+      const log = path.join(directory, "bounded-bv.log");
+      const oldMode = process.env.AGENT_TEAM_BOUNDED_GRAPH_MODE;
+      const oldLog = process.env.AGENT_TEAM_BOUNDED_GRAPH_LOG;
+      process.env.AGENT_TEAM_BOUNDED_GRAPH_MODE = "slow";
+      process.env.AGENT_TEAM_BOUNDED_GRAPH_LOG = log;
+      const budget = createEventBudget(boundary === "budget" ? 180 : 1000);
+      const controller = new AbortController();
+      const timer = boundary === "signal" ? setTimeout(() => controller.abort(), 80) : null;
+      const started = Date.now();
+      try {
+        const result = await createBeadsGraphCommandAdapter({
+          projectRoot: directory,
+          tracker: { kind: "beads", id: `beads:${path.join(directory, ".beads")}`, path: path.join(directory, ".beads"), executable: boundedDashboardBd },
+          bvPath: boundedDashboardBv,
+          selected: true,
+          termsAcknowledged: true,
+          budget,
+          signal: controller.signal,
+          reserveMs: 40,
+        }).refresh();
+        assert.equal(result.status, "unavailable");
+        assert.ok(Date.now() - started < 700, `${boundary} must stop the actual command promptly`);
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        const output = await readFile(log, "utf8").catch((error) => { if (error.code === "ENOENT") return ""; throw error; });
+        assert.doesNotMatch(output, /--robot-help:completed/);
+      } finally {
+        if (timer) clearTimeout(timer);
+        budget.close();
+        if (oldMode === undefined) delete process.env.AGENT_TEAM_BOUNDED_GRAPH_MODE; else process.env.AGENT_TEAM_BOUNDED_GRAPH_MODE = oldMode;
+        if (oldLog === undefined) delete process.env.AGENT_TEAM_BOUNDED_GRAPH_LOG; else process.env.AGENT_TEAM_BOUNDED_GRAPH_LOG = oldLog;
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 test("loopback preserves one aborted underlying collection across repeated timeout requests and stop", async () => {
