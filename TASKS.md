@@ -20,6 +20,8 @@ No task is complete until implementation and applicable independent review/verif
 
 ## Evidence and execution notes
 
+- Userreportslimitsreset; Solcompact/Terra lifecycleandreview resumed. LeanCTXrootverified, integrationf8d6942clean/full491/packagepassed. Finalnativegates/docs/mergedchecks/archive/publication remain; no pendingapproval.
+
 - CodexPTY shutdownreceipt20:07:50Z:300.115s,2actions,78131bytes,deadlineTERMexit-15,errornull; driver/nativePIDsabsent, linkedsourceclean; compact/recallnotexecuted.
 
 - Accountusage limit halted bothSol andTerraagents; errorreports retry2026-09-14 20:25, timezoneunspecified. NativeCodexcompact session01a087c4-18e1-7053-9b4f-8f1480e298a3 completedhistoricalrecovery but usage modal appeared beforecompact; only2/8 queueactions, compact/recallunverified, noquotaresetconsumed. v4/v7 lifecyclehelpers reviewed/corrected, no v4provenance/launch established. Currentf8d6942 full491/packagepassed, integrationclean. Restoreaccountcapacity then resume native/reviewgates; finaldocs/mergedchecks/archive/publication remain. No push/tag/release.
