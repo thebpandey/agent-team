@@ -21,17 +21,23 @@ function taskRows(tasks) {
   return tasks.map((task) => `<tr data-status="${escapeHtml(task.status)}" data-search="${escapeHtml([task.id, task.label, task.owner, task.priority, task.dependencies.join(" "), task.nextAction, task.evidence].join(" ").toLowerCase())}"><th scope="row">${escapeHtml(task.id)}</th><td>${escapeHtml(task.label)}</td><td>${escapeHtml(task.status)}</td><td>${escapeHtml(task.runtime?.compute || "not recorded")}</td><td>${escapeHtml(task.priority)}</td><td>${escapeHtml(task.owner)}</td><td>${escapeHtml(task.dependencies.join(", ") || "None")}</td><td>${escapeHtml(task.nextAction || "Unknown")}</td><td><details><summary>View</summary>${escapeHtml(task.evidence || task.cleanup?.evidencePaths?.join(", ") || "Unknown")}</details></td></tr>`).join("");
 }
 
-function graphSvg(dot) {
-  const allEdges = [...String(dot).matchAll(/["']?([A-Za-z0-9_.:-]+)["']?\s*->\s*["']?([A-Za-z0-9_.:-]+)["']?/g)].map((match) => [match[1], match[2]]);
-  const allNodes = [...new Set(allEdges.flat())];
+function graphSvg(adjacency) {
+  const allNodes = Array.isArray(adjacency?.nodes) ? adjacency.nodes : [];
+  const allEdges = Array.isArray(adjacency?.edges) ? adjacency.edges : [];
   const nodes = allNodes.slice(0, 32);
-  const edges = allEdges.filter(([from, to]) => nodes.includes(from) && nodes.includes(to)).slice(0, 48);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = allEdges.filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to)).slice(0, 48);
   if (!nodes.length) return "<p>Graph data has no safe, renderable edges; the textual graph remains available below.</p>";
   const width = 800;
   const height = Math.max(180, Math.ceil(nodes.length / 4) * 120);
-  const point = (node) => { const index = nodes.indexOf(node); return { x: 85 + (index % 4) * 205, y: 70 + Math.floor(index / 4) * 110 }; };
+  const point = (id) => { const index = nodes.findIndex((node) => node.id === id); return { x: 85 + (index % 4) * 205, y: 70 + Math.floor(index / 4) * 110 }; };
   const excerpt = allNodes.length > nodes.length || allEdges.length > edges.length;
-  return `<p>${excerpt ? `Visual excerpt: ${nodes.length} of ${allNodes.length} nodes, ${edges.length} of ${allEdges.length} edges. ` : ''}Select a node with click, Enter or Space to filter tasks. Full dependency text is available below.</p><svg style="display:block;width:100%;height:auto" viewBox="0 0 ${width} ${height}" role="group" aria-label="Dependency graph"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#75ff57"/></marker></defs>${edges.map(([from, to]) => { const a = point(from); const b = point(to); return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="#5da892" stroke-width="2" marker-end="url(#arrow)"/>`; }).join("")}${nodes.map((node) => { const p = point(node); return `<g tabindex="0" role="button" aria-label="Filter task ${escapeHtml(node)}" data-graph-task="${escapeHtml(node)}"><circle cx="${p.x}" cy="${p.y}" r="35" fill="#07513b" stroke="#75ff57"/><text x="${p.x}" y="${p.y + 5}" text-anchor="middle" fill="#fff">${escapeHtml(node)}</text><title>${escapeHtml(node)}</title></g>`; }).join("")}</svg>`;
+  return `<p>${excerpt ? `Visual excerpt: ${nodes.length} of ${allNodes.length} nodes, ${edges.length} of ${allEdges.length} edges. ` : ''}Select a node with click, Enter or Space to filter tasks. Full dependency text is available below.</p><svg style="display:block;width:100%;height:auto" viewBox="0 0 ${width} ${height}" role="group" aria-label="Dependency graph"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#75ff57"/></marker></defs>${edges.map((edge) => { const a = point(edge.from); const b = point(edge.to); const dx = b.x - a.x; const dy = b.y - a.y; const distance = Math.hypot(dx, dy) || 1; const end = Math.max(0, distance - 43); return `<line x1="${a.x}" y1="${a.y}" x2="${a.x + (dx / distance) * end}" y2="${a.y + (dy / distance) * end}" stroke="#5da892" stroke-width="2" marker-end="url(#arrow)"><title>${escapeHtml(edge.type || "depends on")}</title></line>`; }).join("")}${nodes.map((node) => { const p = point(node.id); const label = node.title || node.id; return `<g tabindex="0" role="button" aria-label="Filter task ${escapeHtml(node.id)}" data-graph-task="${escapeHtml(node.id)}"><circle cx="${p.x}" cy="${p.y}" r="35" fill="#07513b" stroke="#75ff57"/><text x="${p.x}" y="${p.y + 5}" text-anchor="middle" fill="#fff">${escapeHtml(label)}</text><title>${escapeHtml(node.id)}</title></g>`; }).join("")}</svg>`;
+}
+
+function graphText(adjacency) {
+  const edges = Array.isArray(adjacency?.edges) ? adjacency.edges : [];
+  return edges.length ? edges.map((edge) => `${edge.from} --${edge.type || "depends on"}--> ${edge.to}`).join("\n") : "No dependency edges reported.";
 }
 
 // Keep the distributed assets/dashboard files in sync with these snapshot-safe copies.
@@ -45,7 +51,7 @@ export function renderDashboard(model) {
   const freshness = model.freshness || {};
   const percentage = Number.isFinite(progress.percentage) && progress.percentage >= 0 && progress.percentage <= 100 ? `${progress.percentage}%` : "N/A";
   const live = model.mode === "live";
-  const graph = model.graph?.status === "available" && typeof model.graph?.content === "string" ? model.graph : null;
+  const graph = model.graph?.status === "available" && model.graph?.adjacency ? model.graph : null;
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent-Team status</title><style>${snapshotCss}</style></head>
 <body><a class="skip-link" href="#tasks">Skip to tasks</a><main id="dashboard" tabindex="-1">
@@ -53,7 +59,7 @@ export function renderDashboard(model) {
 <section aria-labelledby="overview-title"><h2 id="overview-title">Overview</h2><div class="summary"><article><span>Completion</span><strong>${percentage}</strong><small>${escapeHtml(progress.completed ?? "?")} complete · ${escapeHtml(progress.remaining ?? "?")} remaining</small></article><article><span>Recorded work</span><strong>${escapeHtml(model.activity?.active ?? "?")}</strong><small>${escapeHtml(model.activity?.parked ?? "?")} parked · ${escapeHtml(model.activity?.paused ?? "?")} paused · ${escapeHtml(model.activity?.ready ?? "?")} ready</small></article><article><span>Capacity</span><strong>${escapeHtml(model.activity?.capacity ?? "Unknown")}</strong><small>Supplied scheduler capacity; not inferred here.</small></article></div><p>Progress confidence: ${escapeHtml(progress.status || "unknown")}. Task-count completion only; not estimated effort. Excluded: ${escapeHtml(progress.excluded?.cancelled ?? "?")} cancelled, ${escapeHtml(progress.excluded?.deferred ?? "?")} approved-deferred.</p><p>Current run: ${escapeHtml(model.run?.current || "unknown")} (${escapeHtml(model.run?.scope?.status || "unknown")} scope). Admissions are ${model.run?.paused === true ? "paused" : model.run?.paused === false ? "not paused" : "unknown"}. Integration: ${escapeHtml(model.state?.integration?.status || "unknown")}. Release: ${escapeHtml(model.state?.release?.status || "unknown")}. Recorded compute state is not live process liveness.</p><p>Blockers: ${escapeHtml(model.run?.blockerStatus === "unknown" ? "unknown" : model.run?.blockers?.join(", ") || "none recorded")}.</p></section>
 <section id="tasks" aria-labelledby="tasks-title"><div class="section-heading"><div><h2 id="tasks-title">All tasks</h2><p>${escapeHtml(model.tasks?.length ?? 0)} rows; counts exclude cancelled and approved-deferred work.</p></div><button type="button" id="refresh" aria-describedby="refresh-help">${live ? "Refresh local status" : "Reload saved snapshot"}</button></div><p id="refresh-help" class="helper">${live ? "Refresh reads current local records through the enabled loopback helper." : "A file snapshot reloads its saved data; it cannot query project records."}</p><div class="controls"><label for="task-search">Search tasks</label><input id="task-search" type="search" autocomplete="off" placeholder="ID, owner, status…"><label for="task-status">Status</label><select id="task-status"><option value="">All statuses</option></select></div><div class="table-wrap" tabindex="0"><table><thead><tr><th>ID</th><th>Task</th><th>Status</th><th>Recorded state</th><th>Priority</th><th>Owner</th><th>Dependencies</th><th>Next action</th><th>Evidence</th></tr></thead><tbody id="task-rows">${taskRows(model.tasks || [])}</tbody></table></div><p id="results" aria-live="polite"></p></section>
 <details><summary>Teams and roles</summary><ul>${(model.teams || []).map((team) => `<li><strong>${escapeHtml(team.name)}</strong> · ${escapeHtml(team.role)} · ${escapeHtml(team.model)} / ${escapeHtml(team.effort)} · ${escapeHtml(team.status)} · assignments: ${escapeHtml(team.assignments || "unknown")} · updated: ${escapeHtml(team.updatedAt || "unknown")}</li>`).join("") || "<li>Team metadata is unknown.</li>"}</ul></details>
-<details ${graph ? "open" : ""}><summary>Dependency representation</summary>${graph ? `<p>Optional graph from a canonical Beads export (${escapeHtml(graph.format)}); it does not control tasks. External provider: <a href="https://github.com/Dicklesworthstone/beads_viewer">beads_viewer by Jeffrey Emanuel</a>, under its <a href="https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE">complete license, including the OpenAI/Anthropic rider</a>. Referenced separately, not vendored or relicensed.</p>${graphSvg(graph.content)}<pre aria-label="Dependency graph text" style="max-width:100%;overflow-x:auto;overflow-wrap:anywhere;white-space:pre-wrap">${escapeHtml(graph.content)}</pre>` : "<p>Each task row lists prerequisite task IDs in the Dependencies column. A graph is unavailable unless separately generated from a current Beads export.</p>"}</details>
+<details ${graph ? "open" : ""}><summary>Dependency representation</summary>${graph ? `<p>Optional graph from a canonical Beads export (${escapeHtml(graph.format)}); it does not control tasks. External provider: <a href="https://github.com/Dicklesworthstone/beads_viewer">beads_viewer by Jeffrey Emanuel</a>, under its <a href="https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE">complete license, including the OpenAI/Anthropic rider</a>. Referenced separately, not vendored or relicensed.</p>${graphSvg(graph.adjacency)}<pre aria-label="Dependency graph text" style="max-width:100%;overflow-x:auto;overflow-wrap:anywhere;white-space:pre-wrap">${escapeHtml(graphText(graph.adjacency))}</pre>` : "<p>Each task row lists prerequisite task IDs in the Dependencies column. A graph is unavailable unless separately generated from a current Beads export.</p>"}</details>
 <script id="dashboard-data" type="application/json">${jsonForScript(model)}</script><script>${snapshotScript}</script></main></body></html>`;
 }
 
@@ -218,15 +224,31 @@ export function createBeadsGraphCommandAdapter({ projectRoot, tracker, stagingDi
     async refresh() {
       const available = await capability();
       if (available.status !== "available") return { ...available, graph: null };
-      await ensureDirectory(path.dirname(exportFile), { recursive: true, mode: 0o700 });
+      try {
+        await ensureDirectory(path.dirname(exportFile), { recursive: true, mode: 0o700 });
+      } catch (error) {
+        return { status: "unavailable", reason: `Graph staging directory: ${String(error.message || error)}`, graph: null, attribution };
+      }
       const exported = await runCommand(trackerExecutable, ["export", "-o", exportFile], options);
       if (exported.status !== "completed") return { status: "unavailable", reason: `Canonical bd export: ${exported.status}`, graph: null, attribution };
-      const rendered = await runCommand(bvPath, ["--robot-graph", "--graph-format=dot", "--no-hooks"], graphOptions);
+      const rendered = await runCommand(bvPath, ["--robot-graph", "--graph-format=json", "--no-hooks"], graphOptions);
       if (rendered.status !== "completed") return { status: "unavailable", reason: `bv graph: ${rendered.status}`, graph: null, attribution };
       try {
         const payload = JSON.parse(rendered.output);
-        if (typeof payload.graph !== "string" || Buffer.byteLength(payload.graph) > options.maxOutputBytes) throw new Error("Missing or oversized graph output.");
-        return { status: "available", graph: { status: "available", format: "dot", content: payload.graph, source: { trackerId, exportFile } }, attribution };
+        if (payload?.format !== "json") throw new Error("Unexpected graph format.");
+        const adjacency = payload.adjacency ?? { nodes: [], edges: [] };
+        if (!Array.isArray(adjacency.nodes) || (adjacency.edges !== null && !Array.isArray(adjacency.edges))) throw new Error("Invalid graph adjacency.");
+        const nodes = adjacency.nodes.map((node) => {
+          if (!node || typeof node.id !== "string" || !node.id || node.id.length > 256) throw new Error("Invalid graph node.");
+          return { id: node.id, title: typeof node.title === "string" ? node.title.slice(0, 512) : node.id, status: typeof node.status === "string" ? node.status : "unknown", priority: typeof node.priority === "string" || Number.isFinite(node.priority) ? node.priority : "unknown" };
+        });
+        const ids = new Set(nodes.map((node) => node.id));
+        const edges = (adjacency.edges || []).map((edge) => {
+          if (!edge || typeof edge.from !== "string" || typeof edge.to !== "string" || !ids.has(edge.from) || !ids.has(edge.to)) throw new Error("Invalid graph edge.");
+          return { from: edge.from, to: edge.to, type: typeof edge.type === "string" ? edge.type.slice(0, 128) : "depends on" };
+        });
+        if (nodes.length > 256 || edges.length > 1024 || Buffer.byteLength(JSON.stringify({ nodes, edges })) > options.maxOutputBytes) throw new Error("Oversized graph output.");
+        return { status: "available", graph: { status: "available", format: "json", adjacency: { nodes, edges }, source: { trackerId, exportFile, dataHash: typeof payload.data_hash === "string" ? payload.data_hash : null } }, attribution };
       } catch (error) {
         return { status: "unavailable", reason: String(error.message || error), graph: null, attribution };
       }

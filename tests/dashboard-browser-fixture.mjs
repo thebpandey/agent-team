@@ -12,5 +12,5 @@ await writeFile(destination, renderDashboard({
   tasks: [
     { id: "AT-ONE", label: "Alpha task", status: "ready", runtime: null, priority: "P1", owner: "T1", dependencies: [], counted: true },
     { id: "AT-TWO", label: "Beta task", status: "completed", runtime: { compute: "active" }, priority: "P2", owner: "T1", dependencies: ["AT-ONE"], counted: true },
-  ], graph: { status: "available", format: "dot", content: "digraph { AT-ONE -> AT-TWO; AT-TWO -> AT-THREE; AT-THREE -> AT-FOUR }" }, state: { integration: { status: "passed" }, release: { status: "pending" } },
+  ], graph: { status: "available", format: "json", adjacency: { nodes: [{ id: "AT-ONE", title: "AT-ONE" }, { id: "AT-TWO", title: "AT-TWO" }, { id: "AT-THREE", title: "AT-THREE" }, { id: "AT-FOUR", title: "AT-FOUR" }], edges: [{ from: "AT-ONE", to: "AT-TWO", type: "blocks" }, { from: "AT-TWO", to: "AT-THREE", type: "blocks" }, { from: "AT-THREE", to: "AT-FOUR", type: "blocks" }] } }, state: { integration: { status: "passed" }, release: { status: "pending" } },
 }));

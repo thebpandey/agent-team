@@ -43,8 +43,8 @@ test("dashboard render is a standalone snapshot with escaped embedded data", () 
 });
 
 test('dependency graph provides keyboard-operable task selection and labels a bounded visual excerpt', () => {
-  const dot = `digraph { ${Array.from({ length: 40 }, (_, i) => `AT-${i} -> AT-${i + 1}`).join('; ')} }`;
-  const html = renderDashboard({ ...model, graph: { status: 'available', format: 'dot', content: dot } });
+  const adjacency = { nodes: Array.from({ length: 41 }, (_, i) => ({ id: `AT-${i}`, title: `AT-${i}` })), edges: Array.from({ length: 40 }, (_, i) => ({ from: `AT-${i}`, to: `AT-${i + 1}`, type: 'blocks' })) };
+  const html = renderDashboard({ ...model, graph: { status: 'available', format: 'json', adjacency } });
   assert.match(html, /role="button"[^>]*aria-label="Filter task AT-0"/);
   assert.match(html, /data-graph-task="AT-0"/);
   assert.match(html, /Visual excerpt: 32 of 41 nodes/);
@@ -59,7 +59,7 @@ test('actual command boundary pins canonical export and isolates bv routing from
   const bd = path.join(directory, 'selected-bd');
   const bv = path.join(directory, 'selected-bv');
   await writeFile(bd, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nif (process.argv[2] === '--version') console.log('fixture-bd'); else writeFileSync(process.argv[process.argv.indexOf('-o') + 1], JSON.stringify({ dir: process.env.BEADS_DIR, db: process.env.BEADS_DB ?? null }));\n`);
-  await writeFile(bv, `#!${process.execPath}\nimport { readFileSync } from 'node:fs';\nif (process.argv[2] === '--version') console.log('fixture-bv'); else if (process.argv[2] === '--robot-help') console.log('--robot-graph --graph-format --no-hooks'); else { const input = JSON.parse(readFileSync('.beads/issues.jsonl', 'utf8')); console.log(JSON.stringify({graph: 'digraph { A -> B }', probe: input})); }\n`);
+  await writeFile(bv, `#!${process.execPath}\nimport { readFileSync } from 'node:fs';\nif (process.argv[2] === '--version') console.log('fixture-bv'); else if (process.argv[2] === '--robot-help') console.log('--robot-graph --graph-format --no-hooks'); else { const input = JSON.parse(readFileSync('.beads/issues.jsonl', 'utf8')); console.log(JSON.stringify({format: 'json', nodes: 2, edges: 1, adjacency: {nodes: [{id: 'A', title: 'A'}, {id: 'B', title: 'B'}], edges: [{from: 'A', to: 'B', type: 'blocks'}]}, probe: input})); }\n`);
   await chmod(bd, 0o700); await chmod(bv, 0o700);
   const oldDir = process.env.BEADS_DIR, oldDb = process.env.BEADS_DB;
   t.after(() => { if (oldDir === undefined) delete process.env.BEADS_DIR; else process.env.BEADS_DIR = oldDir; if (oldDb === undefined) delete process.env.BEADS_DB; else process.env.BEADS_DB = oldDb; });
@@ -275,16 +275,16 @@ test("documented Beads command adapter checks capabilities then refreshes canoni
       if (args[0] === "--version") return { status: "completed", output: "bv 0.24.1" };
       if (args[0] === "--robot-help") return { status: "completed", output: "--robot-graph --graph-format --no-hooks" };
       if (command === "/selected/bd") return { status: "completed", output: "" };
-      return { status: "completed", output: JSON.stringify({ graph: "digraph { A -> B }" }) };
+      return { status: "completed", output: JSON.stringify({ format: "json", nodes: 2, edges: 1, adjacency: { nodes: [{ id: "A", title: "Title with A -> B" }, { id: "B", title: "Second" }], edges: [{ from: "A", to: "B", type: "blocks" }] } }) };
     },
   });
   const graph = await adapter.refresh();
   assert.equal(graph.status, "available");
-  assert.equal(graph.graph.content, "digraph { A -> B }");
+  assert.deepEqual(graph.graph.adjacency.edges, [{ from: "A", to: "B", type: "blocks" }]);
   assert.deepEqual(calls.map((entry) => [entry.command, entry.args]), [
     ["/selected/bd", ["--version"]], ["bv", ["--version"]], ["bv", ["--robot-help"]],
     ["/selected/bd", ["export", "-o", "/project/.agent-team/dashboard/beads/.beads/issues.jsonl"]],
-    ["bv", ["--robot-graph", "--graph-format=dot", "--no-hooks"]],
+    ["bv", ["--robot-graph", "--graph-format=json", "--no-hooks"]],
   ]);
   assert.equal(calls.slice(0, 4).every((entry) => entry.options.cwd === "/project"), true);
   assert.equal(calls[4].options.cwd, "/project/.agent-team/dashboard/beads");
@@ -293,10 +293,32 @@ test("documented Beads command adapter checks capabilities then refreshes canoni
   assert.equal(calls[4].options.env.BEADS_DIR, '/project/.agent-team/dashboard/beads/.beads');
   assert.equal(graph.graph.source.trackerId, "beads:/project/.beads");
   const graphHtml = renderDashboard({ ...model, graph: graph.graph });
-  assert.match(graphHtml, /digraph \{ A -&gt; B \}/);
+  assert.match(graphHtml, /A --blocks--&gt; B/);
+  assert.doesNotMatch(graphHtml, /Title with A --.*--&gt; B/);
   assert.match(graphHtml, /<svg /);
   const unselected = await createBeadsGraphCommandAdapter({ projectRoot: "/project", runCommand: async () => { throw new Error("must not execute"); } }).refresh();
   assert.equal(unselected.status, "not_selected");
+});
+
+test("structured graph accepts isolated and empty nodes but rejects invalid adjacency and directory setup failures", async () => {
+  const base = { projectRoot: "/project", tracker: { kind: "beads", id: "beads:/project/.beads", executable: "/selected/bd" }, stagingDirectory: "/project/.agent-team/dashboard/beads", selected: true, termsAcknowledged: true, ensureDirectory: async () => {} };
+  const run = async (_command, args) => {
+    if (args[0] === "--version") return { status: "completed", output: "v1" };
+    if (args[0] === "--robot-help") return { status: "completed", output: "--robot-graph --graph-format --no-hooks" };
+    if (args[0] === "export") return { status: "completed", output: "" };
+    return { status: "completed", output: JSON.stringify({ format: "json", nodes: 1, edges: 0, adjacency: { nodes: [{ id: "SOLO", title: "A -> B is text" }], edges: null } }) };
+  };
+  const isolated = await createBeadsGraphCommandAdapter({ ...base, runCommand: run }).refresh();
+  assert.equal(isolated.status, "available");
+  assert.deepEqual(isolated.graph.adjacency.edges, []);
+  const empty = await createBeadsGraphCommandAdapter({ ...base, runCommand: async (_command, args) => args[0] === "--robot-graph" ? { status: "completed", output: JSON.stringify({ format: "json", nodes: 0, edges: 0 }) } : run(_command, args) }).refresh();
+  assert.equal(empty.status, "available");
+  assert.deepEqual(empty.graph.adjacency.nodes, []);
+  const invalid = await createBeadsGraphCommandAdapter({ ...base, runCommand: async (_command, args) => args[0] === "--robot-graph" ? { status: "completed", output: JSON.stringify({ format: "json", adjacency: { nodes: [{ title: "missing id" }], edges: [] } }) } : run(_command, args) }).refresh();
+  assert.equal(invalid.status, "unavailable");
+  const directoryFailure = await createBeadsGraphCommandAdapter({ ...base, ensureDirectory: async () => { throw new Error("read-only"); }, runCommand: run }).refresh();
+  assert.equal(directoryFailure.status, "unavailable");
+  assert.match(directoryFailure.reason, /staging/i);
 });
 
 test("loopback preserves one aborted underlying collection across repeated timeout requests and stop", async () => {
