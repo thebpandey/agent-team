@@ -9,6 +9,7 @@ import test from "node:test";
 import { readActivationLogs } from "../hooks/lib/telemetry.mjs";
 import { policyFixture } from "./hook-test-helpers.mjs";
 import { normalizeEvent } from '../hooks/lib/event.mjs';
+import { runNormalizedHook } from '../hooks/agent-team-hook.mjs';
 
 const hook = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-hook.mjs");
 const cli = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-cli.mjs");
@@ -63,6 +64,31 @@ test('checkpoint events without native IDs remain distinct and complete batch ID
   const partial = { ...payload, tool_calls: [{ tool_use_id: 'known' }, {}] };
   assert.notEqual(normalizeEvent('claude', 'PostToolBatch', partial).eventId, normalizeEvent('claude', 'PostToolBatch', partial).eventId);
 });
+
+for (const blockedAt of ['discovery', 'recording']) {
+  test(`optional hook evidence ${blockedAt} cannot turn a mapped denial into allow`, async () => {
+    const value = await fixture();
+    const packageRoot = path.join(value.root, '.agents/skills/agent-team');
+    const directory = path.join(value.root, '.agent-team-hooks');
+    await mkdir(directory);
+    const receipt = path.join(directory, 'install.json');
+    let release;
+    if (blockedAt === 'discovery') {
+      assert.equal(spawnSync('mkfifo', [receipt]).status, 0);
+      // Release the genuine FIFO reader even in the RED implementation.
+      release = new Promise((resolve, reject) => setTimeout(() => writeFile(receipt, '{}').then(resolve, reject), 500));
+    } else {
+      await writeFile(receipt, JSON.stringify({ targets: [{ runtime: 'codex', path: packageRoot }] }));
+      await mkdir(path.join(directory, '.hook-evidence.lock'));
+    }
+    try {
+      const event = normalizeEvent('codex', 'PreToolUse', { cwd: value.feature, session_id: 'developer-session',
+        tool_name: 'mcp__filesystem__write', tool_input: { path: path.join(value.root, '.agent-team/TASKS.md'), content: '| AT-001 | TEAM-001 | verified |' } });
+      const result = await runNormalizedHook(event, { timeoutMs: 200, evidencePackageRoot: packageRoot });
+      assert.equal(result.decision.allow, false, 'optional observation must never discard required enforcement');
+    } finally { if (release) await release; }
+  });
+}
 
 test('actual copied hook under a spaced installation path executes and records only its scoped transport', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'agent team hook consumer '));

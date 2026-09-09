@@ -67,15 +67,18 @@ function shouldRefreshOperationMappings(event, project) {
 export async function runNormalizedHook(event, { timeoutMs = 5000, runBeads, evidencePackageRoot } = {}) {
   const budget = createEventBudget(timeoutMs);
   try {
-    const evidenceRoot = evidencePackageRoot
-      ? await budget.run(() => resolveHookEvidenceRoot(evidencePackageRoot, event.runtime)) : null;
-    const result = await runEvent(event, budget, runBeads, evidenceRoot);
+    const { evidenceRoot, ...result } = await runEvent(event, budget, runBeads, evidencePackageRoot);
     if (evidenceRoot) {
-      const evidence = await budget.run(() => recordHookEvidence(evidenceRoot, {
-        runtime: event.runtime, event: event.event, status: 'passed', eventId: event.eventId || randomUUID(),
-        sessionId: event.sessionId, source: 'packaged_entrypoint',
-      }, { budget }));
-      result.decision.mutations.push({ kind: 'hook_transport_evidence', status: evidence.status });
+      try {
+        const evidence = await budget.run(() => recordHookEvidence(evidenceRoot, {
+          runtime: event.runtime, event: event.event, status: 'passed', eventId: event.eventId || randomUUID(),
+          sessionId: event.sessionId, source: 'packaged_entrypoint',
+        }, { budget }));
+        result.decision.mutations.push({ kind: 'hook_transport_evidence', status: evidence.status });
+      } catch {
+        result.decision.capabilities.hookTransportEvidence = 'unavailable';
+        result.decision.messages.push('Agent-Team hook transport evidence is unavailable; the policy decision is unchanged.');
+      }
       result.output = adaptOutput(event.runtime, event.event, result.decision);
     }
     return result;
@@ -88,7 +91,7 @@ export async function runNormalizedHook(event, { timeoutMs = 5000, runBeads, evi
   }
 }
 
-async function runEvent(event, budget, runBeads, evidenceRoot) {
+async function runEvent(event, budget, runBeads, evidencePackageRoot) {
   const project = await budget.run(() => resolveProject(event.cwd, { budget }));
   const progress = {};
   let decision;
@@ -124,8 +127,20 @@ async function runEvent(event, budget, runBeads, evidenceRoot) {
       identity = { role: "unknown" };
     }
   }
+  // Optional installation discovery follows required policy evaluation. Its
+  // deadline must never replace a resolved mapped-operation denial.
+  let evidenceRoot = null;
+  let evidenceDiscoveryUnavailable = false;
+  if (evidencePackageRoot) {
+    try { evidenceRoot = await budget.run(() => resolveHookEvidenceRoot(evidencePackageRoot, event.runtime)); }
+    catch {
+      evidenceDiscoveryUnavailable = true;
+      decision.capabilities.hookTransportEvidence = 'unavailable';
+      decision.messages.push('Agent-Team hook installation evidence is unavailable; the policy decision is unchanged.');
+    }
+  }
   const activation = activationRecordFor(event, project, identity);
-  if (activation) {
+  if (activation && !evidenceDiscoveryUnavailable) {
     try {
       const result = await budget.run(() => appendActivationLog(path.join(evidenceRoot ?? os.homedir(), ".agent-team-hooks", "logs"), activation, { budget }));
       decision.mutations.push({ kind: "activation_log", recorded: result.recorded });
@@ -161,7 +176,7 @@ async function runEvent(event, budget, runBeads, evidenceRoot) {
       decision.capabilities.checkpoint = "unavailable";
     }
   }
-  return { decision, output: adaptOutput(event.runtime, event.event, decision) };
+  return { decision, output: adaptOutput(event.runtime, event.event, decision), evidenceRoot };
 }
 
 /** Normalize one native payload before running the shared entrypoint. */
