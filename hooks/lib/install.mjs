@@ -413,28 +413,18 @@ function sameLockOwner(left, right) {
   return left?.pid === right?.pid && left?.operation === right?.operation && left?.acquiredAt === right?.acquiredAt;
 }
 
-async function liveRecoveryClaims(lockPath) {
-  const claims = [];
-  let entries;
-  try {
-    entries = await readdir(lockPath);
-  } catch (error) {
-    if (error.code === "ENOENT") return claims;
-    throw error;
-  }
-  for (const name of entries) {
-    if (name !== "recovery.json" && !/^recovery\.[0-9a-f-]+\.json$/.test(name)) continue;
-    const claim = await readJson(path.join(lockPath, name), null);
-    if (Number.isInteger(claim?.pid) && claim.pid > 0 && processIsAlive(claim.pid)) claims.push({ name, claim });
-  }
-  return claims;
+function staleLockFence(stateRoot, owner) {
+  const identity = typeof owner.lockToken === "string" && /^[a-zA-Z0-9-]+$/.test(owner.lockToken)
+    ? owner.lockToken
+    : hashBytes(Buffer.from(JSON.stringify(owner))).slice(0, 32);
+  return path.join(stateRoot, `install.lock.stale-${identity}`);
 }
 
 async function withRecoverableInstallLock(stateRoot, metadata, callback, { timeoutMs = 5000 } = {}) {
   const lockPath = path.join(stateRoot, "install.lock");
   const ownerPath = path.join(lockPath, "owner.json");
   const owner = { ...metadata, lockToken: randomUUID() };
-  const recoveryPath = path.join(lockPath, `recovery.${owner.lockToken}.json`);
+  const recoveryPath = path.join(lockPath, "recovery.json");
   const started = Date.now();
   await mkdir(stateRoot, { recursive: true, mode: 0o700 });
   while (true) {
@@ -448,22 +438,35 @@ async function withRecoverableInstallLock(stateRoot, metadata, callback, { timeo
       if (error.code !== "EEXIST") throw error;
       const observed = await readJson(ownerPath, null);
       if (Number.isInteger(observed?.pid) && observed.pid > 0 && !processIsAlive(observed.pid)) {
-        try {
-          const claim = await open(recoveryPath, "wx", 0o600);
-          await claim.writeFile(`${JSON.stringify(owner)}\n`);
-          await claim.close();
-        } catch (claimError) {
-          if (claimError.code !== "EEXIST") throw claimError;
-        }
-        const current = await readJson(ownerPath, null);
-        const claims = await liveRecoveryClaims(lockPath);
-        const liveLegacyClaim = claims.find(({ name }) => name === "recovery.json");
-        const elected = claims.filter(({ name, claim }) => name !== "recovery.json" && typeof claim.lockToken === "string")
-          .sort((left, right) => left.claim.lockToken.localeCompare(right.claim.lockToken))[0];
-        if (!liveLegacyClaim && elected && sameLockOwner(elected.claim, owner)
-          && sameLockOwner(observed, current) && !processIsAlive(current.pid)) {
-          await atomicJson(ownerPath, owner);
-          break;
+        const recoveryPresent = await present(recoveryPath);
+        const observedRecovery = recoveryPresent ? await readJson(recoveryPath, null) : null;
+        if (recoveryPresent && Number.isInteger(observedRecovery?.pid) && observedRecovery.pid > 0) {
+          if (!processIsAlive(observedRecovery.pid)) {
+            try {
+              await rename(lockPath, staleLockFence(stateRoot, observed));
+              continue;
+            } catch (takeoverError) {
+              if (!["EEXIST", "ENOENT", "ENOTEMPTY"].includes(takeoverError.code)) throw takeoverError;
+            }
+          }
+        } else if (!recoveryPresent) {
+          let claim;
+          try {
+            claim = await open(recoveryPath, "wx", 0o600);
+            await claim.writeFile(`${JSON.stringify(owner)}\n`);
+            await claim.close();
+          } catch (claimError) {
+            if (claimError.code !== "EEXIST") throw claimError;
+          }
+          if (claim) {
+            const current = await readJson(ownerPath, null);
+            if (sameLockOwner(observed, current) && !processIsAlive(current.pid)) {
+              await atomicJson(ownerPath, owner);
+              await rm(recoveryPath, { force: true });
+              break;
+            }
+            await rm(recoveryPath, { force: true });
+          }
         }
       }
       if (Date.now() - started >= timeoutMs) throw error;

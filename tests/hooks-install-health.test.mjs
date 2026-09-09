@@ -878,6 +878,11 @@ test("a dead stale-lock recovery claimant is reclaimed without displacing a new 
 
   assert.equal(results.filter(({ changed }) => changed).length, 1);
   await assert.rejects(readFile(lockPath), { code: "ENOENT" });
+  const staleLocks = (await readdir(stateRoot)).filter((name) => name.startsWith("install.lock.stale-"));
+  assert.equal(staleLocks.length, 1);
+  const fencedLock = path.join(stateRoot, staleLocks[0]);
+  assert.equal(JSON.parse(await readFile(path.join(fencedLock, "owner.json"), "utf8")).lockToken, "stale-owner");
+  assert.equal(JSON.parse(await readFile(path.join(fencedLock, "recovery.json"), "utf8")).lockToken, "dead-claimant");
 });
 
 test("recovery rejects an out-of-scope journal without applying it", async () => {
