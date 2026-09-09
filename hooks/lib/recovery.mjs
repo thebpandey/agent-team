@@ -91,13 +91,13 @@ function operationPointers(state) {
   };
 }
 
-async function factualSnapshot(project, sessionId, probe, { includeProbes, budget, canonical: suppliedCanonical }) {
+async function factualSnapshot(project, sessionId, probe, { worktree, includeProbes, budget, canonical: suppliedCanonical }) {
   const boundedProbe = (executable, args, options) => probe(executable, args, { ...options, budget });
   const [branchProbe, revisionProbe, dirtyProbe, githubProbe] = await Promise.all([
-    boundedProbe("git", ["branch", "--show-current"], { cwd: project.worktreeRoot, timeoutMs: 500, maxOutputBytes: 256 }),
-    boundedProbe("git", ["rev-parse", "HEAD"], { cwd: project.worktreeRoot, timeoutMs: 500, maxOutputBytes: 256 }),
-    boundedProbe("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: project.worktreeRoot, timeoutMs: 500, maxOutputBytes: 2048 }),
-    includeProbes ? boundedProbe("gh", ["pr", "status"], { cwd: project.worktreeRoot, timeoutMs: 1000, maxOutputBytes: 512 }) : { status: "not_requested" },
+    boundedProbe("git", ["branch", "--show-current"], { cwd: worktree, timeoutMs: 500, maxOutputBytes: 256 }),
+    boundedProbe("git", ["rev-parse", "HEAD"], { cwd: worktree, timeoutMs: 500, maxOutputBytes: 256 }),
+    boundedProbe("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: worktree, timeoutMs: 500, maxOutputBytes: 2048 }),
+    includeProbes ? boundedProbe("gh", ["pr", "status"], { cwd: worktree, timeoutMs: 1000, maxOutputBytes: 512 }) : { status: "not_requested" },
   ]);
   const dirtyLines = dirtyProbe.status === "available" ? dirtyProbe.output.split(/\r?\n/).filter(Boolean) : [];
   let canonical;
@@ -109,7 +109,7 @@ async function factualSnapshot(project, sessionId, probe, { includeProbes, budge
   }
   const identity = canonical ? identityFor(canonical.registry, sessionId) : { role: "unknown" };
   return {
-    worktree: project.worktreeRoot,
+    worktree,
     git: {
       branch: evidence(branchProbe),
       revision: evidence(revisionProbe, (value) => (/^[0-9a-f]{40,64}$/i.test(value) ? value : "")),
@@ -159,10 +159,11 @@ export async function inspectRecovery(project, {
   canonical,
 } = {}) {
   if (!project.active) return { status: "unavailable", reason: project.reason };
+  worktree = path.resolve(project.root, worktree);
   const bounded = (action) => budget ? budget.run(action) : action();
-  const finish = async (snapshot) => {
+  const finish = async (snapshot, factualWorktree = project.worktreeRoot) => {
     if (!includeProbes && !includeGit) return snapshot;
-    const facts = await factualSnapshot(project, sessionId, probe, { includeProbes, budget, canonical });
+    const facts = await factualSnapshot(project, sessionId, probe, { worktree: factualWorktree, includeProbes, budget, canonical });
     const binding = snapshot.evidenceRevision ?? snapshot.revision;
     const stale = binding && (facts.git.revision.value !== binding || facts.git.dirty.entries.length > 0);
     return { ...snapshot, ...facts, ...(stale ? { status: "stale", evidenceStatus: "stale" } : {}) };
@@ -184,7 +185,7 @@ export async function inspectRecovery(project, {
       const recordSession = record.sessionId ?? name.replace(/\.json$/, "");
       if (sessionId !== "unknown" && recordSession !== sessionId) continue;
       if (taskId && !record.taskIds?.includes(taskId)) continue;
-      if (record.worktree && path.resolve(record.worktree) !== path.resolve(worktree)) continue;
+      if (record.worktree && path.resolve(project.root, record.worktree) !== worktree) continue;
       const timestamp = Date.parse(record.updatedAt);
       if (Number.isFinite(timestamp)) records.push({ ...record, sessionId: recordSession, path: path.join(project.paths.checkpoints, name), timestamp });
     } catch {
@@ -225,5 +226,5 @@ export async function inspectRecovery(project, {
     uncertainty: latest.uncertainty ?? [],
     scope: latest.scope,
     restoreIndex: { tracker: project.paths.tasks, checkpoint: latest.path, sources: latest.sourcePointers ?? [] },
-  });
+  }, latest.worktree ? path.resolve(project.root, latest.worktree) : project.worktreeRoot);
 }

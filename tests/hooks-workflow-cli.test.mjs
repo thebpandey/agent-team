@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -91,6 +91,45 @@ test("real CLI exposes read-only status, usage, recovery, and eligibility withou
   assert.equal(recovery.nextAction, "Continue the assigned task.");
   assert.deepEqual(eligibility.held.map(({ id }) => id), ["AT-001"]);
   await assert.rejects(access(path.join(value.root, ".agent-team", "dashboard", "index.html")), { code: "ENOENT" });
+});
+
+test("real CLI executes through a linked skill directory", async () => {
+  const value = await fixture();
+  const linkedSkill = path.join(value.feature, ".claude");
+  await symlink(path.dirname(cli), linkedSkill, "dir");
+  const { stdout } = await run(process.execPath, [path.join(linkedSkill, "agent-team-cli.mjs"), "status", "--project", value.root], { encoding: "utf8", timeout: 5000 });
+  assert.equal(JSON.parse(stdout).project.id, "project-1");
+});
+
+test("real CLI recovery probes the selected linked worktree instead of canonical main", async () => {
+  const value = await fixture();
+  execFileSync("git", ["commit", "--allow-empty", "-qm", "linked revision"], { cwd: value.feature });
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.feature, encoding: "utf8" }).trim();
+  assert.notEqual(revision, value.revision);
+  const checkpoint = await requestFile(value, "linked-recovery", envelope("developer-session", 0, {
+    eventId: "linked-recovery", sessionId: "developer-session", taskIds: ["AT-001"],
+    worktree: value.feature, revision, evidenceRevision: revision, nextAction: "Review the linked revision.",
+  }));
+  assert.equal((await invoke("checkpoint", "--project", value.root, "--request", checkpoint)).status, "applied");
+  const recover = () => invoke("recovery", "--project", value.root, "--session", "developer-session", "--task", "AT-001",
+    "--worktree", path.relative(value.root, value.feature), "--include-git", "true");
+  const result = await recover();
+  assert.equal(result.worktree, value.feature);
+  assert.equal(result.git.branch.value, "feature");
+  assert.equal(result.git.revision.value, revision);
+  assert.equal(result.status, "current");
+  assert.equal(result.evidenceStatus, "current");
+  const recorded = JSON.parse(await readFile(result.path, "utf8"));
+  recorded.worktree = path.relative(value.root, value.feature);
+  await writeFile(result.path, JSON.stringify(recorded));
+  assert.equal((await recover()).evidenceStatus, "current");
+  await writeFile(path.join(value.feature, "src", "owned.js"), "// changed after checkpoint\n");
+  assert.equal((await recover()).evidenceStatus, "stale");
+  const unmatched = await invoke("recovery", "--project", value.root, "--session", "developer-session", "--task", "AT-001",
+    "--worktree", value.remote, "--include-git", "true");
+  assert.equal(unmatched.status, "unavailable");
+  assert.equal(unmatched.worktree, value.root);
+  assert.equal(unmatched.git.revision.value, value.revision);
 });
 
 test("real CLI forwards versioned transition, gate-evidence, and cleanup requests to canonical APIs", async () => {

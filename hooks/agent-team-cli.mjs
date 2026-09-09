@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { auditEffectiveness } from "./lib/telemetry.mjs";
 import { buildArtifacts, checkArtifacts } from "./lib/artifacts.mjs";
@@ -102,7 +102,8 @@ export async function runCommand(command, options, context = {}) {
   throw new Error(`Unknown command: ${command ?? "missing"}`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const invokedPath = process.argv[1] && await realpath(process.argv[1]).catch(() => undefined);
+if (invokedPath && invokedPath === await realpath(fileURLToPath(import.meta.url))) {
   const command = process.argv[2];
   const streaming = command === "dashboard-start";
   try {
