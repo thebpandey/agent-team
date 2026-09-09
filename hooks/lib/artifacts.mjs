@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const crcTable = Array.from({ length: 256 }, (_, index) => {
@@ -111,18 +111,22 @@ async function manifestAt(sourceRoot) {
   return JSON.parse(await readFile(path.join(sourceRoot, "hooks", "manifest.json"), "utf8"));
 }
 
-async function expectedEntries(sourceRoot, manifest, runtime, sourceRevision) {
-  const exclude = new Set(manifest.artifacts[runtime].exclude);
+async function expectedEntries(sourceRoot, manifest, sourceRevision) {
   const entries = [];
-  for (const file of manifest.files.filter((entry) => !exclude.has(entry)).sort()) {
-    entries.push({ name: `${manifest.artifacts.prefix}${file}`, data: await readFile(path.join(sourceRoot, file)) });
+  for (const file of manifest.files.toSorted()) {
+    const source = path.join(sourceRoot, file);
+    entries.push({
+      name: `${manifest.artifacts.prefix}${file}`,
+      data: await readFile(source),
+      mode: (await stat(source)).mode,
+    });
   }
   entries.push({
     name: manifest.artifacts.metadata,
     data: Buffer.from(`${JSON.stringify({
       name: manifest.name,
       version: manifest.version,
-      runtime,
+      hosts: ["codex", "claude-code"],
       repository: manifest.repository,
       releaseTag: `v${manifest.version}`,
       releaseUrl: `${manifest.repository}/releases/tag/v${manifest.version}`,
@@ -133,15 +137,12 @@ async function expectedEntries(sourceRoot, manifest, runtime, sourceRevision) {
   return entries.sort((left, right) => left.name.localeCompare(right.name));
 }
 
-/** Build one reproducible current-edition archive per runtime; legacy files stay excluded. */
+/** Build one reproducible archive containing the complete cross-host consumer package. */
 export async function buildArtifacts({ sourceRoot, outputDirectory, sourceRevision }) {
   const manifest = await manifestAt(sourceRoot);
-  const archives = [];
-  for (const runtime of ["codex", "claude"]) {
-    const file = path.join(outputDirectory, `agent-team-${runtime}-${manifest.version}.zip`);
-    await writeZip(file, await expectedEntries(sourceRoot, manifest, runtime, sourceRevision));
-    archives.push(file);
-  }
+  const file = path.join(outputDirectory, `agent-team-${manifest.version}.zip`);
+  await writeZip(file, await expectedEntries(sourceRoot, manifest, sourceRevision));
+  const archives = [file];
   return { status: "built", sourceRevision, archives };
 }
 
@@ -155,7 +156,7 @@ export async function checkArtifacts({ sourceRoot, archives = [], expectedRevisi
   if (!archives.length) return { status: "not_applicable", reason: "no_archive", errors: [] };
   const manifest = await manifestAt(sourceRoot);
   const errors = [];
-  const seenRuntimes = new Set();
+  if (archives.length !== 1) errors.push(`Expected one universal archive, received ${archives.length}.`);
   for (const archive of archives) {
     let entries;
     try {
@@ -175,26 +176,20 @@ export async function checkArtifacts({ sourceRoot, archives = [], expectedRevisi
       errors.push(`${path.basename(archive)} has invalid source metadata.`);
       continue;
     }
-    const runtime = metadata.runtime;
-    if (!["codex", "claude"].includes(runtime)) {
-      errors.push(`${path.basename(archive)} has an unknown runtime.`);
-      continue;
-    }
-    if (seenRuntimes.has(runtime)) errors.push(`More than one ${runtime} archive was supplied.`);
-    seenRuntimes.add(runtime);
+    if (JSON.stringify(metadata.hosts) !== JSON.stringify(["codex", "claude-code"])) errors.push(`${path.basename(archive)} does not identify both supported hosts.`);
     if (metadata.sourceRevision !== expectedRevision) errors.push(`${path.basename(archive)} has stale source revision metadata.`);
     if (metadata.version !== manifest.version) errors.push(`${path.basename(archive)} has stale version metadata.`);
     if (metadata.repository !== manifest.repository) errors.push(`${path.basename(archive)} has stale repository metadata.`);
     if (metadata.releaseTag !== `v${manifest.version}`) errors.push(`${path.basename(archive)} has stale release tag metadata.`);
-    const expected = await expectedEntries(sourceRoot, manifest, runtime, expectedRevision);
-    const expectedMap = new Map(expected.map((entry) => [entry.name, entry.data]));
-    const actualMap = new Map(entries.map((entry) => [entry.name, entry.data]));
-    for (const [name, data] of expectedMap) {
+    const expected = await expectedEntries(sourceRoot, manifest, expectedRevision);
+    const expectedMap = new Map(expected.map((entry) => [entry.name, entry]));
+    const actualMap = new Map(entries.map((entry) => [entry.name, entry]));
+    for (const [name, expectedEntry] of expectedMap) {
       if (!actualMap.has(name)) errors.push(`${path.basename(archive)} omits ${name}.`);
-      else if (!actualMap.get(name).equals(data)) errors.push(`${path.basename(archive)} has stale content for ${name}.`);
+      else if (!actualMap.get(name).data.equals(expectedEntry.data)) errors.push(`${path.basename(archive)} has stale content for ${name}.`);
+      else if (expectedEntry.mode !== undefined && (actualMap.get(name).mode & 0o777) !== (expectedEntry.mode & 0o777)) errors.push(`${path.basename(archive)} has stale mode for ${name}.`);
     }
     for (const name of actualMap.keys()) if (!expectedMap.has(name)) errors.push(`${path.basename(archive)} has unexpected entry ${name}.`);
   }
-  for (const runtime of ["codex", "claude"]) if (!seenRuntimes.has(runtime)) errors.push(`The ${runtime} archive is missing.`);
   return { status: errors.length ? "failed" : "passed", errors };
 }

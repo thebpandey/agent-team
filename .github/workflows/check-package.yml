@@ -14,3 +14,9 @@ jobs:
           node-version: 24
       - run: node --test tests/hooks-*.test.mjs
       - run: node hooks/agent-team-cli.mjs check-package
+      - name: Build and verify universal package
+        run: |
+          package_version="$(node -p "JSON.parse(require('fs').readFileSync('hooks/manifest.json')).version")"
+          node hooks/agent-team-cli.mjs build-artifacts --revision "${GITHUB_SHA}" --output package-artifacts
+          node hooks/agent-team-cli.mjs check-artifacts --revision "${GITHUB_SHA}" \
+            --archive "package-artifacts/agent-team-${package_version}.zip"

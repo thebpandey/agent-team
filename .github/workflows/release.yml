@@ -28,8 +28,7 @@ jobs:
         run: |
           node hooks/agent-team-cli.mjs build-artifacts --revision "${GITHUB_SHA}" --output release-artifacts
           node hooks/agent-team-cli.mjs check-artifacts --revision "${GITHUB_SHA}" \
-            --archive release-artifacts/agent-team-codex-${GITHUB_REF_NAME#v}.zip \
-            --archive release-artifacts/agent-team-claude-${GITHUB_REF_NAME#v}.zip
+            --archive release-artifacts/agent-team-${GITHUB_REF_NAME#v}.zip
           cd release-artifacts
           sha256sum *.zip > SHA256SUMS
       - name: Publish GitHub Release
