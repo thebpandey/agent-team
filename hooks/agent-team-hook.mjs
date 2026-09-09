@@ -3,13 +3,15 @@ import process from "node:process";
 import os from "node:os";
 import path from "node:path";
 import { normalizeEvent } from "./lib/event.mjs";
-import { identityFor, loadCanonicalState, syncOperationMappingInventory } from "./lib/canonical-state.mjs";
+import { identityFor, syncOperationMappingInventory } from "./lib/canonical-state.mjs";
 import { resolveProject } from "./lib/project.mjs";
 import { inspectRecovery } from "./lib/recovery.mjs";
 import { writeCheckpoint } from "./lib/checkpoint.mjs";
 import { adaptOutput, adaptTransport } from "./lib/output.mjs";
 import { evaluatePolicy, unavailableDecision } from "./lib/policy.mjs";
 import { activationRecordFor, appendActivationLog } from "./lib/telemetry.mjs";
+import { createEventBudget } from "./lib/budget.mjs";
+import { lintMessages } from "./lib/lint.mjs";
 
 function argument(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -27,8 +29,8 @@ async function stdin() {
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
 
-async function checkpointFacts(event, project) {
-  const snapshot = await inspectRecovery(project, { includeProbes: true, sessionId: event.sessionId });
+async function checkpointFacts(event, project, options) {
+  const snapshot = await inspectRecovery(project, { ...options, includeProbes: false, includeGit: true, sessionId: event.sessionId });
   return {
     eventId: event.eventId || `${event.event}:${event.sessionId}`,
     sessionId: event.sessionId,
@@ -59,15 +61,39 @@ function shouldRefreshOperationMappings(event, project) {
 }
 
 /** Run one normalized event through shared policy and bounded factual mutations. */
-export async function runNormalizedHook(event) {
-  const project = await resolveProject(event.cwd);
-  const decision = await evaluatePolicy(event, project);
+export async function runNormalizedHook(event, { timeoutMs = 5000, runBeads } = {}) {
+  const budget = createEventBudget(timeoutMs);
+  try {
+    return await runEvent(event, budget, runBeads);
+  } catch (error) {
+    const decision = unavailableDecision(event);
+    decision.messages.push(error.code === "EVENT_DEADLINE" ? "Agent-Team event deadline exceeded; required evidence remains unavailable." : `Agent-Team hook unavailable: ${error.message}`);
+    return { decision, output: adaptOutput(event.runtime, event.event, decision) };
+  } finally {
+    budget.close();
+  }
+}
+
+async function runEvent(event, budget, runBeads) {
+  const project = await budget.run(() => resolveProject(event.cwd, { budget }));
+  const progress = {};
+  let decision;
+  try {
+    decision = await budget.run(() => evaluatePolicy(event, project, { budget, runBeads, progress }));
+  } catch {
+    decision = unavailableDecision({ ...event, operation: progress.operation ?? event.operation });
+    if (progress.lint) {
+      decision.capabilities.lint = structuredClone(progress.lint);
+      decision.messages.push(...lintMessages(decision.capabilities.lint, project.worktreeRoot));
+    }
+  }
+  const canonical = progress.canonical;
   decision.context.active = project.active;
   decision.context.projectId = project.projectId;
 
   if (project.active && decision.allow && shouldRefreshOperationMappings(event, project)) {
     try {
-      const result = await syncOperationMappingInventory(project);
+      const result = await budget.run(() => syncOperationMappingInventory(project, { canonical, budget }));
       decision.mutations.push({ kind: "operation_mapping_cache", changed: result.changed });
       decision.messages.push(`Agent-Team mapping cache is ${result.changed ? "updated" : "current"}.`);
     } catch {
@@ -79,8 +105,7 @@ export async function runNormalizedHook(event) {
   let identity = { role: "unregistered" };
   if (project.active) {
     try {
-      const canonical = await loadCanonicalState(project);
-      identity = identityFor(canonical.registry, event.sessionId);
+      identity = canonical ? identityFor(canonical.registry, event.sessionId) : { role: "unknown" };
     } catch {
       identity = { role: "unknown" };
     }
@@ -88,7 +113,7 @@ export async function runNormalizedHook(event) {
   const activation = activationRecordFor(event, project, identity);
   if (activation) {
     try {
-      const result = await appendActivationLog(path.join(os.homedir(), ".agent-team-hooks", "logs"), activation);
+      const result = await budget.run(() => appendActivationLog(path.join(os.homedir(), ".agent-team-hooks", "logs"), activation, { budget }));
       decision.mutations.push({ kind: "activation_log", recorded: result.recorded });
     } catch {
       decision.messages.push("Agent-Team activation logging is unavailable for this event.");
@@ -97,15 +122,21 @@ export async function runNormalizedHook(event) {
   }
 
   if (project.active && ["SessionStart", "UserPromptSubmit"].includes(event.event)) {
-    const recovery = await inspectRecovery(project, { includeProbes: true, sessionId: event.sessionId });
-    decision.context.recovery = recovery;
-    decision.messages.push(`Agent-Team recovery evidence: ${recovery.status}.`);
+    try {
+      const recovery = await budget.run(() => inspectRecovery(project, { includeProbes: false, includeGit: true, sessionId: event.sessionId, canonical, budget }));
+      decision.context.recovery = recovery;
+      decision.messages.push(`Agent-Team recovery evidence: ${recovery.status}.`);
+    } catch {
+      decision.messages.push("Agent-Team recovery evidence is unavailable within the event deadline.");
+      decision.capabilities.recovery = "unavailable";
+    }
   }
   const checkpointEvent = ["PreCompact", "PostCompact", "Interrupt", "SessionEnd"].includes(event.event)
     || (event.runtime === "claude" && event.event === "PostToolBatch" && event.operation.kind === "file_change");
   if (project.active && checkpointEvent) {
     try {
-      const result = await writeCheckpoint(project, await checkpointFacts(event, project));
+      const facts = await budget.run(() => checkpointFacts(event, project, { canonical, budget }));
+      const result = await budget.run(() => writeCheckpoint(project, facts, { budget }));
       decision.mutations.push({ kind: "checkpoint", created: result.created });
     } catch {
       decision.messages.push("Agent-Team checkpoint is unavailable for this event.");
