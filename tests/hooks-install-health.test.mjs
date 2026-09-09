@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 
 import { getHealth } from "../hooks/lib/health.mjs";
 import { installPackage, uninstallPackage } from "../hooks/lib/install.mjs";
 import { appendActivationLog } from "../hooks/lib/telemetry.mjs";
 
 const sourceRoot = path.resolve(import.meta.dirname, "..");
+const cli = path.join(sourceRoot, "hooks", "agent-team-cli.mjs");
+const run = promisify(execFile);
 const temporary = [];
 test.afterEach(async () => Promise.all(temporary.splice(0).map((item) => rm(item, { force: true, recursive: true }))));
 
@@ -16,10 +21,8 @@ async function homeFixture() {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-home-"));
   temporary.push(home);
   await mkdir(path.join(home, ".codex", "skills", "agent-team"), { recursive: true });
-  await mkdir(path.join(home, ".agents", "skills", "agent-team"), { recursive: true });
   await mkdir(path.join(home, ".claude"), { recursive: true });
   await writeFile(path.join(home, ".codex", "skills", "agent-team", "legacy.txt"), "legacy\n");
-  await writeFile(path.join(home, ".agents", "skills", "agent-team", "old.txt"), "old\n");
   await writeFile(path.join(home, ".codex", "hooks.json"), JSON.stringify({ hooks: {
     Stop: [{ hooks: [{ type: "command", command: "unrelated-stop" }] }],
     SessionStart: [{ hooks: [{ type: "command", command: "lean-ctx hook codex-session-start" }] }],
@@ -47,6 +50,111 @@ test("target resolution rejects missing or ambiguous metadata and never guesses 
     installPackage({ sourceRoot, home, trustedHost: "both", scope: "user" }),
     /ambiguous|explicit/i,
   );
+  await assert.rejects(
+    installPackage({ sourceRoot, home, host: "codex", scope: "user", projectRoot: path.join(home, "ignored-project") }),
+    /projectRoot.*user scope|ineffective/i,
+  );
+});
+
+test("installer preserves an unreceipted custom skill directory and does not register its hooks", async () => {
+  // Replacing an existing target merely because it has no receipt would overwrite an unowned resource.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-unowned-skill-"));
+  temporary.push(home);
+  const target = path.join(home, ".agents", "skills", "agent-team");
+  await mkdir(target, { recursive: true });
+  await writeFile(path.join(target, "CUSTOM.md"), "unowned\n");
+
+  const result = await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+
+  assert.equal(await readFile(path.join(target, "CUSTOM.md"), "utf8"), "unowned\n");
+  assert.equal(result.conflicts.some(({ kind, reason }) => kind === "skill" && reason === "unowned_target"), true);
+  await assert.rejects(readFile(path.join(home, ".codex", "hooks.json")), { code: "ENOENT" });
+  const uninstalled = await uninstallPackage({ home, host: "codex", scope: "user" });
+  assert.equal(uninstalled.conflicts.some(({ kind, reason }) => kind === "skill" && reason === "unowned_target"), true);
+  assert.equal(await readFile(path.join(target, "CUSTOM.md"), "utf8"), "unowned\n");
+});
+
+test("installer uses but never claims an identical unreceipted skill directory", async () => {
+  // Content equality is not ownership authority; uninstall must retain a package that predates its receipt.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-identical-skill-"));
+  temporary.push(home);
+  const target = path.join(home, ".agents", "skills", "agent-team");
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  await rm(path.join(home, ".agent-team-hooks"), { recursive: true });
+  await rm(path.join(home, ".codex", "hooks.json"));
+
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  const receipt = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
+  assert.equal(receipt.targets.find(({ runtime }) => runtime === "codex").preexisting, true);
+
+  await uninstallPackage({ home, host: "codex", scope: "user" });
+  await readFile(path.join(target, "SKILL.md"));
+});
+
+test("an update preserves a package previously recorded as pre-existing", async () => {
+  // A later release must not convert a content-identical unowned package into replaceable managed state.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-skill-update-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-skill-source-"));
+  temporary.push(home, changedSource);
+  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  const target = path.join(home, ".agents", "skills", "agent-team");
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  await rm(path.join(home, ".agent-team-hooks"), { recursive: true });
+  await rm(path.join(home, ".codex", "hooks.json"));
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  const addedFile = "references/preexisting-update-marker.md";
+  await writeFile(path.join(changedSource, addedFile), "new release\n");
+  const manifestPath = path.join(changedSource, "hooks", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.files.push(addedFile);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const result = await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user" });
+  assert.equal(result.conflicts.some(({ kind, reason }) => kind === "skill" && reason === "preexisting_target"), true);
+  await assert.rejects(readFile(path.join(target, addedFile)), { code: "ENOENT" });
+  await uninstallPackage({ home, host: "codex", scope: "user" });
+  await readFile(path.join(target, "SKILL.md"));
+});
+
+test("installer never claims an identical pre-existing Claude role", async () => {
+  // An identical role file that predates installation must survive uninstall.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-identical-role-"));
+  temporary.push(home);
+  const source = path.join(sourceRoot, "assets", "claude-agents", "agent-team-developer.md");
+  const target = path.join(home, ".claude", "agents", "agent-team-developer.md");
+  await mkdir(path.dirname(target), { recursive: true });
+  const original = await readFile(source, "utf8");
+  await writeFile(target, original);
+
+  await installPackage({ sourceRoot, home, host: "claude-code", scope: "user" });
+  const receipt = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
+  assert.equal(receipt.claudeAgents.find(({ path: name }) => name === target).preexisting, true);
+
+  await uninstallPackage({ home, host: "claude-code", scope: "user" });
+  assert.equal(await readFile(target, "utf8"), original);
+  await assert.rejects(readFile(path.join(home, ".claude", "agents", "agent-team-reviewer.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+  const remaining = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
+  assert.deepEqual(remaining.claudeAgents.map(({ path: name }) => name), [target]);
+});
+
+test("an update preserves a Claude role previously recorded as pre-existing", async () => {
+  // A changed release role cannot overwrite an identical role that existed before installation.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-role-update-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-role-source-"));
+  temporary.push(home, changedSource);
+  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  const target = path.join(home, ".claude", "agents", "agent-team-developer.md");
+  await mkdir(path.dirname(target), { recursive: true });
+  const original = await readFile(path.join(sourceRoot, "assets", "claude-agents", "agent-team-developer.md"), "utf8");
+  await writeFile(target, original);
+  await installPackage({ sourceRoot, home, host: "claude-code", scope: "user" });
+  const changedRole = path.join(changedSource, "assets", "claude-agents", "agent-team-developer.md");
+  await writeFile(changedRole, `${original}\nchanged release\n`);
+
+  const result = await installPackage({ sourceRoot: changedSource, home, host: "claude-code", scope: "user" });
+  assert.equal(result.conflicts.some(({ kind, reason, target: name }) => kind === "claude_agent" && reason === "preexisting_definition" && name === target), true);
+  assert.equal(await readFile(target, "utf8"), original);
 });
 
 test("source installs configure only the selected host and scope, including paths with spaces", async (context) => {
@@ -87,7 +195,7 @@ test("source installs configure only the selected host and scope, including path
           .map(async (configPath) => [configPath, await readFile(configPath, "utf8")]),
       ));
 
-      const result = await installPackage({ sourceRoot, home, host, scope, projectRoot });
+      const result = await installPackage({ sourceRoot, home, host, scope, ...(scope === "project" ? { projectRoot } : {}) });
       const selectedRuntimes = host === "both" ? ["codex", "claude"] : [host === "claude-code" ? "claude" : host];
       assert.deepEqual(result.selection, { host, scope, ...(scope === "project" ? { projectRoot } : {}) });
       assert.deepEqual(result.configured.map(({ runtime, trust }) => [runtime, trust]), selectedRuntimes.map((runtime) => [runtime, "required"]));
@@ -266,6 +374,85 @@ test("uninstall preserves a receipt-marked pre-existing exact handler and its pa
   await readFile(path.join(home, ".agents", "skills", "agent-team", "hooks", "agent-team-hook.mjs"));
 });
 
+test("an update preserves a pre-existing handler when the new declaration differs", async () => {
+  // A release update must not turn an unowned exact handler into managed content and overwrite it.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-update-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-update-source-"));
+  temporary.push(home, changedSource);
+  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  const configPath = path.join(home, ".codex", "hooks.json");
+  await mkdir(path.dirname(configPath), { recursive: true });
+  const original = JSON.parse(await readFile(path.join(sourceRoot, "hooks", "codex-hooks.json"), "utf8"));
+  await writeFile(configPath, `${JSON.stringify(original, null, 2)}\n`);
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+
+  const declarationPath = path.join(changedSource, "hooks", "codex-hooks.json");
+  const changed = JSON.parse(await readFile(declarationPath, "utf8"));
+  changed.hooks.PreToolUse[0].hooks[0].statusMessage = "new release text";
+  await writeFile(declarationPath, `${JSON.stringify(changed, null, 2)}\n`);
+  const result = await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user" });
+
+  const after = JSON.parse(await readFile(configPath, "utf8"));
+  assert.notEqual(after.hooks.PreToolUse[0].hooks[0].statusMessage, "new release text");
+  assert.equal(result.conflicts.some(({ reason }) => reason === "preexisting_handler"), true);
+  await uninstallPackage({ home, host: "codex", scope: "user" });
+  assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), original);
+  await readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md"));
+});
+
+test("an update removes an unchanged owned handler retired by the new declaration", async () => {
+  // Rebuilding the receipt from current declarations alone would leave the retired hook live and unowned.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-retired-handler-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-retired-source-"));
+  temporary.push(home, changedSource);
+  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  const declarationPath = path.join(changedSource, "hooks", "codex-hooks.json");
+  const changed = JSON.parse(await readFile(declarationPath, "utf8"));
+  delete changed.hooks.Interrupt;
+  await writeFile(declarationPath, `${JSON.stringify(changed, null, 2)}\n`);
+  const manifestPath = path.join(changedSource, "hooks", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.requiredEvents.codex = manifest.requiredEvents.codex.filter((event) => event !== "Interrupt");
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const result = await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user" });
+  const config = JSON.parse(await readFile(path.join(home, ".codex", "hooks.json"), "utf8"));
+  const receipt = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
+  assert.equal(config.hooks.Interrupt, undefined);
+  assert.equal(receipt.handlers.some(({ event }) => event === "Interrupt"), false);
+  assert.equal(result.conflicts.some(({ event }) => event === "Interrupt"), false);
+});
+
+test("an update retains customized retired handler identity and its package", async () => {
+  // A customized retired hook must remain receipted as a conflict so uninstall cannot strand it.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-custom-retired-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-custom-retired-source-"));
+  temporary.push(home, changedSource);
+  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  const configPath = path.join(home, ".codex", "hooks.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  config.hooks.Interrupt[0].hooks[0].command += " --custom";
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  const declarationPath = path.join(changedSource, "hooks", "codex-hooks.json");
+  const changed = JSON.parse(await readFile(declarationPath, "utf8"));
+  delete changed.hooks.Interrupt;
+  await writeFile(declarationPath, `${JSON.stringify(changed, null, 2)}\n`);
+  const manifestPath = path.join(changedSource, "hooks", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.requiredEvents.codex = manifest.requiredEvents.codex.filter((event) => event !== "Interrupt");
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  const result = await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user" });
+  const receipt = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
+  assert.equal(result.conflicts.some(({ event, reason }) => event === "Interrupt" && reason === "customized_handler"), true);
+  assert.equal(receipt.handlers.some(({ event }) => event === "Interrupt"), true);
+  await uninstallPackage({ home, host: "codex", scope: "user" });
+  assert.match(await readFile(configPath, "utf8"), /--event Interrupt --custom/);
+  await readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md"));
+});
+
 test("a conflict in one host does not retain stale receipt ownership for the other host", async () => {
   // One customized Codex handler must not prevent a clean Claude uninstall or leave stale Claude receipt entries.
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-one-host-conflict-"));
@@ -283,9 +470,11 @@ test("a conflict in one host does not retain stale receipt ownership for the oth
   const receipt = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
   assert.deepEqual([...new Set(receipt.handlers.map(({ runtime }) => runtime))], ["codex"]);
   assert.deepEqual([...new Set(receipt.targets.map(({ runtime }) => runtime))], ["codex"]);
+  const remainingCodex = JSON.parse(await readFile(codexPath, "utf8"));
+  assert.equal(agentTeamGroups(remainingCodex).length, 1);
 });
 
-test("installer preserves unrelated settings, backs up replaced copies, removes the legacy Codex duplicate, and reruns cleanly", async () => {
+test("installer preserves unrelated settings, removes the legacy Codex duplicate, and reruns cleanly", async () => {
   // This test catches whole-config replacement, duplicate registration, and two active Codex copies.
   const home = await homeFixture();
   const first = await installPackage({ sourceRoot, home, host: "both", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
@@ -333,8 +522,75 @@ test("installer upgrades an unchanged managed package when the manifest adds a f
   assert.equal(await readFile(path.join(home, ".claude", "skills", "agent-team", addedFile), "utf8"), "new managed file\n");
 });
 
-test("uninstall removes owned groups, preserves unrelated settings, and restores backed-up skill copies", async () => {
-  // This test catches rollback code that deletes unrelated configuration or loses the prior install.
+test("uninstall after a managed package update removes the installation instead of restoring V1", async () => {
+  // Treating an update snapshot as a pre-install backup would restore V1 and then discard its ownership receipt.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-version-uninstall-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-version-source-"));
+  temporary.push(home, changedSource);
+  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
+  const addedFile = "references/version-two-marker.md";
+  await writeFile(path.join(changedSource, addedFile), "version two\n");
+  const manifestPath = path.join(changedSource, "hooks", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.files.push(addedFile);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user", now: new Date("2026-09-06T12:01:00.000Z") });
+  const receipt = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
+  assert.equal(receipt.version, manifest.version);
+  assert.match(receipt.transactionId, /^[0-9a-f-]{36}$/);
+  assert.equal(receipt.backups.some(({ kind, purpose }) => kind === "skill" && purpose === "update_snapshot"), true);
+  assert.equal(receipt.backups.find(({ kind, purpose }) => kind === "skill" && purpose === "update_snapshot").transactionId, receipt.transactionId);
+  await uninstallPackage({ home, host: "codex", scope: "user" });
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+});
+
+test("uninstall after an update restores only an original backup from an older receipt", async () => {
+  // Update snapshots must not hide a pre-install restoration backup created by an earlier installer version.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-original-backup-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-original-backup-source-"));
+  temporary.push(home, changedSource);
+  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  const target = path.join(home, ".agents", "skills", "agent-team");
+  const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
+  const originalBackup = path.join(home, ".agent-team-hooks", "backups", "legacy-receipt", "original-skill");
+  await mkdir(originalBackup, { recursive: true });
+  await writeFile(path.join(originalBackup, "ORIGINAL.md"), "original resource\n");
+  const oldReceipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  oldReceipt.backups.unshift({ kind: "skill", target, backup: originalBackup });
+  await writeFile(receiptPath, `${JSON.stringify(oldReceipt, null, 2)}\n`);
+  const addedFile = "references/second-version.md";
+  await writeFile(path.join(changedSource, addedFile), "second version\n");
+  const manifestPath = path.join(changedSource, "hooks", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.files.push(addedFile);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user" });
+  await uninstallPackage({ home, host: "codex", scope: "user" });
+  assert.equal(await readFile(path.join(target, "ORIGINAL.md"), "utf8"), "original resource\n");
+  await assert.rejects(readFile(path.join(target, "SKILL.md")), { code: "ENOENT" });
+});
+
+test("adding a host from an installed CLI preserves copied ownership for the first host", async () => {
+  // Reclassifying sourceRoot=target as protected source would orphan the first copied package on combined uninstall.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-installed-source-ownership-"));
+  temporary.push(home);
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  const installedRoot = path.join(home, ".agents", "skills", "agent-team");
+  await installPackage({ sourceRoot: installedRoot, home, host: "both", scope: "user" });
+  const receipt = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
+  assert.equal(receipt.targets.find(({ runtime }) => runtime === "codex").mode, "copied");
+
+  await uninstallPackage({ home, host: "both", scope: "user" });
+  await assert.rejects(readFile(path.join(installedRoot, "SKILL.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+});
+
+test("uninstall removes owned groups and copies while preserving unrelated settings and the legacy copy", async () => {
+  // This test catches rollback code that deletes unrelated configuration or retains its owned package.
   const home = await homeFixture();
   await installPackage({ sourceRoot, home, host: "both", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
   const result = await uninstallPackage({ home, host: "both", scope: "user" });
@@ -346,7 +602,7 @@ test("uninstall removes owned groups, preserves unrelated settings, and restores
   assert.equal(agentTeamGroups(claude).length, 0);
   assert.equal(codex.hooks.Stop[0].hooks[0].command, "unrelated-stop");
   assert.equal(claude.model, "fable");
-  assert.equal(await readFile(path.join(home, ".agents", "skills", "agent-team", "old.txt"), "utf8"), "old\n");
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
   assert.equal(await readFile(path.join(home, ".codex", "skills", "agent-team", "legacy.txt"), "utf8"), "legacy\n");
 });
 
@@ -411,9 +667,50 @@ test("installer rolls back its package and config mutations after a later failur
 
   await assert.rejects(installPackage({ sourceRoot: brokenSource, home, host: "both", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") }));
 
-  assert.equal(await readFile(path.join(home, ".agents", "skills", "agent-team", "old.txt"), "utf8"), "old\n");
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
   assert.equal(await readFile(path.join(home, ".codex", "hooks.json"), "utf8"), originalCodex);
   await assert.rejects(readFile(path.join(home, ".agent-team-hooks", "install.json")), { code: "ENOENT" });
+});
+
+test("a subsequent CLI invocation recovers ownership after abrupt process termination", async () => {
+  // An in-memory undo stack cannot recover the legacy resource after the installer process is killed.
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-interrupted-install-"));
+  temporary.push(home);
+  const legacy = path.join(home, ".codex", "skills", "agent-team");
+  await mkdir(legacy, { recursive: true });
+  await writeFile(path.join(legacy, "original.txt"), "original ownership\n");
+  const configPath = path.join(home, ".codex", "hooks.json");
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, JSON.stringify({ padding: "x".repeat(16 * 1024 * 1024), hooks: {} }));
+
+  const child = spawn(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"], {
+    stdio: "ignore",
+  });
+  let interruptedBackup;
+  for (let attempt = 0; attempt < 5000 && !interruptedBackup; attempt += 1) {
+    let journal;
+    try {
+      journal = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "transaction.json"), "utf8"));
+    } catch {}
+    const action = journal?.undo?.find(({ kind, to }) => kind === "move" && to === legacy);
+    if (action) {
+      try {
+        await readdir(action.from);
+        interruptedBackup = action.from;
+      } catch {}
+    }
+    if (child.exitCode !== null) break;
+    await delay(1);
+  }
+  assert.ok(interruptedBackup, "installer exited before a moved resource was durably journaled");
+  child.kill("SIGKILL");
+  await new Promise((resolve) => child.once("exit", resolve));
+  await assert.rejects(readFile(path.join(legacy, "original.txt")), { code: "ENOENT" });
+
+  await run(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"]);
+  await run(process.execPath, [cli, "rollback", "--home", home, "--host", "codex", "--scope", "user"]);
+  assert.equal(await readFile(path.join(legacy, "original.txt"), "utf8"), "original ownership\n");
+  await assert.rejects(readFile(path.join(home, ".agent-team-hooks", "transaction.json")), { code: "ENOENT" });
 });
 
 test("parallel installer calls serialize one transaction and keep one registration set", async () => {

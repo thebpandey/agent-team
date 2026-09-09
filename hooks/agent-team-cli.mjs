@@ -4,6 +4,7 @@ import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { auditEffectiveness } from "./lib/telemetry.mjs";
 import { buildArtifacts, checkArtifacts } from "./lib/artifacts.mjs";
@@ -83,7 +84,7 @@ export async function runCommand(command, options) {
   throw new Error(`Unknown command: ${command ?? "missing"}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const result = await runCommand(process.argv[2], flags(process.argv[2], process.argv.slice(3)));
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

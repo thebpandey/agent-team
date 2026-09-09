@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
 import { buildArtifacts, checkArtifacts, readZip, writeZip } from "../hooks/lib/artifacts.mjs";
-import { installPackage } from "../hooks/lib/install.mjs";
 
 const sourceRoot = path.resolve(import.meta.dirname, "..");
 const run = promisify(execFile);
@@ -21,26 +20,99 @@ async function artifacts() {
   return { outputDirectory, built };
 }
 
-test("the one universal ZIP installs for one selected host from outside the source checkout", async () => {
-  // Removing either adapter, executable mode, or target filtering must break this consumer journey.
+test("the extracted universal CLI completes every host and scope lifecycle outside the source checkout", async () => {
+  // Importing the source installer, skipping a selector, or losing update/uninstall effects must break this consumer matrix.
   const { built } = await artifacts();
   const extracted = await mkdtemp(path.join(os.tmpdir(), "agent team extracted "));
-  const home = await mkdtemp(path.join(os.tmpdir(), "agent team consumer home "));
-  temporary.push(extracted, home);
+  const updated = await mkdtemp(path.join(os.tmpdir(), "agent team updated extracted "));
+  temporary.push(extracted, updated);
 
   assert.equal(built.archives.length, 1);
   assert.equal(path.basename(built.archives[0]), "agent-team-6.5.0.zip");
   await run("unzip", ["-q", built.archives[0], "-d", extracted]);
   const packageRoot = path.join(extracted, "agent-team");
+  const updatedRoot = path.join(updated, "agent-team");
+  assert.equal(packageRoot.startsWith(sourceRoot), false);
   await readFile(path.join(packageRoot, "hooks", "codex-hooks.json"));
   await readFile(path.join(packageRoot, "hooks", "claude-hooks.json"));
   assert.notEqual((await stat(path.join(packageRoot, "hooks", "agent-team-cli.mjs"))).mode & 0o111, 0);
+  await cp(packageRoot, updatedRoot, { recursive: true });
+  const addedFile = "references/extracted-consumer-update.md";
+  await writeFile(path.join(updatedRoot, addedFile), "updated extracted consumer\n");
+  const manifestPath = path.join(updatedRoot, "hooks", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.files.push(addedFile);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-  const installed = await installPackage({ sourceRoot: packageRoot, home, host: "codex", scope: "user" });
-  assert.equal(installed.validation.status, "passed");
-  await readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md"));
-  await readFile(path.join(home, ".codex", "hooks.json"));
-  await assert.rejects(readFile(path.join(home, ".claude", "settings.json")), { code: "ENOENT" });
+  for (const [host, scope] of [
+    ["codex", "user"],
+    ["claude-code", "user"],
+    ["both", "user"],
+    ["codex", "project"],
+    ["claude-code", "project"],
+    ["both", "project"],
+  ]) {
+    {
+      const home = await mkdtemp(path.join(os.tmpdir(), "agent team zip home "));
+      const projectRoot = await mkdtemp(path.join(os.tmpdir(), "agent team zip project "));
+      temporary.push(home, projectRoot);
+      const configs = {
+        user: {
+          codex: path.join(home, ".codex", "hooks.json"),
+          claude: path.join(home, ".claude", "settings.json"),
+        },
+        project: {
+          codex: path.join(projectRoot, ".codex", "hooks.json"),
+          claude: path.join(projectRoot, ".claude", "settings.local.json"),
+        },
+      };
+      const sharedClaude = path.join(projectRoot, ".claude", "settings.json");
+      for (const configPath of [...Object.values(configs.user), ...Object.values(configs.project), sharedClaude]) {
+        await mkdir(path.dirname(configPath), { recursive: true });
+        await writeFile(configPath, `${JSON.stringify({ sentinel: path.basename(configPath) })}\n`);
+      }
+      const protectedPaths = [...Object.values(configs.user), ...Object.values(configs.project), sharedClaude]
+        .filter((configPath) => !Object.entries(configs[scope]).some(([runtime, selectedPath]) =>
+          selectedPath === configPath && (host === "both" || runtime === (host === "claude-code" ? "claude" : host))));
+      const protectedBytes = new Map(await Promise.all(protectedPaths.map(async (configPath) => [configPath, await readFile(configPath, "utf8")])));
+      const selectors = ["--home", home, "--host", host, "--scope", scope, ...(scope === "project" ? ["--project", projectRoot] : [])];
+      const cli = path.join(packageRoot, "hooks", "agent-team-cli.mjs");
+      const updatedCli = path.join(updatedRoot, "hooks", "agent-team-cli.mjs");
+
+      const installed = JSON.parse((await run(process.execPath, [cli, "install", ...selectors])).stdout);
+      assert.equal(installed.validation.status, "passed");
+      const reinstalled = JSON.parse((await run(process.execPath, [cli, "install", ...selectors])).stdout);
+      assert.equal(reinstalled.changed, false);
+      const upgraded = JSON.parse((await run(process.execPath, [updatedCli, "install", ...selectors])).stdout);
+      assert.equal(upgraded.changed, true);
+      const runtimes = host === "both" ? ["codex", "claude"] : [host === "claude-code" ? "claude" : "codex"];
+      for (const runtime of runtimes) {
+        const root = scope === "project" ? projectRoot : home;
+        const target = runtime === "codex"
+          ? path.join(root, ".agents", "skills", "agent-team")
+          : path.join(root, ".claude", "skills", "agent-team");
+        assert.equal(await readFile(path.join(target, addedFile), "utf8"), "updated extracted consumer\n");
+        const configured = JSON.parse(await readFile(configs[scope][runtime], "utf8"));
+        assert.equal(configured.sentinel, path.basename(configs[scope][runtime]));
+        assert.ok(Object.values(configured.hooks).flat().some((group) => group.hooks.some(({ command = "" }) => command.includes("agent-team-hook.mjs"))));
+      }
+      for (const [configPath, bytes] of protectedBytes) assert.equal(await readFile(configPath, "utf8"), bytes);
+
+      const uninstalled = JSON.parse((await run(process.execPath, [updatedCli, "uninstall", ...selectors])).stdout);
+      assert.equal(uninstalled.status, "uninstalled");
+      for (const runtime of runtimes) {
+        const root = scope === "project" ? projectRoot : home;
+        const target = runtime === "codex"
+          ? path.join(root, ".agents", "skills", "agent-team", "SKILL.md")
+          : path.join(root, ".claude", "skills", "agent-team", "SKILL.md");
+        await assert.rejects(readFile(target), { code: "ENOENT" });
+        const configured = JSON.parse(await readFile(configs[scope][runtime], "utf8"));
+        assert.equal(configured.sentinel, path.basename(configs[scope][runtime]));
+        assert.equal(Object.values(configured.hooks ?? {}).flat().some((group) => group.hooks.some(({ command = "" }) => command.includes("agent-team-hook.mjs"))), false);
+      }
+      for (const [configPath, bytes] of protectedBytes) assert.equal(await readFile(configPath, "utf8"), bytes);
+    }
+  }
 });
 
 test("artifact validation reports source-only checks as not applicable", async () => {

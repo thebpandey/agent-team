@@ -89,7 +89,7 @@ function recordAt(runtime, event, handlerIdValue, location, handler, preexisting
 }
 
 function mergeHooks(config, declaration, { runtime, previousHandlers = [], adoptExisting = false }) {
-  const output = structuredClone(config);
+  let output = structuredClone(config);
   output.hooks ??= {};
   const handlers = [];
   const conflicts = [];
@@ -107,6 +107,11 @@ function mergeHooks(config, declaration, { runtime, previousHandlers = [], adopt
           if (exact.length === 1) {
             const location = exact[0];
             if (!same(previous.handler, desired)) {
+              if (previous.preexisting) {
+                conflicts.push({ kind: "handler", runtime, event, handlerId: id, reason: "preexisting_handler" });
+                handlers.push(previous);
+                continue;
+              }
               output.hooks[event][location.groupIndex].hooks[location.handlerIndex] = structuredClone(desired);
               changed = true;
             }
@@ -152,6 +157,17 @@ function mergeHooks(config, declaration, { runtime, previousHandlers = [], adopt
         changed = true;
       }
     }
+  }
+  const desiredIds = new Set(Object.entries(declaration.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group, groupIndex) =>
+    (group.hooks ?? []).map((handler, handlerIndex) => handlerId(runtime, event, groupIndex, handlerIndex)))));
+  const retired = previousHandlers.filter((entry) => !desiredIds.has(entry.handlerId));
+  if (retired.length) {
+    const removed = removeOwnedHooks(output, retired);
+    output = removed.config;
+    changed ||= removed.changed;
+    conflicts.push(...removed.conflicts);
+    const conflictedIds = new Set(removed.conflicts.map(({ handlerId: id }) => id));
+    handlers.push(...retired.filter(({ handlerId: id }) => conflictedIds.has(id)));
   }
   return { config: output, handlers, conflicts, changed };
 }
@@ -257,20 +273,85 @@ function stamp(now) {
   return now.toISOString().replace(/[-:.]/g, "");
 }
 
-async function transaction(callback) {
-  const undo = [];
-  try {
-    return await callback((action) => undo.push(action));
-  } catch (error) {
-    const rollbackErrors = [];
-    for (const action of undo.reverse()) {
-      try {
-        await action();
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError.message);
-      }
+async function applyUndo(action) {
+  if (action.kind === "remove_path") {
+    await rm(action.path, { force: true, recursive: Boolean(action.recursive) });
+    return;
+  }
+  if (action.kind === "move") {
+    if (!(await present(action.from))) return;
+    if (await present(action.to)) await rm(action.to, { force: true, recursive: true });
+    await mkdir(path.dirname(action.to), { recursive: true });
+    await rename(action.from, action.to);
+    return;
+  }
+  if (action.kind === "restore_file") {
+    if (!(await present(action.backup))) return;
+    await atomicText(action.target, await readFile(action.backup));
+    return;
+  }
+  throw new Error(`Unsupported transaction undo action: ${action.kind}`);
+}
+
+async function recoverTransaction(stateRoot) {
+  const journalPath = path.join(stateRoot, "transaction.json");
+  const journal = await readJson(journalPath, null);
+  if (!journal) return null;
+  if (journal.status === "committed") {
+    await rm(journalPath, { force: true });
+    return { transactionId: journal.transactionId, operation: journal.operation, action: "finalized" };
+  }
+  const rollbackErrors = [];
+  for (const action of [...(journal.undo ?? [])].reverse()) {
+    try {
+      await applyUndo(action);
+    } catch (error) {
+      rollbackErrors.push(error.message);
     }
-    if (rollbackErrors.length) error.message = `${error.message}; rollback errors: ${rollbackErrors.join("; ")}`;
+  }
+  if (rollbackErrors.length) throw new Error(`Cannot recover transaction ${journal.transactionId}: ${rollbackErrors.join("; ")}`);
+  await rm(journalPath, { force: true });
+  return { transactionId: journal.transactionId, operation: journal.operation, action: "rolled_back" };
+}
+
+async function clearDeadInstallLock(stateRoot) {
+  const lockPath = path.join(stateRoot, "install.lock");
+  const owner = await readJson(path.join(lockPath, "owner.json"), null);
+  if (!Number.isInteger(owner?.pid) || owner.pid <= 0) return;
+  try {
+    process.kill(owner.pid, 0);
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+    await rm(lockPath, { force: true, recursive: true });
+  }
+}
+
+async function durableTransaction(stateRoot, operation, callback) {
+  const journalPath = path.join(stateRoot, "transaction.json");
+  const journal = {
+    schemaVersion: 1,
+    transactionId: randomUUID(),
+    operation,
+    status: "active",
+    undo: [],
+  };
+  await atomicJson(journalPath, journal);
+  const addUndo = async (action) => {
+    journal.undo.push(action);
+    await atomicJson(journalPath, journal);
+  };
+  try {
+    const result = await callback(addUndo, journal.transactionId);
+    journal.status = "committed";
+    await atomicJson(journalPath, journal);
+    await rm(journalPath, { force: true });
+    return result;
+  } catch (error) {
+    try {
+      await recoverTransaction(stateRoot);
+    } catch (rollbackError) {
+      error.message = `${error.message}; rollback error: ${rollbackError.message}`;
+    }
     throw error;
   }
 }
@@ -288,6 +369,7 @@ function selection({ host, scope, projectRoot, trustedHost }) {
   if (!["codex", "claude-code", "both"].includes(selectedHost)) throw new Error(`Unsupported installation host: ${selectedHost}`);
   if (!["user", "project"].includes(scope)) throw new Error("Installation scope is required: choose user or project.");
   if (scope === "project" && !projectRoot) throw new Error("projectRoot is required for project scope.");
+  if (scope === "user" && projectRoot) throw new Error("projectRoot is ineffective with user scope.");
   return {
     host: selectedHost,
     scope,
@@ -330,47 +412,66 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
   const backupRoot = path.join(stateRoot, "backups", `${stamp(now)}-${randomUUID().slice(0, 8)}`);
   const backups = [];
   const conflicts = [];
+  const unavailableRuntimes = new Set();
   let changed = false;
 
-  return transaction(async (addUndo) => {
-    addUndo(() => rm(backupRoot, { force: true, recursive: true }));
+  return durableTransaction(stateRoot, "install", async (addUndo, transactionId) => {
+    await addUndo({ kind: "remove_path", path: backupRoot, recursive: true });
     const previousTargets = (previousReceipt?.targets ?? []).map((entry, index) => typeof entry === "string"
       ? { runtime: index === 0 ? "codex" : "claude", path: entry, mode: "legacy", digest: previousReceipt.digest }
       : entry);
     const targets = previousTargets.filter((entry) => !selected.runtimes.includes(entry.runtime));
     const sourceIdentity = await realpath(sourceRoot);
-    for (const [index, runtime] of selected.runtimes.entries()) {
+    for (const runtime of selected.runtimes) {
       const { target } = runtimePaths({ home, ...selected }, runtime);
       const targetPresent = await present(target);
       const sourceIsTarget = targetPresent && await realpath(target) === sourceIdentity;
       const previous = targetRecord(previousReceipt, runtime, target);
-      if (sourceIsTarget) {
-        targets.push({ runtime, path: target, mode: "source", digest, files: manifest.files });
-        continue;
-      }
-      const previousDigest = targetPresent && previous?.mode === "copied"
+      const previousDigest = targetPresent && previous
         ? await managedPackageDigest(target, previous.files ?? manifest.files)
         : undefined;
+      if (previous?.preexisting) {
+        if (previousDigest !== previous.digest) conflicts.push({ kind: "skill", runtime, target, reason: "preexisting_target_changed" });
+        else if (await managedPackageDigest(target, manifest.files) !== digest) conflicts.push({ kind: "skill", runtime, target, reason: "preexisting_target" });
+        else {
+          targets.push(previous);
+          continue;
+        }
+        targets.push(previous);
+        unavailableRuntimes.add(runtime);
+        continue;
+      }
+      if (sourceIsTarget) {
+        targets.push(previous?.mode === "copied"
+          ? previous
+          : { runtime, path: target, mode: "source", digest, files: manifest.files, preexisting: true });
+        continue;
+      }
       if (targetPresent && previous?.mode === "copied" && previousDigest !== previous.digest) {
-        conflicts.push({ kind: "skill", target, reason: "managed_target_changed" });
+        conflicts.push({ kind: "skill", runtime, target, reason: "managed_target_changed" });
         targets.push(previous);
         continue;
       }
       const currentDigest = targetPresent ? await managedPackageDigest(target, manifest.files) : undefined;
       if (targetPresent && currentDigest === digest) {
-        targets.push({ runtime, path: target, mode: "copied", digest, files: manifest.files });
+        targets.push({ runtime, path: target, mode: "copied", digest, files: manifest.files, preexisting: previous?.preexisting ?? !previous });
+        continue;
+      }
+      if (targetPresent && !previous) {
+        conflicts.push({ kind: "skill", runtime, target, reason: "unowned_target" });
+        unavailableRuntimes.add(runtime);
         continue;
       }
       await mkdir(path.dirname(target), { recursive: true });
       if (targetPresent) {
         const backup = path.join(backupRoot, "skills", runtime === "codex" ? "agents-agent-team" : "claude-agent-team");
         await mkdir(path.dirname(backup), { recursive: true });
+        await addUndo({ kind: "move", from: backup, to: target });
         await rename(target, backup);
-        addUndo(async () => { if (await present(backup)) await rename(backup, target); });
-        backups.push({ kind: "skill", target, backup });
+        backups.push({ kind: "skill", target, backup, purpose: previous ? "update_snapshot" : "preinstall_restore", transactionId });
       }
+      await addUndo({ kind: "remove_path", path: target, recursive: true });
       await copyPackage(sourceRoot, target, manifest.files);
-      addUndo(() => rm(target, { force: true, recursive: true }));
       targets.push({ runtime, path: target, mode: "copied", digest, files: manifest.files });
       changed = true;
     }
@@ -379,23 +480,29 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
     if (selected.scope === "user" && selected.runtimes.includes("codex") && await present(legacy)) {
       const backup = path.join(backupRoot, "skills", "codex-legacy-agent-team");
       await mkdir(path.dirname(backup), { recursive: true });
+      await addUndo({ kind: "move", from: backup, to: legacy });
       await rename(legacy, backup);
-      addUndo(async () => { if (await present(backup)) await rename(backup, legacy); });
-      backups.push({ kind: "legacy", target: legacy, backup });
+      backups.push({ kind: "legacy", target: legacy, backup, purpose: "preinstall_restore", transactionId });
       changed = true;
     }
 
     const claudeAgents = selected.runtimes.includes("claude") ? [] : [...(previousReceipt?.claudeAgents ?? [])];
     const handlerReceipts = (previousReceipt?.handlers ?? []).filter((entry) => !selected.runtimes.includes(entry.runtime));
     const handlerConflictReceipts = (previousReceipt?.handlerConflicts ?? []).filter((entry) => !selected.runtimes.includes(entry.runtime));
-    for (const sourceFile of selected.runtimes.includes("claude") ? manifest.files.filter((file) => file.startsWith("assets/claude-agents/") && file.endsWith(".md")) : []) {
+    const resourceConflictReceipts = (previousReceipt?.resourceConflicts ?? []).filter((entry) => !selected.runtimes.includes(entry.runtime));
+    for (const sourceFile of selected.runtimes.includes("claude") && !unavailableRuntimes.has("claude") ? manifest.files.filter((file) => file.startsWith("assets/claude-agents/") && file.endsWith(".md")) : []) {
       const target = path.join(runtimePaths({ home, ...selected }, "claude").agentsRoot, path.basename(sourceFile));
       const source = path.join(sourceRoot, sourceFile);
       const desiredDigest = await fileDigest(source);
       const currentDigest = await fileDigest(target);
       const previous = previousReceipt?.claudeAgents?.find((entry) => entry.path === target);
       if (currentDigest === desiredDigest) {
-        claudeAgents.push({ path: target, source: sourceFile, digest: desiredDigest });
+        claudeAgents.push({ path: target, source: sourceFile, digest: desiredDigest, preexisting: previous?.preexisting ?? !previous });
+        continue;
+      }
+      if (previous?.preexisting) {
+        conflicts.push({ kind: "claude_agent", runtime: "claude", target, reason: "preexisting_definition" });
+        claudeAgents.push(previous);
         continue;
       }
       if (currentDigest && (!previous || previous.digest !== currentDigest)) {
@@ -403,24 +510,21 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
         if (previous) claudeAgents.push(previous);
         continue;
       }
-      let prior;
       if (currentDigest) {
-        prior = await readFile(target);
         const backup = path.join(backupRoot, "claude-agents", path.basename(target));
         await mkdir(path.dirname(backup), { recursive: true });
+        await addUndo({ kind: "restore_file", target, backup });
         await copyFile(target, backup);
-        backups.push({ kind: "claude_agent", target, backup });
+        backups.push({ kind: "claude_agent", target, backup, purpose: "update_snapshot", transactionId });
+      } else {
+        await addUndo({ kind: "remove_path", path: target });
       }
       await atomicText(target, await readFile(source, "utf8"));
-      addUndo(async () => {
-        if (prior) await atomicText(target, prior);
-        else await rm(target, { force: true });
-      });
       claudeAgents.push({ path: target, source: sourceFile, digest: desiredDigest });
       changed = true;
     }
 
-    for (const runtime of selected.runtimes) {
+    for (const runtime of selected.runtimes.filter((runtime) => !unavailableRuntimes.has(runtime))) {
       const { configPath } = runtimePaths({ home, ...selected }, runtime);
       const declaration = await hookDeclaration(sourceRoot, runtime, selected);
       const configPresent = await present(configPath);
@@ -439,21 +543,24 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
         if (configPresent) {
           const backup = path.join(backupRoot, "config", runtime === "codex" ? "hooks.json" : "settings.json");
           await mkdir(path.dirname(backup), { recursive: true });
+          await addUndo({ kind: "restore_file", target: configPath, backup });
           await copyFile(configPath, backup);
-          backups.push({ kind: "config", target: configPath, backup });
+          backups.push({ kind: "config", target: configPath, backup, purpose: "update_snapshot", transactionId });
+        } else {
+          await addUndo({ kind: "remove_path", path: configPath });
         }
         await atomicJson(configPath, merged.config);
-        addUndo(async () => {
-          if (original === undefined) await rm(configPath, { force: true });
-          else await atomicText(configPath, original);
-        });
         changed = true;
       }
     }
 
     const installedRuntimes = [...new Set([...targets.map(({ runtime }) => runtime), ...handlerReceipts.map(({ runtime }) => runtime)])];
+    const resourceConflicts = [...new Map([...resourceConflictReceipts, ...conflicts.filter(({ kind }) => kind === "skill")]
+      .map((entry) => [`${entry.kind}:${entry.runtime}:${entry.target}:${entry.reason}`, entry])).values()];
     const receipt = {
       schemaVersion: 3,
+      transactionId,
+      version: manifest.version,
       installedAt: now.toISOString(),
       sourceRoot,
       digest,
@@ -464,15 +571,19 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
       claudeAgents,
       handlers: handlerReceipts,
       handlerConflicts: handlerConflictReceipts,
+      resourceConflicts,
       backups: [...(previousReceipt?.backups ?? []), ...backups],
     };
     if (changed || !previousReceipt || previousReceipt.schemaVersion !== 3 || !Array.isArray(previousReceipt.handlers)) {
-      const original = previousReceipt ? `${JSON.stringify(previousReceipt, null, 2)}\n` : undefined;
+      if (previousReceipt) {
+        const backup = path.join(backupRoot, "receipt", "install.json");
+        await mkdir(path.dirname(backup), { recursive: true });
+        await addUndo({ kind: "restore_file", target: receiptPath, backup });
+        await copyFile(receiptPath, backup);
+      } else {
+        await addUndo({ kind: "remove_path", path: receiptPath });
+      }
       await atomicJson(receiptPath, receipt);
-      addUndo(async () => {
-        if (original === undefined) await rm(receiptPath, { force: true });
-        else await atomicText(receiptPath, original);
-      });
     }
     return { status: "installed", changed, receipt: receiptPath, backups, conflicts };
   });
@@ -484,11 +595,15 @@ export async function installPackage({ sourceRoot, home, host, scope, projectRoo
   const validation = await checkInstalledPackage(sourceRoot);
   if (validation.status !== "passed") throw new Error(`Invalid installable package: ${validation.errors.join("; ")}`);
   const stateRoot = path.join(selected.scope === "project" ? selected.projectRoot : home, ".agent-team-hooks");
+  await clearDeadInstallLock(stateRoot);
   const result = await withDirectoryLock(path.join(stateRoot, "install.lock"), {
     pid: process.pid,
     operation: "install",
     acquiredAt: now.toISOString(),
-  }, () => installLocked({ sourceRoot, home, now, selected }, stateRoot), { timeoutMs: 5000 });
+  }, async () => {
+    const recovery = await recoverTransaction(stateRoot);
+    return { ...await installLocked({ sourceRoot, home, now, selected }, stateRoot), ...(recovery ? { recovery } : {}) };
+  }, { timeoutMs: 5000 });
   return {
     ...result,
     validation,
@@ -509,10 +624,13 @@ async function uninstallLocked({ home, selected }, stateRoot) {
   const receiptPath = path.join(stateRoot, "install.json");
   const receipt = await readJson(receiptPath, null);
   if (!receipt) return { status: "not_installed", changed: false, conflicts: [] };
-  const conflicts = (receipt.handlerConflicts ?? []).filter((entry) => selected.runtimes.includes(entry.runtime));
+  const conflicts = [
+    ...(receipt.handlerConflicts ?? []).filter((entry) => selected.runtimes.includes(entry.runtime)),
+    ...(receipt.resourceConflicts ?? []).filter((entry) => selected.runtimes.includes(entry.runtime)),
+  ];
   const removalRoot = path.join(stateRoot, "removals", randomUUID());
 
-  const result = await transaction(async (addUndo) => {
+  const result = await durableTransaction(stateRoot, "uninstall", async (addUndo) => {
     for (const runtime of selected.runtimes) {
       const { configPath } = runtimePaths({ home, ...selected }, runtime);
       const configPresent = await present(configPath);
@@ -520,12 +638,16 @@ async function uninstallLocked({ home, selected }, stateRoot) {
       const config = configPresent ? JSON.parse(original) : {};
       const cleaned = removeOwnedHooks(config, (receipt.handlers ?? []).filter((entry) => entry.runtime === runtime && (!entry.configPath || entry.configPath === configPath)));
       conflicts.push(...cleaned.conflicts.map((entry) => ({ ...entry, target: configPath })));
-      if (cleaned.changed && !cleaned.conflicts.length) {
+      if (cleaned.changed) {
+        if (configPresent) {
+          const backup = path.join(removalRoot, "config", runtime === "codex" ? "hooks.json" : "settings.json");
+          await mkdir(path.dirname(backup), { recursive: true });
+          await addUndo({ kind: "restore_file", target: configPath, backup });
+          await copyFile(configPath, backup);
+        } else {
+          await addUndo({ kind: "remove_path", path: configPath });
+        }
         await atomicJson(configPath, cleaned.config);
-        addUndo(async () => {
-          if (original === undefined) await rm(configPath, { force: true });
-          else await atomicText(configPath, original);
-        });
       }
     }
 
@@ -533,21 +655,9 @@ async function uninstallLocked({ home, selected }, stateRoot) {
       ? { runtime: index === 0 ? "codex" : "claude", path: entry, mode: "legacy", digest: receipt.digest }
       : entry);
     const blockedRuntimes = new Set(conflicts.filter(({ kind }) => kind === "handler").map(({ runtime }) => runtime));
-    let sourceIdentity;
-    try {
-      sourceIdentity = await realpath(receipt.sourceRoot);
-    } catch {
-      sourceIdentity = undefined;
-    }
     for (const target of normalizedTargets.filter((entry) => selected.runtimes.includes(entry.runtime) && !blockedRuntimes.has(entry.runtime))) {
       if (!(await present(target.path))) continue;
-      let targetIdentity;
-      try {
-        targetIdentity = await realpath(target.path);
-      } catch {
-        targetIdentity = undefined;
-      }
-      if (target.mode === "source" || (sourceIdentity && targetIdentity === sourceIdentity)) continue;
+      if (target.preexisting || target.mode === "source") continue;
       let files = target.files;
       if (!files) files = (await readJson(path.join(target.path, "hooks", "manifest.json"), { files: [] })).files;
       const currentDigest = await managedPackageDigest(target.path, files ?? []);
@@ -557,44 +667,53 @@ async function uninstallLocked({ home, selected }, stateRoot) {
       }
       const removed = path.join(removalRoot, "skills", target.runtime);
       await mkdir(path.dirname(removed), { recursive: true });
+      await addUndo({ kind: "move", from: removed, to: target.path });
       await rename(target.path, removed);
-      addUndo(async () => { if (await present(removed)) await rename(removed, target.path); });
-      const backup = [...(receipt.backups ?? [])].reverse().find((entry) => entry.kind === "skill" && entry.target === target.path && entry.backup);
+      const backup = (receipt.backups ?? []).find((entry) => entry.kind === "skill"
+        && entry.target === target.path
+        && entry.backup
+        && entry.purpose !== "update_snapshot");
       if (backup && await present(backup.backup)) {
         await mkdir(path.dirname(target.path), { recursive: true });
+        await addUndo({ kind: "move", from: target.path, to: backup.backup });
         await rename(backup.backup, target.path);
-        addUndo(async () => { if (await present(target.path)) await rename(target.path, backup.backup); });
       }
     }
 
     for (const agent of selected.runtimes.includes("claude") && !blockedRuntimes.has("claude") ? receipt.claudeAgents ?? [] : []) {
       if (!(await present(agent.path))) continue;
+      if (agent.preexisting) {
+        conflicts.push({ kind: "claude_agent", runtime: "claude", target: agent.path, reason: "preexisting_definition" });
+        continue;
+      }
       if (await fileDigest(agent.path) !== agent.digest) {
         conflicts.push({ kind: "claude_agent", runtime: "claude", target: agent.path, reason: "custom_definition" });
         continue;
       }
       const removed = path.join(removalRoot, "claude-agents", path.basename(agent.path));
       await mkdir(path.dirname(removed), { recursive: true });
+      await addUndo({ kind: "move", from: removed, to: agent.path });
       await rename(agent.path, removed);
-      addUndo(async () => { if (await present(removed)) await rename(removed, agent.path); });
     }
 
     for (const backup of selected.runtimes.includes("codex") ? [...(receipt.backups ?? [])].reverse().filter(({ kind }) => kind === "legacy") : []) {
       if (!(await present(backup.target)) && await present(backup.backup)) {
         await mkdir(path.dirname(backup.target), { recursive: true });
+        await addUndo({ kind: "move", from: backup.target, to: backup.backup });
         await rename(backup.backup, backup.target);
-        addUndo(async () => { if (await present(backup.target)) await rename(backup.target, backup.backup); });
       }
     }
 
     const unselectedRuntimes = new Set(["codex", "claude"].filter((runtime) => !selected.runtimes.includes(runtime)));
     const handlerConflictRuntimes = new Set(conflicts.filter(({ kind }) => kind === "handler").map(({ runtime }) => runtime));
     const targetConflictRuntimes = new Set(conflicts.filter(({ kind }) => ["handler", "skill"].includes(kind)).map(({ runtime }) => runtime));
-    const claudeConflict = conflicts.some(({ kind, runtime }) => runtime === "claude" && ["handler", "claude_agent"].includes(kind));
+    const claudeConflictPaths = new Set(conflicts.filter(({ kind, runtime }) => runtime === "claude" && kind === "claude_agent").map(({ target }) => target));
     const remainingTargets = normalizedTargets.filter((entry) => unselectedRuntimes.has(entry.runtime) || targetConflictRuntimes.has(entry.runtime));
     const remainingHandlers = (receipt.handlers ?? []).filter((entry) => unselectedRuntimes.has(entry.runtime) || handlerConflictRuntimes.has(entry.runtime));
     const remainingHandlerConflicts = (receipt.handlerConflicts ?? []).filter((entry) => unselectedRuntimes.has(entry.runtime) || handlerConflictRuntimes.has(entry.runtime));
-    const remainingClaudeAgents = unselectedRuntimes.has("claude") || claudeConflict ? receipt.claudeAgents ?? [] : [];
+    const remainingResourceConflicts = (receipt.resourceConflicts ?? []).filter((entry) => unselectedRuntimes.has(entry.runtime)
+      || conflicts.some((conflict) => conflict.kind === entry.kind && conflict.runtime === entry.runtime && conflict.target === entry.target && conflict.reason === entry.reason));
+    const remainingClaudeAgents = (receipt.claudeAgents ?? []).filter((entry) => unselectedRuntimes.has("claude") || claudeConflictPaths.has(entry.path));
     const remainingRuntimes = [...new Set([
       ...remainingTargets.map(({ runtime }) => runtime),
       ...remainingHandlers.map(({ runtime }) => runtime),
@@ -606,6 +725,7 @@ async function uninstallLocked({ home, selected }, stateRoot) {
       targets: remainingTargets,
       handlers: remainingHandlers,
       handlerConflicts: remainingHandlerConflicts,
+      resourceConflicts: remainingResourceConflicts,
       claudeAgents: remainingClaudeAgents,
       backups: (receipt.backups ?? []).filter((entry) => {
         if (entry.kind === "legacy") return remainingRuntimes.includes("codex");
@@ -615,13 +735,16 @@ async function uninstallLocked({ home, selected }, stateRoot) {
         return true;
       }),
     };
-    const hasRemaining = (remaining.targets?.length ?? 0) || (remaining.handlers?.length ?? 0) || (remaining.handlerConflicts?.length ?? 0) || (remaining.claudeAgents?.length ?? 0);
+    const hasRemaining = (remaining.targets?.length ?? 0) || (remaining.handlers?.length ?? 0) || (remaining.handlerConflicts?.length ?? 0)
+      || (remaining.resourceConflicts?.length ?? 0) || (remaining.claudeAgents?.length ?? 0);
+    const receiptBackup = path.join(removalRoot, "receipt", "install.json");
+    await mkdir(path.dirname(receiptBackup), { recursive: true });
+    await addUndo({ kind: "restore_file", target: receiptPath, backup: receiptBackup });
+    await copyFile(receiptPath, receiptBackup);
     if (conflicts.length || hasRemaining) {
       await atomicJson(receiptPath, conflicts.length ? { ...remaining, status: "uninstall_conflicts", conflicts } : remaining);
-      addUndo(() => atomicJson(receiptPath, receipt));
     } else {
       await rm(receiptPath, { force: true });
-      addUndo(() => atomicJson(receiptPath, receipt));
     }
     return { status: conflicts.length ? "uninstalled_with_conflicts" : "uninstalled", changed: true, conflicts };
   });
@@ -633,11 +756,16 @@ async function uninstallLocked({ home, selected }, stateRoot) {
 export async function uninstallPackage({ home, host, scope, projectRoot, trustedHost }) {
   const selected = selection({ host, scope, projectRoot, trustedHost });
   const stateRoot = path.join(selected.scope === "project" ? selected.projectRoot : home, ".agent-team-hooks");
+  await clearDeadInstallLock(stateRoot);
   return withDirectoryLock(path.join(stateRoot, "install.lock"), {
     pid: process.pid,
     operation: "uninstall",
     acquiredAt: new Date().toISOString(),
-  }, () => uninstallLocked({ home, selected }, stateRoot), { timeoutMs: 5000 });
+  }, async () => {
+    const recovery = await recoverTransaction(stateRoot);
+    const result = await uninstallLocked({ home, selected }, stateRoot);
+    return { ...result, ...(recovery ? { recovery } : {}) };
+  }, { timeoutMs: 5000 });
 }
 
 /** Roll back the selected installed host/scope using the same ownership receipt. */
