@@ -5,6 +5,7 @@ import path from "node:path";
 import { loadCanonicalState } from "./canonical-state.mjs";
 import { createDependencyRunner, inspectDependencies, prepareDependencies } from "./dependencies.mjs";
 import { ROLE_DEFINITIONS } from "./dependency-profiles.mjs";
+import { initializationRecordProblem } from "./initialization.mjs";
 import { resolveProject } from "./project.mjs";
 import { assessReadiness } from "./readiness.mjs";
 import { buildRoleMenu, buildSettingsWizard, inspectSettings, mutateSetup, updateSettings } from "./settings.mjs";
@@ -122,16 +123,12 @@ function validateDraft(draft) {
   return draft;
 }
 
-function initialized(project, canonical) {
-  if (project.setup.initialization?.status !== 'complete') return false;
-  const owner = canonical.registry?.projectOwner;
-  return canonical.registry?.projectId === project.projectId && typeof owner === "string"
-    && identityPattern.test(owner) && !["none", "unknown", "unassigned", "-"].includes(owner.toLowerCase());
-}
-
 async function canonicalReadiness(project, host, scope, context) {
   const canonical = await loadCanonicalState(project, { budget: context.budget });
-  const eligible = new Set(taskEligibility(canonical).eligible.map(({ id }) => id));
+  const eligible = new Set(taskEligibility(canonical, {
+    scopeTaskIds: canonical.state.run?.taskIds,
+    capacity: canonical.state.capacity,
+  }).eligible.map(({ id }) => id));
   const finished = new Set(["verified", "integrated", "deployed", "closed", "done", "completed", "complete"]);
   const tasks = canonical.tasks.map((task) => ({
     ...task,
@@ -144,7 +141,12 @@ async function canonicalReadiness(project, host, scope, context) {
   const result = assessReadiness({ existing: {
     plan: { ...(project.setup.plan ?? {}), tasks }, tracker: canonical.tracker,
   }, capabilities });
-  result.projectInitialization = { required: !initialized(project, canonical), projectId: project.projectId, projectOwner: canonical.registry.projectOwner ?? null };
+  const initializationProblem = initializationRecordProblem(project.setup, canonical, {
+    projectRoot: project.root,
+    validateTracker: true,
+  });
+  result.projectInitialization = { required: Boolean(initializationProblem), projectId: project.projectId, projectOwner: canonical.registry.projectOwner ?? null,
+    ...(initializationProblem ? { reason: initializationProblem } : {}) };
   result.readyForDispatch = result.readyForDispatch && !result.projectInitialization.required;
   return result;
 }
@@ -192,7 +194,7 @@ export async function runSetupCommand(command, options = {}, context = {}) {
   if (!["codex", "claude-code"].includes(options.host)) throw new Error("--host must explicitly select codex or claude-code.");
   if (!["user", "project"].includes(options.scope)) throw new Error("--scope must explicitly select user or project.");
   if (options.home && options.scope !== "user") throw new Error("--home is ineffective with project scope.");
-  if (options.scope === "user" && !["dependencies", "dependencies-prepare"].includes(command)) throw new Error(`${command} supports project scope only.`);
+  if (options.scope === "user" && !["dependencies", "dependencies-prepare", "readiness"].includes(command)) throw new Error(`${command} supports project scope only.`);
   const project = await resolveProject(path.resolve(string(options.project, "--project")), { budget: context.budget });
   const envelope = options.request ? await requestEnvelope(options.request) : null;
   if (mutations.has(command) && !envelope) throw new Error("--request is required for setup mutations.");
@@ -220,8 +222,13 @@ export async function runSetupCommand(command, options = {}, context = {}) {
   const common = {
     setupPath: project.paths.setup, ...identity, budget: context.budget,
     loadRegistry: async () => {
-      const canonical = await loadCanonicalState(project, { includeTasks: false, budget: context.budget });
-      return initialized(project, canonical) ? canonical.registry : { projectOwner: null };
+      const fresh = await resolveProject(project.cwd ?? project.root, { budget: context.budget });
+      if (!fresh.active) return { projectOwner: null };
+      const canonical = await loadCanonicalState(fresh, { includeTasks: false, budget: context.budget });
+      return initializationRecordProblem(fresh.setup, canonical, {
+        projectRoot: fresh.root,
+        validateTracker: false,
+      }) ? { projectOwner: null } : canonical.registry;
     },
   };
   if (command === "settings-update") {

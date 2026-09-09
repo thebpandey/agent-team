@@ -6,6 +6,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
+import { initializeProject } from "../hooks/lib/initialization.mjs";
 
 const exec = promisify(execFile);
 const modulePath = path.resolve(import.meta.dirname, "../hooks/lib/setup-cli.mjs");
@@ -15,16 +16,26 @@ const nativeChoices = { enforceable: false, models: [
 ] };
 
 async function fixture(t, overrides = {}) {
-  overrides = { initialization: { status: 'complete' }, ...overrides };
   const root = await mkdtemp(path.join(os.tmpdir(), "agent team setup cli "));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await exec("git", ["init", "--quiet", root]);
-  await mkdir(path.join(root, ".agent-team"));
+  await exec("git", ["init", "--quiet", "-b", "develop", root]);
+  const initialized = await initializeProject(root, {
+    projectId: "project-1", ownerSessionId: "owner", operationId: "initialize-fixture", source: "standalone",
+    tracker: { kind: "markdown", path: ".agent-team/TASKS.md" },
+    plan: {
+      scope: "Repair parser", acceptance: ["Regression passes"], branch: "develop", verification: ["node --test"],
+      authority: { ownedPaths: ["src/**"] },
+      tasks: [
+        { id: "T-1", title: "Complete prerequisite", status: "todo", dependencies: [] },
+        { id: "T-2", title: "Repair parser", status: "blocked", dependencies: ["T-1"] },
+      ],
+    },
+  });
+  assert.equal(initialized.status, "applied", initialized.reason);
   const setupPath = path.join(root, ".agent-team", "setup.json");
+  const initializedSetup = JSON.parse(await readFile(setupPath, "utf8"));
   const setup = {
-    skill: "agent-team", projectId: "project-1", version: 3,
-    tracker: { kind: "markdown", path: "TASKS.md" },
-    plan: { scope: "Repair parser", acceptance: ["Regression passes"], branch: "develop", verification: ["node --test"], authority: { writes: ["src"], deployment: false } },
+    ...initializedSetup, version: 3,
     settings: { custom: "keep", hosts: { "claude-code": { roles: { developer: { model: "custom", effort: "high" } } } } },
     dashboard: { custom: "keep", graph: { custom: "keep", enabled: false, termsAcknowledged: false } },
     dependencies: { hosts: { codex: { scope: "project", receipts: [
@@ -34,13 +45,14 @@ async function fixture(t, overrides = {}) {
     ...overrides,
   };
   await writeFile(setupPath, `${JSON.stringify(setup, null, 2)}\n`);
-  await writeFile(path.join(root, ".agent-team", "TEAMS.md"), "Project: project-1\nProject owner: owner\n");
-  await writeFile(path.join(root, "TASKS.md"), "| ID | Owner | Status | Depends on |\n| --- | --- | --- | --- |\n| T-1 | - | closed | - |\n| T-2 | - | ready | T-1 |\n");
+  const tasksPath = path.join(root, ".agent-team", "TASKS.md");
+  const statePath = path.join(root, ".agent-team", "state.json");
+  await writeFile(tasksPath, "| ID | Owner | Status | Depends on |\n| --- | --- | --- | --- |\n| T-1 | - | closed | - |\n| T-2 | - | ready | T-1 |\n");
   const options = { project: root, host: "codex", scope: "project" };
   const consumer = path.join(root, "consumer.mjs");
   await writeFile(consumer, `import { runSetupCommand } from ${JSON.stringify(pathToFileURL(modulePath).href)};\ntry { console.log(JSON.stringify(await runSetupCommand(process.argv[2], JSON.parse(process.argv[3])))); } catch (error) { console.log(JSON.stringify({ status: "failed", error: error.message })); process.exitCode = 1; }\n`);
   const invoke = async (command, extra = {}) => JSON.parse((await exec(process.execPath, [consumer, command, JSON.stringify({ ...options, ...extra })])).stdout);
-  return { root, setupPath, setup, options, invoke };
+  return { root, setupPath, statePath, tasksPath, setup, options, invoke };
 }
 
 async function envelope(value, request, top = {}) {
@@ -84,8 +96,21 @@ test("settings changes use canonical owner/version and semantic operation identi
   assert.equal((await runSetupCommand("settings-update", { ...value.options, request: reused })).reason, "operation_id_reused");
   const stale = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { operationId: "operation-2" });
   assert.equal((await runSetupCommand("settings-update", { ...value.options, request: stale })).reason, "version_changed");
-  await writeFile(path.join(value.root, ".agent-team", "TEAMS.md"), "Project: project-1\nProject owner: replacement\n");
+  const teamsPath = path.join(value.root, ".agent-team", "TEAMS.md");
+  await writeFile(teamsPath, (await readFile(teamsPath, "utf8")).replace("Project owner: owner", "Project owner: replacement"));
   assert.equal((await runSetupCommand("settings-update", { ...value.options, request: stale })).reason, "project_owner_required");
+});
+
+test("settings remain editable while the selected Beads tracker is unavailable", async (t) => {
+  const { runSetupCommand } = await import(modulePath);
+  const value = await fixture(t);
+  await writeFile(value.setupPath, JSON.stringify({ ...value.setup, tracker: { kind: "beads", executable: "/missing/selected-bd" } }));
+  const request = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { operationId: "settings-during-outage" });
+
+  const result = await runSetupCommand("settings-update", { ...value.options, request });
+
+  assert.equal(result.status, "applied");
+  assert.equal(result.setup.settings.runDefaults.continuous, true);
 });
 
 test("Node consumer applies run defaults but cannot submit native capability claims", async (t) => {
@@ -103,7 +128,7 @@ test("canonical readiness uses actual tasks and tracker and requires initializat
   assert.equal(ready.eligibleTask.id, "T-2");
   assert.deepEqual(ready.eligibleTask.dependencies, ["T-1"]);
   assert.equal(ready.readyForDispatch, true);
-  await writeFile(path.join(value.root, "TASKS.md"), "| ID | Owner | Status |\n| --- | --- | --- |\n| T-2 | TEAM-1 | ready |\n");
+  await writeFile(value.tasksPath, "| ID | Owner | Status |\n| --- | --- | --- |\n| T-2 | TEAM-1 | ready |\n");
   assert.equal((await value.invoke("readiness")).readyForDispatch, false);
   await writeFile(path.join(value.root, ".agent-team", "TEAMS.md"), "Project: another-project\nProject owner: owner\n");
   const held = await value.invoke("readiness");
@@ -150,6 +175,38 @@ test("dependency preparation fixes selected managed paths and keeps worker disco
   assert.equal(observedPaths.skillRoot, path.join(home, ".agents", "skills"));
 });
 
+test("user-scope dependency receipts can satisfy project readiness", async (t) => {
+  const { runSetupCommand } = await import(modulePath);
+  const value = await fixture(t);
+  const request = await envelope(value, { selections: { defaults: [] } }, { operationId: "user-ready" });
+  const createRunner = () => async ({ dependency }) => ({ status: "passed", version: dependency.version, evidence: "Bounded fixture evidence" });
+
+  assert.equal((await runSetupCommand("dependencies-prepare", { ...value.options, scope: "user", home: path.join(value.root, "home"), request }, { createDependencyRunner: createRunner })).status, "ready");
+  const ready = await runSetupCommand("readiness", { ...value.options, scope: "user" });
+  assert.equal(ready.readyForDispatch, true);
+  assert.equal(ready.eligibleTask.id, "T-2");
+});
+
+test("canonical readiness holds tasks outside the active run and when capacity is reserved", async (t) => {
+  const { runSetupCommand } = await import(modulePath);
+  const value = await fixture(t);
+  const state = JSON.parse(await readFile(value.statePath, "utf8"));
+  state.stateVersion = 1;
+  state.run.taskIds = ["T-1"];
+  await writeFile(value.statePath, JSON.stringify(state));
+  const scoped = await runSetupCommand("readiness", value.options);
+  assert.equal(scoped.readyForDispatch, false);
+  assert.equal(scoped.eligibleTask, null);
+
+  state.stateVersion = 2;
+  state.run.taskIds = ["T-1", "T-2"];
+  state.capacity = { limit: 1, active: 1, reservedReview: 0 };
+  await writeFile(value.statePath, JSON.stringify(state));
+  const full = await runSetupCommand("readiness", value.options);
+  assert.equal(full.readyForDispatch, false);
+  assert.equal(full.eligibleTask, null);
+});
+
 test("dashboard configuration requires Beads and explicit graph terms and preserves custom fields", async (t) => {
   const { runSetupCommand } = await import(modulePath);
   const value = await fixture(t);
@@ -194,4 +251,31 @@ test('readiness requires a completed initialization receipt', async (t) => {
   const result = await runSetupCommand('readiness', { project: f.root, host: 'codex', scope: 'project' });
   assert.equal(result.readyForDispatch, false);
   assert.equal(result.projectInitialization.required, true);
+});
+
+test("readiness rejects a receipt whose required initialization state is missing", async (t) => {
+  const { runSetupCommand } = await import(modulePath);
+  const value = await fixture(t);
+  await rm(value.statePath);
+  const result = await runSetupCommand("readiness", value.options);
+  assert.equal(result.readyForDispatch, false);
+  assert.equal(result.projectInitialization.required, true);
+});
+
+test("setup mutations recheck the initialization record after waiting for the setup lock", async (t) => {
+  const { runSetupCommand } = await import(modulePath);
+  const value = await fixture(t);
+  const request = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { operationId: "stale-setup" });
+  const lock = path.join(value.root, ".agent-team", ".locks", "setup.lock");
+  await mkdir(lock, { recursive: true });
+  const pending = runSetupCommand("settings-update", { ...value.options, request });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const setup = JSON.parse(await readFile(value.setupPath, "utf8"));
+  delete setup.initialization;
+  await writeFile(value.setupPath, JSON.stringify(setup));
+  await rm(lock, { recursive: true });
+
+  const result = await pending;
+  assert.deepEqual(result, { status: "conflict", reason: "project_owner_required" });
+  assert.equal(JSON.parse(await readFile(value.setupPath, "utf8")).settings.runDefaults?.continuous, undefined);
 });
