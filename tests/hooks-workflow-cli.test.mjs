@@ -13,6 +13,7 @@ import { policyFixture } from "./hook-test-helpers.mjs";
 
 const run = promisify(execFile);
 const cli = path.resolve(import.meta.dirname, "../hooks/agent-team-cli.mjs");
+const boundedBeads = path.resolve(import.meta.dirname, "fixtures/bounded-beads-cli.mjs");
 const temporary = [];
 
 test.afterEach(async () => Promise.all(temporary.splice(0).map((target) => rm(target, { force: true, recursive: true }))));
@@ -114,6 +115,32 @@ test("real CLI forwards versioned transition, gate-evidence, and cleanup request
   const retained = await invoke("cleanup", "--project", value.feature, "--request", cleanup);
   assert.deepEqual(retained, { status: "conflict", reason: "retain_identity_mismatch" });
   await access(value.feature);
+});
+
+test("real CLI claims a canonical Beads task whose unassigned owner is the empty string", async () => {
+  const value = await fixture();
+  const setupPath = path.join(value.root, ".agent-team", "setup.json");
+  const setup = JSON.parse(await readFile(setupPath, "utf8"));
+  setup.tracker = { kind: "beads", executable: boundedBeads };
+  await writeFile(setupPath, JSON.stringify(setup));
+  const teamsPath = path.join(value.root, ".agent-team", "TEAMS.md");
+  await writeFile(teamsPath, (await readFile(teamsPath, "utf8")).replaceAll("AT-001", "AT-BEADS"));
+  const project = await resolveProject(value.feature);
+  const canonical = await loadCanonicalState(project);
+  assert.equal(canonical.tasks[0].owner, "");
+  const claim = await requestFile(value, "beads-claim", envelope("owner-session", 0, {
+    operationId: "beads-empty-owner-claim",
+    taskId: "AT-BEADS",
+    expectedFingerprint: canonical.tracker.fingerprint,
+    expectedOwner: "",
+    action: "claim",
+    owner: "TEAM-001",
+  }));
+
+  const result = await invoke("task-transition", "--project", value.feature, "--request", claim);
+
+  assert.equal(result.status, "applied");
+  assert.equal((await loadCanonicalState(project)).tasks[0].owner, "TEAM-001");
 });
 
 test("request JSON must be a bounded regular file with valid schema, actor, version, and command fields", async () => {
@@ -219,5 +246,41 @@ test("dashboard start reports its loopback URL and stops cleanly on SIGINT or SI
       assert.equal(records.at(-1).status, "stopped");
       assert.equal(records.at(-1).url, listening.url);
     });
+  }
+});
+
+test("dashboard start binds the requested nonzero port and fails when that port is occupied", async () => {
+  const value = await fixture();
+  const reservation = http.createServer();
+  await new Promise((resolve, reject) => reservation.once("error", reject).listen(0, "127.0.0.1", resolve));
+  const port = reservation.address().port;
+  await new Promise((resolve, reject) => reservation.close((error) => error ? reject(error) : resolve()));
+
+  const child = spawn(process.execPath, [cli, "dashboard-start", "--project", value.feature, "--port", String(port)], { stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  const listening = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("dashboard did not bind requested port")), 3000);
+    child.stdout.on("data", () => {
+      const line = stdout.split("\n").find(Boolean);
+      if (line) { clearTimeout(timeout); resolve(JSON.parse(line)); }
+    });
+  });
+  try {
+    assert.equal(listening.port, port);
+  } finally {
+    child.kill("SIGTERM");
+    await exited;
+  }
+
+  const occupied = http.createServer();
+  await new Promise((resolve, reject) => occupied.once("error", reject).listen(port, "127.0.0.1", resolve));
+  try {
+    const failure = await invokeFailure("dashboard-start", "--project", value.feature, "--port", String(port));
+    assert.equal(failure.status, "failed");
+    assert.match(failure.error, /EADDRINUSE|address already in use/i);
+  } finally {
+    await new Promise((resolve, reject) => occupied.close((error) => error ? reject(error) : resolve()));
   }
 });

@@ -40,6 +40,11 @@ function requiredString(value, label) {
   return value;
 }
 
+function string(value, label) {
+  if (typeof value !== "string") throw new Error(`${label} must be a string.`);
+  return value;
+}
+
 function integer(value, label, { minimum = 0, maximum = Number.MAX_SAFE_INTEGER } = {}) {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) throw new Error(`${label} must be an integer from ${minimum} to ${maximum}.`);
@@ -109,7 +114,7 @@ function validateMutation(command, envelope, project) {
   if (command === "task-transition") {
     requiredString(request.taskId, "task-transition request.taskId");
     requiredString(request.expectedFingerprint, "task-transition request.expectedFingerprint");
-    requiredString(request.expectedOwner, "task-transition request.expectedOwner");
+    string(request.expectedOwner, "task-transition request.expectedOwner");
     if (!new Set(["claim", "pause", "park", "resume"]).has(request.action)) throw new Error("task-transition request.action is invalid.");
     if (request.action === "claim") requiredString(request.owner, "task-transition request.owner");
     if (["park", "resume"].includes(request.action)) writer(request.writer, "task-transition request.writer");
@@ -160,6 +165,7 @@ async function runDashboard(project, options, context) {
   const port = integer(options.port ?? 0, "--port", { maximum: 65535 });
   const dashboard = createLoopbackDashboard({
     assetsDirectory,
+    port,
     readModel: ({ signal, deadlineMs }) => readStatus(project, { signal, deadlineMs }),
   });
   let stop;
@@ -177,7 +183,7 @@ async function runDashboard(project, options, context) {
   } finally {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
-    await dashboard.stop();
+    if (result) await dashboard.stop();
   }
   return { ...result, status: "stopped" };
 }
