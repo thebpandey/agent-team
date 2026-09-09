@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, chmod, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, cp, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { CATALOG_BY_ID, DEPENDENCY_CATALOG } from "./dependency-catalog.mjs";
@@ -101,13 +101,12 @@ export function buildPreparationPlan({ dependencyId, host, scope, paths, executa
   } else if (dependency.install?.kind === "github-release") {
     install.push({ file: "download-verified-release", args: [dependency.install.source, dependency.install.checksums] });
   }
-  if (dependency.id === "playwright-cli") {
-    install.push(
-      { file: target, args: ["--help"] },
-      { file: target, args: ["install", `--skills=${host === "codex" ? "agents" : "claude"}`], cwd: paths.projectRoot },
-      { file: target, args: ["install-browser", "chromium"], env: { PLAYWRIGHT_BROWSERS_PATH: path.join(paths.toolRoot, "playwright-browsers") } },
-    );
-  }
+  // The upstream skill installer initializes cwd and overwrites existing skills.
+  // Prepare the bundled companion ourselves, including on compatible CLI reuse.
+  const browserInstall = dependency.id === "playwright-cli" ? {
+    file: target, args: ["install-browser", "chromium"], cwd: paths.toolRoot,
+    env: { PLAYWRIGHT_BROWSERS_PATH: path.join(paths.toolRoot, "playwright-browsers"), NO_UPDATE_NOTIFIER: "1" },
+  } : undefined;
   if (dependency.id === "impeccable") {
     install.push({
       file: target,
@@ -138,6 +137,7 @@ export function buildPreparationPlan({ dependencyId, host, scope, paths, executa
     source: dependency.install?.source,
     profile: structuredClone(dependency.profile ?? {}),
     install,
+    ...(browserInstall ? { browserInstall } : {}),
     functional: { id: dependency.functionalCheck, steps: functionalSteps[dependency.functionalCheck] ?? ["run declared functional operation"] },
     ...(registration ? { registration } : {}),
   };
@@ -198,6 +198,17 @@ async function prepareOne(dependency, runner) {
         id: dependency.id, version: installedProbe.version ?? null, detected, installed,
         functional: "not_run", availableToWorker: "not_run", status: "failed", observedAt,
         boundary: `Installed ${dependency.id}, but expected ${dependency.version} and detected ${installedProbe.version ?? "no executable"}.`,
+      };
+    }
+  }
+  if (dependency.id === "playwright-cli") {
+    const companion = await run({ dependency, phase: "companion" });
+    if (companion.status !== "passed") {
+      return {
+        id: dependency.id, version: dependency.version, detected, installed,
+        functional: "not_run", availableToWorker: "not_run",
+        status: companion.status === "customized" ? "cannot_use" : "failed", observedAt,
+        boundary: dependencyBoundary(dependency, companion, "The selected-scope Playwright companion and browser prerequisites were not prepared."),
       };
     }
   }
@@ -368,6 +379,66 @@ async function installGitSkills(dependency, paths) {
   return { status: "passed", version: dependency.version, evidence: `Prepared ${dependency.install.paths.length} complete skill path(s).` };
 }
 
+function playwrightSkill(dependency) {
+  return { ...dependency, install: { ...dependency.install, paths: ["skills/playwright-cli"] } };
+}
+
+// Reject links/special files and compare every bundled file, not just SKILL.md.
+async function skillContents(root, prefix = "") {
+  if (!(await lstat(root)).isDirectory()) throw new Error(`Not a regular skill directory: ${root}`);
+  const files = {};
+  for (const name of (await readdir(root)).sort()) {
+    if (!prefix && name === ".agent-team-source.json") continue;
+    const file = path.join(root, name);
+    const relative = path.posix.join(prefix, name);
+    const stat = await lstat(file);
+    if (stat.isDirectory()) Object.assign(files, await skillContents(file, relative));
+    else if (stat.isFile()) files[relative] = createHash("sha256").update(await readFile(file)).digest("hex");
+    else throw new Error(`Preserved non-regular skill path: ${file}`);
+  }
+  return files;
+}
+
+async function preparePlaywrightSkill(dependency, paths) {
+  const companion = playwrightSkill(dependency);
+  const destination = skillDestination(companion, paths, companion.install.paths[0]);
+  try {
+    // A symlink (including a dangling one) is not an owned destination.
+    try {
+      if (!(await lstat(destination)).isDirectory()) return { status: "customized", evidence: `Preserved non-directory companion: ${destination}` };
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+    const preflight = await inspectSkillDestinations(companion, paths);
+    if (preflight.status === "customized") return preflight;
+    const packageRoot = path.join(paths.toolRoot, process.platform === "win32" ? "node_modules" : "lib/node_modules", "@playwright/cli");
+    const source = path.join(packageRoot, "skills/playwright-cli");
+    const relative = path.relative(await realpath(paths.toolRoot), await realpath(source));
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      return { status: "failed", evidence: "Pinned Playwright companion source escapes the managed tool root." };
+    }
+    const metadata = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
+    if (metadata.name !== dependency.install.package || metadata.version !== dependency.version) {
+      return { status: "failed", evidence: `Expected pinned ${dependency.install.package}@${dependency.version} companion package.` };
+    }
+    const sourceFiles = await skillContents(source);
+    const complete = await verifySkillFiles(companion, { ...paths, skillRoot: path.dirname(source) }, { ignoreFencedExamples: true });
+    if (complete.status !== "passed") return complete;
+    if (preflight.status === "passed") {
+      try {
+        if (JSON.stringify(sourceFiles) !== JSON.stringify(await skillContents(destination))) {
+          return { status: "customized", evidence: `Preserved edited or incomplete managed companion: ${destination}` };
+        }
+      } catch (error) { return { status: "customized", evidence: error.message }; }
+    } else {
+      await mkdir(paths.skillRoot, { recursive: true, mode: 0o700 });
+      await cp(source, destination, { recursive: true, errorOnExist: true, force: false });
+      await writeFile(path.join(destination, ".agent-team-source.json"), `${JSON.stringify({
+        source: companion.install.source, revision: companion.version, selectedPath: companion.install.paths[0],
+      }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+    }
+    return { status: "passed", evidence: "Complete pinned Playwright companion is present in the selected skill scope." };
+  } catch (error) { return { status: "failed", evidence: error.message }; }
+}
+
 function uvAsset() {
   const architecture = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : null;
   const platform = process.platform === "linux" ? "unknown-linux-gnu" : process.platform === "darwin" ? "apple-darwin" : null;
@@ -407,7 +478,7 @@ async function installUvRelease(dependency, paths) {
   }
 }
 
-async function verifySkillFiles(dependency, paths) {
+async function verifySkillFiles(dependency, paths, { ignoreFencedExamples = false } = {}) {
   for (const selectedPath of dependency.install.paths) {
     const root = skillDestination(dependency, paths, selectedPath);
     const skill = path.join(root, "SKILL.md");
@@ -415,7 +486,8 @@ async function verifySkillFiles(dependency, paths) {
     for (const includedPath of dependency.install.includePaths ?? []) {
       if (!await exists(path.join(root, includedPath))) return { status: "failed", evidence: `Missing approved package path: ${includedPath}` };
     }
-    const source = await readFile(skill, "utf8");
+    const text = await readFile(skill, "utf8");
+    const source = ignoreFencedExamples ? text.replace(/^```[^\n]*\n[\s\S]*?^```[^\n]*$/gm, "") : text;
     for (const match of source.matchAll(/\]\(([^)#]+)(?:#[^)]+)?\)/g)) {
       const reference = match[1];
       if (/^[a-z]+:/i.test(reference) || reference.startsWith("/")) continue;
@@ -646,11 +718,16 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
   return async ({ dependency, phase, check }) => {
     const executable = binaryPath(dependency, paths.toolRoot);
     if (phase === "probe") {
+      if (dependency.id === "playwright-cli") {
+        const companion = await inspectSkillDestinations(playwrightSkill(dependency), paths);
+        if (companion.status === "customized") return companion;
+      }
       if (dependency.install?.kind === "git-skill") {
         if (!dependency.install.paths.length) return { status: "not_found" };
         return inspectSkillDestinations(dependency, paths);
       }
-      const result = await command(executable, ["--version"]);
+      const result = await command(executable, ["--version"], dependency.id === "playwright-cli"
+        ? { env: { ...process.env, NO_UPDATE_NOTIFIER: "1" } } : {});
       return result.status === "passed" ? { ...result, version: parsedVersion(`${result.stdout}\n${result.stderr}`) } : result;
     }
     if (phase === "install") {
@@ -671,6 +748,13 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       if (dependency.install?.kind === "git-skill") return installGitSkills(dependency, paths);
       if (dependency.id === "uv" && dependency.install?.kind === "github-release") return installUvRelease(dependency, paths);
       return { status: "failed", evidence: `Pinned ${dependency.install?.kind ?? "unknown"} preparation requires its verified installer adapter.` };
+    }
+    if (phase === "companion" && dependency.id === "playwright-cli") {
+      const companion = await preparePlaywrightSkill(dependency, paths);
+      if (companion.status !== "passed") return companion;
+      const step = buildPreparationPlan({ dependencyId: dependency.id, host, scope, paths, executable }).browserInstall;
+      const browser = await command(step.file, step.args, { cwd: step.cwd, env: { ...process.env, ...step.env } });
+      return browser.status === "passed" ? companion : browser;
     }
     if (phase === "functional") {
       if (check === "command") return command(executable, ["--version"]);
