@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { getHealth } from "../hooks/lib/health.mjs";
 import { installPackage, uninstallPackage } from "../hooks/lib/install.mjs";
 import { appendActivationLog } from "../hooks/lib/telemetry.mjs";
+import { copyTrackedSource } from "./hook-test-helpers.mjs";
 
 const sourceRoot = path.resolve(import.meta.dirname, "..");
 const cli = path.join(sourceRoot, "hooks", "agent-team-cli.mjs");
@@ -101,7 +102,7 @@ test("an update preserves a package previously recorded as pre-existing", async 
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-skill-update-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-skill-source-"));
   temporary.push(home, changedSource);
-  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, changedSource);
   const target = path.join(home, ".agents", "skills", "agent-team");
   await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
   await rm(path.join(home, ".agent-team-hooks"), { recursive: true });
@@ -148,7 +149,7 @@ test("an update preserves a Claude role previously recorded as pre-existing", as
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-role-update-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-role-source-"));
   temporary.push(home, changedSource);
-  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, changedSource);
   const target = path.join(home, ".claude", "agents", "agent-team-developer.md");
   await mkdir(path.dirname(target), { recursive: true });
   const original = await readFile(path.join(sourceRoot, "assets", "claude-agents", "agent-team-developer.md"), "utf8");
@@ -227,7 +228,7 @@ test("handler receipts update exact owned handlers while preserving mixed siblin
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-handler-home-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-handler-source-"));
   temporary.push(home, changedSource);
-  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, changedSource);
   const args = { home, host: "codex", scope: "user" };
   await installPackage({ sourceRoot, ...args, now: new Date("2026-09-06T12:00:00.000Z") });
 
@@ -390,7 +391,7 @@ test("an update preserves a pre-existing handler when the new declaration differ
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-update-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-update-source-"));
   temporary.push(home, changedSource);
-  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, changedSource);
   const configPath = path.join(home, ".codex", "hooks.json");
   await mkdir(path.dirname(configPath), { recursive: true });
   const original = JSON.parse(await readFile(path.join(sourceRoot, "hooks", "codex-hooks.json"), "utf8"));
@@ -416,7 +417,7 @@ test("an update removes an unchanged owned handler retired by the new declaratio
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-retired-handler-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-retired-source-"));
   temporary.push(home, changedSource);
-  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, changedSource);
   await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
   const declarationPath = path.join(changedSource, "hooks", "codex-hooks.json");
   const changed = JSON.parse(await readFile(declarationPath, "utf8"));
@@ -440,7 +441,7 @@ test("an update retains customized retired handler identity and its package", as
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-custom-retired-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-custom-retired-source-"));
   temporary.push(home, changedSource);
-  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, changedSource);
   await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
   const configPath = path.join(home, ".codex", "hooks.json");
   const config = JSON.parse(await readFile(configPath, "utf8"));
@@ -557,7 +558,7 @@ test("installer upgrades an unchanged managed package when the manifest adds a f
   const home = await homeFixture();
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-expanded-source-"));
   temporary.push(changedSource);
-  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, changedSource);
   await installPackage({ sourceRoot, home, host: "both", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
 
   const addedFile = "references/new-release-file.md";
@@ -580,7 +581,7 @@ test("uninstall after a managed package update removes the installation instead 
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-version-uninstall-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-version-source-"));
   temporary.push(home, changedSource);
-  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, changedSource);
   await installPackage({ sourceRoot, home, host: "codex", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
   const addedFile = "references/version-two-marker.md";
   await writeFile(path.join(changedSource, addedFile), "version two\n");
@@ -604,7 +605,7 @@ test("uninstall after an update restores only an original backup from an older r
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-original-backup-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-original-backup-source-"));
   temporary.push(home, changedSource);
-  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, changedSource);
   await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
   const target = path.join(home, ".agents", "skills", "agent-team");
   const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
@@ -684,7 +685,7 @@ test("installer can run from an authoritative Codex source already at its target
   temporary.push(home);
   const codexTarget = path.join(home, ".agents", "skills", "agent-team");
   await mkdir(path.dirname(codexTarget), { recursive: true });
-  await cp(sourceRoot, codexTarget, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, codexTarget);
 
   const result = await installPackage({ sourceRoot: codexTarget, home, host: "both", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
 
@@ -714,7 +715,7 @@ test("installer rolls back its package and config mutations after a later failur
   const home = await homeFixture();
   const brokenSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-broken-source-"));
   temporary.push(brokenSource);
-  await cp(sourceRoot, brokenSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, brokenSource);
   await writeFile(path.join(brokenSource, "hooks", "claude-hooks.json"), "{bad json\n");
   const originalCodex = await readFile(path.join(home, ".codex", "hooks.json"), "utf8");
 
@@ -982,7 +983,7 @@ test("installer updates a previously managed Claude role and backs up its prior 
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-role-update-home-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-role-source-"));
   temporary.push(home, changedSource);
-  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, changedSource);
   await installPackage({ sourceRoot, home, host: "both", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
   const roleSource = path.join(changedSource, "assets", "claude-agents", "agent-team-developer.md");
   await writeFile(roleSource, `${await readFile(roleSource, "utf8")}\nManaged update marker.\n`);
@@ -1011,7 +1012,7 @@ test("mixed-host update retains unavailable Claude ownership while updating Code
   const claudeConfigPath = path.join(home, ".claude", "settings.json");
   const claudeConfig = await readFile(claudeConfigPath, "utf8");
 
-  await cp(sourceRoot, changedSource, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) });
+  await copyTrackedSource(sourceRoot, changedSource);
   const addedFile = "references/mixed-host-update.md";
   await writeFile(path.join(changedSource, addedFile), "changed package\n");
   const manifestPath = path.join(changedSource, "hooks", "manifest.json");
