@@ -1,6 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+export async function copyTrackedSource(sourceRoot, destination) {
+  const files = execFileSync("git", ["-C", sourceRoot, "ls-files", "-z"], { encoding: "utf8" }).split("\0").filter(Boolean);
+  for (const file of files) {
+    const target = path.join(destination, file);
+    await mkdir(path.dirname(target), { recursive: true });
+    await cp(path.join(sourceRoot, file), target);
+  }
+}
 
 export async function policyFixture(root, { now = "2026-09-06T12:00:00.000Z" } = {}) {
   execFileSync("git", ["init", "-q", "-b", "main", root]);

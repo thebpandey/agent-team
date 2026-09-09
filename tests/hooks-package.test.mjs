@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 
 import { buildArtifacts } from "../hooks/lib/artifacts.mjs";
 import * as validators from "../hooks/lib/package-validator.mjs";
+import { copyTrackedSource } from "./hook-test-helpers.mjs";
 
 const sourceRoot = path.resolve(import.meta.dirname, "..");
 const run = promisify(execFile);
@@ -15,13 +16,32 @@ const { checkPackage } = validators;
 const temporary = [];
 test.afterEach(async () => Promise.all(temporary.splice(0).map((item) => rm(item, { force: true, recursive: true }))));
 
+test("source fixtures copy tracked working files without ignored or untracked private data", async () => {
+  const source = await mkdtemp(path.join(os.tmpdir(), "agent-team-copy-source-"));
+  const destination = await mkdtemp(path.join(os.tmpdir(), "agent-team-copy-target-"));
+  temporary.push(source, destination);
+  await run("git", ["init", "-q", source]);
+  await mkdir(path.join(source, ".github", "workflows"), { recursive: true });
+  await writeFile(path.join(source, ".github", "workflows", "check.yml"), "tracked workflow\n");
+  await writeFile(path.join(source, "README.md"), "initial source\n");
+  await writeFile(path.join(source, ".gitignore"), "local-private/\n");
+  await run("git", ["-C", source, "add", "."]);
+  await writeFile(path.join(source, "README.md"), "uncommitted source change\n");
+  await mkdir(path.join(source, "local-private"));
+  await writeFile(path.join(source, "local-private", "placeholder.json"), "synthetic private sentinel\n");
+  await writeFile(path.join(source, "untracked-note.txt"), "synthetic untracked sentinel\n");
+  await copyTrackedSource(source, destination);
+  assert.equal(await readFile(path.join(destination, "README.md"), "utf8"), "uncommitted source change\n");
+  assert.equal(await readFile(path.join(destination, ".github", "workflows", "check.yml"), "utf8"), "tracked workflow\n");
+  for (const excluded of ["local-private", "untracked-note.txt", ".git"]) {
+    await assert.rejects(stat(path.join(destination, excluded)), { code: "ENOENT" });
+  }
+});
+
 async function packageFixture() {
   const destination = await mkdtemp(path.join(os.tmpdir(), "agent-team-package-"));
   temporary.push(destination);
-  await cp(sourceRoot, destination, {
-    recursive: true,
-    filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) && !source.includes(`${path.sep}.superpowers${path.sep}`),
-  });
+  await copyTrackedSource(sourceRoot, destination);
   return destination;
 }
 
