@@ -7,6 +7,29 @@ const root = path.resolve(import.meta.dirname, "..");
 const read = file => readFile(path.join(root, file), "utf8");
 const readMany = files => Promise.all(files.map(read));
 
+test("field guide embeds compact WebP artwork without a local image dependency", async () => {
+  const [guide, readme, rawManifest] = await readMany([
+    "agent-team-guide-v7.0.2.html", "README.md", "hooks/manifest.json",
+  ]);
+  const manifest = JSON.parse(rawManifest);
+  const imagePaths = [
+    "assets/guide/agent-team-essence-16x9.webp",
+    "assets/guide/agent-team-harness-flow-3x4.webp",
+  ];
+  const embedded = [...guide.matchAll(/src="data:image\/webp;base64,([^"]+)"/g)]
+    .map(match => Buffer.from(match[1], "base64"));
+
+  assert.equal(embedded.length, 2);
+  assert.doesNotMatch(guide, /src="assets\/guide\//);
+  assert.match(guide, /flowchartModalImage\.src = flowchartImage\.src/);
+  for (const [index, imagePath] of imagePaths.entries()) {
+    const source = await readFile(path.join(root, imagePath));
+    assert.deepEqual(embedded[index], source);
+    assert.ok(manifest.files.includes(imagePath));
+    assert.ok(readme.includes(imagePath));
+  }
+});
+
 // Text contracts catch instruction drift; behavioral/consumer/native tests remain separate gates.
 test("release version and public guidance stay consistent", async () => {
   const [raw, skill, readme, changelog, guide] = await readMany(["hooks/manifest.json", "SKILL.md", "README.md", "CHANGELOG.md", "references/hooks.md"]);
