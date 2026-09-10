@@ -1,5 +1,8 @@
-# Local setup receipt, never shared authorization or a task ledger.
-.agent-team/setup.json
+# Local run state, never shared authorization or a task ledger.
+.agent-team/
+# Local tool state written by Serena and the Playwright CLI.
+.serena/
+.playwright-cli/
 __pycache__/
 .worktrees/
 .superpowers/
