@@ -8,7 +8,7 @@ New here? Open the [hosted Agent-Team 7.0.2 field guide](https://thebpandey.gith
 
 [![Agent-Team overview: Morpheus coordinates bounded work by Neo, Trinity, and Tank, followed by independent review from Agent Smith and the Oracle.](assets/guide/agent-team-essence-16x9.webp)](https://thebpandey.github.io/agent-team/agent-team-guide-v7.0.2.html)
 
-The field guide explains Agent-Team in plain language and includes installation, dependencies, setup, settings, launch examples, and the optional Project Kickoff handoff.
+The field guide explains Agent-Team in plain language and includes installation, dependencies, setup, settings, launch examples, memory and context management, and the optional Project Kickoff handoff.
 
 ## The workflow at a glance
 

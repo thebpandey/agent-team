@@ -21,13 +21,33 @@ test("field guide embeds compact WebP artwork without a local image dependency",
 
   assert.equal(embedded.length, 2);
   assert.doesNotMatch(guide, /src="assets\/guide\//);
-  assert.match(guide, /flowchartModalImage\.src = flowchartImage\.src/);
+  assert.match(guide, /modalImage\.src = sourceImage\.src/);
   for (const [index, imagePath] of imagePaths.entries()) {
     const source = await readFile(path.join(root, imagePath));
     assert.deepEqual(embedded[index], source);
     assert.ok(manifest.files.includes(imagePath));
     assert.ok(readme.includes(imagePath));
   }
+});
+
+test("every field-guide image opens through one borderless modal", async () => {
+  const guide = await read("agent-team-guide-v7.0.2.html");
+  assert.equal((guide.match(/class="image-open"/g) || []).length, 2);
+  assert.equal((guide.match(/<dialog id="image-dialog"/g) || []).length, 1);
+  assert.match(guide, /dialog \{[^}]*border:0;[^}]*background:transparent;/);
+  assert.match(guide, /querySelectorAll\("\.image-open"\)/);
+  assert.match(guide, /modalImage\.src = sourceImage\.src/);
+});
+
+test("field guide explains bounded memory and context management", async () => {
+  const guide = await read("agent-team-guide-v7.0.2.html");
+  for (const required of [
+    'id="context"', "Small task packets", "One source of truth", "Relevant reading",
+    "Bounded checkpoints", "Native auto-compaction", "LeanCTX", "under 600 words",
+    "Tracker", "Project documents", "MISTAKES.md",
+  ]) assert.ok(guide.includes(required), required);
+  assert.match(guide, /does not make the context window larger/i);
+  assert.match(guide, /does not become a second task tracker/i);
 });
 
 // Text contracts catch instruction drift; behavioral/consumer/native tests remain separate gates.
