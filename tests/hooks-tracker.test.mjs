@@ -69,12 +69,18 @@ for (const tracker of [{ kind: "markdown", path: "TASKS.md" }, { kind: "markdown
     assert.equal(canonical.tracker.status, "current");
     assert.match(canonical.tracker.fingerprint, /^[a-f0-9]{64}$/);
     assert.deepEqual(canonical.tasks.map(({ id, owner, status }) => ({ id, owner, status })), [{ id: "AT-001", owner: "TEAM-001", status: "in_progress" }]);
+    Object.assign(canonical.state.integration, {
+      taskIds: ["AT-001"],
+      authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: canonical.state.integration.expectedRevision, taskIds: ["AT-001"], observedAt: "2026-09-06T12:00:00.000Z" },
+    });
     const event = hookEvent(value, { operation: { kind: "completion", taskId: "AT-001" } });
     assert.equal((await evaluatePolicy(event, linked, { canonical })).allow, true);
-    for (const command of ["npm publish", "git push origin feature"]) {
+    for (const command of ["npm publish", "git push origin HEAD:feature"]) {
       const release = hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command } });
       assert.equal((await evaluatePolicy(release, linked, { canonical, now: new Date("2026-09-06T12:00:00Z") })).allow, true);
     }
+    const shorthandPush = hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: "git push origin feature" } });
+    assert.equal((await evaluatePolicy(shorthandPush, linked, { canonical, now: new Date("2026-09-06T12:00:00Z") })).allow, false);
     canonical.tasks[0].owner = "TEAM-OTHER";
     assert.equal((await evaluatePolicy(event, linked, { canonical })).allow, false);
   });

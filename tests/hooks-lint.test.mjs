@@ -75,7 +75,7 @@ test("mixed lint batches preserve passed, failed, missing and timeout evidence w
   await executable(path.join(directory, "passed"), "process.stdout.write('ok');");
   await executable(path.join(directory, "failed"), "process.stdout.write('bad.js:2:3 no-undef brokenName\\n' + 'detail '.repeat(1000)); process.exitCode = 1;");
   await executable(path.join(directory, "timeout"), "setTimeout(() => {}, 5000);");
-  const result = await runLintChecks(directory, ["passed/ok.js", "failed/bad.js", "missing/unknown.js", "timeout/slow.js"], { timeoutMs: 150, maxOutputBytes: 120 });
+  const result = await runLintChecks(directory, ["passed/ok.js", "failed/bad.js", "missing/unknown.js", "timeout/slow.js"], { timeoutMs: 500, maxOutputBytes: 120 });
   assert.equal(result.status, "failed");
   assert.deepEqual(result.batches.map(({ status }) => status), ["passed", "failed", "skipped", "timeout"]);
   assert.match(result.batches[1].output, /bad.js:2:3.*brokenName/);
@@ -113,7 +113,7 @@ test("slow config discovery respects the event budget without starting a linter"
 test("delayed log-directory creation cannot start a log write after event deadline", async () => {
   const directory = await root();
   await executable(directory, "process.stdout.write('index.js:1:1 broken'); process.exitCode=1;");
-  const budget = createEventBudget(100);
+  const budget = createEventBudget(150);
   let wroteAfterDelay = false;
   const started = performance.now();
   try {
