@@ -310,6 +310,21 @@ export async function recordGateEvidence(project, request, options = {}) {
     const evidence = JSON.parse(source);
     if (evidence.status !== "passed" || evidence.revision !== revision || !Array.isArray(evidence.taskIds)
       || JSON.stringify([...evidence.taskIds].sort()) !== JSON.stringify([...request.taskIds].sort())) return conflict("evidence_mismatch");
+    if (request.gate === "completion") {
+      if (request.taskIds.length !== 1) return conflict("completion_task_count");
+      const [taskId] = request.taskIds;
+      const review = evidence.review;
+      const checks = evidence.checks;
+      if (evidence.requirementsReconciled !== true || review?.status !== "passed" || review.revision !== revision || review.taskId !== taskId
+        || !Array.isArray(checks) || !checks.length
+        || checks.some((check) => !check?.name || check.status !== "passed" || check.revision !== revision || check.taskId !== taskId)) {
+        return conflict("completion_evidence_mismatch");
+      }
+      state.completion = { ...state.completion, taskId, evidenceRevision: revision, requirementsReconciled: true,
+        review: { status: "passed", revision, taskId },
+        checks: checks.map(({ name, status, revision: checkRevision, taskId: checkTaskId }) => ({ name, status, revision: checkRevision, taskId: checkTaskId })),
+      };
+    }
     const current = await loadCanonicalTracker(project, options);
     if (current.tracker.status !== "current" || current.tracker.fingerprint !== canonical.tracker.fingerprint) return conflict("stale_tracker");
     state[request.gate] = { ...state[request.gate], trackerFingerprint: current.tracker.fingerprint,

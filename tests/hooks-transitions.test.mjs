@@ -420,22 +420,51 @@ if (process.argv[2] === "writer") {
     assert.equal(await readFile(path.join(value.root, ".agent-team/TASKS.md"), "utf8"), before);
   });
 
-  test("gate evidence writer binds exact canonical fingerprint and revision without granting authorization", async () => {
+  test("completion gate evidence maps one HEAD-bound task's reconciled review and checks", async () => {
     const module = await api();
     assert.equal(typeof module.recordGateEvidence, "function");
     const value = await fixture();
     const evidencePath = path.join(value.root, ".agent-team/verification.json");
-    await writeFile(evidencePath, JSON.stringify({ status: "passed", revision: value.revision, taskIds: ["AT-001"], checks: ["unit"] }));
+    await writeFile(evidencePath, JSON.stringify({
+      status: "passed", revision: value.revision, taskIds: ["AT-001"], requirementsReconciled: true,
+      review: { status: "passed", revision: value.revision, taskId: "AT-001" },
+      checks: [{ name: "unit", status: "passed", revision: value.revision, taskId: "AT-001" }],
+    }));
     const wanted = { actorSessionId: "owner-session", operationId: "gate-evidence", expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint,
       gate: "completion", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath };
     const result = await module.recordGateEvidence(value.project, wanted);
     assert.equal(result.status, "applied");
     const current = await loadCanonicalState(value.project);
     assert.equal(current.state.completion.trackerFingerprint, current.tracker.fingerprint);
+    assert.equal(current.state.completion.taskId, "AT-001");
+    assert.equal(current.state.completion.evidenceRevision, value.revision);
+    assert.equal(current.state.completion.requirementsReconciled, true);
+    assert.deepEqual(current.state.completion.review, { status: "passed", revision: value.revision, taskId: "AT-001" });
+    assert.deepEqual(current.state.completion.checks, [{ name: "unit", status: "passed", revision: value.revision, taskId: "AT-001" }]);
     assert.equal(current.state.completion.authorized, value.state.completion.authorized);
     await writeFile(path.join(value.feature, "src/owned.js"), "dirty now\n");
     const changed = await module.recordGateEvidence(value.project, { ...wanted, operationId: "dirty-evidence", expectedVersion: current.state.stateVersion });
     assert.equal(changed.reason, "dirty_revision");
+  });
+
+  test("completion gate evidence rejects multiple tasks and task-mismatched review records", async () => {
+    const { recordGateEvidence } = await api();
+    const value = await fixture();
+    const evidencePath = path.join(value.root, ".agent-team/verification.json");
+    const wanted = { actorSessionId: "owner-session", operationId: "bad-gate-evidence", expectedVersion: 0,
+      expectedFingerprint: value.canonical.tracker.fingerprint, gate: "completion", taskIds: ["AT-001", "AT-002"],
+      expectedRevision: value.revision, evidencePath };
+    await writeFile(evidencePath, JSON.stringify({
+      status: "passed", revision: value.revision, taskIds: ["AT-001", "AT-002"], requirementsReconciled: true,
+      review: { status: "passed", revision: value.revision, taskId: "AT-001" }, checks: [],
+    }));
+    assert.equal((await recordGateEvidence(value.project, wanted)).reason, "completion_task_count");
+    await writeFile(evidencePath, JSON.stringify({
+      status: "passed", revision: value.revision, taskIds: ["AT-001"], requirementsReconciled: true,
+      review: { status: "passed", revision: value.revision, taskId: "AT-002" },
+      checks: [{ name: "unit", status: "passed", revision: value.revision, taskId: "AT-001" }],
+    }));
+    assert.equal((await recordGateEvidence(value.project, { ...wanted, operationId: "task-mismatch", taskIds: ["AT-001"] })).reason, "completion_evidence_mismatch");
   });
 
   test("Beads atomic claim retains uncertain writes and reconciles its native operation note without retry", async () => {

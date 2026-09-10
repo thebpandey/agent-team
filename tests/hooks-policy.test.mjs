@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { classifyOperation } from "../hooks/lib/operation.mjs";
+import { loadCanonicalState } from "../hooks/lib/canonical-state.mjs";
 import { resolveProject } from "../hooks/lib/project.mjs";
 import { evaluatePolicy } from "../hooks/lib/policy.mjs";
 import { hookEvent, policyFixture, saveState } from "./hook-test-helpers.mjs";
@@ -419,6 +420,36 @@ test("Codex canonical tracker status transitions use the explicit completion gat
 
   assert.equal(allowed.allow, true);
   assert.equal(blocked.allow, false);
+});
+
+test("Codex permits a verified flip only after valid HEAD completion gate evidence", async () => {
+  const value = await fixture();
+  const project = await resolveProject(value.root);
+  const operation = { kind: "file_change", files: [{
+    action: "edit", path: ".agent-team/TASKS.md",
+    previousContent: "| AT-001 | Complete fixture work | TEAM-001 | none | in_progress | rev | Verify. |",
+    changedContent: "| AT-001 | Complete fixture work | TEAM-001 | none | verified | rev | Done. |",
+  }] };
+  const state = structuredClone(value.state);
+  state.completion = { requirementsReconciled: false, checks: [] };
+  await saveState(value, state);
+  const beforeEvidence = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation }), project);
+  const evidencePath = path.join(value.root, ".agent-team/verification.json");
+  await writeFile(evidencePath, JSON.stringify({
+    status: "passed", revision: value.revision, taskIds: ["AT-001"], requirementsReconciled: true,
+    review: { status: "passed", revision: value.revision, taskId: "AT-001" },
+    checks: [{ name: "focused", status: "passed", revision: value.revision, taskId: "AT-001" }],
+  }));
+  const { recordGateEvidence } = await import("../hooks/lib/task-transitions.mjs");
+  const canonical = await loadCanonicalState(project);
+  const recorded = await recordGateEvidence(project, { actorSessionId: "owner-session", operationId: "completion-evidence",
+    expectedVersion: canonical.state.stateVersion ?? 0, expectedFingerprint: canonical.tracker.fingerprint, gate: "completion",
+    taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath });
+  const afterEvidence = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation }), project);
+
+  assert.equal(beforeEvidence.allow, false);
+  assert.equal(recorded.status, "applied");
+  assert.equal(afterEvidence.allow, true);
 });
 
 test("post-tool file events run one changed-file lint batch with an installed executable", async () => {
