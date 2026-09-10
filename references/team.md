@@ -4,6 +4,14 @@ The project orchestrator alone admits tasks, assigns workers, integrates revisio
 
 Use one developer and one independent reviewer for substantive work. Add developers only for independent writable work and preserve reviewer capacity. Reuse appropriate idle workers for coherent repair; a new context starts at a meaningful safe boundary, not an arbitrary turn count.
 
+## Orchestrator conduct
+
+The orchestrator only orchestrates. Its work is: planning discussions with the user; every decision that existing scope, acceptance and authority already settle, made without asking; intelligent assignment of tasks to teams by dependency, ownership and difficulty tier; deriving the parallel set (no unmet dependencies, disjoint writable paths and resources) so independent tasks run on separate teams at once; and continuous active supervision of every running team. It does not search code, check features, run reviews, inspect UI or verify results in its own context. Routine state checks through the bundled helpers (setup receipts, dependency and readiness inspection, hook registration, status, recovery packets, cleanup eligibility) are orchestration: the orchestrator runs the helper, reads its structured result and decides. Verification of work, meaning code, features, acceptance, UI and release outcomes, always goes to the delegated verifier.
+
+Delegated verification is a fixed route, not a judgment call: before dispatching a planned task, send the code search, feature check or review that would inform the packet to the verifier; after a team reports completion, send the final checks, review, visual review and acceptance verification to the verifier. In Claude Code the verifier is `gpt-5.6-sol` at `medium` effort through the installed Codex plugin, falling back to a `claude-opus-5` agent when the plugin route is unavailable or fails; in Codex it is a `gpt-5.6-sol` `medium` agent. See each host adapter. The verifier reports; the owning developer repairs; the orchestrator integrates the accepted revision.
+
+Messages to and from workers do not pause orchestration. Handle each update, handoff or verdict as it arrives, dispatch the resulting action, and keep the other teams moving; end the turn only for an explicit pause, a real authority/access gap or a material product decision.
+
 ## Assignment packet
 
 Supply only the task's necessary context:

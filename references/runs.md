@@ -20,6 +20,8 @@ Distinguish logical task ownership from compute occupancy:
 
 Reserve capacity for independent review. Reuse a shared reviewer when appropriate; do not spawn a full extra hierarchy per task. Only the project orchestrator admits replacements. Keep scheduling event-driven with bounded waits, not repeated full-queue polling.
 
+Orchestration is continuous while any team is active. Each worker update, handoff, verifier verdict or completion notification is handled as soon as it arrives: record the fact, decide the next action (repair, verify, integrate, refill, park) and dispatch it, then return to supervising the other teams. Do not pause the run, wait for a user prompt or end the turn because a message was sent to or received from a worker; stop only for an explicit pause, a genuine authority/access gap or a material product decision.
+
 ## Finite and continuous scope
 
 A finite start fixes the admitted delivery set after initial selection and finishes that set without adding replacements. A named start selects one existing task and rejects count/continuous modifiers. A natural-language feature request may create a deduplicated canonical task once its scope and acceptance are sufficient.

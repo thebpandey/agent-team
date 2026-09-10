@@ -10,6 +10,8 @@ For changes that affect visible UI or user interaction, assign this procedure to
 
 Use `gpt-5.6-terra` with `high` effort in Codex. Use `claude-opus-5` with `high` effort in Claude Code. The model must be able to inspect images. Do not use Luna, Sonnet, or Haiku for this Pro visual judgment role. Follow the selected host's actual model controls and access limits.
 
+The orchestrator never performs the visual review itself. In-loop UI review belongs to the assigned reviewer or visual tester above; the final post-completion visual check goes through the host's delegated verifier route (`gpt-5.6-sol` medium, with the Claude Code fallback to the `claude-opus-5` visual tester when the Codex route cannot inspect the screenshots or fails).
+
 Give the reviewer the app URL, source revision, changed screens, main user flow, agreed design guide, and test-data limits. Also supply the task IDs, evidence folder, tracker mode, and assigned CONTEXT.md path. Reviewers report findings; the assigned developer repairs product code.
 
 ## Select a supported browser tool
@@ -41,4 +43,4 @@ Save a compact report with: task ID, revision, URL/environment, screen sizes, ch
 
 After two repair attempts without useful progress, change the approach or escalate through the orchestrator. If the new approach cannot progress, report the blocker. Do not erase findings, reduce acceptance criteria, or enter an open-ended polish loop.
 
-The orchestrator checks coverage and evidence before release. This review supplements [Pro acceptance tests](acceptance-tests.md); screenshots alone do not prove that data was saved correctly. Share the same browser evidence where useful. Read applicable MISTAKES.md lessons before review and report confirmed mistakes through the orchestrator. Preserve live release checks. Reuse the existing release procedure for final verification and recovery.
+The delegated verifier checks coverage and evidence before release; the orchestrator reads that verdict and records the outcome. This review supplements [Pro acceptance tests](acceptance-tests.md); screenshots alone do not prove that data was saved correctly. Share the same browser evidence where useful. Read applicable MISTAKES.md lessons before review and report confirmed mistakes through the orchestrator. Preserve live release checks. Reuse the existing release procedure for final verification and recovery.

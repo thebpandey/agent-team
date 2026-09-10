@@ -10,17 +10,18 @@ These are workflow choices, not benchmark equivalence claims. Verified against A
 
 | Role | Anthropic model ID | Effort |
 | --- | --- | --- |
-| Project/team orchestrator; trivial work in feature worktree | `claude-fable-5-1` | high |
+| Project/team orchestrator: planning, assignment, decisions, supervision, integration and release only | `claude-fable-5-1` | high |
 | Complex developer: Sol-level work | `claude-opus-5` | xhigh |
 | Standard developer: Terra-level work | `claude-opus-5` | high |
 | Independent reviewer: Terra-level work | `claude-opus-5` | high |
 | Pro visual reviewer | `claude-opus-5` | high |
 | Routine developer: Luna-level work only | `claude-sonnet-5` | high |
 | Optional text assistant: simple rewrite/paraphrase only | `claude-haiku-4-5-20251001` | omit effort override |
+| Delegated verifier: pre-dispatch code searches/feature checks and post-completion final checks, reviews and verification | `gpt-5.6-sol` through the installed Codex plugin | medium; fallback `claude-opus-5` high |
 
 Use `xhigh` for the user's “extra effort” setting. Sonnet is reserved for Luna-level assignments and must not substitute for Terra- or Sol-level work. If a required model or effort cannot be enforced, report the constraint instead of silently lowering the tier.
 
-Haiku is never a fallback for development, source discovery, debugging, tests, review, UI decisions, task planning, or releases. Do tiny text edits directly when delegation costs more. If Sonnet is unavailable, use a suitable available higher-tier developer or report the constraint; never downgrade that work to Haiku.
+Haiku is never a fallback for development, source discovery, debugging, tests, review, UI decisions, task planning, or releases. Even tiny text edits go to a developer or the text assistant; the orchestrator does not edit files itself. If Sonnet is unavailable, use a suitable available higher-tier developer or report the constraint; never downgrade that work to Haiku.
 
 Fable is preferred for long, demanding orchestration; Opus handles standard development/review at high effort and complex development at xhigh effort. See [Fable](https://platform.claude.com/docs/en/models/fable-5-1/overview), [Opus](https://platform.claude.com/docs/en/models/opus-5/overview), [Sonnet](https://platform.claude.com/docs/en/models/sonnet-5/overview), and [Haiku](https://platform.claude.com/docs/en/models/haiku-4-5/overview).
 
@@ -34,6 +35,15 @@ claude --model claude-fable-5-1 --effort high
 
 Fable 5.1 needs Claude Code v2.1.255+. Confirm installed version and account/provider access. If Fable is unavailable or its usage-credit choice is declined, disclose the fallback to Opus 5 high; the user/runtime must actually select it. Never claim the skill changed its own parent. Do not buy access or bypass a consent prompt. Third-party provider identifiers and aliases differ; resolve supported equivalents before dispatch and record the actual model. See [model configuration](https://code.claude.com/docs/en/model-config).
 
+## Delegated verification
+
+The orchestrator never performs code searches, feature checks, reviews, visual reviews or final verification itself, whether before dispatching a team or after a team reports completion. Delegate that work to the verifier route:
+
+1. Primary: `gpt-5.6-sol` at `medium` effort through the installed Codex plugin. Route every search, check and review through the companion runtime's `task` command, which is the only command that accepts explicit model and effort: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --model gpt-5.6-sol --effort medium "<packet>"` (foreground by default; `--background` plus `result` for long checks). Do not use the plugin's `review`/`adversarial-review` commands for this route; they cannot pin the model or effort. The `codex:codex-rescue` agent may forward a `task` with those explicit flags. Leave `--write` off; verifiers report, developers repair.
+2. Fallback: a `claude-opus-5` `high` agent (`agent-team-reviewer`, or `agent-team-visual-tester` for image inspection) when the Codex plugin is not installed, Codex is not authenticated, the model is unavailable, or the primary run fails. Record which route actually ran and why.
+
+Access is proven by an actual invocation, not by the plugin's presence. The plugin's own result-handling rule to stop and ask before fixing does not apply inside an Agent-Team run: findings return to the owning developer for automatic in-scope repair, and the orchestrator integrates only after the verifier accepts the repaired revision. Verifier output is evidence linked from the task packet, never pasted wholesale into the orchestrator context.
+
 For substantial UI work, the Pro-only `agent-team-visual-tester` definition is available. The existing reviewer owns smaller visual tasks. Apply the shared visual-review procedure to either assignment. Never include this template in Lite.
 
 ## Native dispatch
@@ -43,6 +53,8 @@ Bundled definitions are in `assets/claude-agents/` relative to the skill root. D
 Dispatch using Claude's native Agent tool and registered role names. Supply the compact team contract, applicable skill paths, ownership, tracker and context location. Each fresh child completes [selective startup](dependencies.md#skill-startup-for-every-agent) through the actual Skill tool or complete applicable file reads. A parent's receipt or role registration is not a child read. Verify effective model/effort, including provider limits and substitutions; never silently route coding/review to Haiku. Use supported per-call settings or prepared role definitions only when enforceable, otherwise use the approved suitable fallback or report the affected limitation. See [subagent configuration](https://code.claude.com/docs/en/sub-agents).
 
 Feed observed catalog and fresh-worker results into the [native setup binding](setup.md#bind-the-native-observations) before claiming scoped readiness or saving a role change. A generated driver transfers inspected facts; it does not grant native trust or substitute for the actual dispatch.
+
+Use Graphify only through its CLI inside the worktree, as described in [the code-only integration](graphify.md); never run `graphify install`, `graphify claude install` or its hook installers, which write host instruction files and PreToolUse hooks, and register `graphify-mcp` only on explicit selection.
 
 For LeanCTX, use only the [narrowed profile](lean-ctx.md) and selected-scope adapter, not a broad initializer. Preserve MCP servers, permissions, hook handlers and customized roles. Do not import full-catalog `autoApprove` or `permissions.allow` lists. Tool visibility is not an authorization boundary. Keep native read-before-write and exact-output recovery; disable coordination/memory, model steering and proxying. Verify the actual worker access path without rewriting unrelated host settings.
 

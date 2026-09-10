@@ -54,7 +54,7 @@ export function resolveCatalogSelection({ tracker, defaults, optionals = [] } = 
   };
 }
 
-const TOOL_IDS = new Set(["uv", "serena", "playwright-cli", "ast-grep", "lean-ctx", "beads", "beads-viewer", "context7"]);
+const TOOL_IDS = new Set(["uv", "serena", "playwright-cli", "ast-grep", "graphify", "lean-ctx", "beads", "beads-viewer", "context7"]);
 
 export function inspectDependencies({ setup = {}, host }) {
   if (!HOSTS.has(host)) throw new Error(`Unknown dependency host: ${host ?? "missing"}.`);
@@ -122,6 +122,7 @@ export function buildPreparationPlan({ dependencyId, host, scope, paths, executa
     "browser-interaction": ["open isolated local fixture", "click fixture control", "verify changed page state", "close owned session"],
     "symbol-operation": ["activate isolated fixture project", "locate a known symbol through Serena"],
     "positive-negative-structural-pattern": ["match positive structural fixture", "reject negative structural fixture"],
+    "code-graph-traversal": ["extract an isolated code fixture with --code-only --no-viz", "trace a known call path and explain a known symbol"],
     "detector-exit-contract": ["verify clean exit 0", "verify findings exit 2", "verify execution failure exit 1"],
   };
   const registration = dependency.id === "serena" ? {
@@ -763,6 +764,64 @@ async function astGrepFunctional(executable, paths) {
     : { status: "failed", evidence: "Negative structural fixture unexpectedly matched or failed to execute." };
 }
 
+// Code-only extraction stays deterministic and offline only while no backend key reaches the CLI.
+const GRAPHIFY_BACKEND_KEYS = [
+  "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY",
+  "MOONSHOT_API_KEY", "DEEPSEEK_API_KEY", "OLLAMA_BASE_URL",
+];
+
+// Exact labels the pinned extractor emits for the fixture; methods and functions carry their parentheses.
+const GRAPHIFY_FIXTURE_CHAIN = ["Pool", ".connect()", "start_server()", "load_config()"];
+const GRAPHIFY_FIXTURE_EDGES = [["Pool", ".connect()", "method"], [".connect()", "start_server()", "calls"], ["start_server()", "load_config()", "calls"]];
+
+async function graphifyFunctional(executable, paths, budget) {
+  const verification = path.join(paths.toolRoot, "verification");
+  budget?.check();
+  await mkdir(verification, { recursive: true, mode: 0o700 });
+  const root = await mkdtemp(path.join(verification, "graphify-"));
+  const env = { ...process.env };
+  for (const key of GRAPHIFY_BACKEND_KEYS) delete env[key];
+  const options = { cwd: root, env, budget };
+  try {
+    await writeFile(path.join(root, "app.py"), "def load_config():\n    return {}\n\n\ndef start_server():\n    cfg = load_config()\n    return cfg\n", { mode: 0o600, signal: budget?.signal });
+    await writeFile(path.join(root, "db.py"), "from app import start_server\n\n\nclass Pool:\n    def connect(self):\n        return start_server()\n", { mode: 0o600, signal: budget?.signal });
+    const extracted = await command(executable, ["extract", ".", "--code-only", "--no-viz"], options);
+    if (extracted.status !== "passed") return { status: "failed", evidence: evidence(extracted) ?? "Graphify code-only extraction failed." };
+    let graph;
+    try {
+      graph = JSON.parse(await readFile(path.join(root, "graphify-out", "graph.json"), { encoding: "utf8", signal: budget?.signal }));
+    } catch (error) {
+      if (error.code === "EVENT_DEADLINE") throw error;
+      return { status: "failed", evidence: `Graphify did not write a parseable graphify-out/graph.json: ${error.message}` };
+    }
+    budget?.check();
+    // Code-only extraction is pure AST work, so any inferred edge means a semantic backend ran.
+    const inferred = (graph.links ?? []).find(({ confidence }) => confidence !== "EXTRACTED");
+    if (inferred) {
+      return { status: "failed", evidence: `Graphify emitted an edge with ${inferred.confidence ?? "missing"} confidence; code-only extraction must produce EXTRACTED edges only.` };
+    }
+    const ids = new Map((graph.nodes ?? []).filter(({ label }) => GRAPHIFY_FIXTURE_CHAIN.includes(label)).map(({ label, id }) => [label, id]));
+    const missingLabel = GRAPHIFY_FIXTURE_CHAIN.find((label) => !ids.has(label));
+    if (missingLabel) return { status: "failed", evidence: `The extracted graph did not contain the known fixture symbol ${missingLabel}.` };
+    const missingEdge = GRAPHIFY_FIXTURE_EDGES.find(([from, to, relation]) => !(graph.links ?? [])
+      .some((link) => link.source === ids.get(from) && link.target === ids.get(to) && link.relation === relation));
+    if (missingEdge) {
+      return { status: "failed", evidence: `The extracted graph did not contain the known fixture edge ${missingEdge[0]} --${missingEdge[2]}--> ${missingEdge[1]}.` };
+    }
+    const traced = await command(executable, ["path", "Pool", "load_config"], options);
+    const offsets = GRAPHIFY_FIXTURE_CHAIN.map((label) => traced.stdout?.indexOf(label) ?? -1);
+    if (traced.status !== "passed" || offsets.some((offset, index) => offset < 0 || (index > 0 && offset <= offsets[index - 1]))) {
+      return { status: "failed", evidence: evidence(traced) ?? `Graphify path did not report the chain ${GRAPHIFY_FIXTURE_CHAIN.join(" -> ")}.` };
+    }
+    const explained = await command(executable, ["explain", "start_server"], options);
+    return explained.status === "passed" && ["start_server()", "load_config()"].every((label) => explained.stdout?.includes(label))
+      ? { status: "passed", evidence: "Graphify code-only extraction built an EXTRACTED-only graph and resolved path Pool -> load_config and explain start_server in an isolated fixture." }
+      : { status: "failed", evidence: evidence(explained) ?? "Graphify explain did not report the known fixture symbol and its call edge." };
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 async function leanCtxFunctional(executable, paths) {
   const root = path.join(paths.toolRoot, "verification", `lean-ctx-${randomUUID()}`);
   const fixture = path.join(root, "fixture.txt");
@@ -1103,6 +1162,7 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       if (check === "skill-discovery") return verifySkillFiles(dependency, paths);
       if (check === "symbol-operation") return serenaFunctional(executable, paths);
       if (check === "positive-negative-structural-pattern") return astGrepFunctional(executable, paths);
+      if (check === "code-graph-traversal") return graphifyFunctional(executable, paths, budget);
       if (check === "browser-interaction") return playwrightFunctional(executable, paths, budget);
       if (check === "narrow-read-recovery") return leanCtxFunctional(executable, paths);
       if (check === "detector-exit-contract") return impeccableFunctional(executable, paths);
@@ -1128,5 +1188,7 @@ export function selectInstructions({ role, task = {} }) {
   if (task.kind === "react") result.push("react-best-practices");
   if (["ui", "react", "browser"].includes(task.kind) || role === "visual_reviewer") result.push("playwright-cli");
   if (task.planning === "unresolved") result.push("superpowers:brainstorming", "superpowers:writing-plans");
+  // Structural graph reading only helps where code spans modules; text work and routine single-file edits skip it.
+  if (task.kind !== "text" && ["developer", "complex_developer", "reviewer", "project_orchestrator"].includes(role)) result.push("graphify");
   return result;
 }

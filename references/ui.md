@@ -2,7 +2,7 @@
 
 UI means the screens and controls that a person uses. UX means how easy the product is to understand and use. Read this guide for UI/UX tasks only.
 
-Use Impeccable for the lead agent and relevant teammates when available and enabled. Otherwise, use the procedure below. Do not claim that a missing skill ran. Preserve approved colors, fonts, and design rules.
+Use Impeccable for the assigned UI developer and reviewer when available and enabled. Otherwise, use the procedure below. The procedure belongs to those assigned workers; the orchestrator assigns it and consumes the resulting evidence, never inspects, builds or checks screens itself. Do not claim that a missing skill ran. Preserve approved colors, fonts, and design rules.
 
 For a new design, identify the users and their main task. Establish the brand, visual direction, and representative content. Ask about unresolved decisions only when they affect the result.
 

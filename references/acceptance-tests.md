@@ -14,7 +14,7 @@ Reuse the project's test tools and existing tests. Use supported browser control
 
 The developer implements and runs focused checks. The existing independent reviewer owns acceptance findings alongside the code review. A dedicated testing agent is optional for substantial work with a distinct test scope. Share evidence with the visual reviewer; do not repeat browser sessions or create a second review panel without need.
 
-Use the platform's standard review tier for acceptance decisions: Terra high in Codex, Opus high in Claude Code. Routine agents may run predefined checks under that owner's contract. They must not replace independent judgment for the result. The orchestrator verifies requirement coverage and the integrated revision before release.
+Use the platform's standard review tier for acceptance decisions: Terra high in Codex, Opus high in Claude Code. Routine agents may run predefined checks under that owner's contract. They must not replace independent judgment for the result. Requirement coverage and the integrated revision are verified before release by the host's delegated verifier route (GPT-5.6-Sol at medium effort; Opus 5 fallback in Claude Code); the orchestrator dispatches that check, reads its verdict and evidence, and records the outcome. It does not run the verification itself.
 
 ## Define each test briefly
 
@@ -51,6 +51,6 @@ Do not send real messages, charge a card, or alter live customer records without
 
 Send actionable failures to the developer through the active tracker. Recheck the failure and affected flow after repair. Reuse results only when relevant code, dependencies, configuration, and environment are unchanged. Follow the shared bounded failure procedure after two attempts without useful progress.
 
-The orchestrator checks the integrated revision before release. A previous worktree pass may need a focused rerun after integration. Existing release instructions still require live checks and recording of the deployment. Final reconciliation links each requirement to its acceptance evidence and any blocked or deferred work.
+The delegated verifier checks the integrated revision before release; the orchestrator dispatches that check and acts on its verdict. A previous worktree pass may need a focused rerun after integration. Existing release instructions still require live checks and recording of the deployment. Final reconciliation links each requirement to its acceptance evidence and any blocked or deferred work.
 
 Example: complete a lesson, verify the saved completion, reload the dashboard, and confirm that the same learner's progress remains correct. This checks a business outcome beyond visual appearance.

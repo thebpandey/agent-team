@@ -9,6 +9,7 @@ Preparation makes a capability available; it does not load all its instructions 
 | [Serena](https://github.com/oraios/serena) | Mandatory | Semantic navigation; isolated active project/worktree context. Start with a small navigation tool profile; owned edits only after compatibility checks. |
 | [Microsoft Playwright CLI](https://github.com/microsoft/playwright-cli) | Mandatory, including backend projects | Default browser tool. Prepare runtime and browser binaries; use isolated sessions for real visual and interaction verification. Host-required browser controls take precedence. |
 | [ast-grep CLI](https://github.com/ast-grep/ast-grep) | Default | Structural search and scoped rewrites alongside Serena. Positive/negative fixtures, diff and tests verify changes. The separate agent-skill bundle is not approved for installation. |
+| [Graphify](https://github.com/Graphify-Labs/graphify) | Default | Deterministic whole-repository structure graph next to Serena: module clusters, hotspots, blast radius and cross-module paths. Code-only offline profile (`extract . --code-only --no-viz`); no host installers, hooks, semantic backend or automatic MCP registration. See [graphify](graphify.md). |
 | [LeanCTX](https://github.com/yvgude/lean-ctx) | Default, narrowed profile | Compact reads/shell output with exact recovery. No coordination, persistent shared knowledge, model steering, proxy or second tracker. |
 | [Superpowers](https://github.com/obra/superpowers) | Default, selective procedures | Relevant TDD, debugging and existing review/verification loop. Reuse approved plans; do not introduce a second orchestrator or ledger. |
 | [Ponytail](https://github.com/DietrichGebert/ponytail) | Default, local skills | Proportionate readable implementation and overengineering review. No Ponytail MCP or blanket hooks. Requirements/security/accessibility/tests take precedence over line count. |
@@ -33,9 +34,9 @@ Project Kickoff is optional and independent: [thebpandey/project-kickoff](https:
 
 | Assignment | Additional instruction selection |
 | --- | --- |
-| Orchestration | Selected tracker, readiness, dispatch, applicable lifecycle/release; planning only for unresolved gaps |
-| Implementation | Relevant TDD/debugging and Ponytail; Serena/ast-grep/LeanCTX when useful |
-| Independent review | Requirements and code-quality axes, relevant review/verification and Ponytail review; not a new review panel |
+| Orchestration | Selected tracker, readiness, dispatch, applicable lifecycle/release; Graphify impact and parallel-set derivation through the delegated verifier; planning only for unresolved gaps |
+| Implementation | Relevant TDD/debugging and Ponytail; Serena/ast-grep/Graphify/LeanCTX when useful |
+| Independent review | Requirements and code-quality axes, relevant review/verification and Ponytail review; Graphify `affected` against the claimed ownership; not a new review panel |
 | UI implementation/review | Impeccable and actual browser verification; applicable React rules only for React/Next |
 | Recovery | Current task packet and original decision/evidence records; [recovery](recovery.md), not complete old transcripts |
 
@@ -52,6 +53,8 @@ Record selected capability versions and functional readiness in the existing set
 **Impeccable:** Apply relevant audit/critique/polish/repair in the existing UI loop. Initialize or shape only missing design decisions. Image concepts are opt-in. Respect the user's deliberate style, including green/neon themes, while verifying accessibility. Distinguish aesthetic advice, actionable defects and detector execution failures. Prefer a verified prebuilt detector/runtime; do not install Rust/Bun just to compile an optional source route. No blanket per-edit hooks.
 
 **React rules:** Read individual applicable rules rather than compiled whole-collection instructions. Performance priorities are not defect severities. A suggested library is not automatic installation authority; preserve cache freshness and user isolation. Do not claim app speed improvements prove agent-token savings.
+
+**Graphify:** Follow [the code-only integration](graphify.md). Structure questions only: Serena still owns exact symbol bodies, references and edits. Build the graph inside the worktree that owns the code, refresh it before review, and never commit `graphify-out/`. Do not run the host installers or hooks, do not enable semantic extraction, community labeling or a backend, and register the stdio MCP server only on explicit selection. A graph edge is a lead to verify, not evidence of behavior.
 
 **LeanCTX:** Follow [the narrowed integration](lean-ctx.md). Do not repeat discovery already answered by Serena/ast-grep. Recover original output for verification, not just a compressed summary. A tool denial is not permission to rerun through another wrapper.
 

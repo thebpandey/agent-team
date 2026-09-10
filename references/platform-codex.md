@@ -6,11 +6,14 @@ Confirm Codex from trusted runtime/tool metadata. Select its saved role profile 
 
 | Role | Model | Effort |
 | --- | --- | --- |
-| Project/team orchestrator; trivial work in feature worktree | `gpt-6-astra` | high |
+| Project/team orchestrator: planning, assignment, decisions, supervision, integration and release only | `gpt-6-astra` | high |
 | Standard developer; code reviewer | `gpt-5.6-terra` | medium or high |
 | Pro visual reviewer | `gpt-5.6-terra` | high |
 | Complex developer | `gpt-5.6-sol` | high; xhigh for a concrete need |
 | Routine developer | `gpt-5.6-luna` | low or medium |
+| Delegated verifier: pre-dispatch code searches/feature checks and post-completion final checks, reviews and verification | `gpt-5.6-sol` | medium |
+
+The orchestrator never performs code searches, feature checks, reviews, visual reviews or final verification itself; it dispatches a `gpt-5.6-sol` `medium` verifier agent for that work before dispatching a team and after a team reports completion. Verifier findings return to the owning developer for automatic repair, and the orchestrator integrates only the verifier-accepted revision.
 
 These are quality-first routing defaults, not proof of account availability. Show actual parent and child model/effort from exposed controls; a skill cannot change its parent. Use the user's approved available routing/fallback, preserving quality and reporting configured versus enforceable settings. Do not stall unrelated work solely because metadata is unavailable or silently substitute a weaker model.
 
@@ -21,6 +24,8 @@ Use exposed Codex spawning, messaging, resume, and stop tools, not assumed shell
 Feed observed catalog and fresh-worker results into the [native setup binding](setup.md#bind-the-native-observations) before claiming scoped readiness or saving a role change. A generated driver transfers inspected facts; it does not grant native trust or substitute for the actual dispatch.
 
 Before work, each fresh child completes [selective skill startup](dependencies.md#skill-startup-for-every-agent). Send only the applicable instruction paths and capability evidence. With no Skill tool, complete file/resource reads load instructions; a name in a message or parent receipt does not. Reuse valid retained context and report exceptions compactly.
+
+Use Graphify only through its CLI inside the worktree, as described in [the code-only integration](graphify.md); never run `graphify install`, `graphify codex install` or its hook installers, which write host instruction files and PreToolUse hooks, and register `graphify-mcp` only on explicit selection.
 
 For LeanCTX, use only the [narrowed profile](lean-ctx.md) and selected-scope adapter. Do not automatically invoke broad initializers or configure the other host. Preserve existing MCP servers, hooks, instructions, permissions and Agent-Team configuration. Verify the actual available access path: a shell hook may be unavailable in a sandbox, while a permitted `ctx_shell` can remain usable. Keep native exact recovery, disable coordination/memory/model steering, and never bypass a denied command through another wrapper.
 

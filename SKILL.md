@@ -1,13 +1,15 @@
 ---
 name: agent-team
 metadata:
-  version: "7.0.2"
+  version: "7.1.0"
 description: Use when coordinating development in Codex or Claude Code, continuing Agent-Team tasks, or requesting agent-team setup, settings, start, status, pause, resume, review, or release.
 ---
 
 # Agent-Team
 
 One project orchestrator owns scope, task admission, integration and release. Delegate bounded implementation and independent review through the actual host controls. Deliver verified work with small task-specific contexts; keep engineering judgment with the orchestrator and routine state checks in the bundled helpers.
+
+The orchestrator is strictly an orchestrator. It plans with the user, decides everything that can be decided without the user, assigns tasks to teams intelligently, identifies which tasks are independent so they run in parallel across teams, and keeps every team under continuous active supervision. It does not search code, check features, review, visually inspect or verify work itself: before dispatching a planned task and after a team reports completion, it delegates those checks to the host's delegated verifier route described in [team dispatch](references/team.md#orchestrator-conduct) and each adapter ([Claude Code](references/platform-claude.md#delegated-verification), [Codex](references/platform-codex.md)): GPT-5.6-Sol at medium effort, with the Opus 5 fallback in Claude Code. A worker update or handoff is an event to act on immediately, never a reason to pause orchestration or end the turn while teams are active.
 
 This complete package is Pro. Agent Team Lite is a separate dependency-free package; do not copy Pro-only browser/acceptance/preview procedures or dependencies into it. Publication always needs authority for its destination.
 
@@ -41,7 +43,7 @@ First use automatically prepares missing mandatory Serena and Microsoft Playwrig
 
 Each assignment contains task IDs, acceptance, exclusive paths/worktree, input revision, relevant decisions and prohibitions, actual model/effort, required skill paths, evidence destination and next action. Fresh workers read their own applicable instructions; retained workers reuse still-valid context. Do not fork the full conversation or load every prepared skill into every agent.
 
-Use the smallest useful team within actual host capacity, reserving review capacity. Default to a developer and independent reviewer; parallelize independent work in separate worktrees. One writer owns each shared file or resource. Only the orchestrator spawns; do not add another scheduler, database or agent hierarchy.
+Use the smallest useful team within actual host capacity, reserving review capacity. Default to a developer and independent reviewer. Before dispatch, derive the parallel set from the tracker: tasks with no unmet dependencies and disjoint writable paths/resources run at once on separate teams in separate worktrees; tasks that share an entrypoint, schema or resource serialize behind one writer. Have the delegated verifier confirm that ownership is actually disjoint with Graphify `affected` and `path` on the integration worktree graph before dispatch. Send any pre-dispatch code search, feature check or review to the delegated verifier rather than doing it in the orchestrator context. One writer owns each shared file or resource. Only the orchestrator spawns; do not add another scheduler, database or agent hierarchy.
 
 ## Execute and repair continuously
 
@@ -53,7 +55,7 @@ Continuous runs refill from authorized eligible tasks without new prompts. A pro
 
 ## Verify, retain and recover
 
-Tests prove the checked revision and environment only. Keep unavailable, failed, timed-out and unrun checks distinct. The [lifecycle hooks](references/hooks.md) add bounded enforcement and evidence. Read-only status/health never install, repair, checkpoint, dispatch or start servers.
+Tests prove the checked revision and environment only. Keep unavailable, failed, timed-out and unrun checks distinct. Final checks after a team finishes (acceptance re-run, review, visual review, feature verification) are delegated to the verifier route; the orchestrator reads the verifier's compact verdict and evidence pointer, routes findings back to the owning developer, and integrates only the accepted revision. The [lifecycle hooks](references/hooks.md) add bounded enforcement and evidence. Read-only status/health never install, repair, checkpoint, dispatch or start servers.
 
 Cleanup and deployment are separate. After verified integration, reclaim only safely stopped, clean task-owned resources with retained evidence; preserve dirty/untracked/ignored user files and required previews. Publish only to the authorized destination through required gates.
 

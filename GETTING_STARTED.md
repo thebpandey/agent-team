@@ -92,7 +92,7 @@ Setup reuses the Kickoff handoff, an existing plan, or a standalone task. It pre
 | 6 | [Beads](https://github.com/gastownhall/beads), if selected | Verify its actual backend; do not assume an external database server is always required. |
 | 7 | Optional additions | Install only after selection. |
 
-Default-selected profiles: [ast-grep CLI](https://github.com/ast-grep/ast-grep), narrowed [LeanCTX](https://github.com/yvgude/lean-ctx), selective [Superpowers](https://github.com/obra/superpowers), local [Ponytail](https://github.com/DietrichGebert/ponytail), [Impeccable](https://github.com/pbakaus/impeccable) skill/detector, and individual [React Best Practices](https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices).
+Default-selected profiles: [ast-grep CLI](https://github.com/ast-grep/ast-grep), code-only [Graphify](https://github.com/Graphify-Labs/graphify) for offline repository structure, blast radius and cross-module paths, narrowed [LeanCTX](https://github.com/yvgude/lean-ctx), selective [Superpowers](https://github.com/obra/superpowers), local [Ponytail](https://github.com/DietrichGebert/ponytail), [Impeccable](https://github.com/pbakaus/impeccable) skill/detector, and individual [React Best Practices](https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices).
 
 Setup shows grouped progress, not a separate approval question for each already-selected tool. Required missing capabilities remain pending until useful functional checks pass. Optional [Context7](https://github.com/upstash/context7) supplies library docs; the dashboard is also opt-in.
 

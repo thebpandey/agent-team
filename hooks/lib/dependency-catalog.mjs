@@ -40,6 +40,13 @@ export const DEPENDENCY_CATALOG = Object.freeze([
     functionalCheck: "positive-negative-structural-pattern",
   },
   {
+    id: "graphify", name: "Graphify", disposition: "default", version: "0.9.57", prerequisites: ["uv"],
+    install: { kind: "uv-tool", package: "graphifyy", version: "0.9.57", python: "3.12", source: "https://pypi.org/project/graphifyy/0.9.57/" },
+    profile: { codeOnly: true, viz: false, llmBackend: false, hostInstall: false, hooks: false, mcp: "optional-stdio" },
+    boundary: "Build graphs per worktree with extract --code-only --no-viz; graphify install/hook/claude/codex installers, semantic extraction and MCP registration remain separate explicit decisions.",
+    functionalCheck: "code-graph-traversal",
+  },
+  {
     id: "lean-ctx", name: "LeanCTX", disposition: "default", version: "3.10.1", prerequisites: [],
     install: {
       kind: "github-release",

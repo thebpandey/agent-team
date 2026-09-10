@@ -143,6 +143,23 @@ test("real isolated Serena package performs an MCP symbol lookup", { skip: !enab
   assert.equal(functional.status, "passed", functional.evidence);
 });
 
+test("real isolated Graphify package builds and traverses an offline code graph", { skip: !enabled }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-real-graphify-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const paths = { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot: path.join(root, "skills") };
+  const runner = createDependencyRunner({ host: "codex", scope: "project", paths });
+  const uv = CATALOG_BY_ID.get("uv");
+  const graphify = CATALOG_BY_ID.get("graphify");
+
+  assert.equal((await runner({ dependency: uv, phase: "install" })).status, "passed");
+  const installed = await runner({ dependency: graphify, phase: "install" });
+  assert.equal(installed.status, "passed", installed.evidence);
+  assert.equal((await runner({ dependency: graphify, phase: "probe" })).version, graphify.version);
+  const functional = await runner({ dependency: graphify, phase: "functional", check: graphify.functionalCheck });
+
+  assert.equal(functional.status, "passed", functional.evidence);
+});
+
 test("real pinned Project Kickoff source prepares its complete independent skill", { skip: !enabled }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-real-kickoff-"));
   t.after(() => rm(root, { recursive: true, force: true }));

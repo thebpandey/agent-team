@@ -1,5 +1,14 @@
 # Changelog
 
+## 7.1.0 - 2026-09-10
+
+Version 7.1.0 makes the orchestrator a pure orchestrator and routes verification to a delegated verifier.
+
+- Add the delegated verifier route: pre-dispatch code searches/feature checks and post-completion final checks, reviews and verification go to `gpt-5.6-sol` at medium effort (through the installed Codex plugin in Claude Code, natively in Codex), with a `claude-opus-5` high fallback in Claude Code when the plugin route is unavailable or fails.
+- Instruct the orchestrator to plan with the user, decide autonomously within authority, derive the parallel task set from dependencies and disjoint ownership, and keep supervising all teams without pausing on worker updates or handoffs.
+- Add [Graphify](https://github.com/Graphify-Labs/graphify) 0.9.57 as a default dependency, prepared automatically through uv with a code-only offline profile: per-worktree `extract . --code-only --no-viz` structure graphs for blast radius, cross-module paths and hotspots next to Serena's precise symbol work, verified by a real extraction and traversal gate. Its host installers, hooks, semantic backends and MCP registration stay separate explicit decisions.
+- Relax the LeanCTX compatibility profile to `shell_security = "warn"` so interpreter heredocs and inline `node -e`/`python3 -c` are permitted, and add `cmp` to the additive allowlist.
+
 ## 7.0.2 - 2026-09-09
 
 Version 7.0.2 improves large-project initialization, Beads reliability, and onboarding documentation.

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "agent-team",
-  "version": "7.0.2",
+  "version": "7.1.0",
   "repository": "https://github.com/thebpandey/agent-team",
   "rootFiles": [
     "CHANGELOG.md",
@@ -36,6 +36,8 @@
     "assets/claude-agents/agent-team-visual-tester.md",
     "assets/dashboard/dashboard.css",
     "assets/dashboard/dashboard.js",
+    "assets/guide/agent-team-banner-ultrawide.png",
+    "assets/guide/agent-team-banner-ultrawide.webp",
     "assets/guide/agent-team-essence-16x9.png",
     "assets/guide/agent-team-essence-16x9.webp",
     "assets/guide/agent-team-harness-flow-3x4.png",
@@ -88,6 +90,7 @@
     "references/actions.md",
     "references/code-explanations.md",
     "references/dependencies.md",
+    "references/graphify.md",
     "references/help.md",
     "references/hooks.md",
     "references/lean-ctx.md",

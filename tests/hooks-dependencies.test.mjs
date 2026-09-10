@@ -34,7 +34,7 @@ test("catalog selects mandatory, defaults, tracker dependency, and explicit opti
   const result = resolveCatalogSelection?.({ tracker: { kind: "beads" }, optionals: ["context7"] });
 
   assert.deepEqual(result.selected.map(({ id }) => id), [
-    "uv", "serena", "playwright-cli", "ast-grep", "lean-ctx", "superpowers", "ponytail", "impeccable", "react-best-practices", "beads", "context7",
+    "uv", "serena", "playwright-cli", "ast-grep", "graphify", "lean-ctx", "superpowers", "ponytail", "impeccable", "react-best-practices", "beads", "context7",
   ]);
   assert.deepEqual(result.optional.map(({ id }) => id), ["project-kickoff", "beads-viewer"]);
   assert.deepEqual(result.excluded.map(({ id }) => id), [
@@ -221,13 +221,19 @@ test("instruction selection is task-specific and never reopens an approved plan"
   const { selectInstructions } = await import("../hooks/lib/dependencies.mjs");
 
   assert.deepEqual(selectInstructions({ role: "developer", task: { kind: "backend", planning: "approved" } }), [
-    "superpowers:test-driven-development", "superpowers:systematic-debugging", "ponytail",
+    "superpowers:test-driven-development", "superpowers:systematic-debugging", "ponytail", "graphify",
   ]);
   assert.deepEqual(selectInstructions({ role: "visual_reviewer", task: { kind: "react", planning: "approved" } }), [
     "superpowers:verification-before-completion", "impeccable", "react-best-practices", "playwright-cli",
   ]);
   assert.ok(!selectInstructions({ role: "developer", task: { kind: "backend", planning: "approved" } }).some((id) => /brainstorm|impeccable|react|playwright/.test(id)));
   assert.ok(selectInstructions({ role: "project_orchestrator", task: { kind: "planning", planning: "unresolved" } }).includes("superpowers:brainstorming"));
+  // The structural graph is for code, and routine single-file work does not need it.
+  for (const role of ["reviewer", "project_orchestrator"]) {
+    assert.ok(selectInstructions({ role, task: { kind: "backend", planning: "approved" } }).includes("graphify"), role);
+  }
+  assert.ok(!selectInstructions({ role: "developer", task: { kind: "text", planning: "approved" } }).includes("graphify"));
+  assert.ok(!selectInstructions({ role: "routine_developer", task: { kind: "backend", planning: "approved" } }).includes("graphify"));
 });
 
 test("dependency inspection groups recorded evidence without writing or running preparation", async () => {
@@ -236,9 +242,10 @@ test("dependency inspection groups recorded evidence without writing or running 
   const setupPath = path.join(directory, "setup.json");
   const source = `${JSON.stringify({
     skill: "agent-team", projectId: "p", version: 8,
-    dependencies: { hosts: { codex: { scope: "project", selected: ["serena", "playwright-cli", "superpowers"], receipts: [
+    dependencies: { hosts: { codex: { scope: "project", selected: ["serena", "playwright-cli", "graphify", "superpowers"], receipts: [
       { id: "serena", status: "ready", functional: "passed", availableToWorker: "passed" },
       { id: "playwright-cli", status: "failed", functional: "failed", availableToWorker: "not_run", boundary: "browser launch failed" },
+      { id: "graphify", status: "ready", functional: "passed", availableToWorker: "passed" },
       { id: "superpowers", status: "ready", functional: "passed", availableToWorker: "passed" },
     ] } } },
   }, null, 2)}\n`;
@@ -247,8 +254,9 @@ test("dependency inspection groups recorded evidence without writing or running 
   const overview = await inspectDependenciesFile({ setupPath, host: "codex" });
 
   assert.equal(await readFile(setupPath, "utf8"), source);
+  // Graphify is a prepared CLI, so its receipt belongs with the runtimes and tools, not the skills.
   assert.deepEqual(overview.groups.map(({ id, ready, failed }) => ({ id, ready, failed })), [
-    { id: "runtimes_tools", ready: 1, failed: 1 },
+    { id: "runtimes_tools", ready: 2, failed: 1 },
     { id: "skills", ready: 1, failed: 0 },
     { id: "project_readiness", ready: 0, failed: 1 },
   ]);
@@ -276,6 +284,140 @@ test("pinned preparation plans target the selected scope and avoid broad initial
   assert.equal(lean.install.length, 1);
   assert.ok(!JSON.stringify(lean.install).match(/\b(init|wrap|onboard|setup|proxy)\b/));
   assert.equal(lean.profile.coordination, false);
+});
+
+test("Graphify preparation installs the pinned uv tool without any host installer or hook step", async () => {
+  const { buildPreparationPlan } = await import("../hooks/lib/dependencies.mjs");
+  const paths = { projectRoot: "/work/project", toolRoot: "/work/project/.agent-team/tools", skillRoot: "/work/project/.agents/skills" };
+
+  const plan = buildPreparationPlan({ dependencyId: "graphify", host: "claude-code", scope: "user", paths });
+
+  assert.deepEqual(plan.install, [{
+    file: path.join(paths.toolRoot, "bin", "uv"),
+    args: ["tool", "install", "--python", "3.12", "graphifyy==0.9.57"],
+  }]);
+  assert.equal(plan.registration, undefined);
+  assert.equal(plan.profile.codeOnly, true);
+  assert.equal(plan.profile.llmBackend, false);
+  assert.ok(!JSON.stringify(plan.install).match(/\b(hook|claude|codex)\b/));
+  assert.equal(plan.functional.id, "code-graph-traversal");
+  assert.ok(plan.functional.steps.some((step) => step.includes("--code-only --no-viz")));
+});
+
+// Mirrors pinned 0.9.57 output: ids, parenthesised labels, relations and the traversal text all
+// come from the graph the fixture wrote, so a wrong operand or a wrong edge cannot still pass.
+const GRAPHIFY_FIXTURE = `#!/usr/bin/env node
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// A backend key in the environment would make extraction non-deterministic and online.
+for (const key of ${JSON.stringify(["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "MOONSHOT_API_KEY", "DEEPSEEK_API_KEY", "OLLAMA_BASE_URL"])}) {
+  if (process.env[key] !== undefined) process.exit(7);
+}
+const args = process.argv.slice(2);
+appendFileSync(process.argv[1] + ".calls", JSON.stringify(args) + "\\n");
+const variant = readFileSync(process.argv[1] + ".variant", "utf8").trim();
+const edge = (source, target, relation, confidence = "EXTRACTED") => ({ source, target, relation, confidence });
+if (args[0] === "extract") {
+  mkdirSync("graphify-out", { recursive: true });
+  writeFileSync("graphify-out/graph.json", JSON.stringify({
+    directed: true, multigraph: false, graph: {}, hyperedges: [],
+    nodes: [
+      { id: "db_pool", label: "Pool" }, { id: "db_pool_connect", label: ".connect()" },
+      { id: "app_start_server", label: "start_server()" }, { id: "app_load_config", label: "load_config()" },
+    ],
+    links: [
+      edge("db_pool", "db_pool_connect", "method"),
+      ...(variant === "missing-edge" ? [] : [edge("db_pool_connect", "app_start_server", "calls")]),
+      edge("app_start_server", "app_load_config", "calls"),
+      ...(variant === "inferred" ? [edge("db_pool", "app_load_config", "calls", "INFERRED")] : []),
+    ],
+  }));
+  process.exit(0);
+}
+const graph = JSON.parse(readFileSync("graphify-out/graph.json", "utf8"));
+const labelOf = (id) => graph.nodes.find((node) => node.id === id).label;
+const plain = (label) => label.replace(/^\\./, "").replace(/\\(\\)$/, "");
+const find = (name) => graph.nodes.find((node) => node.label === name || plain(node.label) === name);
+if (args[0] === "path") {
+  const [from, to] = [find(args[1]), find(args[2])];
+  if (!from || !to) process.exit(3);
+  const trails = [[from.id]];
+  const seen = new Set([from.id]);
+  while (trails.length) {
+    const trail = trails.shift();
+    const last = trail.at(-1);
+    if (last === to.id) {
+      const hops = trail.slice(1).map((id, index) => {
+        const link = graph.links.find(({ source, target }) => [source, target].includes(trail[index]) && [source, target].includes(id));
+        return \`--\${link.relation} [\${link.confidence}]--> \${labelOf(id)}\`;
+      });
+      process.stdout.write(\`Shortest path (\${hops.length} hops):\\n  \${[labelOf(trail[0]), ...hops].join(" ")}\\n\`);
+      process.exit(0);
+    }
+    for (const { source, target } of graph.links) {
+      for (const [a, b] of [[source, target], [target, source]]) {
+        if (a === last && !seen.has(b)) { seen.add(b); trails.push([...trail, b]); }
+      }
+    }
+  }
+  process.exit(4);
+}
+if (args[0] === "explain") {
+  const node = find(args[1]);
+  if (!node) process.exit(3);
+  const connections = graph.links.filter(({ source, target }) => [source, target].includes(node.id))
+    .map((link) => link.source === node.id
+      ? \`  --> \${labelOf(link.target)} [\${link.relation}] [\${link.confidence}]\`
+      : \`  <-- \${labelOf(link.source)} [\${link.relation}] [\${link.confidence}]\`);
+  process.stdout.write(\`Node: \${node.label}\\n  ID:        \${node.id}\\nConnections (\${connections.length}):\\n\${connections.join("\\n")}\\n\`);
+  process.exit(0);
+}
+process.exit(9);
+`;
+
+test("default Graphify gate extracts an offline code graph and traverses it", async (t) => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const { CATALOG_BY_ID } = await import("../hooks/lib/dependency-catalog.mjs");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-graphify-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const previous = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = "sentinel-must-not-reach-graphify";
+  t.after(() => {
+    if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previous;
+  });
+  const gate = async (variant) => {
+    const root = path.join(directory, variant);
+    const executable = path.join(root, "graphify-fixture.mjs");
+    await mkdir(root, { recursive: true });
+    await writeFile(executable, GRAPHIFY_FIXTURE);
+    await writeFile(`${executable}.variant`, `${variant}\n`);
+    await chmod(executable, 0o755);
+    const paths = { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot: path.join(root, "skills") };
+    const runner = createDependencyRunner({ host: "codex", scope: "project", paths });
+    const result = await runner({ dependency: { ...CATALOG_BY_ID.get("graphify"), executable }, phase: "functional", check: "code-graph-traversal" });
+    const calls = (await readFile(`${executable}.calls`, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    return { result, calls };
+  };
+
+  const complete = await gate("complete");
+  const inferred = await gate("inferred");
+  const missing = await gate("missing-edge");
+
+  assert.equal(complete.result.status, "passed", complete.result.evidence);
+  assert.match(complete.result.evidence, /EXTRACTED-only.*Pool -> load_config.*explain start_server/);
+  assert.deepEqual(complete.calls, [
+    ["extract", ".", "--code-only", "--no-viz"],
+    ["path", "Pool", "load_config"],
+    ["explain", "start_server"],
+  ]);
+  // An inferred edge means a semantic backend ran, so the offline profile no longer holds.
+  assert.equal(inferred.result.status, "failed");
+  assert.match(inferred.result.evidence, /INFERRED.*EXTRACTED edges only/);
+  assert.deepEqual(inferred.calls, [["extract", ".", "--code-only", "--no-viz"]]);
+  // A graph without the known call edge is not a usable map, however well the CLI exits.
+  assert.equal(missing.result.status, "failed");
+  assert.match(missing.result.evidence, /\.connect\(\) --calls--> start_server\(\)/);
+  assert.deepEqual(missing.calls, [["extract", ".", "--code-only", "--no-viz"]]);
 });
 
 test("successful installer output is not ready until a post-install version probe passes", async () => {

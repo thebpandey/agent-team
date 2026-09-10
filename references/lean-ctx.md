@@ -27,8 +27,11 @@ Before launching a new process-local MCP profile, inspect whether the real user'
 ```toml
 shell_activation = "agents-only"
 shell_hook_mode = "rewrite"
-shell_security = "enforce"
+# warn: interpreter heredocs (python3 <<EOF) and inline code (node -e, python3 -c) are permitted; unlisted commands and dangerous patterns are logged, not blocked.
+shell_security = "warn"
 shell_allow_writes = false
+# Additive; managed with `lean-ctx allow <cmd>`. cmp is required for byte-exact recovery checks.
+shell_allowlist_extra = ["cmp"]
 structure_first = true
 read_redirect = "auto"
 read_dedup = "auto"
@@ -121,6 +124,8 @@ enabled = false
 [updates]
 auto_update = false
 ```
+
+`shell_security = "warn"` is deliberate: LeanCTX has no separate switch for its interpreter-eval hard block, and Agent-Team workers legitimately run interpreter heredocs and `node -e`/`python3 -c` one-liners for fixtures and checks. In warn mode the allowlist and dangerous-pattern detector still log every hit, and Agent-Team's own PreToolUse hook remains the enforcement layer for critical operations. `cmp` is added through `shell_allowlist_extra` so byte-exact recovery comparisons are not blocked. A worker still may not alter the allowlist or security mode itself.
 
 This profile keeps compact discovery, `ctx_shell`, shell-hook shaping, and `ctx_expand`, while removing the broader `ctx_execute` and `shell` execution aliases, the listed LeanCTX memory and coordination tools, and the universal `ctx_call` gateway from the advertised surface. `disabled_tools` controls visibility; it is not a server-side authorization boundary, so the Agent-Team contract also prohibits direct or nested use of those tools. The remaining settings disable decision tracking, edit tools, output-style steering, native-tool denial, and request proxying. `shadow_mode = false` is a code-quality guard: native read/search tools stay available for exact recovery and diagnosis. `tee_mode = "always"` keeps original shell output recoverable for the archive retention period. Do not add a project `.lean-ctx.toml` for Agent-Team. If one already exists, inspect it and leave security-sensitive overrides inactive until the user explicitly trusts the workspace.
 
