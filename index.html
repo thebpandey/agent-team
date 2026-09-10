@@ -17,8 +17,10 @@
     * { box-sizing:border-box; }
     body { margin:0; min-height:100vh; display:grid; place-items:center; padding:2rem 1.25rem;
            color:var(--ink); background:var(--canvas); font:400 1rem/1.65 var(--sans); }
-    main { width:min(640px,100%); padding:clamp(1.75rem,5vw,2.75rem); border:1px solid var(--line);
-           border-radius:14px; background:var(--surface); box-shadow:var(--shadow); }
+    main { width:min(760px,100%); border:1px solid var(--line); border-radius:14px; overflow:hidden;
+           background:var(--surface); box-shadow:var(--shadow); }
+    .banner { width:100%; height:auto; display:block; border-bottom:1px solid var(--line); }
+    .card { padding:clamp(1.75rem,5vw,2.75rem); }
     .version { display:inline-flex; align-items:center; padding:.32rem .7rem; border:1px solid #b9c9f9;
                border-radius:999px; color:var(--blue-dark); background:var(--blue-soft); font-size:.82rem; font-weight:700; }
     h1 { margin:1rem 0 .75rem; font-size:clamp(2rem,6vw,2.9rem); font-weight:780; letter-spacing:-.03em; line-height:1.1; }
@@ -37,6 +39,8 @@
 </head>
 <body>
   <main>
+    <img class="banner" src="assets/guide/agent-team-banner-ultrawide.webp" width="1800" height="600" alt="Blueprint banner for Agent-Team version 7.0.2. Pencil sketch panels show ready work with Morpheus as orchestrator holding an approved tracker, assign with task card 42, isolated build with Neo, Trinity and Tank in separate worktrees, independent review with Agent Smith reading findings, and verified integration with a checked cube placed into the integration branch crate. A red release gate card reads authority required.">
+    <div class="card">
     <span class="version">Version 7.0.2</span>
     <h1>Agent-Team</h1>
     <p>Agent-Team is a skill for Codex and Claude Code. One orchestrator owns the plan and splits it into small tasks. Developers build each task in a separate worktree. A reviewer checks the result. Only verified work reaches the integration branch.</p>
@@ -48,6 +52,7 @@
       <li><a href="https://thebpandey.github.io/project-kickoff/">Project Kickoff, which plans the work first</a></li>
     </ul>
     <footer>Created by <a href="https://github.com/thebpandey">thebpandey</a>.</footer>
+    </div>
   </main>
 </body>
 </html>
