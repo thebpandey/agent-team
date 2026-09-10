@@ -16,6 +16,18 @@ const conflict = (reason) => ({ status: "conflict", reason });
 const finished = new Set(["verified", "integrated", "deployed", "closed", "done"]);
 const unclaimed = new Set(["", "none", "unassigned", "-"]);
 const split = (value) => Array.isArray(value) ? value : String(value ?? "").split(/\s*,\s*/).filter((id) => id && !["none", "-"].includes(id));
+const ref = (value) => typeof value === "string" && (/^refs\/heads\/[\w./-]+$/.test(value)
+  || (/^refs\/tags\/[A-Za-z0-9][\w./-]*$/.test(value) && !/[./]$|\.\.|\/\//.test(value.slice("refs/tags/".length))));
+const configuredRemoteBaseRef = (value) => typeof value === "string" && /^[A-Za-z0-9][\w./-]*$/.test(value)
+  && !value.startsWith("refs/") && !/[./]$|\.\.|\/\//.test(value) ? `refs/heads/${value}` : undefined;
+const provenance = (value, { ownerSessionId, revision, taskIds }) => value && typeof value === "object"
+  && typeof value.source === "string" && value.source.trim() && value.source.length <= 256
+  && value.scope === "integration" && value.ownerSessionId === ownerSessionId && value.revision === revision
+  && Array.isArray(value.taskIds) && JSON.stringify([...value.taskIds].sort()) === JSON.stringify([...taskIds].sort());
+const recovery = (value, { revision, taskIds }) => value && value.status === "reconciled" && value.revision === revision
+  && Array.isArray(value.taskIds) && JSON.stringify([...value.taskIds].sort()) === JSON.stringify([...taskIds].sort());
+const preview = (value, revision) => value && typeof value.required === "boolean"
+  && (!value.required || value.approvedRevision === revision);
 
 function pendingAffectsTask(entry, task, canonical, project) {
   const taskIds = [...(entry.taskId ? [entry.taskId] : []), ...(Array.isArray(entry.taskIds) ? entry.taskIds : [])];
@@ -295,7 +307,7 @@ export async function transitionTask(project, request, options = {}) {
 export async function recordGateEvidence(project, request, options = {}) {
   const { budget } = options;
   const bounded = (action) => budget ? budget.run(action) : action();
-  return mutateOperationalState(project, request, async (state) => {
+  return mutateOperationalState(project, request, async (state, canonicalState) => {
     if (!["completion", "integration", "release"].includes(request.gate)) return conflict("unsupported_gate");
     const canonical = await loadCanonicalTracker(project, options);
     if (canonical.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable" };
@@ -325,6 +337,27 @@ export async function recordGateEvidence(project, request, options = {}) {
         review: { status: "passed", revision, taskId },
         checks: checks.map(({ name, status, revision: checkRevision, taskId: checkTaskId }) => ({ name, status, revision: checkRevision, taskId: checkTaskId })),
       };
+    }
+    if (request.gate === "integration") {
+      const remote = evidence.remote;
+      const ownerSessionId = state.integration?.ownerSessionId;
+      const expectedBaseRef = configuredRemoteBaseRef(state.integration?.baseRef);
+      if (!remote || typeof remote !== "object" || typeof remote.name !== "string" || !remote.name.trim() || remote.name.length > 128
+        || remote.baseRef !== expectedBaseRef || !ref(remote.targetRef) || typeof remote.revision !== "string" || !/^[0-9a-f]{40,64}$/i.test(remote.revision)
+        || (remote.targetAbsent === true ? remote.targetRevision !== undefined : typeof remote.targetRevision !== "string" || !/^[0-9a-f]{40,64}$/i.test(remote.targetRevision))
+        || ownerSessionId !== canonicalState.registry.integrationOwner
+        || !provenance(evidence.authorization, { ownerSessionId, revision, taskIds: request.taskIds })
+        || !recovery(evidence.recovery, { revision, taskIds: request.taskIds }) || !preview(evidence.preview, revision)
+        || typeof evidence.remoteMainDeploys !== "boolean") return conflict("integration_evidence_mismatch");
+      const observedAt = new Date().toISOString();
+      const authorization = { source: evidence.authorization.source, scope: "integration", ownerSessionId, revision,
+        taskIds: [...request.taskIds].sort(), observedAt };
+      state.integration = { ...state.integration, authorized: true, expectedRevision: revision, baseRevision: remote.revision,
+        remoteName: remote.name, baseRemoteRef: remote.baseRef, remoteRef: remote.targetRef,
+        ...(remote.targetAbsent === true ? { targetAbsent: true, remoteRevision: undefined } : { remoteRevision: remote.targetRevision, targetAbsent: false }),
+        taskIds: [...request.taskIds].sort(), authorization, evidenceAt: observedAt, deltaClean: true, recoveryReconciled: true,
+        updatesRemoteMain: remote.targetRef === "refs/heads/main", remoteMainDeploys: evidence.remoteMainDeploys,
+        preview: evidence.preview.required ? { required: true, approvedRevision: revision } : { required: false } };
     }
     const current = await loadCanonicalTracker(project, options);
     if (current.tracker.status !== "current" || current.tracker.fingerprint !== canonical.tracker.fingerprint) return conflict("stale_tracker");

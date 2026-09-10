@@ -53,7 +53,22 @@ function gitOperation(tokens) {
     if (tokens[cursor] === "-C") repository = tokens[++cursor];
     cursor += 1;
   }
-  return { command: tokens[cursor], repository };
+  return { command: tokens[cursor], repository, commandIndex: cursor };
+}
+
+function pushOperation(tokens, git) {
+  const arguments_ = tokens.slice(git.commandIndex + 1);
+  const control = tokens.some((token) => [";", "|", "&"].includes(token));
+  const force = arguments_.some((token) => /^--force(?:$|=|-)/.test(token)
+    || (/^-[^-]/.test(token) && token.slice(1).includes("f")));
+  const positional = arguments_.filter((token) => !token.startsWith("-"));
+  const [remote, refspec, ...extra] = positional;
+  const branch = typeof refspec === "string" && refspec.match(/^HEAD:((?:refs\/heads\/|(?!refs\/))[\w./-]+)$/);
+  const tag = typeof refspec === "string" && refspec.match(/^HEAD:refs\/tags\/([\w./-]+)$/);
+  const validTag = tag && /^[A-Za-z0-9][\w./-]*$/.test(tag[1]) && !/[./]$|\.\.|\/\//.test(tag[1]);
+  const targetRef = validTag ? `refs/tags/${tag[1]}` : branch ? `refs/heads/${branch[1].replace(/^refs\/heads\//, "")}` : undefined;
+  return { valid: !control && !force && typeof remote === "string" && Boolean(targetRef) && extra.length === 0,
+    ...(typeof remote === "string" ? { remote } : {}), ...(targetRef ? { targetRef } : {}) };
 }
 
 function sqlClient(tokens) {
@@ -135,9 +150,9 @@ export function classifyOperation(event, mappings = {}, { tracker } = {}) {
     }
   }
   const git = gitOperation(tokens);
-  if (git?.command === "push") return { kind: "integration", repository: git.repository };
+  if (git?.command === "push") return { kind: "integration", repository: git.repository, method: "push", push: pushOperation(tokens, git) };
   const gh = tokens.findIndex((token) => executable(token) === "gh");
-  if (gh !== -1 && tokens[gh + 1] === "pr" && ["create", "merge"].includes(tokens[gh + 2])) return { kind: "integration" };
+  if (gh !== -1 && tokens[gh + 1] === "pr" && ["create", "merge"].includes(tokens[gh + 2])) return { kind: "integration", method: "pull_request" };
   if (gh !== -1 && tokens[gh + 1] === "release" && tokens[gh + 2] === "create") return { kind: "release", process: "gh-release" };
   const packageManager = tokens.find((token) => ["npm", "pnpm"].includes(executable(token)));
   if (packageManager && tokens.includes("publish")) return { kind: "release", process: executable(packageManager) };

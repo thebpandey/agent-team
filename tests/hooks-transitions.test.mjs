@@ -480,6 +480,94 @@ if (process.argv[2] === "writer") {
     }
   });
 
+  test("integration gate evidence maps only exact owner-authorized remote-base provenance", async (context) => {
+    const invalid = [
+      ["missing provenance", (evidence) => { delete evidence.authorization; }],
+      ["malformed provenance", (evidence) => { evidence.authorization = { source: "" }; }],
+      ["wrong owner", (evidence) => { evidence.authorization.ownerSessionId = "developer-session"; }],
+      ["wrong revision", (evidence) => { evidence.authorization.revision = "deadbeef"; }],
+      ["wrong task set", (evidence) => { evidence.authorization.taskIds = ["AT-002"]; }],
+      ["substituted base ref", (evidence) => { evidence.remote.baseRef = "refs/heads/feature"; }],
+      ["missing recovery", (evidence) => { delete evidence.recovery; }],
+      ["missing deployment disposition", (evidence) => { delete evidence.remoteMainDeploys; }],
+      ["failed artifact", (evidence) => { evidence.status = "failed"; }],
+    ];
+    for (const [name, invalidate] of invalid) await context.test(name, async () => {
+      const { recordGateEvidence } = await api();
+      const value = await fixture();
+      const evidencePath = path.join(value.root, `.agent-team/${name.replaceAll(" ", "-")}.json`);
+      const evidence = {
+        status: "passed", revision: value.revision, taskIds: ["AT-001"],
+        remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/heads/feature", targetRevision: value.revision },
+        authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
+        recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false,
+      };
+      invalidate(evidence);
+      await writeFile(evidencePath, JSON.stringify(evidence));
+      const before = structuredClone((await loadCanonicalState(value.project)).state.integration);
+      const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: `integration-${name.replaceAll(" ", "-")}`,
+        expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath });
+      assert.equal(result.status, "conflict");
+      assert.deepEqual((await loadCanonicalState(value.project)).state.integration, before);
+    });
+
+    const { recordGateEvidence } = await api();
+    const value = await fixture();
+    const evidencePath = path.join(value.root, ".agent-team/integration.json");
+    await writeFile(evidencePath, JSON.stringify({
+      status: "passed", revision: value.revision, taskIds: ["AT-001"],
+      remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/heads/feature", targetRevision: value.revision },
+      authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
+      recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false,
+    }));
+    const before = structuredClone((await loadCanonicalState(value.project)).state.integration);
+    const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "integration-evidence",
+      expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath });
+    const integration = (await loadCanonicalState(value.project)).state.integration;
+    assert.equal(result.status, "applied");
+    assert.equal(integration.baseRef, before.baseRef);
+    assert.equal(integration.ownerSessionId, before.ownerSessionId);
+    assert.equal(integration.paused, before.paused);
+    assert.equal(integration.hold, before.hold);
+    assert.equal(integration.baseRevision, value.revision);
+    assert.equal(integration.deltaClean, true);
+    assert.equal(integration.recoveryReconciled, true);
+    assert.equal(integration.updatesRemoteMain, false);
+    assert.deepEqual({ ...integration.authorization, observedAt: undefined }, { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"], observedAt: undefined });
+    assert.equal(typeof integration.authorization.observedAt, "string");
+  });
+
+  test("integration evidence rejects an untracked non-ignored worktree file", async () => {
+    const { recordGateEvidence } = await api();
+    const value = await fixture();
+    const evidencePath = path.join(value.root, ".agent-team/untracked-evidence.json");
+    await writeFile(evidencePath, JSON.stringify({ status: "passed", revision: value.revision, taskIds: ["AT-001"],
+      remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/heads/feature", targetRevision: value.revision },
+      authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
+      recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false }));
+    await writeFile(path.join(value.feature, "untracked-source.js"), "export {};\n");
+    const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "untracked-evidence", expectedVersion: 0,
+      expectedFingerprint: value.canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath });
+    assert.deepEqual(result, { status: "conflict", reason: "dirty_revision" });
+  });
+
+  test("integration evidence records an explicitly absent exact tag target", async () => {
+    const { recordGateEvidence } = await api();
+    const value = await fixture();
+    const evidencePath = path.join(value.root, ".agent-team/tag-evidence.json");
+    await writeFile(evidencePath, JSON.stringify({ status: "passed", revision: value.revision, taskIds: ["AT-001"],
+      remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/tags/v7.1.0", targetAbsent: true },
+      authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
+      recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false }));
+    const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "tag-evidence", expectedVersion: 0,
+      expectedFingerprint: value.canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath });
+    const integration = (await loadCanonicalState(value.project)).state.integration;
+    assert.equal(result.status, "applied");
+    assert.equal(integration.remoteRef, "refs/tags/v7.1.0");
+    assert.equal(integration.targetAbsent, true);
+    assert.equal(Object.hasOwn(integration, "remoteRevision"), false);
+  });
+
   test("Beads atomic claim retains uncertain writes and reconciles its native operation note without retry", async () => {
     const { transitionTask } = await api();
     const value = await fixture();

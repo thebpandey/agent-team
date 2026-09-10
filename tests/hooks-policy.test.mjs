@@ -19,7 +19,11 @@ async function fixture() {
   temporary.push(root, `${root}-feature`);
   const value = await policyFixture(root);
   temporary.push(value.remote);
-  return { ...value, project: await resolveProject(value.feature) };
+  const state = structuredClone(value.state);
+  state.integration.taskIds = ["AT-001"];
+  state.integration.authorization = { source: "fixture", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"], observedAt: "2026-09-06T12:00:00.000Z" };
+  await saveState(value, state);
+  return { ...value, state, project: await resolveProject(value.feature) };
 }
 
 test("canonical ownership allows assigned files and blocks unowned, shared, main, and symlink targets", async () => {
@@ -236,6 +240,106 @@ test("integration compares bounded current remote and base refs instead of stale
   assert.match(drifted.messages.join("\n"), /remote/i);
   assert.equal(unavailable.allow, false);
   assert.match(unavailable.messages.join("\n"), /unavailable/i);
+});
+
+test("integration permits only an evidenced non-force remote-main advance", async () => {
+  const value = await fixture();
+  await writeFile(path.join(value.root, "advance.txt"), "advance\n");
+  execFileSync("git", ["add", "advance.txt"], { cwd: value.root });
+  execFileSync("git", ["commit", "-q", "-m", "advance main"], { cwd: value.root });
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+  const remoteBase = execFileSync("git", ["ls-remote", "--exit-code", "origin", "refs/heads/main"], { cwd: value.root, encoding: "utf8" }).trim().split(/\s+/)[0];
+  const state = structuredClone((await loadCanonicalState(await resolveProject(value.root))).state);
+  Object.assign(state.integration, {
+    expectedRevision: head, baseRevision: remoteBase, remoteRevision: remoteBase, remoteRef: "refs/heads/main",
+    authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: head, taskIds: ["AT-001"], observedAt: "2026-09-06T12:00:00.000Z" },
+  });
+  await saveState(value, state);
+  const project = await resolveProject(value.root);
+  const operation = { kind: "shell", command: `git -C ${value.root} push origin HEAD:main` };
+  const allowed = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation }), project, { now: new Date("2026-09-06T12:01:00.000Z") });
+  assert.equal(allowed.allow, true);
+  for (const [name, mutate] of [
+    ["remote drift", (candidate) => { candidate.integration.remoteRevision = "deadbeef"; }],
+    ["non ancestor", (candidate) => { candidate.integration.baseRevision = head; candidate.integration.expectedRevision = remoteBase; }],
+    ["wrong head", (candidate) => { candidate.integration.expectedRevision = "deadbeef"; }],
+    ["missing provenance", (candidate) => { delete candidate.integration.authorization; }],
+  ]) {
+    const candidate = structuredClone(state);
+    mutate(candidate);
+    await saveState(value, candidate);
+    const denied = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation }), project, { now: new Date("2026-09-06T12:01:00.000Z") });
+    assert.equal(denied.allow, false, name);
+  }
+  await saveState(value, state);
+  const forced = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session",
+    operation: { kind: "shell", command: `git -C ${value.root} push --force origin HEAD:main` } }), project, { now: new Date("2026-09-06T12:01:00.000Z") });
+  assert.equal(forced.allow, false, "force push");
+  for (const command of [
+    `git -C ${value.root} push origin +HEAD:main`,
+    `git -C ${value.root} push --force-with-lease=refs/heads/main:${remoteBase} origin HEAD:main`,
+    `git -C ${value.root} push backup HEAD:main`,
+    `git -C ${value.root} push origin HEAD:main HEAD:other`,
+    `git -C ${value.root} push origin HEAD:main ; git status`,
+  ]) {
+    const bypass = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation: { kind: "shell", command } }), project, { now: new Date("2026-09-06T12:01:00.000Z") });
+    assert.equal(bypass.allow, false, command);
+  }
+  await writeFile(path.join(value.root, "advance.txt"), "dirty\n");
+  const dirty = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation }), project, { now: new Date("2026-09-06T12:01:00.000Z") });
+  assert.equal(dirty.allow, false, "dirty worktree");
+});
+
+test("PR integration retains its non-push evidence route", async () => {
+  const value = await fixture();
+  const result = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: "gh pr merge 1 --merge" } }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+  assert.equal(result.allow, true);
+});
+
+test("tag integration requires an absent exact remote target until creation", async () => {
+  const value = await fixture();
+  const state = structuredClone(value.state);
+  state.integration.remoteRef = "refs/tags/v7.1.0";
+  state.integration.targetAbsent = true;
+  delete state.integration.remoteRevision;
+  await saveState(value, state);
+  const operation = { kind: "shell", command: `git -C ${value.feature} push origin HEAD:refs/tags/v7.1.0` };
+  const allowed = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+  assert.equal(allowed.allow, true);
+  for (const command of [`git -C ${value.feature} push backup HEAD:refs/tags/v7.1.0`, `git -C ${value.feature} push origin HEAD:refs/tags/v7.1.1`]) {
+    const denied = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command } }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+    assert.equal(denied.allow, false, command);
+  }
+  execFileSync("git", ["push", "-q", "origin", "HEAD:refs/tags/v7.1.0"], { cwd: value.feature });
+  const drifted = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+  assert.equal(drifted.allow, false);
+});
+
+test("absent-tag integration rejects a substituted remote feature base after remote main diverges", async () => {
+  const value = await fixture();
+  const original = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+  await writeFile(path.join(value.root, "local-main-advance.txt"), "local advance\n");
+  execFileSync("git", ["add", "local-main-advance.txt"], { cwd: value.root });
+  execFileSync("git", ["commit", "-q", "-m", "local main advance"], { cwd: value.root });
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+  const tree = execFileSync("git", ["rev-parse", `${original}^{tree}`], { cwd: value.root, encoding: "utf8" }).trim();
+  const divergentRemoteMain = execFileSync("git", ["commit-tree", tree, "-p", original, "-m", "remote main divergence"], { cwd: value.root, encoding: "utf8" }).trim();
+  execFileSync("git", ["push", "-q", "origin", `${divergentRemoteMain}:refs/heads/main`], { cwd: value.root });
+
+  const state = structuredClone(value.state);
+  Object.assign(state.integration, {
+    expectedRevision: head, baseRevision: original, baseRemoteRef: "refs/heads/feature",
+    remoteRef: "refs/tags/v7.1.0", targetAbsent: true, remoteRevision: undefined,
+    authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: head, taskIds: ["AT-001"], observedAt: "2026-09-06T12:00:00.000Z" },
+  });
+  await saveState(value, state);
+  const project = await resolveProject(value.root);
+  const decision = await evaluatePolicy(hookEvent(value, {
+    cwd: value.root, sessionId: "owner-session",
+    operation: { kind: "shell", command: `git -C ${value.root} push origin HEAD:refs/tags/v7.1.0` },
+  }), project, { now: new Date("2026-09-06T12:01:00.000Z") });
+
+  assert.equal(decision.allow, false, "a tampered canonical baseRemoteRef cannot substitute an unchanged feature for divergent remote main");
 });
 
 test("release gate binds authorization, run, batch, artifact, evidence, pause, delta, and recovery records", async (context) => {

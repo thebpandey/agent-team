@@ -8,9 +8,11 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { loadCanonicalState } from "../hooks/lib/canonical-state.mjs";
+import { initializeProject, initializationRecordProblem } from "../hooks/lib/initialization.mjs";
 import { resolveProject } from "../hooks/lib/project.mjs";
-import { captureWriterIdentity } from "../hooks/lib/task-transitions.mjs";
-import { policyFixture } from "./hook-test-helpers.mjs";
+import { captureWriterIdentity, recordGateEvidence } from "../hooks/lib/task-transitions.mjs";
+import { evaluatePolicy } from "../hooks/lib/policy.mjs";
+import { hookEvent, policyFixture } from "./hook-test-helpers.mjs";
 
 const run = promisify(execFile);
 const cli = path.resolve(import.meta.dirname, "../hooks/agent-team-cli.mjs");
@@ -175,6 +177,90 @@ test("real CLI forwards versioned transition, gate-evidence, and cleanup request
   const retained = await invoke("cleanup", "--project", value.feature, "--request", cleanup);
   assert.deepEqual(retained, { status: "conflict", reason: "retain_identity_mismatch" });
   await access(value.feature);
+});
+
+test("real CLI persists integration evidence that policy can consume", async () => {
+  const value = await fixture();
+  const canonical = await loadCanonicalState(value.project);
+  const evidencePath = path.join(value.root, ".agent-team", "evidence", "cli-integration.json");
+  await mkdir(path.dirname(evidencePath), { recursive: true });
+  await writeFile(evidencePath, JSON.stringify({
+    status: "passed", revision: value.revision, taskIds: ["AT-001"],
+    remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/heads/feature", targetRevision: value.revision },
+    authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
+    recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false,
+  }));
+  const gate = await requestFile(value, "integration-gate", envelope("owner-session", canonical.state.stateVersion ?? 0, {
+    operationId: "cli-integration-gate", gate: "integration", taskIds: ["AT-001"], expectedFingerprint: canonical.tracker.fingerprint,
+    expectedRevision: value.revision, evidencePath,
+  }));
+  assert.equal((await invoke("gate-evidence", "--project", value.feature, "--request", gate)).status, "applied");
+  const integration = (await loadCanonicalState(value.project)).state.integration;
+  assert.equal(integration.authorization.source, "accepted-packet");
+  assert.equal(integration.baseRef, "main");
+  const consumed = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:feature` } }), value.project);
+  assert.equal(consumed.allow, true);
+});
+
+test("real CLI maps a fresh initialized integration record and retains the main deployment gate", async () => {
+  const value = await fixture();
+  const state = structuredClone((await loadCanonicalState(value.project)).state);
+  state.integration = { ownerSessionId: "owner-session", authorized: false, baseRef: "main", paused: false, hold: false };
+  state.release.autoDeploy = false;
+  await writeFile(value.project.paths.state, JSON.stringify(state));
+  const canonical = await loadCanonicalState(value.project);
+  const evidencePath = path.join(value.root, ".agent-team", "evidence", "fresh-main.json");
+  await mkdir(path.dirname(evidencePath), { recursive: true });
+  await writeFile(evidencePath, JSON.stringify({
+    status: "passed", revision: value.revision, taskIds: ["AT-001"],
+    remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/heads/main", targetRevision: value.revision },
+    authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
+    recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: true,
+  }));
+  const request = await requestFile(value, "fresh-main", envelope("owner-session", canonical.state.stateVersion ?? 0, {
+    operationId: "fresh-main", gate: "integration", taskIds: ["AT-001"], expectedFingerprint: canonical.tracker.fingerprint,
+    expectedRevision: value.revision, evidencePath,
+  }));
+  assert.equal((await invoke("gate-evidence", "--project", value.feature, "--request", request)).status, "applied");
+  const blocked = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:main` } }), value.project);
+  assert.equal(blocked.allow, false);
+  const mapped = (await loadCanonicalState(value.project)).state;
+  mapped.release.autoDeploy = true;
+  await writeFile(value.project.paths.state, JSON.stringify(mapped));
+  const allowed = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:main` } }), value.project);
+  assert.equal(allowed.allow, true);
+});
+
+test("integration evidence keeps an actual initialized project structurally ready", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-fresh-integration-"));
+  const remote = `${root}-remote`;
+  temporary.push(root, remote);
+  execFileSync("git", ["init", "-q", "-b", "main", root]);
+  execFileSync("git", ["config", "user.name", "Gate Test"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "gate@example.test"], { cwd: root });
+  await writeFile(path.join(root, "README.md"), "fixture\n");
+  await writeFile(path.join(root, ".gitignore"), ".agent-team/\n");
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "fixture"], { cwd: root });
+  execFileSync("git", ["init", "-q", "--bare", remote]);
+  execFileSync("git", ["remote", "add", "origin", remote], { cwd: root });
+  execFileSync("git", ["push", "-q", "-u", "origin", "main"], { cwd: root });
+  const request = { projectId: "fresh-project", ownerSessionId: "owner-session", operationId: "initialize-fresh", source: "standalone",
+    tracker: { kind: "markdown", path: ".agent-team/TASKS.md" }, plan: { scope: "Gate test", acceptance: ["Gate passes"], branch: "main", verification: ["node --test"],
+      authority: { ownedPaths: ["tests/**"] }, tasks: [{ id: "AT-001", title: "Gate", status: "ready", dependencies: [] }] } };
+  assert.equal((await initializeProject(root, request)).status, "applied");
+  const project = await resolveProject(root);
+  const canonical = await loadCanonicalState(project);
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  const evidencePath = path.join(root, ".agent-team", "integration.json");
+  await writeFile(evidencePath, JSON.stringify({ status: "passed", revision, taskIds: ["AT-001"],
+    remote: { name: "origin", baseRef: "refs/heads/main", revision, targetRef: "refs/heads/main", targetRevision: revision },
+    authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision, taskIds: ["AT-001"] },
+    recovery: { status: "reconciled", revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false }));
+  assert.equal((await recordGateEvidence(project, { actorSessionId: "owner-session", operationId: "fresh-integration", expectedVersion: canonical.state.stateVersion,
+    expectedFingerprint: canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: revision, evidencePath })).status, "applied");
+  const mapped = await loadCanonicalState(project);
+  assert.equal(initializationRecordProblem(project.setup, mapped, { projectRoot: root, validateTracker: true }), undefined);
 });
 
 test("real CLI claims a canonical Beads task whose unassigned owner is the empty string", async () => {

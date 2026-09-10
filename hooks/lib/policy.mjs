@@ -108,21 +108,56 @@ async function remoteRevision(cwd, remote, ref, budget) {
   return matches[0][0];
 }
 
+async function remoteTarget(cwd, remote, ref, budget) {
+  try { return { status: "present", revision: await remoteRevision(cwd, remote, ref, budget) }; }
+  catch (error) { if (error?.code === 2) return { status: "absent" }; throw error; }
+}
+
 async function gitEvidence(project, state, budget) {
   const head = await gitValue(project.worktreeRoot, ["rev-parse", "HEAD"], budget);
   const base = await gitValue(project.worktreeRoot, ["rev-parse", state.baseRef], budget);
   const delta = await gitValue(project.worktreeRoot, ["status", "--porcelain", "--untracked-files=no"], budget);
-  const [baseRemote, remote] = await Promise.all([
+  const [baseRemote, target] = await Promise.all([
     remoteRevision(project.worktreeRoot, state.remoteName, state.baseRemoteRef, budget),
-    remoteRevision(project.worktreeRoot, state.remoteName, state.remoteRef, budget),
+    remoteTarget(project.worktreeRoot, state.remoteName, state.remoteRef, budget),
   ]);
-  return { head, base, baseRemote, remote, clean: delta === "" };
+  return { head, base, baseRemote, target, clean: delta === "" };
+}
+
+async function isAncestor(cwd, ancestor, descendant, budget) {
+  try {
+    await run("git", ["merge-base", "--is-ancestor", ancestor, descendant], { cwd, encoding: "utf8", timeout: budget?.timeout(1500) ?? 1500,
+      ...(budget ? { signal: budget.signal } : {}), maxBuffer: 16 * 1024 });
+    return true;
+  } catch (error) {
+    if (error?.code === 1) return false;
+    throw error;
+  }
+}
+
+function integrationAuthorization(gate, now) {
+  const authorization = gate.authorization;
+  return authorization && typeof authorization === "object" && typeof authorization.source === "string" && authorization.source.trim()
+    && authorization.source.length <= 256 && authorization.scope === "integration" && authorization.ownerSessionId === gate.ownerSessionId
+    && authorization.revision === gate.expectedRevision && sameIds(authorization.taskIds, gate.taskIds) && fresh(authorization.observedAt, now);
+}
+
+function configuredRemoteBaseRef(baseRef) {
+  return typeof baseRef === "string" && /^[A-Za-z0-9][\w./-]*$/.test(baseRef)
+    && !baseRef.startsWith("refs/") && !/[./]$|\.\.|\/\//.test(baseRef) ? `refs/heads/${baseRef}` : undefined;
+}
+
+function nonForcePushMatches(operation, gate) {
+  return operation.method !== "push" || (operation.push?.valid === true && operation.push.remote === gate.remoteName
+    && operation.push.targetRef === gate.remoteRef);
 }
 
 async function integrationGate(event, project, canonical, operation, now, budget) {
   const gate = canonical.state.integration ?? {};
   if (event.sessionId !== canonical.registry.integrationOwner || event.sessionId !== gate.ownerSessionId) return deny("The registered integration owner must run this operation.");
   if (!gate.authorized) return deny("Integration authorization is missing.");
+  if (!integrationAuthorization(gate, now)) return deny("Integration authorization provenance is missing or mismatched.");
+  if (gate.baseRemoteRef !== configuredRemoteBaseRef(gate.baseRef)) return deny("The integration remote base does not match the configured integration branch.");
   if (!fresh(gate.evidenceAt, now)) return deny("Integration evidence is stale or unavailable.");
   if (gate.paused) return deny("Integration is paused.");
   if (gate.hold) return deny("An integration hold is active.");
@@ -142,10 +177,17 @@ async function integrationGate(event, project, canonical, operation, now, budget
     return deny("Current integration Git evidence is unavailable.");
   }
   if (evidence.head !== gate.expectedRevision) return deny("The integration revision does not match current HEAD.");
-  if (evidence.base !== gate.baseRevision) return deny("The integration base does not match current Git evidence.");
+  if (evidence.base !== gate.expectedRevision) return deny("The configured integration branch does not resolve to the exact integration revision.");
   if (evidence.baseRemote !== gate.baseRevision) return deny("The integration base does not match the current remote base.");
-  if (evidence.remote !== gate.remoteRevision) return deny("The integration remote revision does not match current Git evidence.");
+  if (gate.targetAbsent ? evidence.target.status !== "absent" : evidence.target.revision !== gate.remoteRevision) return deny("The integration remote revision does not match current Git evidence.");
   if (!evidence.clean) return deny("The current integration delta is not clean.");
+  try { if (!await isAncestor(targetProject.worktreeRoot, gate.baseRevision, gate.expectedRevision, budget)) return deny("The observed remote base is not an ancestor of the exact integration revision."); }
+  catch { return deny("Integration ancestry evidence is unavailable."); }
+  if (!nonForcePushMatches(operation, gate)) return deny("Integration push must be the evidenced non-force advance.");
+  try {
+    const target = await remoteTarget(targetProject.worktreeRoot, gate.remoteName, gate.remoteRef, budget);
+    if (gate.targetAbsent ? target.status !== "absent" : target.revision !== gate.remoteRevision) return deny("The integration target changed after evidence was recorded.");
+  } catch { return deny("Current integration target evidence is unavailable."); }
   return undefined;
 }
 
