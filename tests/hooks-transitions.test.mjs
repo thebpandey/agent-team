@@ -447,24 +447,37 @@ if (process.argv[2] === "writer") {
     assert.equal(changed.reason, "dirty_revision");
   });
 
-  test("completion gate evidence rejects multiple tasks and task-mismatched review records", async () => {
+  test("completion gate evidence rejects invalid reconciled review and check records without changing completion", async () => {
     const { recordGateEvidence } = await api();
-    const value = await fixture();
-    const evidencePath = path.join(value.root, ".agent-team/verification.json");
-    const wanted = { actorSessionId: "owner-session", operationId: "bad-gate-evidence", expectedVersion: 0,
-      expectedFingerprint: value.canonical.tracker.fingerprint, gate: "completion", taskIds: ["AT-001", "AT-002"],
-      expectedRevision: value.revision, evidencePath };
-    await writeFile(evidencePath, JSON.stringify({
-      status: "passed", revision: value.revision, taskIds: ["AT-001", "AT-002"], requirementsReconciled: true,
-      review: { status: "passed", revision: value.revision, taskId: "AT-001" }, checks: [],
-    }));
-    assert.equal((await recordGateEvidence(value.project, wanted)).reason, "completion_task_count");
-    await writeFile(evidencePath, JSON.stringify({
-      status: "passed", revision: value.revision, taskIds: ["AT-001"], requirementsReconciled: true,
-      review: { status: "passed", revision: value.revision, taskId: "AT-002" },
-      checks: [{ name: "unit", status: "passed", revision: value.revision, taskId: "AT-001" }],
-    }));
-    assert.equal((await recordGateEvidence(value.project, { ...wanted, operationId: "task-mismatch", taskIds: ["AT-001"] })).reason, "completion_evidence_mismatch");
+    const artifact = (value) => ({ status: "passed", revision: value.revision, taskIds: ["AT-001"], requirementsReconciled: true,
+      review: { status: "passed", revision: value.revision, taskId: "AT-001" },
+      checks: [{ name: "unit", status: "passed", revision: value.revision, taskId: "AT-001" }] });
+    const invalid = [
+      ["multiple tasks", (evidence) => { evidence.taskIds = ["AT-001", "AT-002"]; }, ["AT-001", "AT-002"], "completion_task_count"],
+      ["false reconciliation", (evidence) => { evidence.requirementsReconciled = false; }],
+      ["failed review", (evidence) => { evidence.review.status = "failed"; }],
+      ["stale review", (evidence) => { evidence.review.revision = "stale"; }],
+      ["empty checks", (evidence) => { evidence.checks = []; }],
+      ["failed check", (evidence) => { evidence.checks[0].status = "failed"; }],
+      ["stale check", (evidence) => { evidence.checks[0].revision = "stale"; }],
+      ["mismatched check", (evidence) => { evidence.checks[0].taskId = "AT-002"; }],
+      ["blank check name", (evidence) => { evidence.checks[0].name = " "; }],
+      ["untrimmed check name", (evidence) => { evidence.checks[0].name = " unit "; }],
+      ["non-string check name", (evidence) => { evidence.checks[0].name = true; }],
+    ];
+    for (const [name, invalidate, taskIds = ["AT-001"], reason = "completion_evidence_mismatch"] of invalid) {
+      const value = await fixture();
+      const evidencePath = path.join(value.root, ".agent-team/verification.json");
+      const evidence = artifact(value);
+      invalidate(evidence);
+      await writeFile(evidencePath, JSON.stringify(evidence));
+      const before = structuredClone((await loadCanonicalState(value.project)).state.completion);
+      const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: `bad-gate-${name.replaceAll(" ", "-")}`,
+        expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint, gate: "completion", taskIds,
+        expectedRevision: value.revision, evidencePath });
+      assert.equal(result.reason, reason, name);
+      assert.deepEqual((await loadCanonicalState(value.project)).state.completion, before, name);
+    }
   });
 
   test("Beads atomic claim retains uncertain writes and reconciles its native operation note without retry", async () => {

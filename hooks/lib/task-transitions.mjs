@@ -317,7 +317,8 @@ export async function recordGateEvidence(project, request, options = {}) {
       const checks = evidence.checks;
       if (evidence.requirementsReconciled !== true || review?.status !== "passed" || review.revision !== revision || review.taskId !== taskId
         || !Array.isArray(checks) || !checks.length
-        || checks.some((check) => !check?.name || check.status !== "passed" || check.revision !== revision || check.taskId !== taskId)) {
+        || checks.some((check) => typeof check?.name !== "string" || !check.name.trim() || check.name !== check.name.trim()
+          || check.status !== "passed" || check.revision !== revision || check.taskId !== taskId)) {
         return conflict("completion_evidence_mismatch");
       }
       state.completion = { ...state.completion, taskId, evidenceRevision: revision, requirementsReconciled: true,

@@ -149,7 +149,11 @@ test("real CLI forwards versioned transition, gate-evidence, and cleanup request
   const afterPause = await loadCanonicalState(value.project);
   const evidencePath = path.join(value.root, ".agent-team", "evidence", "cli-gate.json");
   await mkdir(path.dirname(evidencePath), { recursive: true });
-  await writeFile(evidencePath, JSON.stringify({ status: "passed", revision: value.revision, taskIds: ["AT-001"] }));
+  await writeFile(evidencePath, JSON.stringify({
+    status: "passed", revision: value.revision, taskIds: ["AT-001"], requirementsReconciled: true,
+    review: { status: "passed", revision: value.revision, taskId: "AT-001" },
+    checks: [{ name: "workflow-cli", status: "passed", revision: value.revision, taskId: "AT-001" }],
+  }));
   const gate = await requestFile(value, "gate", envelope("owner-session", afterPause.state.stateVersion, {
     operationId: "cli-gate",
     gate: "completion",
