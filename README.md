@@ -2,11 +2,11 @@
 
 Created by [thebpandey](https://github.com/thebpandey). An orchestrator-led development skill for Codex and Claude Code: small parallel assignments, independent review, automatic repair of ordinary findings, and verified integration.
 
-> **Version 7.1.0.** One complete package for Codex and Claude Code. This release makes the orchestrator a pure orchestrator, routes pre-dispatch checks and post-completion verification to a GPT-5.6-Sol verifier (Opus 5 fallback in Claude Code), adds Graphify as a default code-graph dependency next to Serena, and relaxes the LeanCTX shell profile for interpreter one-liners. The illustrated field guide below still documents the 7.0.2 workflow. Installation lets you choose the host and whether to install for one project or your user account; setup guides you through the required tool and hook checks.
+> **Version 7.1.0.** One complete package for Codex and Claude Code. This release makes the orchestrator a pure orchestrator, routes pre-dispatch checks and post-completion verification to a GPT-5.6-Sol verifier (Opus 5 fallback in Claude Code), adds Graphify as a default code-graph dependency next to Serena, and uses a LeanCTX warning profile for interpreter one-liners. Installation lets you choose the host and whether to install for one project or your user account; setup guides you through the required tool and hook checks.
 
-New here? Open the [hosted Agent-Team 7.0.2 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.0.2.html) in your browser, or read the [short Markdown guide](GETTING_STARTED.md). Both start with GitHub authentication and optional Project Kickoff.
+New here? Open the [hosted Agent-Team 7.1.0 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.1.0.html) in your browser, or read the [short Markdown guide](GETTING_STARTED.md). The [7.0.2 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.0.2.html) remains reachable as historical documentation. Both start with GitHub authentication and optional Project Kickoff.
 
-[![Agent-Team overview: Morpheus coordinates bounded work by Neo, Trinity, and Tank, followed by independent review from Agent Smith and the Oracle.](assets/guide/agent-team-essence-16x9.webp)](https://thebpandey.github.io/agent-team/agent-team-guide-v7.0.2.html)
+[![Agent-Team overview: Morpheus coordinates bounded work by Neo, Trinity, and Tank, followed by independent review from Agent Smith and the Oracle.](assets/guide/agent-team-essence-16x9.webp)](https://thebpandey.github.io/agent-team/agent-team-guide-v7.1.0.html)
 
 The field guide explains Agent-Team in plain language and includes installation, dependencies, setup, settings, launch examples, memory and context management, and the optional Project Kickoff handoff.
 
@@ -219,7 +219,7 @@ A retry cap is a signal to change strategy, not permission to declare incomplete
 
 [![Hand-sketched Agent-Team flowchart showing task admission, isolated development, independent review, repair, integration, continuation, reporting, and the separate release gate.](assets/guide/agent-team-harness-flow-3x4.webp)](assets/guide/agent-team-harness-flow-3x4.webp)
 
-Select the diagram to open it at full size. The [hosted interactive field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.0.2.html#logic) also provides an expandable, borderless view with a step-by-step explanation.
+Select the diagram to open it at full size. The [hosted interactive field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.1.0.html#conduct) explains the 7.1.0 delegated verification and orchestration flow.
 
 ## 7. Inspect the optional local dashboard
 

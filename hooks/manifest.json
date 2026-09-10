@@ -10,7 +10,8 @@
     "LICENSE",
     "README.md",
     "SKILL.md",
-    "agent-team-guide-v7.0.2.html"
+    "agent-team-guide-v7.0.2.html",
+    "agent-team-guide-v7.1.0.html"
   ],
   "includeRoots": [
     "agents",
@@ -26,6 +27,7 @@
     "README.md",
     "SKILL.md",
     "agent-team-guide-v7.0.2.html",
+    "agent-team-guide-v7.1.0.html",
     "agents/openai.yaml",
     "assets/banner.svg",
     "assets/claude-agents/agent-team-complex.md",

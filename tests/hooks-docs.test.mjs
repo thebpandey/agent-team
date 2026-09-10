@@ -9,7 +9,7 @@ const readMany = files => Promise.all(files.map(read));
 
 test("field guide embeds compact WebP artwork without a local image dependency", async () => {
   const [guide, readme, rawManifest] = await readMany([
-    "agent-team-guide-v7.0.2.html", "README.md", "hooks/manifest.json",
+    "agent-team-guide-v7.1.0.html", "README.md", "hooks/manifest.json",
   ]);
   const manifest = JSON.parse(rawManifest);
   const imagePaths = [
@@ -31,7 +31,7 @@ test("field guide embeds compact WebP artwork without a local image dependency",
 });
 
 test("every field-guide image opens through one borderless modal", async () => {
-  const guide = await read("agent-team-guide-v7.0.2.html");
+  const guide = await read("agent-team-guide-v7.1.0.html");
   assert.equal((guide.match(/class="image-open"/g) || []).length, 2);
   assert.equal((guide.match(/<dialog id="image-dialog"/g) || []).length, 1);
   assert.match(guide, /dialog \{[^}]*border:0;[^}]*background:transparent;/);
@@ -40,7 +40,7 @@ test("every field-guide image opens through one borderless modal", async () => {
 });
 
 test("field guide explains bounded memory and context management", async () => {
-  const guide = await read("agent-team-guide-v7.0.2.html");
+  const guide = await read("agent-team-guide-v7.1.0.html");
   for (const required of [
     'id="context"', "Small task packets", "One source of truth", "Relevant reading",
     "Bounded checkpoints", "Native auto-compaction", "LeanCTX", "under 600 words",
@@ -48,6 +48,37 @@ test("field guide explains bounded memory and context management", async () => {
   ]) assert.ok(guide.includes(required), required);
   assert.match(guide, /does not make the context window larger/i);
   assert.match(guide, /does not become a second task tracker/i);
+});
+
+test("7.1 field guide retains complete onboarding and documents its new operating model", async () => {
+  const [guide, index, readme, rawManifest] = await readMany([
+    "agent-team-guide-v7.1.0.html", "index.html", "README.md", "hooks/manifest.json",
+  ]);
+  const manifest = JSON.parse(rawManifest);
+  for (const required of [
+    "Version 7.1.0", "GPT-5.6-Sol", "medium effort", "Opus 5 fallback",
+    "pure orchestrator", "parallel set", "continuous supervision", "Graphify",
+    "Serena", 'shell_security = "warn"', "LeanCTX",
+  ]) assert.match(guide, new RegExp(required, "i"), required);
+  for (const required of [
+    "Install the complete package", "Choose settings", "Launch a run",
+    "Inspect the optional local dashboard", "Use Project Kickoff first",
+  ]) assert.ok(guide.includes(required), required);
+  assert.ok(manifest.rootFiles.includes("agent-team-guide-v7.1.0.html"));
+  assert.ok(manifest.files.includes("agent-team-guide-v7.1.0.html"));
+  assert.match(index, /agent-team-guide-v7\.1\.0\.html/);
+  assert.match(readme, /agent-team-guide-v7\.1\.0\.html/);
+});
+
+test("7.0.2 guide remains a reachable historical edition", async () => {
+  const [historical, current, rawManifest] = await readMany([
+    "agent-team-guide-v7.0.2.html", "agent-team-guide-v7.1.0.html", "hooks/manifest.json",
+  ]);
+  const manifest = JSON.parse(rawManifest);
+  assert.match(historical, /Version 7\.0\.2/);
+  assert.match(current, /agent-team-guide-v7\.0\.2\.html/);
+  assert.ok(manifest.rootFiles.includes("agent-team-guide-v7.0.2.html"));
+  assert.ok(manifest.files.includes("agent-team-guide-v7.0.2.html"));
 });
 
 // Text contracts catch instruction drift; behavioral/consumer/native tests remain separate gates.

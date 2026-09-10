@@ -328,6 +328,7 @@ Claude: /agent-team setup</pre>
 
 Prepare the mandatory tools:
 Serena — https://github.com/oraios/serena
+Graphify — https://github.com/Graphify-Labs/graphify (code graph beside Serena; code-only by default)
 Microsoft Playwright CLI — https://github.com/microsoft/playwright-cli
 
 Prepare the selected defaults:
@@ -348,7 +349,7 @@ Keep optional Context7 and the web dashboard off unless I select them. Install p
               <tr><td>1</td><td>Host, Git, <a href="https://cli.github.com/">gh</a>, account and repository access</td><td>You complete login/SSO and grant required access. The agent can inspect and install in an approved scope.</td></tr>
               <tr><td>2</td><td><a href="https://nodejs.org/">Node.js 24</a> and npm</td><td>Before Agent-Team helpers, hook registration, or npm-distributed tools. System/admin changes may need you.</td></tr>
               <tr><td>3</td><td>Complete <a href="https://github.com/thebpandey/agent-team">Agent-Team package</a>, then reload and trust</td><td>Managed installer handles selected host/scope. You make native trust decisions.</td></tr>
-              <tr><td>4</td><td><a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a>, managed Python, <a href="https://github.com/oraios/serena">Serena</a>, selected language-server prerequisites</td><td>First-run preparation installs supported prerequisites in order. Unavailable system requirements are reported specifically.</td></tr>
+              <tr><td>4</td><td><a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a>, managed Python, <a href="https://github.com/oraios/serena">Serena</a>, <a href="https://github.com/Graphify-Labs/graphify">Graphify</a>, selected language-server prerequisites</td><td>First-run preparation installs supported prerequisites in order. Serena handles symbols; Graphify supplies a code-only repository graph. Unavailable system requirements are reported specifically.</td></tr>
               <tr><td>5</td><td><a href="https://github.com/microsoft/playwright-cli">Playwright CLI</a>, browser binaries and browser OS libraries</td><td>Agent prepares and tests an isolated browser. Required OS packages may need administrator access; backend projects still prepare this tool.</td></tr>
               <tr><td>6</td><td>Selected default skills/CLIs and, if chosen, <a href="https://github.com/gastownhall/beads">Beads</a></td><td>Reuse compatible installations. No Rust/Bun build toolchain merely to obtain a supported prebuilt detector. A Beads server is not assumed necessary: inspect its backend.</td></tr>
               <tr><td>7</td><td>Optional components</td><td>Only after you select them; missing optional tools do not block unrelated work.</td></tr>
@@ -495,6 +496,7 @@ node hooks/agent-team-cli.mjs dashboard-start --project /absolute/project/root -
         <h3>Mandatory preparation</h3>
         <ul class="reference-list">
           <li><a href="https://github.com/oraios/serena">Serena<small>Semantic code navigation; free language-server backend</small></a></li>
+          <li><a href="https://github.com/Graphify-Labs/graphify">Graphify<small>Code-only repository graph beside Serena; no MCP unless explicitly selected</small></a></li>
           <li><a href="https://docs.astral.sh/uv/getting-started/installation/">uv<small>Serena's tool/Python prerequisite</small></a></li>
           <li><a href="https://github.com/microsoft/playwright-cli">Microsoft Playwright CLI<small>Default browser automation, including backend-only projects</small></a></li>
         </ul>

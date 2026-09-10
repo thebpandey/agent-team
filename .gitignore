@@ -3,6 +3,7 @@
 # Local tool state written by Serena and the Playwright CLI.
 .serena/
 .playwright-cli/
+graphify-out/
 __pycache__/
 .worktrees/
 .superpowers/
