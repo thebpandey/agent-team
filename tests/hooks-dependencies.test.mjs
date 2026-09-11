@@ -315,20 +315,35 @@ for (const key of ${JSON.stringify(["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOG
 const args = process.argv.slice(2);
 appendFileSync(process.argv[1] + ".calls", JSON.stringify(args) + "\\n");
 const variant = readFileSync(process.argv[1] + ".variant", "utf8").trim();
-const edge = (source, target, relation, confidence = "EXTRACTED") => ({ source, target, relation, confidence });
+const edge = (source, target, relation, {
+  confidence = "EXTRACTED",
+  confidenceScore = 1.0,
+  origin = "ast",
+  context,
+} = {}) => ({
+  source, target, relation, confidence, confidence_score: confidenceScore, _origin: origin,
+  ...(context ? { context } : {}),
+});
 if (args[0] === "extract") {
   mkdirSync("graphify-out", { recursive: true });
   writeFileSync("graphify-out/graph.json", JSON.stringify({
     directed: true, multigraph: false, graph: {}, hyperedges: [],
     nodes: [
-      { id: "db_pool", label: "Pool" }, { id: "db_pool_connect", label: ".connect()" },
-      { id: "app_start_server", label: "start_server()" }, { id: "app_load_config", label: "load_config()" },
+      { id: "db_pool", label: "Pool", _origin: "ast" }, { id: "db_pool_connect", label: ".connect()", _origin: "ast" },
+      { id: "app_start_server", label: "start_server()", _origin: "ast" }, { id: "app_load_config", label: "load_config()", _origin: "ast" },
+      { id: "app_dispatch", label: "dispatch()", _origin: "ast" }, { id: "app_handler", label: "handler()", _origin: "ast" },
     ],
     links: [
       edge("db_pool", "db_pool_connect", "method"),
       ...(variant === "missing-edge" ? [] : [edge("db_pool_connect", "app_start_server", "calls")]),
       edge("app_start_server", "app_load_config", "calls"),
-      ...(variant === "inferred" ? [edge("db_pool", "app_load_config", "calls", "INFERRED")] : []),
+      edge("app_dispatch", "app_handler", "indirect_call", {
+        confidence: "INFERRED",
+        confidenceScore: 0.85,
+        origin: variant === "semantic-origin" ? "semantic" : "ast",
+        context: "argument",
+      }),
+      ...(variant === "missing-origin" ? [{ source: "db_pool", target: "app_load_config", relation: "calls", confidence: "EXTRACTED", confidence_score: 1.0 }] : []),
     ],
   }));
   process.exit(0);
@@ -400,20 +415,25 @@ test("default Graphify gate extracts an offline code graph and traverses it", as
   };
 
   const complete = await gate("complete");
-  const inferred = await gate("inferred");
+  const semanticOrigin = await gate("semantic-origin");
+  const missingOrigin = await gate("missing-origin");
   const missing = await gate("missing-edge");
 
   assert.equal(complete.result.status, "passed", complete.result.evidence);
-  assert.match(complete.result.evidence, /EXTRACTED-only.*Pool -> load_config.*explain start_server/);
+  assert.match(complete.result.evidence, /AST-origin.*inferred callback.*Pool -> load_config.*explain start_server/);
   assert.deepEqual(complete.calls, [
     ["extract", ".", "--code-only", "--no-viz"],
     ["path", "Pool", "load_config"],
     ["explain", "start_server"],
   ]);
-  // An inferred edge means a semantic backend ran, so the offline profile no longer holds.
-  assert.equal(inferred.result.status, "failed");
-  assert.match(inferred.result.evidence, /INFERRED.*EXTRACTED edges only/);
-  assert.deepEqual(inferred.calls, [["extract", ".", "--code-only", "--no-viz"]]);
+  // Semantic provenance is never valid in a code-only extraction, even when the edge is inferred.
+  assert.equal(semanticOrigin.result.status, "failed");
+  assert.match(semanticOrigin.result.evidence, /semantic provenance; expected AST-origin graph content only/);
+  assert.deepEqual(semanticOrigin.calls, [["extract", ".", "--code-only", "--no-viz"]]);
+  // Missing provenance must fail closed rather than being treated as AST-derived.
+  assert.equal(missingOrigin.result.status, "failed");
+  assert.match(missingOrigin.result.evidence, /missing provenance; expected AST-origin graph content only/);
+  assert.deepEqual(missingOrigin.calls, [["extract", ".", "--code-only", "--no-viz"]]);
   // A graph without the known call edge is not a usable map, however well the CLI exits.
   assert.equal(missing.result.status, "failed");
   assert.match(missing.result.evidence, /\.connect\(\) --calls--> start_server\(\)/);

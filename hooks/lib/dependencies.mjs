@@ -773,6 +773,14 @@ const GRAPHIFY_BACKEND_KEYS = [
 // Exact labels the pinned extractor emits for the fixture; methods and functions carry their parentheses.
 const GRAPHIFY_FIXTURE_CHAIN = ["Pool", ".connect()", "start_server()", "load_config()"];
 const GRAPHIFY_FIXTURE_EDGES = [["Pool", ".connect()", "method"], [".connect()", "start_server()", "calls"], ["start_server()", "load_config()", "calls"]];
+const GRAPHIFY_FIXTURE_CALLBACK = {
+  from: "dispatch()",
+  to: "handler()",
+  relation: "indirect_call",
+  confidence: "INFERRED",
+  confidenceScore: 0.85,
+  origin: "ast",
+};
 
 async function graphifyFunctional(executable, paths, budget) {
   const verification = path.join(paths.toolRoot, "verification");
@@ -783,7 +791,7 @@ async function graphifyFunctional(executable, paths, budget) {
   for (const key of GRAPHIFY_BACKEND_KEYS) delete env[key];
   const options = { cwd: root, env, budget };
   try {
-    await writeFile(path.join(root, "app.py"), "def load_config():\n    return {}\n\n\ndef start_server():\n    cfg = load_config()\n    return cfg\n", { mode: 0o600, signal: budget?.signal });
+    await writeFile(path.join(root, "app.py"), "def load_config():\n    return {}\n\n\ndef start_server():\n    cfg = load_config()\n    return cfg\n\n\ndef handler(value):\n    return value\n\n\ndef dispatch(values):\n    return list(map(handler, values))\n", { mode: 0o600, signal: budget?.signal });
     await writeFile(path.join(root, "db.py"), "from app import start_server\n\n\nclass Pool:\n    def connect(self):\n        return start_server()\n", { mode: 0o600, signal: budget?.signal });
     const extracted = await command(executable, ["extract", ".", "--code-only", "--no-viz"], options);
     if (extracted.status !== "passed") return { status: "failed", evidence: evidence(extracted) ?? "Graphify code-only extraction failed." };
@@ -795,18 +803,29 @@ async function graphifyFunctional(executable, paths, budget) {
       return { status: "failed", evidence: `Graphify did not write a parseable graphify-out/graph.json: ${error.message}` };
     }
     budget?.check();
-    // Code-only extraction is pure AST work, so any inferred edge means a semantic backend ran.
-    const inferred = (graph.links ?? []).find(({ confidence }) => confidence !== "EXTRACTED");
-    if (inferred) {
-      return { status: "failed", evidence: `Graphify emitted an edge with ${inferred.confidence ?? "missing"} confidence; code-only extraction must produce EXTRACTED edges only.` };
+    const graphItems = [...(graph.nodes ?? []), ...(graph.links ?? [])];
+    const nonAst = graphItems.find(({ _origin }) => _origin !== "ast");
+    if (nonAst) {
+      return {
+        status: "failed",
+        evidence: `Graphify code-only extraction emitted ${nonAst._origin ?? "missing"} provenance; expected AST-origin graph content only.`,
+      };
     }
-    const ids = new Map((graph.nodes ?? []).filter(({ label }) => GRAPHIFY_FIXTURE_CHAIN.includes(label)).map(({ label, id }) => [label, id]));
+    const labels = [...GRAPHIFY_FIXTURE_CHAIN, GRAPHIFY_FIXTURE_CALLBACK.from, GRAPHIFY_FIXTURE_CALLBACK.to];
+    const ids = new Map((graph.nodes ?? []).filter(({ label }) => labels.includes(label)).map(({ label, id }) => [label, id]));
     const missingLabel = GRAPHIFY_FIXTURE_CHAIN.find((label) => !ids.has(label));
     if (missingLabel) return { status: "failed", evidence: `The extracted graph did not contain the known fixture symbol ${missingLabel}.` };
+    const missingCallbackLabel = [GRAPHIFY_FIXTURE_CALLBACK.from, GRAPHIFY_FIXTURE_CALLBACK.to].find((label) => !ids.has(label));
+    if (missingCallbackLabel) return { status: "failed", evidence: `The extracted graph did not contain the known callback fixture symbol ${missingCallbackLabel}.` };
     const missingEdge = GRAPHIFY_FIXTURE_EDGES.find(([from, to, relation]) => !(graph.links ?? [])
       .some((link) => link.source === ids.get(from) && link.target === ids.get(to) && link.relation === relation));
     if (missingEdge) {
       return { status: "failed", evidence: `The extracted graph did not contain the known fixture edge ${missingEdge[0]} --${missingEdge[2]}--> ${missingEdge[1]}.` };
+    }
+    const callback = (graph.links ?? []).find((link) => link.source === ids.get(GRAPHIFY_FIXTURE_CALLBACK.from) &&
+      link.target === ids.get(GRAPHIFY_FIXTURE_CALLBACK.to) && link.relation === GRAPHIFY_FIXTURE_CALLBACK.relation);
+    if (!callback || callback.confidence !== GRAPHIFY_FIXTURE_CALLBACK.confidence || callback.confidence_score !== GRAPHIFY_FIXTURE_CALLBACK.confidenceScore || callback._origin !== GRAPHIFY_FIXTURE_CALLBACK.origin) {
+      return { status: "failed", evidence: `The extracted graph did not contain the known callback fixture edge ${GRAPHIFY_FIXTURE_CALLBACK.from} --${GRAPHIFY_FIXTURE_CALLBACK.relation}--> ${GRAPHIFY_FIXTURE_CALLBACK.to} with AST-origin INFERRED confidence 0.85.` };
     }
     const traced = await command(executable, ["path", "Pool", "load_config"], options);
     const offsets = GRAPHIFY_FIXTURE_CHAIN.map((label) => traced.stdout?.indexOf(label) ?? -1);
@@ -815,7 +834,7 @@ async function graphifyFunctional(executable, paths, budget) {
     }
     const explained = await command(executable, ["explain", "start_server"], options);
     return explained.status === "passed" && ["start_server()", "load_config()"].every((label) => explained.stdout?.includes(label))
-      ? { status: "passed", evidence: "Graphify code-only extraction built an EXTRACTED-only graph and resolved path Pool -> load_config and explain start_server in an isolated fixture." }
+      ? { status: "passed", evidence: "Graphify code-only extraction built an AST-origin graph with deterministic inferred callback resolution and resolved path Pool -> load_config and explain start_server in an isolated fixture." }
       : { status: "failed", evidence: evidence(explained) ?? "Graphify explain did not report the known fixture symbol and its call edge." };
   } finally {
     await rm(root, { recursive: true, force: true });
