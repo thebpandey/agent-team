@@ -1,5 +1,12 @@
 # Changelog
 
+## 7.1.1 - 2026-09-11
+
+Version 7.1.1 clarifies the evidence boundary for Graphify's offline structural graph.
+
+- Accept AST-origin `INFERRED` relationships as offline structural leads while rejecting semantic or missing provenance for readiness evidence. Keep a fresh worktree graph separate from any graph that may contain a prior semantic layer.
+- Refresh package metadata, archive expectations and the optional Project Kickoff reference for the planned 0.4.1 release.
+
 ## 7.1.0 - 2026-09-10
 
 Version 7.1.0 makes the orchestrator a pure orchestrator and routes verification to a delegated verifier.

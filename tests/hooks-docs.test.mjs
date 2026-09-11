@@ -94,6 +94,18 @@ test("release version and public guidance stay consistent", async () => {
   assert.match(guide, /Requirements 1.?15/i);
 });
 
+test("Graphify guidance accepts AST-origin inferred structural leads only", async () => {
+  const [guide, readme] = await readMany(["references/graphify.md", "README.md"]);
+  for (const required of [
+    "_origin distinguishes AST from semantic extraction",
+    "confidence describes resolution strength",
+    "AST-origin INFERRED relationships are valid offline structural leads",
+    "Semantic or missing provenance is invalid for Agent-Team's offline readiness evidence",
+    "must not adopt a graph that may contain a prior semantic layer",
+  ]) assert.ok(guide.includes(required), required);
+  assert.match(readme, /\[planned Project Kickoff v0\.4\.1 release\]\(https:\/\/github\.com\/thebpandey\/project-kickoff\/releases\/tag\/v0\.4\.1\)/);
+});
+
 test("GitHub release publication remains tag-driven and checked", async () => {
   const workflow = await read(".github/workflows/release.yml");
   for (const pattern of [

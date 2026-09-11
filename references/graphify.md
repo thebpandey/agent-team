@@ -15,7 +15,7 @@ Serena answers "what is this symbol and who references it" with language-server 
 
 ## Code-only offline profile
 
-Agent-Team uses `graphify extract . --code-only --no-viz` only. That path is deterministic and offline: no model call, no network, no API key, no visualization output. Every edge it writes is tagged `confidence: "EXTRACTED"`, meaning it came from the AST. Semantic extraction (`extract` without `--code-only`) adds `INFERRED` edges from a model backend; in code-only mode no `INFERRED` edge exists, so an `INFERRED` edge in a graph means a backend ran and the graph is no longer offline evidence.
+Agent-Team uses `graphify extract . --code-only --no-viz` only. That path is deterministic and offline: no model call, no network, no API key, no visualization output. _origin distinguishes AST from semantic extraction; confidence describes resolution strength. AST-origin INFERRED relationships are valid offline structural leads, just as AST-origin EXTRACTED relationships are. Semantic or missing provenance is invalid for Agent-Team's offline readiness evidence, regardless of confidence. A fresh worktree graph must not adopt a graph that may contain a prior semantic layer.
 
 ## Where graphs live
 
