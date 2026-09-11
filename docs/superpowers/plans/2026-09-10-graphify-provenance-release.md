@@ -258,19 +258,39 @@ If the complete suite passes without reproducing either issue, create no stabili
 ### Task 4: Verify and publish Project Kickoff 0.4.1
 
 **Files:**
-- Verify unchanged source: `/home/server/dev/skills/project-kickoff`
+- Modify: `/home/server/dev/skills/project-kickoff/tests/test_agent_team_handoff.py`
+- Verify source: `/home/server/dev/skills/project-kickoff`
 - Create ignored artifact: `dist/project-kickoff-0.4.1.zip`
 - Create ignored checksum: `dist/v0.4.1/SHA256SUMS`
 
 **Interfaces:**
-- Consumes: Project Kickoff commit `7a522aab466709571b6ee084cb1a86afcdf87f3a` and the final compatible Agent-Team source.
+- Consumes: Project Kickoff commit `7a522aab466709571b6ee084cb1a86afcdf87f3a` and the final compatible Agent-Team 7.1.1 source.
 - Produces: `origin/main`, annotated tag `v0.4.1`, GitHub release `Project Kickoff v0.4.1`, verified ZIP and checksum assets, and verified Pages version.
 
-- [ ] **Step 1: Verify the exact Project Kickoff candidate**
+- [ ] **Step 1: Update only the real cross-version integration assertion**
+
+Rename `test_real_agent_team_710_adopts_the_handoff` to `test_real_agent_team_711_adopts_the_710_handoff`. Require the supplied real Agent-Team root to report 7.1.1, while continuing to assert that the Project Kickoff template and checker use `agentTeam.testedVersion: "7.1.0"`. Do not change the checker, handoff template, or compatibility documentation: Agent-Team 7.1.1 is a compatible patch, and Project Kickoff removes its producer-only compatibility metadata before initialization.
+
+Run the focused test against the final Agent-Team integration worktree:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 AGENT_TEAM_ROOT=/home/server/dev/skills/agent-team/.worktrees/integrate-graphify-provenance-7.1.1 python3 -m unittest tests.test_agent_team_handoff -v
+```
+
+Expected before the test-only adjustment: one failure because the test requires the Agent-Team package version to equal 7.1.0. Expected afterward: every focused test passes and the emitted handoff compatibility baseline remains 7.1.0.
+
+Commit only the test adjustment:
+
+```bash
+git add tests/test_agent_team_handoff.py
+git commit -m "test: qualify Agent-Team 7.1.1 compatibility"
+```
+
+- [ ] **Step 2: Verify the exact Project Kickoff candidate**
 
 ```bash
 cd /home/server/dev/skills/project-kickoff
-test "$(git rev-parse HEAD)" = "7a522aab466709571b6ee084cb1a86afcdf87f3a"
+git merge-base --is-ancestor 7a522aab466709571b6ee084cb1a86afcdf87f3a HEAD
 test "$(git status --porcelain)" = ""
 git diff --check
 python3 /home/server/.codex/skills/.system/skill-creator/scripts/quick_validate.py .
@@ -278,15 +298,15 @@ PYTHONDONTWRITEBYTECODE=1 AGENT_TEAM_ROOT=/home/server/dev/skills/agent-team pyt
 node scripts/check-guide.mjs project-kickoff-guide-v0.3.1.html
 ```
 
-Expected: exact revision match, clean tree, 54 tests pass, Skill validation passes, and guide checks report 6/6.
+Expected: the candidate descends from the reviewed 0.4.1 source, the tree is clean, 54 tests pass, Skill validation passes, and guide checks report 6/6.
 
-- [ ] **Step 2: Build the exact 34-file archive**
+- [ ] **Step 3: Build the exact 34-file archive**
 
 Use the 34-path README allowlist and exact revision:
 
 ```bash
 release_version=0.4.1
-release_revision=7a522aab466709571b6ee084cb1a86afcdf87f3a
+release_revision="$(git rev-parse HEAD)"
 mkdir -p "dist/v$release_version"
 git archive --format=zip --prefix=project-kickoff/ --output="dist/project-kickoff-$release_version.zip" "$release_revision" $kickoff_required_files
 (cd dist && sha256sum "project-kickoff-$release_version.zip" > "v$release_version/SHA256SUMS" && sha256sum -c "v$release_version/SHA256SUMS")
@@ -294,11 +314,11 @@ git archive --format=zip --prefix=project-kickoff/ --output="dist/project-kickof
 
 Define `kickoff_required_files` from the first README installation allowlist and assert the second list is byte-identical before invoking `git archive`.
 
-- [ ] **Step 3: Verify archive contents and bytes**
+- [ ] **Step 4: Verify archive contents and bytes**
 
 Create a disposable extraction directory. Assert exactly 34 regular files, no symlinks, every path equals the allowlist, and every extracted byte equals `git show "$release_revision:$path"`. Run Skill Creator validation on the extracted package and `unzip -t` on the ZIP. Remove only the disposable extraction directory.
 
-- [ ] **Step 4: Recheck remote identity, then push main and tag**
+- [ ] **Step 5: Recheck remote identity, then push main and tag**
 
 ```bash
 git fetch origin
@@ -312,7 +332,7 @@ git push origin "v$release_version"
 
 If remote main changed, stop publication, incorporate it, and repeat affected verification. Never replace the expected hash without reviewing the new commits.
 
-- [ ] **Step 5: Create and verify the GitHub release**
+- [ ] **Step 6: Create and verify the GitHub release**
 
 ```bash
 gh release create v0.4.1 dist/project-kickoff-0.4.1.zip dist/v0.4.1/SHA256SUMS --repo thebpandey/project-kickoff --verify-tag --title "Project Kickoff v0.4.1" --generate-notes
