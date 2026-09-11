@@ -202,7 +202,7 @@ test("real CLI persists integration evidence that policy can consume", async () 
   assert.equal(consumed.allow, true);
 });
 
-test("real CLI maps a fresh initialized integration record and retains the main deployment gate", async () => {
+test("real CLI maps a fresh initialized integration record and a raw autoDeploy flag cannot bypass the main deployment gate", async () => {
   const value = await fixture();
   const state = structuredClone((await loadCanonicalState(value.project)).state);
   state.integration = { ownerSessionId: "owner-session", authorized: false, baseRef: "main", paused: false, hold: false };
@@ -227,8 +227,93 @@ test("real CLI maps a fresh initialized integration record and retains the main 
   const mapped = (await loadCanonicalState(value.project)).state;
   mapped.release.autoDeploy = true;
   await writeFile(value.project.paths.state, JSON.stringify(mapped));
-  const allowed = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:main` } }), value.project);
-  assert.equal(allowed.allow, true);
+  const stillBlocked = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:main` } }), value.project);
+  assert.equal(stillBlocked.allow, false);
+});
+
+test("real CLI maps one release batch before allowing its deployment-triggering main push", async () => {
+  // This test catches a successful release evidence receipt that leaves the main deployment trigger disabled.
+  const value = await fixture();
+  const seeded = structuredClone((await loadCanonicalState(value.project)).state);
+  seeded.integration = { ownerSessionId: "owner-session", authorized: false, baseRef: "main", paused: false, hold: false };
+  seeded.release = { ownerSessionId: "owner-session", authorized: false, autoDeploy: false, hold: true };
+  await writeFile(value.project.paths.state, JSON.stringify(seeded));
+  const canonical = await loadCanonicalState(value.project);
+  const integrationPath = path.join(value.root, ".agent-team", "evidence", "main-integration.json");
+  await mkdir(path.dirname(integrationPath), { recursive: true });
+  await writeFile(integrationPath, JSON.stringify({
+    status: "passed", revision: value.revision, taskIds: ["AT-001"],
+    remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/heads/main", targetRevision: value.revision },
+    authorization: { source: "explicit-main-authorization", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
+    recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: true,
+  }));
+  const integrationRequest = await requestFile(value, "main-integration", envelope("owner-session", canonical.state.stateVersion ?? 0, {
+    operationId: "main-integration", gate: "integration", taskIds: ["AT-001"], expectedFingerprint: canonical.tracker.fingerprint,
+    expectedRevision: value.revision, evidencePath: integrationPath,
+  }));
+  assert.equal((await invoke("gate-evidence", "--project", value.feature, "--request", integrationRequest)).status, "applied");
+  const pushEvent = hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:main` } });
+  const beforeRelease = await evaluatePolicy(pushEvent, value.project);
+  assert.equal(beforeRelease.allow, false);
+  assert.match(beforeRelease.messages.join("\n"), /automatic deployment is off/);
+
+  const afterIntegration = await loadCanonicalState(value.project);
+  const releasePath = path.join(value.root, ".agent-team", "evidence", "release.json");
+  await writeFile(releasePath, JSON.stringify({
+    status: "passed", revision: value.revision, taskIds: ["AT-001"], ownerSessionId: "owner-session", authorized: true,
+    expectedRevision: value.revision, target: "github:example/project:v1.0.0", process: "gh-release",
+    authorization: { source: "explicit one-time user authorization", target: "github:example/project:v1.0.0", process: "gh-release",
+      scope: "batch-1", ownerSessionId: "owner-session", grantedAt: "2026-09-10" },
+    run: { id: "release-1", mode: "auto_deploy", taskIds: ["AT-001"], paused: false }, runMode: "auto_deploy", autoDeploy: true,
+    batchId: "batch-1", batch: { id: "batch-1", taskIds: ["AT-001"] },
+    artifact: { id: "artifact-1", revision: value.revision, taskIds: ["AT-001"], sha256: "a".repeat(64) },
+    integration: { status: "passed", revision: value.revision, taskIds: ["AT-001"], recordedTaskIds: ["AT-001"], remoteMainDeploys: true },
+    verification: { status: "passed", revision: value.revision, taskIds: ["AT-001"] },
+    preview: { required: false, status: "not_required", revision: value.revision },
+    delta: { status: "clean", revision: value.revision, taskIds: ["AT-001"] },
+    recovery: { status: "verified", artifactId: "git:known-good", action: "restore the known-good revision" },
+    projectPaused: false, hold: false,
+  }));
+  const releaseRequest = await requestFile(value, "release", envelope("owner-session", afterIntegration.state.stateVersion, {
+    operationId: "release", gate: "release", taskIds: ["AT-001"], expectedFingerprint: afterIntegration.tracker.fingerprint,
+    expectedRevision: value.revision, evidencePath: releasePath,
+  }));
+  assert.equal((await invoke("gate-evidence", "--project", value.feature, "--request", releaseRequest)).status, "applied");
+
+  assert.equal((await evaluatePolicy(pushEvent, value.project)).allow, true);
+  const exactProcess = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: "gh release create v1.0.0" } }), value.project);
+  const wrongProcess = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: "npm publish" } }), value.project);
+  assert.equal(exactProcess.allow, true);
+  assert.equal(wrongProcess.allow, false);
+  const release = (await loadCanonicalState(value.project)).state.release;
+  assert.equal(release.runMode, "auto_deploy");
+  assert.equal(release.autoDeploy, true);
+  assert.equal(release.remoteMainDeploys, true);
+  assert.deepEqual(release.taskIds, ["AT-001"]);
+
+  execFileSync("git", ["push", "-q", "origin", "HEAD:refs/heads/main"], { cwd: value.feature });
+  const beforeTag = await loadCanonicalState(value.project);
+  const tagPath = path.join(value.root, ".agent-team", "evidence", "tag-integration.json");
+  await writeFile(tagPath, JSON.stringify({
+    status: "passed", revision: value.revision, taskIds: ["AT-001"],
+    remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/tags/v1.0.0", targetAbsent: true },
+    authorization: { source: "explicit-tag-authorization", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
+    recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false,
+  }));
+  const tagRequest = await requestFile(value, "tag-integration", envelope("owner-session", beforeTag.state.stateVersion, {
+    operationId: "tag-integration", gate: "integration", taskIds: ["AT-001"], expectedFingerprint: beforeTag.tracker.fingerprint,
+    expectedRevision: value.revision, evidencePath: tagPath,
+  }));
+  assert.equal((await invoke("gate-evidence", "--project", value.feature, "--request", tagRequest)).status, "applied");
+  const tagCommand = `git -C ${value.feature} push origin HEAD:refs/tags/v1.0.0`;
+  assert.equal((await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: tagCommand } }), value.project)).allow, true);
+  for (const command of [
+    `git -C ${value.feature} push backup HEAD:refs/tags/v1.0.0`,
+    `git -C ${value.feature} push origin HEAD:refs/tags/v1.0.1`,
+    `git -C ${value.feature} push origin HEAD:refs/tags/v1.0.0 HEAD:refs/tags/v1.0.1`,
+  ]) assert.equal((await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command } }), value.project)).allow, false, command);
+  execFileSync("git", ["push", "-q", "origin", "HEAD:refs/tags/v1.0.0"], { cwd: value.feature });
+  assert.equal((await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: tagCommand } }), value.project)).allow, false);
 });
 
 test("integration evidence keeps an actual initialized project structurally ready", async () => {

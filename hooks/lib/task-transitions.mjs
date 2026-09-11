@@ -16,6 +16,9 @@ const conflict = (reason) => ({ status: "conflict", reason });
 const finished = new Set(["verified", "integrated", "deployed", "closed", "done"]);
 const unclaimed = new Set(["", "none", "unassigned", "-"]);
 const split = (value) => Array.isArray(value) ? value : String(value ?? "").split(/\s*,\s*/).filter((id) => id && !["none", "-"].includes(id));
+const sameIds = (left, right) => Array.isArray(left) && Array.isArray(right) && left.length === right.length
+  && [...left].sort().every((value, index) => value === [...right].sort()[index]);
+const boundedString = (value, maximum = 256) => typeof value === "string" && value.trim() === value && value.length > 0 && value.length <= maximum;
 const ref = (value) => typeof value === "string" && (/^refs\/heads\/[\w./-]+$/.test(value)
   || (/^refs\/tags\/[A-Za-z0-9][\w./-]*$/.test(value) && !/[./]$|\.\.|\/\//.test(value.slice("refs/tags/".length))));
 const configuredRemoteBaseRef = (value) => typeof value === "string" && /^[A-Za-z0-9][\w./-]*$/.test(value)
@@ -358,6 +361,93 @@ export async function recordGateEvidence(project, request, options = {}) {
         taskIds: [...request.taskIds].sort(), authorization, evidenceAt: observedAt, deltaClean: true, recoveryReconciled: true,
         updatesRemoteMain: remote.targetRef === "refs/heads/main", remoteMainDeploys: evidence.remoteMainDeploys,
         preview: evidence.preview.required ? { required: true, approvedRevision: revision } : { required: false } };
+    }
+    if (request.gate === "release") {
+      const ownerSessionId = state.release?.ownerSessionId;
+      const authorization = evidence.authorization;
+      const runRecord = evidence.run;
+      const batch = evidence.batch;
+      const artifact = evidence.artifact;
+      const integration = evidence.integration;
+      const verification = evidence.verification;
+      const releasePreview = evidence.preview;
+      const delta = evidence.delta;
+      const releaseRecovery = evidence.recovery;
+      const runModeMatches = evidence.runMode === runRecord?.mode && ["auto_deploy", "manual"].includes(evidence.runMode)
+        && ((evidence.runMode === "auto_deploy" && evidence.autoDeploy === true)
+          || (evidence.runMode === "manual" && evidence.autoDeploy === false));
+      const releaseRecord = (record, status) => record?.status === status && record.revision === revision
+        && sameIds(record.taskIds, request.taskIds);
+      const artifactMetadataValid = artifact && typeof artifact === "object" && boundedString(artifact.id, 4096)
+        && artifact.revision === revision && sameIds(artifact.taskIds, request.taskIds)
+        && (artifact.path === undefined || boundedString(artifact.path, 4096))
+        && (artifact.bytes === undefined || Number.isSafeInteger(artifact.bytes) && artifact.bytes > 0)
+        && /^[0-9a-f]{64}$/i.test(artifact.sha256)
+        && (artifact.checksumPath === undefined || boundedString(artifact.checksumPath, 4096))
+        && (artifact.checksumBytes === undefined || Number.isSafeInteger(artifact.checksumBytes) && artifact.checksumBytes > 0)
+        && (artifact.checksumSha256 === undefined || /^[0-9a-f]{64}$/i.test(artifact.checksumSha256))
+        && (artifact.checksumEntry === undefined || boundedString(artifact.checksumEntry, 4096));
+      const integrationBindingValid = releaseRecord(integration, "passed")
+        && sameIds(integration.recordedTaskIds, state.integration?.taskIds)
+        && state.integration?.authorized === true && state.integration.expectedRevision === revision
+        && typeof integration.remoteMainDeploys === "boolean" && integration.remoteMainDeploys === state.integration.remoteMainDeploys
+        && (integration.remoteName === undefined || boundedString(integration.remoteName, 128))
+        && (integration.baseRef === undefined || ref(integration.baseRef))
+        && (integration.baseRevision === undefined || /^[0-9a-f]{40,64}$/i.test(integration.baseRevision))
+        && (integration.targetRef === undefined || ref(integration.targetRef))
+        && (integration.targetRevision === undefined || integration.targetRevision === revision)
+        && (integration.evidencePath === undefined || boundedString(integration.evidencePath, 4096))
+        && (integration.deploymentTarget === undefined || boundedString(integration.deploymentTarget, 4096));
+      const deltaBindingValid = releaseRecord(delta, "clean")
+        && (delta.remoteBaseRevision === undefined || /^[0-9a-f]{40,64}$/i.test(delta.remoteBaseRevision));
+      if (ownerSessionId !== canonicalState.registry.integrationOwner || ownerSessionId !== request.actorSessionId
+        || evidence.ownerSessionId !== ownerSessionId || evidence.authorized !== true || evidence.expectedRevision !== revision
+        || !boundedString(evidence.target, 1024) || !boundedString(evidence.process, 128)
+        || !authorization || typeof authorization !== "object" || !boundedString(authorization.source)
+        || authorization.target !== evidence.target || authorization.process !== evidence.process
+        || authorization.scope !== evidence.batchId || authorization.ownerSessionId !== ownerSessionId
+        || !boundedString(authorization.grantedAt, 128) || !Number.isFinite(Date.parse(authorization.grantedAt))
+        || !runRecord || typeof runRecord !== "object" || !boundedString(runRecord.id, 128) || !runModeMatches
+        || !sameIds(runRecord.taskIds, request.taskIds) || runRecord.paused !== false
+        || !boundedString(evidence.batchId, 128) || batch?.id !== evidence.batchId || !sameIds(batch.taskIds, request.taskIds)
+        || !artifactMetadataValid || !integrationBindingValid || !releaseRecord(verification, "passed")
+        || typeof releasePreview?.required !== "boolean" || releasePreview.revision !== revision
+        || (releasePreview.required ? releasePreview.status !== "passed" : !["not_required", "passed"].includes(releasePreview.status))
+        || !deltaBindingValid || releaseRecovery?.status !== "verified"
+        || !boundedString(releaseRecovery.artifactId, 4096) || !boundedString(releaseRecovery.action, 4096)
+        || evidence.projectPaused !== false || canonicalState.state.run?.paused === true || evidence.hold !== false) {
+        return conflict("release_evidence_mismatch");
+      }
+      const observedAt = new Date().toISOString();
+      const taskIds = [...request.taskIds].sort();
+      const copy = (record, keys) => Object.fromEntries(keys.filter((key) => record[key] !== undefined).map((key) => [key, structuredClone(record[key])]));
+      state.release = {
+        ownerSessionId,
+        authorized: true,
+        expectedRevision: revision,
+        evidenceAt: observedAt,
+        target: evidence.target,
+        process: evidence.process,
+        authorization: { source: authorization.source, target: evidence.target, process: evidence.process, scope: evidence.batchId,
+          ownerSessionId, grantedAt: authorization.grantedAt, revision, taskIds, observedAt },
+        run: { id: runRecord.id, mode: evidence.runMode, taskIds, paused: false },
+        runMode: evidence.runMode,
+        batchId: evidence.batchId,
+        taskIds,
+        batch: { id: evidence.batchId, taskIds },
+        artifact: { ...copy(artifact, ["id", "path", "bytes", "sha256", "checksumPath", "checksumBytes", "checksumSha256", "checksumEntry"]), revision, taskIds },
+        integration: { ...copy(integration, ["status", "evidencePath", "remoteName", "baseRef", "baseRevision", "targetRef", "targetRevision", "remoteMainDeploys", "deploymentTarget"]),
+          revision, taskIds, recordedTaskIds: [...integration.recordedTaskIds].sort() },
+        verification: { status: "passed", revision, taskIds },
+        preview: { required: releasePreview.required, status: releasePreview.status, revision },
+        delta: { ...copy(delta, ["status", "remoteBaseRevision"]), revision, taskIds },
+        recovery: { status: "verified", artifactId: releaseRecovery.artifactId, action: releaseRecovery.action },
+        recoveryReady: true,
+        remoteMainDeploys: integration.remoteMainDeploys,
+        autoDeploy: evidence.autoDeploy,
+        projectPaused: false,
+        hold: false,
+      };
     }
     const current = await loadCanonicalTracker(project, options);
     if (current.tracker.status !== "current" || current.tracker.fingerprint !== canonical.tracker.fingerprint) return conflict("stale_tracker");

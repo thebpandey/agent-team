@@ -242,6 +242,36 @@ test("integration compares bounded current remote and base refs instead of stale
   assert.match(unavailable.messages.join("\n"), /unavailable/i);
 });
 
+test("deployment-triggering main integration consumes only the current release batch authority", async (context) => {
+  const invalid = [
+    ["release revision", (state) => { state.release.expectedRevision = "deadbeef"; }],
+    ["release tracker", (state) => { state.release.trackerFingerprint = "deadbeef"; }],
+    ["release freshness", (state) => { state.release.evidenceAt = "2026-09-06T11:00:00.000Z"; }],
+    ["release authorization scope", (state) => { state.release.authorization.scope = "another-batch"; }],
+    ["release authorization target", (state) => { state.release.authorization.target = "another-target"; }],
+    ["release deployment disposition", (state) => { state.release.remoteMainDeploys = false; }],
+  ];
+  for (const [name, invalidate] of invalid) await context.test(name, async () => {
+    const value = await fixture();
+    const canonical = await loadCanonicalState(value.project);
+    const state = structuredClone(canonical.state);
+    Object.assign(state.integration, {
+      remoteRef: "refs/heads/main", remoteRevision: value.revision, updatesRemoteMain: true, remoteMainDeploys: true,
+    });
+    Object.assign(state.release, {
+      trackerFingerprint: canonical.tracker.fingerprint, remoteMainDeploys: true,
+    });
+    state.release.integration.remoteMainDeploys = true;
+    invalidate(state);
+    await saveState(value, state);
+    const result = await evaluatePolicy(hookEvent(value, {
+      sessionId: "owner-session",
+      operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:main` },
+    }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+    assert.equal(result.allow, false, name);
+  });
+});
+
 test("integration permits only an evidenced non-force remote-main advance", async () => {
   const value = await fixture();
   await writeFile(path.join(value.root, "advance.txt"), "advance\n");
@@ -346,6 +376,9 @@ test("release gate binds authorization, run, batch, artifact, evidence, pause, d
   // This test catches a release decision based only on owner, target, and revision.
   const cases = [
     ["authorization provenance", (state) => { delete state.release.authorization.source; }],
+    ["authorization owner", (state) => { state.release.authorization.ownerSessionId = "developer-session"; }],
+    ["authorization revision", (state) => { state.release.authorization.revision = "deadbeef"; }],
+    ["authorization task scope", (state) => { state.release.authorization.taskIds = ["AT-404"]; }],
     ["process scope", (state) => { state.release.authorization.process = "vercel"; }],
     ["run mode", (state) => { state.release.runMode = "auto_deploy"; state.release.autoDeploy = false; }],
     ["manual mode", (state) => { state.release.runMode = "manual"; state.release.autoDeploy = true; }],
@@ -356,6 +389,7 @@ test("release gate binds authorization, run, batch, artifact, evidence, pause, d
     ["preview record", (state) => { state.release.preview = { required: true, status: "pending", revision: state.release.expectedRevision }; }],
     ["project pause", (state) => { state.release.projectPaused = true; }],
     ["deployment delta", (state) => { state.release.delta.taskIds = []; }],
+    ["remote main deployment binding", (state) => { state.release.remoteMainDeploys = true; }],
     ["known recovery", (state) => { delete state.release.recovery.action; }],
   ];
 

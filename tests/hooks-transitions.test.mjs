@@ -568,6 +568,129 @@ if (process.argv[2] === "writer") {
     assert.equal(Object.hasOwn(integration, "remoteRevision"), false);
   });
 
+  test("release gate evidence maps one owner-authorized batch from the initialized release hold", async () => {
+    // This test catches release evidence that is receipted without establishing the policy fields it validated.
+    const { recordGateEvidence } = await api();
+    const value = await fixture();
+    const seeded = structuredClone((await loadCanonicalState(value.project)).state);
+    seeded.release = { ownerSessionId: "owner-session", authorized: false, autoDeploy: false, hold: true };
+    seeded.integration.taskIds = ["AT-001"];
+    seeded.integration.remoteMainDeploys = true;
+    await writeFile(value.project.paths.state, JSON.stringify(seeded));
+    const evidencePath = path.join(value.root, ".agent-team/release.json");
+    const sha256 = "a".repeat(64);
+    const checksumSha256 = "b".repeat(64);
+    const evidence = {
+      status: "passed", revision: value.revision, taskIds: ["AT-001"], ownerSessionId: "owner-session", authorized: true,
+      expectedRevision: value.revision, target: "github:example/project:v1.0.0", process: "gh-release",
+      authorization: { source: "explicit user authorization", target: "github:example/project:v1.0.0", process: "gh-release",
+        scope: "batch-1", ownerSessionId: "owner-session", grantedAt: "2026-09-10" },
+      run: { id: "release-1", mode: "auto_deploy", taskIds: ["AT-001"], paused: false },
+      runMode: "auto_deploy", batchId: "batch-1", batch: { id: "batch-1", taskIds: ["AT-001"] },
+      artifact: { id: `artifact-1:${sha256}`, revision: value.revision, taskIds: ["AT-001"], path: "/tmp/artifact-1.zip",
+        bytes: 42, sha256, checksumPath: "/tmp/SHA256SUMS", checksumBytes: 80, checksumSha256,
+        checksumEntry: `${sha256}  artifact-1.zip` },
+      integration: { status: "passed", revision: value.revision, taskIds: ["AT-001"], recordedTaskIds: ["AT-001"], remoteMainDeploys: true },
+      verification: { status: "passed", revision: value.revision, taskIds: ["AT-001"] },
+      preview: { required: false, status: "not_required", revision: value.revision },
+      delta: { status: "clean", revision: value.revision, taskIds: ["AT-001"] },
+      recovery: { status: "verified", artifactId: "git:known-good", action: "restore the known-good revision" },
+      autoDeploy: true, projectPaused: false, hold: false,
+    };
+    await writeFile(evidencePath, JSON.stringify(evidence));
+
+    const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "release-evidence", expectedVersion: 0,
+      expectedFingerprint: value.canonical.tracker.fingerprint, gate: "release", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath });
+    const release = (await loadCanonicalState(value.project)).state.release;
+
+    assert.equal(result.status, "applied");
+    assert.equal(release.ownerSessionId, "owner-session");
+    assert.equal(release.authorized, true);
+    assert.equal(release.expectedRevision, value.revision);
+    assert.equal(release.target, evidence.target);
+    assert.equal(release.process, "gh-release");
+    assert.equal(release.runMode, "auto_deploy");
+    assert.equal(release.autoDeploy, true);
+    assert.equal(release.projectPaused, false);
+    assert.equal(release.hold, false);
+    assert.equal(release.remoteMainDeploys, true);
+    assert.deepEqual(release.taskIds, ["AT-001"]);
+    assert.deepEqual(release.batch, evidence.batch);
+    assert.deepEqual(release.artifact, evidence.artifact);
+    assert.deepEqual(release.integration, evidence.integration);
+    assert.deepEqual(release.verification, evidence.verification);
+    assert.deepEqual(release.preview, evidence.preview);
+    assert.deepEqual(release.delta, evidence.delta);
+    assert.deepEqual(release.recovery, evidence.recovery);
+    assert.equal(release.authorization.ownerSessionId, "owner-session");
+    assert.equal(release.authorization.revision, value.revision);
+    assert.deepEqual(release.authorization.taskIds, ["AT-001"]);
+    assert.equal(typeof release.evidenceAt, "string");
+    assert.equal(release.trackerFingerprint, value.canonical.tracker.fingerprint);
+    assert.equal(release.recordedEvidence.revision, value.revision);
+  });
+
+  test("release gate evidence rejects incomplete, mismatched, paused, held, and fabricated authority without changing state", async (context) => {
+    const invalid = [
+      ["missing authorization source", (evidence) => { delete evidence.authorization.source; }],
+      ["blank authorization source", (evidence) => { evidence.authorization.source = " "; }],
+      ["oversized authorization source", (evidence) => { evidence.authorization.source = "x".repeat(257); }],
+      ["wrong owner", (evidence) => { evidence.ownerSessionId = "developer-session"; }],
+      ["wrong authorization owner", (evidence) => { evidence.authorization.ownerSessionId = "developer-session"; }],
+      ["wrong target", (evidence) => { evidence.authorization.target = "github:example/other:v1"; }],
+      ["wrong process", (evidence) => { evidence.authorization.process = "npm"; }],
+      ["wrong scope", (evidence) => { evidence.authorization.scope = "batch-2"; }],
+      ["fabricated authorization", (evidence) => { evidence.authorized = false; }],
+      ["wrong run mode pair", (evidence) => { evidence.autoDeploy = false; }],
+      ["paused run", (evidence) => { evidence.run.paused = true; }],
+      ["missing batch", (evidence) => { delete evidence.batch; }],
+      ["wrong batch tasks", (evidence) => { evidence.batch.taskIds = ["AT-002"]; }],
+      ["stale expected revision", (evidence) => { evidence.expectedRevision = "deadbeef"; }],
+      ["missing artifact checksum", (evidence) => { delete evidence.artifact.sha256; }],
+      ["stale artifact", (evidence) => { evidence.artifact.revision = "deadbeef"; }],
+      ["stale integration", (evidence) => { evidence.integration.revision = "deadbeef"; }],
+      ["stale verification", (evidence) => { evidence.verification.revision = "deadbeef"; }],
+      ["stale preview", (evidence) => { evidence.preview.revision = "deadbeef"; }],
+      ["stale delta", (evidence) => { evidence.delta.revision = "deadbeef"; }],
+      ["malformed remote delta base", (evidence) => { evidence.delta.remoteBaseRevision = "fabricated"; }],
+      ["missing remote deployment fact", (evidence) => { delete evidence.integration.remoteMainDeploys; }],
+      ["missing recovery", (evidence) => { delete evidence.recovery; }],
+      ["paused project", (evidence) => { evidence.projectPaused = true; }],
+      ["active hold", (evidence) => { evidence.hold = true; }],
+    ];
+    for (const [name, invalidate] of invalid) await context.test(name, async () => {
+      const { recordGateEvidence } = await api();
+      const value = await fixture();
+      const seeded = structuredClone((await loadCanonicalState(value.project)).state);
+      seeded.release = { ownerSessionId: "owner-session", authorized: false, autoDeploy: false, hold: true };
+      seeded.integration.taskIds = ["AT-001"];
+      seeded.integration.remoteMainDeploys = true;
+      await writeFile(value.project.paths.state, JSON.stringify(seeded));
+      const evidence = { status: "passed", revision: value.revision, taskIds: ["AT-001"], ownerSessionId: "owner-session", authorized: true,
+        expectedRevision: value.revision, target: "github:example/project:v1.0.0", process: "gh-release",
+        authorization: { source: "explicit user authorization", target: "github:example/project:v1.0.0", process: "gh-release",
+          scope: "batch-1", ownerSessionId: "owner-session", grantedAt: "2026-09-10" },
+        run: { id: "release-1", mode: "auto_deploy", taskIds: ["AT-001"], paused: false }, runMode: "auto_deploy", autoDeploy: true,
+        batchId: "batch-1", batch: { id: "batch-1", taskIds: ["AT-001"] },
+        artifact: { id: "artifact-1", revision: value.revision, taskIds: ["AT-001"], sha256: "a".repeat(64) },
+        integration: { status: "passed", revision: value.revision, taskIds: ["AT-001"], recordedTaskIds: ["AT-001"], remoteMainDeploys: true },
+        verification: { status: "passed", revision: value.revision, taskIds: ["AT-001"] },
+        preview: { required: false, status: "not_required", revision: value.revision },
+        delta: { status: "clean", revision: value.revision, taskIds: ["AT-001"] },
+        recovery: { status: "verified", artifactId: "git:known-good", action: "restore the known-good revision" },
+        projectPaused: false, hold: false };
+      invalidate(evidence);
+      const evidencePath = path.join(value.root, `.agent-team/release-${name.replaceAll(" ", "-")}.json`);
+      await writeFile(evidencePath, JSON.stringify(evidence));
+      const before = structuredClone((await loadCanonicalState(value.project)).state.release);
+      const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: `release-${name.replaceAll(" ", "-")}`,
+        expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint, gate: "release", taskIds: ["AT-001"],
+        expectedRevision: value.revision, evidencePath });
+      assert.deepEqual(result, { status: "conflict", reason: "release_evidence_mismatch" }, name);
+      assert.deepEqual((await loadCanonicalState(value.project)).state.release, before, name);
+    });
+  });
+
   test("Beads atomic claim retains uncertain writes and reconciles its native operation note without retry", async () => {
     const { transitionTask } = await api();
     const value = await fixture();

@@ -164,8 +164,26 @@ async function integrationGate(event, project, canonical, operation, now, budget
   if (!gate.recoveryReconciled) return deny("Integration recovery evidence is not reconciled.");
   if (!gate.deltaClean) return deny("The recorded integration delta is not clean.");
   if (gate.preview?.required && gate.preview.approvedRevision !== gate.expectedRevision) return deny("Preview approval does not match the integration revision.");
-  if (gate.updatesRemoteMain && gate.remoteMainDeploys && !canonical.state.release?.autoDeploy) {
-    return deny("Updating remote main is a deployment trigger, but automatic deployment is off.");
+  if (gate.updatesRemoteMain && gate.remoteMainDeploys) {
+    const release = canonical.state.release ?? {};
+    const authorization = release.authorization ?? {};
+    if (!release.autoDeploy) return deny("Updating remote main is a deployment trigger, but automatic deployment is off.");
+    if (release.authorized !== true || release.runMode !== "auto_deploy" || release.ownerSessionId !== canonical.registry.integrationOwner
+      || release.expectedRevision !== gate.expectedRevision || release.trackerFingerprint !== canonical.tracker.fingerprint
+      || !fresh(release.evidenceAt, now) || release.remoteMainDeploys !== true || release.hold || release.projectPaused || canonical.state.run?.paused
+      || typeof authorization.source !== "string" || !authorization.source.trim() || authorization.source.length > 256
+      || authorization.target !== release.target || authorization.process !== release.process || !authorization.grantedAt
+      || authorization.scope !== release.batchId || authorization.ownerSessionId !== release.ownerSessionId
+      || authorization.revision !== release.expectedRevision || !sameIds(authorization.taskIds, release.taskIds)
+      || !fresh(authorization.observedAt, now) || release.batch?.id !== release.batchId
+      || !sameIds(release.batch?.taskIds, release.taskIds) || release.artifact?.revision !== release.expectedRevision
+      || !sameIds(release.artifact?.taskIds, release.taskIds) || !/^[0-9a-f]{64}$/i.test(release.artifact?.sha256)
+      || !releaseRecord(release.integration, release.expectedRevision, release.taskIds) || release.integration.remoteMainDeploys !== true
+      || !releaseRecord(release.verification, release.expectedRevision, release.taskIds)
+      || release.delta?.status !== "clean" || release.delta.revision !== release.expectedRevision || !sameIds(release.delta.taskIds, release.taskIds)
+      || release.recovery?.status !== "verified" || !release.recovery.artifactId || !release.recovery.action) {
+      return deny("The automatic deployment authority does not match this exact release batch.");
+    }
   }
 
   const targetProject = operation.repository ? await resolveProject(path.resolve(event.cwd, operation.repository), { budget }) : project;
@@ -207,7 +225,10 @@ async function releaseGate(event, project, canonical, operation, now, budget) {
   if (!gate.authorized) return deny("Release authorization is missing.");
   if (!gate.target) return deny("The release target is unknown.");
   const authorization = gate.authorization ?? {};
-  if (!authorization.source || !authorization.scope || !authorization.grantedAt) return deny("Release authorization provenance is missing.");
+  if (typeof authorization.source !== "string" || !authorization.source.trim() || authorization.source.length > 256
+    || !authorization.scope || !authorization.grantedAt || authorization.ownerSessionId !== gate.ownerSessionId
+    || authorization.revision !== gate.expectedRevision || !sameIds(authorization.taskIds, gate.taskIds)
+    || !fresh(authorization.observedAt, now)) return deny("Release authorization provenance is missing or mismatched.");
   if (authorization.target !== gate.target || authorization.process !== gate.process || operation.process !== gate.process) {
     return deny("Release target or process authorization does not match this operation.");
   }
@@ -227,6 +248,9 @@ async function releaseGate(event, project, canonical, operation, now, budget) {
     return deny("Release artifact evidence does not match the exact revision and task IDs.");
   }
   if (!releaseRecord(gate.integration, gate.expectedRevision, gate.taskIds)) return deny("Required integration evidence is missing or stale.");
+  if (typeof gate.remoteMainDeploys !== "boolean" || gate.remoteMainDeploys !== gate.integration.remoteMainDeploys) {
+    return deny("The remote-main deployment binding is missing or inconsistent.");
+  }
   if (!releaseRecord(gate.verification, gate.expectedRevision, gate.taskIds)) return deny("Required release verification is missing or stale.");
   if (gate.preview?.required
     ? gate.preview.status !== "passed" || gate.preview.revision !== gate.expectedRevision

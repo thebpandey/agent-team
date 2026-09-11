@@ -99,6 +99,23 @@ These are Node helpers from [the official Agent-Team package](https://github.com
 | `dashboard-snapshot --project /path/to/project` | Generate `.agent-team/dashboard/index.html` once. This does not silently enable future snapshots. |
 | `dashboard-start --project /path/to/project --port 0` | Explicitly run the foreground loopback viewer. Reports its actual URL; Ctrl-C/SIGTERM stops this helper. A requested occupied port fails instead of moving silently. |
 
+### Release evidence artifact
+
+`gate-evidence` accepts a release artifact only through the same versioned, project-owner request envelope used by the other operational mutations. The artifact is JSON with `status: "passed"`, the exact clean `revision` and release `taskIds`, and these release fields:
+
+- the registered `ownerSessionId`, `authorized: true`, matching `expectedRevision`, bounded `target`, and release `process`;
+- `authorization` with a nonblank source of at most 256 characters, the same target/process, `scope` equal to `batchId`, the registered owner, and a parseable `grantedAt` value;
+- a `run` record with a bounded ID, the exact task set, `paused: false`, and the same `mode` as `runMode`; `auto_deploy` pairs only with `autoDeploy: true`, while `manual` pairs only with `false`;
+- matching `batchId` and `{ id, taskIds }` batch records;
+- an `artifact` with a bounded ID, exact revision/task set, and a 64-hex-character `sha256`; optional path, size, and checksum-file fields are syntax-checked and copied only from their named schema fields;
+- passed, exact-revision/task-set `integration` and `verification` records. Integration also names the complete task set from the current authorized integration gate as `recordedTaskIds` and includes its exact boolean `remoteMainDeploys` disposition;
+- an exact-revision preview disposition (`passed` when required, otherwise `not_required` or `passed`), a clean exact-revision/task-set `delta`, and verified `recovery` with a known-good `artifactId` and bounded safe action;
+- `projectPaused: false` and `hold: false`.
+
+The helper rechecks the current tracker, clean HEAD, registered release/integration owner, active integration binding, project pause, operational version, and task identities while holding the state lock. It rejects incomplete or inconsistent release evidence as `release_evidence_mismatch`. On acceptance it maps only the validated fields, derives task ordering plus fresh evidence/authorization observation times, preserves the registered owner, and records the evidence path and digest. This records the owner's existing batch-scoped authorization; it cannot create broader or future-batch authority.
+
+When a remote-main push is itself a deployment trigger, record this release artifact before the already-evidenced exact main push so `autoDeploy` reflects that batch's explicit authority. After main advances, a tag push is a separate integration operation: refresh integration evidence against the new remote-main revision, use the exact `refs/tags/<tag>` target with `targetAbsent: true` and no `targetRevision`, set `remoteMainDeploys: false`, then immediately re-probe absence and push only that evidenced non-force refspec. Main-target evidence never authorizes a tag, another remote, another tag name, multiple refspecs, or a target that has appeared.
+
 Mutation request files are schema-versioned JSON, at most 256 KiB, and must be regular files. For example, the orchestrator can construct a pause request from freshly observed status:
 
 ```json
