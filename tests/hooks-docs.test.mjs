@@ -81,6 +81,14 @@ test("7.0.2 guide remains a reachable historical edition", async () => {
   assert.ok(manifest.files.includes("agent-team-guide-v7.0.2.html"));
 });
 
+test("landing-page banner alt text does not misidentify retained artwork as the release version", async () => {
+  const index = await read("index.html");
+  const banner = index.match(/<img class="banner"[^>]*alt="([^"]+)"/);
+  assert.ok(banner);
+  assert.match(banner[1], /^Blueprint banner for Agent-Team\./);
+  assert.doesNotMatch(banner[1], /version\s+\d+\.\d+\.\d+/i);
+});
+
 // Text contracts catch instruction drift; behavioral/consumer/native tests remain separate gates.
 test("release version and public guidance stay consistent", async () => {
   const [raw, skill, readme, changelog, guide] = await readMany(["hooks/manifest.json", "SKILL.md", "README.md", "CHANGELOG.md", "references/hooks.md"]);
