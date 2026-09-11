@@ -2,7 +2,7 @@
 
 Created by [thebpandey](https://github.com/thebpandey). An orchestrator-led development skill for Codex and Claude Code: small parallel assignments, independent review, automatic repair of ordinary findings, and verified integration.
 
-> **Version 7.1.0.** One complete package for Codex and Claude Code. This release makes the orchestrator a pure orchestrator, routes pre-dispatch checks and post-completion verification to a GPT-5.6-Sol verifier (Opus 5 fallback in Claude Code), adds Graphify as a default code-graph dependency next to Serena, and uses a LeanCTX warning profile for interpreter one-liners. Installation lets you choose the host and whether to install for one project or your user account; setup guides you through the required tool and hook checks.
+> **Version 7.1.1.** One complete package for Codex and Claude Code. This release makes the orchestrator a pure orchestrator, routes pre-dispatch checks and post-completion verification to a GPT-5.6-Sol verifier (Opus 5 fallback in Claude Code), adds Graphify as a default code-graph dependency next to Serena, and uses a LeanCTX warning profile for interpreter one-liners. Graphify treats AST-origin `INFERRED` relationships as offline structural leads and rejects semantic or missing provenance for readiness evidence. Installation lets you choose the host and whether to install for one project or your user account; setup guides you through the required tool and hook checks.
 
 New here? Open the [hosted Agent-Team 7.1.0 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.1.0.html) in your browser, or read the [short Markdown guide](GETTING_STARTED.md). The [7.0.2 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.0.2.html) remains reachable as historical documentation. Both start with GitHub authentication and optional Project Kickoff.
 
@@ -61,7 +61,7 @@ The source repositories are publicly visible, but visibility is **not** a licens
 [Project Kickoff](https://github.com/thebpandey/project-kickoff), also by thebpandey, defines a new project, audits an existing one, or replans a major revision. It produces approved planning records and an Agent-Team handoff; it does not implement the product or automatically launch Agent-Team.
 
 ```text
-Install the complete Project Kickoff package from https://github.com/thebpandey/project-kickoff at tag v0.3.0 under its applicable license.
+Install the complete Project Kickoff package from the [planned Project Kickoff v0.4.1 release](https://github.com/thebpandey/project-kickoff/releases/tag/v0.4.1) under its applicable license. This future release link is not yet independently verified here.
 Use this confirmed project's .agents/skills/project-kickoff for Codex or .claude/skills/project-kickoff for Claude Code.
 Preserve customizations, references, assets, scripts and metadata.
 Exclude the licensed package from application commits using the project's local Git exclude.
@@ -255,7 +255,7 @@ See [recovery](references/recovery.md), [canonical state](references/state.md), 
 
 ## Source, versions and updates
 
-The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.1.0**; `metadata.version` in `SKILL.md` is authoritative. Version [7.1.0](https://github.com/thebpandey/agent-team/releases/tag/v7.1.0) makes the orchestrator a pure orchestrator, routes pre-dispatch checks and post-completion verification to a GPT-5.6-Sol verifier (Opus 5 fallback in Claude Code), and relaxes the LeanCTX shell profile for interpreter one-liners. Version [7.0.2](https://github.com/thebpandey/agent-team/releases/tag/v7.0.2) supports larger projects, extends Beads read time, and includes the illustrated field guide. Version [7.0.1](https://github.com/thebpandey/agent-team/releases/tag/v7.0.1) remains the archive-permission maintenance release, and [v7.0.0](https://github.com/thebpandey/agent-team/releases/tag/v7.0.0) introduced explicit host/scope installation. Find published packages and checksums in the [latest official release](https://github.com/thebpandey/agent-team/releases/latest). See the [changelog](CHANGELOG.md).
+The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.1.1**; `metadata.version` in `SKILL.md` is authoritative. Version [7.1.1](https://github.com/thebpandey/agent-team/releases/tag/v7.1.1) accepts AST-origin `INFERRED` Graphify relationships as offline structural leads while rejecting semantic or missing provenance for readiness evidence. Version [7.1.0](https://github.com/thebpandey/agent-team/releases/tag/v7.1.0) makes the orchestrator a pure orchestrator, routes pre-dispatch checks and post-completion verification to a GPT-5.6-Sol verifier (Opus 5 fallback in Claude Code), and relaxes the LeanCTX shell profile for interpreter one-liners. Version [7.0.2](https://github.com/thebpandey/agent-team/releases/tag/v7.0.2) supports larger projects, extends Beads read time, and includes the illustrated field guide. Version [7.0.1](https://github.com/thebpandey/agent-team/releases/tag/v7.0.1) remains the archive-permission maintenance release, and [v7.0.0](https://github.com/thebpandey/agent-team/releases/tag/v7.0.0) introduced explicit host/scope installation. Find published packages and checksums in the [latest official release](https://github.com/thebpandey/agent-team/releases/latest). See the [changelog](CHANGELOG.md).
 
 Use an identified authorized revision and the complete package. Universal archives have an `agent-team/` prefix and include `SKILL.md`, `README.md`, `LICENSE`, `CHANGELOG.md`, `agents/`, `references/`, `assets/` and `hooks/`. External dependencies and model access are not bundled. Inactive `legacy/` and maintenance tests are excluded. Provenance lives in `.agent-team-source.json`; verify the exact revision and checksum.
 
@@ -264,8 +264,8 @@ Maintainer reference, from a qualified committed source revision:
 ```bash
 node hooks/agent-team-cli.mjs check-package
 node hooks/agent-team-cli.mjs build-artifacts --revision <full-commit-id> --output ../agent-team-artifacts
-node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --archive ../agent-team-artifacts/agent-team-7.1.0.zip
-sha256sum ../agent-team-artifacts/agent-team-7.1.0.zip
+node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --archive ../agent-team-artifacts/agent-team-7.1.1.zip
+sha256sum ../agent-team-artifacts/agent-team-7.1.1.zip
 ```
 
 On macOS, use `shasum -a 256` on the same exact archive. These commands reproduce and validate the versioned artifact from an identified revision; verify any published checksum against the exact GitHub release asset. Change the version consistently before releasing altered contents; never replace an existing released version with different files.
