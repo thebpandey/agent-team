@@ -176,8 +176,8 @@ async function integrationGate(event, project, canonical, operation, now, budget
       || authorization.scope !== release.batchId || authorization.ownerSessionId !== release.ownerSessionId
       || authorization.revision !== release.expectedRevision || !sameIds(authorization.taskIds, release.taskIds)
       || !fresh(authorization.observedAt, now) || release.batch?.id !== release.batchId
-      || !sameIds(release.batch?.taskIds, release.taskIds) || release.artifact?.revision !== release.expectedRevision
-      || !sameIds(release.artifact?.taskIds, release.taskIds) || !/^[0-9a-f]{64}$/i.test(release.artifact?.sha256)
+      || !sameIds(release.batch?.taskIds, release.taskIds) || !releaseRun(release.run, release.runMode, release.taskIds)
+      || !releaseArtifact(release.artifact, release.expectedRevision, release.taskIds)
       || !releaseRecord(release.integration, release.expectedRevision, release.taskIds) || release.integration.remoteMainDeploys !== true
       || !releaseRecord(release.verification, release.expectedRevision, release.taskIds)
       || release.delta?.status !== "clean" || release.delta.revision !== release.expectedRevision || !sameIds(release.delta.taskIds, release.taskIds)
@@ -215,8 +215,28 @@ function sameIds(left, right) {
     && [...left].sort().every((value, index) => value === [...right].sort()[index]);
 }
 
+function boundedString(value, maximum = 256) {
+  return typeof value === "string" && value.trim() === value && value.length > 0 && value.length <= maximum;
+}
+
 function releaseRecord(record, revision, taskIds) {
   return record?.status === "passed" && record.revision === revision && sameIds(record.taskIds, taskIds);
+}
+
+function releaseRun(record, mode, taskIds) {
+  return record && typeof record === "object" && boundedString(record.id, 128)
+    && record.mode === mode && sameIds(record.taskIds, taskIds) && record.paused === false;
+}
+
+function releaseArtifact(record, revision, taskIds) {
+  return record && typeof record === "object" && boundedString(record.id, 4096)
+    && record.revision === revision && sameIds(record.taskIds, taskIds) && /^[0-9a-f]{64}$/i.test(record.sha256)
+    && (record.path === undefined || boundedString(record.path, 4096))
+    && (record.bytes === undefined || Number.isSafeInteger(record.bytes) && record.bytes > 0)
+    && (record.checksumPath === undefined || boundedString(record.checksumPath, 4096))
+    && (record.checksumBytes === undefined || Number.isSafeInteger(record.checksumBytes) && record.checksumBytes > 0)
+    && (record.checksumSha256 === undefined || /^[0-9a-f]{64}$/i.test(record.checksumSha256))
+    && (record.checksumEntry === undefined || boundedString(record.checksumEntry, 4096));
 }
 
 async function releaseGate(event, project, canonical, operation, now, budget) {
@@ -241,11 +261,12 @@ async function releaseGate(event, project, canonical, operation, now, budget) {
   if ((gate.runMode === "auto_deploy" && gate.autoDeploy !== true)
     || (gate.runMode === "manual" && gate.autoDeploy !== false)
     || !["auto_deploy", "manual"].includes(gate.runMode)) return deny("Release run mode is missing or inconsistent.");
+  if (!releaseRun(gate.run, gate.runMode, gate.taskIds)) return deny("Release run evidence is missing or inconsistent.");
   if (canonical.state.run?.paused || gate.projectPaused) return deny("The project run is paused.");
   if (gate.hold) return deny("A release hold is active.");
   if (!fresh(gate.evidenceAt, now)) return deny("Release evidence is stale or unavailable.");
-  if (!gate.artifact?.id || gate.artifact.revision !== gate.expectedRevision || !sameIds(gate.artifact.taskIds, gate.taskIds)) {
-    return deny("Release artifact evidence does not match the exact revision and task IDs.");
+  if (!releaseArtifact(gate.artifact, gate.expectedRevision, gate.taskIds)) {
+    return deny("Release artifact identity, digest, revision, or task evidence is missing or inconsistent.");
   }
   if (!releaseRecord(gate.integration, gate.expectedRevision, gate.taskIds)) return deny("Required integration evidence is missing or stale.");
   if (typeof gate.remoteMainDeploys !== "boolean" || gate.remoteMainDeploys !== gate.integration.remoteMainDeploys) {

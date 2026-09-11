@@ -99,6 +99,7 @@ Integration owner: owner-session
         taskIds: ["AT-001"],
         observedAt: now,
       },
+      run: { id: "release-1", mode: "auto_deploy", taskIds: ["AT-001"], paused: false },
       runMode: "auto_deploy",
       batchId: "batch-1",
       taskIds: ["AT-001"],

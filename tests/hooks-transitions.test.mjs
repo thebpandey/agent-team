@@ -574,8 +574,9 @@ if (process.argv[2] === "writer") {
     const value = await fixture();
     const seeded = structuredClone((await loadCanonicalState(value.project)).state);
     seeded.release = { ownerSessionId: "owner-session", authorized: false, autoDeploy: false, hold: true };
-    seeded.integration.taskIds = ["AT-001"];
-    seeded.integration.remoteMainDeploys = true;
+    const integrationEvidencePath = path.join(value.root, ".agent-team/integration.json");
+    Object.assign(seeded.integration, { taskIds: ["AT-001"], remoteRef: "refs/heads/main", remoteMainDeploys: true,
+      recordedEvidence: { path: integrationEvidencePath, fingerprint: "c".repeat(64), revision: value.revision, taskIds: ["AT-001"] } });
     await writeFile(value.project.paths.state, JSON.stringify(seeded));
     const evidencePath = path.join(value.root, ".agent-team/release.json");
     const sha256 = "a".repeat(64);
@@ -590,7 +591,9 @@ if (process.argv[2] === "writer") {
       artifact: { id: `artifact-1:${sha256}`, revision: value.revision, taskIds: ["AT-001"], path: "/tmp/artifact-1.zip",
         bytes: 42, sha256, checksumPath: "/tmp/SHA256SUMS", checksumBytes: 80, checksumSha256,
         checksumEntry: `${sha256}  artifact-1.zip` },
-      integration: { status: "passed", revision: value.revision, taskIds: ["AT-001"], recordedTaskIds: ["AT-001"], remoteMainDeploys: true },
+      integration: { status: "passed", revision: value.revision, taskIds: ["AT-001"], recordedTaskIds: ["AT-001"],
+        evidencePath: integrationEvidencePath, remoteName: "origin", baseRef: "refs/heads/main", baseRevision: value.revision,
+        targetRef: "refs/heads/main", targetRevision: value.revision, remoteMainDeploys: true },
       verification: { status: "passed", revision: value.revision, taskIds: ["AT-001"] },
       preview: { required: false, status: "not_required", revision: value.revision },
       delta: { status: "clean", revision: value.revision, taskIds: ["AT-001"] },
@@ -617,7 +620,7 @@ if (process.argv[2] === "writer") {
     assert.deepEqual(release.taskIds, ["AT-001"]);
     assert.deepEqual(release.batch, evidence.batch);
     assert.deepEqual(release.artifact, evidence.artifact);
-    assert.deepEqual(release.integration, evidence.integration);
+    assert.deepEqual(release.integration, { ...evidence.integration, evidenceFingerprint: "c".repeat(64) });
     assert.deepEqual(release.verification, evidence.verification);
     assert.deepEqual(release.preview, evidence.preview);
     assert.deepEqual(release.delta, evidence.delta);
@@ -654,6 +657,11 @@ if (process.argv[2] === "writer") {
       ["stale delta", (evidence) => { evidence.delta.revision = "deadbeef"; }],
       ["malformed remote delta base", (evidence) => { evidence.delta.remoteBaseRevision = "fabricated"; }],
       ["missing remote deployment fact", (evidence) => { delete evidence.integration.remoteMainDeploys; }],
+      ["wrong integration remote", (evidence) => { evidence.integration.remoteName = "backup"; }],
+      ["wrong integration base ref", (evidence) => { evidence.integration.baseRef = "refs/heads/other"; }],
+      ["wrong integration base revision", (evidence) => { evidence.integration.baseRevision = "b".repeat(40); }],
+      ["wrong integration target", (evidence) => { evidence.integration.targetRef = "refs/tags/v9.9.9"; }],
+      ["fabricated integration evidence path", (evidence) => { evidence.integration.evidencePath = "/tmp/fabricated-integration.json"; }],
       ["missing recovery", (evidence) => { delete evidence.recovery; }],
       ["paused project", (evidence) => { evidence.projectPaused = true; }],
       ["active hold", (evidence) => { evidence.hold = true; }],
@@ -663,8 +671,9 @@ if (process.argv[2] === "writer") {
       const value = await fixture();
       const seeded = structuredClone((await loadCanonicalState(value.project)).state);
       seeded.release = { ownerSessionId: "owner-session", authorized: false, autoDeploy: false, hold: true };
-      seeded.integration.taskIds = ["AT-001"];
-      seeded.integration.remoteMainDeploys = true;
+      const integrationEvidencePath = path.join(value.root, ".agent-team/integration.json");
+      Object.assign(seeded.integration, { taskIds: ["AT-001"], remoteRef: "refs/heads/main", remoteMainDeploys: true,
+        recordedEvidence: { path: integrationEvidencePath, fingerprint: "c".repeat(64), revision: value.revision, taskIds: ["AT-001"] } });
       await writeFile(value.project.paths.state, JSON.stringify(seeded));
       const evidence = { status: "passed", revision: value.revision, taskIds: ["AT-001"], ownerSessionId: "owner-session", authorized: true,
         expectedRevision: value.revision, target: "github:example/project:v1.0.0", process: "gh-release",
@@ -673,7 +682,9 @@ if (process.argv[2] === "writer") {
         run: { id: "release-1", mode: "auto_deploy", taskIds: ["AT-001"], paused: false }, runMode: "auto_deploy", autoDeploy: true,
         batchId: "batch-1", batch: { id: "batch-1", taskIds: ["AT-001"] },
         artifact: { id: "artifact-1", revision: value.revision, taskIds: ["AT-001"], sha256: "a".repeat(64) },
-        integration: { status: "passed", revision: value.revision, taskIds: ["AT-001"], recordedTaskIds: ["AT-001"], remoteMainDeploys: true },
+        integration: { status: "passed", revision: value.revision, taskIds: ["AT-001"], recordedTaskIds: ["AT-001"],
+          evidencePath: integrationEvidencePath, remoteName: "origin", baseRef: "refs/heads/main", baseRevision: value.revision,
+          targetRef: "refs/heads/main", targetRevision: value.revision, remoteMainDeploys: true },
         verification: { status: "passed", revision: value.revision, taskIds: ["AT-001"] },
         preview: { required: false, status: "not_required", revision: value.revision },
         delta: { status: "clean", revision: value.revision, taskIds: ["AT-001"] },

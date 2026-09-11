@@ -369,6 +369,8 @@ export async function recordGateEvidence(project, request, options = {}) {
       const batch = evidence.batch;
       const artifact = evidence.artifact;
       const integration = evidence.integration;
+      const activeIntegration = state.integration;
+      const integrationReceipt = activeIntegration?.recordedEvidence;
       const verification = evidence.verification;
       const releasePreview = evidence.preview;
       const delta = evidence.delta;
@@ -388,15 +390,14 @@ export async function recordGateEvidence(project, request, options = {}) {
         && (artifact.checksumSha256 === undefined || /^[0-9a-f]{64}$/i.test(artifact.checksumSha256))
         && (artifact.checksumEntry === undefined || boundedString(artifact.checksumEntry, 4096));
       const integrationBindingValid = releaseRecord(integration, "passed")
-        && sameIds(integration.recordedTaskIds, state.integration?.taskIds)
-        && state.integration?.authorized === true && state.integration.expectedRevision === revision
-        && typeof integration.remoteMainDeploys === "boolean" && integration.remoteMainDeploys === state.integration.remoteMainDeploys
-        && (integration.remoteName === undefined || boundedString(integration.remoteName, 128))
-        && (integration.baseRef === undefined || ref(integration.baseRef))
-        && (integration.baseRevision === undefined || /^[0-9a-f]{40,64}$/i.test(integration.baseRevision))
-        && (integration.targetRef === undefined || ref(integration.targetRef))
-        && (integration.targetRevision === undefined || integration.targetRevision === revision)
-        && (integration.evidencePath === undefined || boundedString(integration.evidencePath, 4096))
+        && sameIds(integration.recordedTaskIds, activeIntegration?.taskIds)
+        && activeIntegration?.authorized === true && activeIntegration.expectedRevision === revision
+        && integration.remoteName === activeIntegration.remoteName && integration.baseRef === activeIntegration.baseRemoteRef
+        && integration.baseRevision === activeIntegration.baseRevision && integration.targetRef === activeIntegration.remoteRef
+        && integration.targetRevision === revision && integration.evidencePath === integrationReceipt?.path
+        && integrationReceipt?.revision === revision && sameIds(integrationReceipt?.taskIds, activeIntegration.taskIds)
+        && /^[0-9a-f]{64}$/i.test(integrationReceipt?.fingerprint)
+        && typeof integration.remoteMainDeploys === "boolean" && integration.remoteMainDeploys === activeIntegration.remoteMainDeploys
         && (integration.deploymentTarget === undefined || boundedString(integration.deploymentTarget, 4096));
       const deltaBindingValid = releaseRecord(delta, "clean")
         && (delta.remoteBaseRevision === undefined || /^[0-9a-f]{40,64}$/i.test(delta.remoteBaseRevision));
@@ -437,7 +438,7 @@ export async function recordGateEvidence(project, request, options = {}) {
         batch: { id: evidence.batchId, taskIds },
         artifact: { ...copy(artifact, ["id", "path", "bytes", "sha256", "checksumPath", "checksumBytes", "checksumSha256", "checksumEntry"]), revision, taskIds },
         integration: { ...copy(integration, ["status", "evidencePath", "remoteName", "baseRef", "baseRevision", "targetRef", "targetRevision", "remoteMainDeploys", "deploymentTarget"]),
-          revision, taskIds, recordedTaskIds: [...integration.recordedTaskIds].sort() },
+          revision, taskIds, recordedTaskIds: [...integration.recordedTaskIds].sort(), evidenceFingerprint: integrationReceipt.fingerprint },
         verification: { status: "passed", revision, taskIds },
         preview: { required: releasePreview.required, status: releasePreview.status, revision },
         delta: { ...copy(delta, ["status", "remoteBaseRevision"]), revision, taskIds },

@@ -259,7 +259,7 @@ test("real CLI maps one release batch before allowing its deployment-triggering 
 
   const afterIntegration = await loadCanonicalState(value.project);
   const releasePath = path.join(value.root, ".agent-team", "evidence", "release.json");
-  await writeFile(releasePath, JSON.stringify({
+  const releaseEvidence = {
     status: "passed", revision: value.revision, taskIds: ["AT-001"], ownerSessionId: "owner-session", authorized: true,
     expectedRevision: value.revision, target: "github:example/project:v1.0.0", process: "gh-release",
     authorization: { source: "explicit one-time user authorization", target: "github:example/project:v1.0.0", process: "gh-release",
@@ -267,13 +267,37 @@ test("real CLI maps one release batch before allowing its deployment-triggering 
     run: { id: "release-1", mode: "auto_deploy", taskIds: ["AT-001"], paused: false }, runMode: "auto_deploy", autoDeploy: true,
     batchId: "batch-1", batch: { id: "batch-1", taskIds: ["AT-001"] },
     artifact: { id: "artifact-1", revision: value.revision, taskIds: ["AT-001"], sha256: "a".repeat(64) },
-    integration: { status: "passed", revision: value.revision, taskIds: ["AT-001"], recordedTaskIds: ["AT-001"], remoteMainDeploys: true },
+    integration: { status: "passed", revision: value.revision, taskIds: ["AT-001"], recordedTaskIds: ["AT-001"],
+      evidencePath: integrationPath, remoteName: "origin", baseRef: "refs/heads/main", baseRevision: value.revision,
+      targetRef: "refs/heads/main", targetRevision: value.revision, remoteMainDeploys: true },
     verification: { status: "passed", revision: value.revision, taskIds: ["AT-001"] },
     preview: { required: false, status: "not_required", revision: value.revision },
     delta: { status: "clean", revision: value.revision, taskIds: ["AT-001"] },
     recovery: { status: "verified", artifactId: "git:known-good", action: "restore the known-good revision" },
     projectPaused: false, hold: false,
-  }));
+  };
+  const releaseBefore = await readFile(value.project.paths.state, "utf8");
+  const invalidIntegrationBindings = [
+    ["remote", (evidence) => { evidence.integration.remoteName = "backup"; }],
+    ["base-ref", (evidence) => { evidence.integration.baseRef = "refs/heads/other"; }],
+    ["base-revision", (evidence) => { evidence.integration.baseRevision = "b".repeat(40); }],
+    ["target", (evidence) => { evidence.integration.targetRef = "refs/tags/v9.9.9"; }],
+    ["evidence-path", (evidence) => { evidence.integration.evidencePath = "/tmp/fabricated-integration.json"; }],
+  ];
+  for (const [name, invalidate] of invalidIntegrationBindings) {
+    const invalid = structuredClone(releaseEvidence);
+    invalidate(invalid);
+    const invalidPath = path.join(value.root, ".agent-team", "evidence", `release-${name}.json`);
+    await writeFile(invalidPath, JSON.stringify(invalid));
+    const invalidRequest = await requestFile(value, `release-${name}`, envelope("owner-session", afterIntegration.state.stateVersion, {
+      operationId: `release-${name}`, gate: "release", taskIds: ["AT-001"], expectedFingerprint: afterIntegration.tracker.fingerprint,
+      expectedRevision: value.revision, evidencePath: invalidPath,
+    }));
+    assert.deepEqual(await invoke("gate-evidence", "--project", value.feature, "--request", invalidRequest),
+      { status: "conflict", reason: "release_evidence_mismatch" }, name);
+    assert.equal(await readFile(value.project.paths.state, "utf8"), releaseBefore, name);
+  }
+  await writeFile(releasePath, JSON.stringify(releaseEvidence));
   const releaseRequest = await requestFile(value, "release", envelope("owner-session", afterIntegration.state.stateVersion, {
     operationId: "release", gate: "release", taskIds: ["AT-001"], expectedFingerprint: afterIntegration.tracker.fingerprint,
     expectedRevision: value.revision, evidencePath: releasePath,
