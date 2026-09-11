@@ -15,7 +15,7 @@ Serena answers "what is this symbol and who references it" with language-server 
 
 ## Code-only offline profile
 
-Agent-Team uses `graphify extract . --code-only --no-viz` only. That path is deterministic and offline: no model call, no network, no API key, no visualization output. _origin distinguishes AST from semantic extraction; confidence describes resolution strength. AST-origin INFERRED relationships are valid offline structural leads, just as AST-origin EXTRACTED relationships are. Semantic or missing provenance is invalid for Agent-Team's offline readiness evidence, regardless of confidence. A fresh worktree graph must not adopt a graph that may contain a prior semantic layer.
+Agent-Team uses `graphify extract . --code-only --no-viz` only. That path is deterministic and offline: no model call, no network, no API key, no visualization output. `_origin` distinguishes AST from semantic extraction; confidence describes resolution strength. AST-origin INFERRED relationships are valid offline structural leads, just as AST-origin EXTRACTED relationships are. Semantic or missing provenance is invalid for Agent-Team's offline readiness evidence, regardless of confidence. A fresh worktree graph must not adopt a graph that may contain a prior semantic layer.
 
 ## Where graphs live
 

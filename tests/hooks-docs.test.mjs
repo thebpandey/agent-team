@@ -97,7 +97,7 @@ test("release version and public guidance stay consistent", async () => {
 test("Graphify guidance accepts AST-origin inferred structural leads only", async () => {
   const [guide, readme] = await readMany(["references/graphify.md", "README.md"]);
   for (const required of [
-    "_origin distinguishes AST from semantic extraction",
+    "`_origin` distinguishes AST from semantic extraction",
     "confidence describes resolution strength",
     "AST-origin INFERRED relationships are valid offline structural leads",
     "Semantic or missing provenance is invalid for Agent-Team's offline readiness evidence",
