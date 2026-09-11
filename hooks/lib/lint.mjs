@@ -48,7 +48,15 @@ function eligible(file) {
 }
 
 /** Run one installed linter process per config root; never install a missing tool. */
-export async function runLintChecks(root, changedFiles, { timeoutMs = 3000, maxOutputBytes = 4096, executableName = "eslint", budget, filesystem = {}, progress } = {}) {
+export async function runLintChecks(root, changedFiles, {
+  timeoutMs = 3000,
+  maxOutputBytes = 4096,
+  executableName = "eslint",
+  budget,
+  filesystem = {},
+  progress,
+  runCommand = run,
+} = {}) {
   const io = { access, mkdir, writeFile, ...filesystem };
   const withinBudget = (action) => budget ? budget.run(action) : action();
   const files = [...new Set(changedFiles.map((file) => file.replaceAll("\\", "/")))].filter(eligible);
@@ -90,7 +98,7 @@ export async function runLintChecks(root, changedFiles, { timeoutMs = 3000, maxO
     let batch;
     let fullOutput;
     try {
-      const { stdout, stderr } = await run(binary, targets, { cwd, timeout: budget?.timeout(timeoutMs) ?? timeoutMs,
+      const { stdout, stderr } = await runCommand(binary, targets, { cwd, timeout: budget?.timeout(timeoutMs) ?? timeoutMs,
         maxBuffer: 1024 * 1024, encoding: "utf8", ...(budget ? { signal: budget.signal } : {}) });
       fullOutput = `${stdout}${stderr}`;
       batch = { cwd, files: targets, status: "passed" };

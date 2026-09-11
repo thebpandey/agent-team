@@ -120,6 +120,12 @@ test("delayed log-directory creation cannot start a log write after event deadli
     const result = await runLintChecks(directory, ["index.js"], { budget, filesystem: {
       mkdir: async () => { await new Promise((resolve) => setTimeout(resolve, 200)); },
       writeFile: async () => { wroteAfterDelay = true; },
+    }, runCommand: async () => {
+      throw Object.assign(new Error("lint failed"), {
+        code: 1,
+        stdout: "index.js:1:1 broken",
+        stderr: "",
+      });
     } });
     assert.ok(performance.now() - started < 180);
     assert.equal(result.status, "failed");
