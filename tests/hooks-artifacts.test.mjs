@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,9 +8,10 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-import { buildArtifacts, checkArtifacts, readZip, writeZip } from "../hooks/lib/artifacts.mjs";
+import { __artifactTest, buildArtifacts, checkArtifacts, fileMapDigest, readZip, verifyReleaseArtifact, writeZip } from "../hooks/lib/artifacts.mjs";
 
 const sourceRoot = path.resolve(import.meta.dirname, "..");
+const releaseRevision = "a".repeat(40);
 const run = promisify(execFile);
 const temporary = [];
 test.afterEach(async () => Promise.all(temporary.splice(0).map((item) => rm(item, { force: true, recursive: true }))));
@@ -17,13 +19,86 @@ test.afterEach(async () => Promise.all(temporary.splice(0).map((item) => rm(item
 async function artifacts() {
   const outputDirectory = await mkdtemp(path.join(os.tmpdir(), "agent-team-artifacts-"));
   temporary.push(outputDirectory);
-  const built = await buildArtifacts({ sourceRoot, outputDirectory, sourceRevision: "fixture-revision" });
-  return { outputDirectory, built };
+  const built = await buildArtifacts({ sourceRoot, outputDirectory, sourceRevision: releaseRevision });
+  const checksums = path.join(outputDirectory, "SHA256SUMS");
+  const digest = createHash("sha256").update(await readFile(built.archives[0])).digest("hex");
+  await writeFile(checksums, `${digest}  ${path.basename(built.archives[0])}\n`);
+  return { outputDirectory, built, checksums };
 }
+
+async function releaseArtifact() {
+  const outputDirectory = await mkdtemp(path.join(os.tmpdir(), "agent-team-release-"));
+  temporary.push(outputDirectory);
+  const built = await buildArtifacts({ sourceRoot, outputDirectory, sourceRevision: "a".repeat(40) });
+  const archive = built.archives[0];
+  const checksums = path.join(outputDirectory, "SHA256SUMS");
+  const digest = createHash("sha256").update(await readFile(archive)).digest("hex");
+  await writeFile(checksums, `${digest}  ${path.basename(archive)}\n`);
+  return { archive, checksums, digest };
+}
+
+test("release artifact authority validates one exact checksum record and immutable closed bytes", async () => {
+  const { archive, checksums, digest } = await releaseArtifact();
+  const authority = await verifyReleaseArtifact({ archive, checksums });
+  assert.equal(authority.archiveSha256, digest);
+  assert.equal(authority.metadata.sourceRevision, "a".repeat(40));
+  assert.equal(authority.packageContentDigest, fileMapDigest(authority.packageFileMap));
+  assert.equal(authority.archiveContentDigest, fileMapDigest(authority.archiveFileMap));
+  const mutated = authority.bytes;
+  mutated.fill(0);
+  assert.notEqual(authority.bytes[0], 0);
+  assert.equal(Object.isFrozen(authority.packageFileMap), true);
+
+  const alternateChecksums = path.join(path.dirname(checksums), "checksums.txt");
+  await writeFile(alternateChecksums, await readFile(checksums));
+  await assert.rejects(verifyReleaseArtifact({ archive, checksums: alternateChecksums }), /checksum_manifest_mismatch/);
+
+  for (const contents of ["", `${digest}  wrong.zip\n`, `${digest}  ${path.basename(archive)}\n${digest}  extra.zip\n`, "malformed\n"]) {
+    await writeFile(checksums, contents);
+    await assert.rejects(verifyReleaseArtifact({ archive, checksums }), /checksum_manifest_mismatch/);
+  }
+});
+
+test("release artifact authority rejects checksum, duplicate, unsafe, special, mode, and header drift", async (context) => {
+  for (const [name, mutate, reason] of [
+    ["checksum", async ({ archive }) => writeFile(archive, Buffer.concat([await readFile(archive), Buffer.from("x")])), /archive_checksum_mismatch|archive_header_mismatch/],
+    ["duplicate", async ({ archive, checksums }) => { const entries = await readZip(archive); await __artifactTest.writeZipRaw(archive, [...entries, entries[0]]); const digest = createHash("sha256").update(await readFile(archive)).digest("hex"); await writeFile(checksums, `${digest}  ${path.basename(archive)}\n`); }, /duplicate_archive_entry/],
+    ["unsafe", async ({ archive, checksums }) => { const entries = await readZip(archive); entries[0].name = "agent-team/../escape"; await __artifactTest.writeZipRaw(archive, entries); const digest = createHash("sha256").update(await readFile(archive)).digest("hex"); await writeFile(checksums, `${digest}  ${path.basename(archive)}\n`); }, /unsafe_archive_entry/],
+    ["special", async ({ archive, checksums }) => { const entries = await readZip(archive); entries[0].mode = 0o120777; await __artifactTest.writeZipRaw(archive, entries); const digest = createHash("sha256").update(await readFile(archive)).digest("hex"); await writeFile(checksums, `${digest}  ${path.basename(archive)}\n`); }, /unsafe_archive_entry/],
+    ["mode", async ({ archive, checksums }) => { const entries = await readZip(archive); entries[0].mode = 0o100666; await __artifactTest.writeZipRaw(archive, entries); const digest = createHash("sha256").update(await readFile(archive)).digest("hex"); await writeFile(checksums, `${digest}  ${path.basename(archive)}\n`); }, /archive_mode_mismatch/],
+    ["header", async ({ archive, checksums }) => { const entries = await readZip(archive); entries[0].raw = { centralSize: entries[0].data.length + 1 }; await __artifactTest.writeZipRaw(archive, entries); const digest = createHash("sha256").update(await readFile(archive)).digest("hex"); await writeFile(checksums, `${digest}  ${path.basename(archive)}\n`); }, /archive_header_mismatch|archive_size_mismatch/],
+  ]) await context.test(name, async () => { const fixture = await releaseArtifact(); await mutate(fixture); await assert.rejects(verifyReleaseArtifact(fixture), reason); });
+});
+
+test("release artifact authority rejects missing and malformed closed metadata", async (context) => {
+  for (const [name, mutate] of [
+    ["missing", (entries) => entries.filter((entry) => entry.name !== "agent-team/.agent-team-source.json")],
+    ["unknown field", (entries) => entries.map((entry) => entry.name !== "agent-team/.agent-team-source.json" ? entry : {
+      ...entry, data: Buffer.from(`${JSON.stringify({ ...JSON.parse(entry.data), unexpected: true }, null, 2)}\n`),
+    })],
+    ["revision", (entries) => entries.map((entry) => entry.name !== "agent-team/.agent-team-source.json" ? entry : {
+      ...entry, data: Buffer.from(`${JSON.stringify({ ...JSON.parse(entry.data), sourceRevision: "moving" }, null, 2)}\n`),
+    })],
+  ]) await context.test(name, async () => {
+    const fixture = await releaseArtifact();
+    await writeZip(fixture.archive, mutate(await readZip(fixture.archive)));
+    const digest = createHash("sha256").update(await readFile(fixture.archive)).digest("hex");
+    await writeFile(fixture.checksums, `${digest}  ${path.basename(fixture.archive)}\n`);
+    await assert.rejects(verifyReleaseArtifact(fixture), /archive_manifest_mismatch/);
+  });
+});
+
+test("archive path is opened without following a symbolic link", async () => {
+  const { archive } = await releaseArtifact();
+  const link = `${archive}.link`;
+  await import("node:fs/promises").then(({ symlink }) => symlink(archive, link));
+  temporary.push(link);
+  await assert.rejects(__artifactTest.readArchiveOnce(link), /archive_invalid/);
+});
 
 test("source and extracted universal CLIs complete every host and scope lifecycle in isolated targets", async (t) => {
   // Importing the source installer, skipping a selector, or losing update/uninstall effects must break this consumer matrix.
-  const { built } = await artifacts();
+  const { built, checksums } = await artifacts();
   const extracted = await mkdtemp(path.join(os.tmpdir(), "agent team extracted "));
   const updated = await mkdtemp(path.join(os.tmpdir(), "agent team updated extracted "));
   temporary.push(extracted, updated);
@@ -44,6 +119,12 @@ test("source and extracted universal CLIs complete every host and scope lifecycl
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   manifest.files.push(addedFile);
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const updatedOutput = await mkdtemp(path.join(os.tmpdir(), "agent-team-updated-artifact-"));
+  temporary.push(updatedOutput);
+  const updatedBuilt = await buildArtifacts({ sourceRoot: updatedRoot, outputDirectory: updatedOutput, sourceRevision: "e".repeat(40) });
+  const updatedArchive = updatedBuilt.archives[0];
+  const updatedChecksums = path.join(updatedOutput, "SHA256SUMS");
+  await writeFile(updatedChecksums, `${createHash("sha256").update(await readFile(updatedArchive)).digest("hex")}  ${path.basename(updatedArchive)}\n`);
 
   for (const [host, scope] of [
     ["codex", "user"],
@@ -84,14 +165,15 @@ test("source and extracted universal CLIs complete every host and scope lifecycl
           selectedPath === configPath && (host === "both" || runtime === (host === "claude-code" ? "claude" : host))));
       const protectedBytes = new Map(await Promise.all(protectedPaths.map(async (configPath) => [configPath, await readFile(configPath, "utf8")])));
       const selectors = ["--home", home, "--host", host, "--scope", scope, ...(scope === "project" ? ["--project", projectRoot] : [])];
+      const releaseSelectors = ["--archive", built.archives[0], "--checksums", checksums];
       const cli = path.join(entryRoot, "hooks", "agent-team-cli.mjs");
       const updatedCli = path.join(updatedRoot, "hooks", "agent-team-cli.mjs");
 
-      const installed = JSON.parse((await run(process.execPath, [cli, "install", ...selectors])).stdout);
+      const installed = JSON.parse((await run(process.execPath, [cli, "install", ...releaseSelectors, ...selectors])).stdout);
       assert.equal(installed.validation.status, "passed");
-      const reinstalled = JSON.parse((await run(process.execPath, [cli, "install", ...selectors])).stdout);
+      const reinstalled = JSON.parse((await run(process.execPath, [cli, "install", ...releaseSelectors, ...selectors])).stdout);
       assert.equal(reinstalled.changed, false);
-      const upgraded = JSON.parse((await run(process.execPath, [updatedCli, "install", ...selectors])).stdout);
+      const upgraded = JSON.parse((await run(process.execPath, [updatedCli, "install", "--archive", updatedArchive, "--checksums", updatedChecksums, ...selectors])).stdout);
       assert.equal(upgraded.changed, true);
       const runtimes = host === "both" ? ["codex", "claude"] : [host === "claude-code" ? "claude" : "codex"];
       for (const runtime of runtimes) {
@@ -162,7 +244,7 @@ test("source and extracted universal CLIs complete every host and scope lifecycl
 
 test("artifact validation reports source-only checks as not applicable", async () => {
   // This test catches invented archive success when no archive was supplied.
-  const result = await checkArtifacts({ sourceRoot, archives: [], expectedRevision: "fixture-revision" });
+  const result = await checkArtifacts({ sourceRoot, archives: [], expectedRevision: releaseRevision });
   assert.equal(result.status, "not_applicable");
 });
 
@@ -201,7 +283,7 @@ test("the reproducible universal archive matches the manifest and source", async
   // This test catches platform payload drift and nondeterministic archive output.
   const first = await artifacts();
   const second = await artifacts();
-  const result = await checkArtifacts({ sourceRoot, archives: first.built.archives, expectedRevision: "fixture-revision" });
+  const result = await checkArtifacts({ sourceRoot, archives: first.built.archives, expectedRevision: releaseRevision });
   const firstBytes = await Promise.all(first.built.archives.map((file) => readZip(file).then((entries) => entries.map(({ name, data }) => [name, data.toString("hex")]))));
   const secondBytes = await Promise.all(second.built.archives.map((file) => readZip(file).then((entries) => entries.map(({ name, data }) => [name, data.toString("hex")]))));
   const firstArchives = await Promise.all(first.built.archives.map((file) => readFile(file)));
@@ -220,7 +302,7 @@ test("archives identify the canonical repository and pinned release source", asy
     assert.deepEqual(source.hosts, ["codex", "claude-code"]);
     assert.equal(source.repository, "https://github.com/thebpandey/agent-team");
     assert.equal(source.releaseTag, "v7.1.1");
-    assert.equal(source.sourceRevision, "fixture-revision");
+    assert.equal(source.sourceRevision, releaseRevision);
   }
 });
 
@@ -241,7 +323,7 @@ test("artifact validation rejects stale, omitted, unexpected, duplicate, absolut
       const value = await artifacts();
       const archive = value.built.archives[0];
       await writeZip(archive, mutate(await readZip(archive)));
-      const result = await checkArtifacts({ sourceRoot, archives: value.built.archives, expectedRevision: "fixture-revision" });
+      const result = await checkArtifacts({ sourceRoot, archives: value.built.archives, expectedRevision: releaseRevision });
       assert.equal(result.status, "failed");
     });
   }

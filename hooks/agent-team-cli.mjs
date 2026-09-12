@@ -21,7 +21,7 @@ const run = promisify(execFile);
 const commandFlags = {
   health: new Set(["home", "project", "scope"]),
   audit: new Set(["home", "log", "tracker", "mistakes", "limit"]),
-  install: new Set(["source", "home", "host", "scope", "project"]),
+  install: new Set(["archive", "checksums", "home", "host", "scope", "project"]),
   uninstall: new Set(["home", "host", "scope", "project"]),
   rollback: new Set(["home", "host", "scope", "project"]),
   "check-package": new Set(["source"]),
@@ -36,15 +36,18 @@ const commandFlags = {
 
 function flags(command, args) {
   if (!commandFlags[command]) throw new Error(`Unknown command: ${command ?? "missing"}`);
-  const output = { archive: [] };
+  const output = command === "check-artifacts" ? { archive: [] } : {};
   for (let index = 0; index < args.length; index += 1) {
     if (!args[index].startsWith("--")) throw new Error(`Unexpected positional argument: ${args[index]}`);
     const name = args[index].slice(2);
     if (!commandFlags[command]?.has(name)) throw new Error(`Unsupported flag for ${command ?? "missing"}: --${name}`);
     const value = args[++index];
     if (value === undefined || value.startsWith("--")) throw new Error(`Missing value for --${name}.`);
-    if (name === "archive") output.archive.push(value);
-    else output[name] = value;
+    if (name === "archive" && command === "check-artifacts") output.archive.push(value);
+    else {
+      if (Object.hasOwn(output, name)) throw new Error(`Duplicate flag for ${command}: --${name}`);
+      output[name] = value;
+    }
   }
   return output;
 }
@@ -71,7 +74,10 @@ export async function runCommand(command, options, context = {}) {
   });
   if (command === "install") {
     if (options.scope === "user" && options.project) throw new Error("--project is ineffective with --scope user.");
-    return installPackage({ sourceRoot, home, host: options.host, scope: options.scope, projectRoot: options.project && path.resolve(options.project) });
+    if (!options.archive) throw new Error("Missing required --archive.");
+    if (!options.checksums) throw new Error("Missing required --checksums.");
+    return installPackage({ archive: path.resolve(options.archive), checksums: path.resolve(options.checksums), home,
+      host: options.host, scope: options.scope, projectRoot: options.project && path.resolve(options.project) });
   }
   if (["uninstall", "rollback"].includes(command)) {
     if (options.scope === "user" && options.project) throw new Error("--project is ineffective with --scope user.");

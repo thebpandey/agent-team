@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { buildArtifacts } from "../hooks/lib/artifacts.mjs";
+import { buildArtifacts, fileMapDigest, verifyReleaseArtifact } from "../hooks/lib/artifacts.mjs";
 import * as validators from "../hooks/lib/package-validator.mjs";
 import { copyTrackedSource } from "./hook-test-helpers.mjs";
 
@@ -65,6 +65,21 @@ test("installed-package validation accepts the extracted consumer without source
   await assert.rejects(readFile(path.join(root, ".github", "workflows", "release.yml")), { code: "ENOENT" });
   const result = await validators.checkInstalledPackage(root);
   assert.equal(result.status, "passed", result.errors.join("\n"));
+});
+
+test("verified release maps agree with the structurally valid extracted package", async () => {
+  const output = await mkdtemp(path.join(os.tmpdir(), "agent-team-package-release-"));
+  const extracted = await mkdtemp(path.join(os.tmpdir(), "agent-team-package-release-extracted-"));
+  temporary.push(output, extracted);
+  const { archives: [archive] } = await buildArtifacts({ sourceRoot, outputDirectory: output, sourceRevision: "c".repeat(40) });
+  const checksums = path.join(output, "SHA256SUMS");
+  const digest = (await import("node:crypto")).createHash("sha256").update(await readFile(archive)).digest("hex");
+  await writeFile(checksums, `${digest}  ${path.basename(archive)}\n`);
+  const artifact = await verifyReleaseArtifact({ archive, checksums });
+  await run("unzip", ["-q", archive, "-d", extracted]);
+  assert.equal((await validators.checkInstalledPackage(path.join(extracted, "agent-team"))).status, "passed");
+  assert.equal(artifact.archiveContentDigest, fileMapDigest(artifact.archiveFileMap));
+  assert.deepEqual(Object.keys(artifact.packageFileMap).sort(), JSON.parse(await readFile(path.join(sourceRoot, "hooks", "manifest.json"))).files.sort());
 });
 
 test("installed-package validation rejects a self-consistent manifest that drops one host adapter", async () => {

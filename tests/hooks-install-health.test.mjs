@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,7 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
 import { getHealth } from "../hooks/lib/health.mjs";
-import { installPackage, uninstallPackage } from "../hooks/lib/install.mjs";
+import { __installTest, installPackage as installReleasePackage, uninstallPackage } from "../hooks/lib/install.mjs";
+import { buildArtifacts } from "../hooks/lib/artifacts.mjs";
 import { appendActivationLog } from "../hooks/lib/telemetry.mjs";
 import { copyTrackedSource } from "./hook-test-helpers.mjs";
 
@@ -17,7 +18,12 @@ const sourceRoot = path.resolve(import.meta.dirname, "..");
 const cli = path.join(sourceRoot, "hooks", "agent-team-cli.mjs");
 const run = promisify(execFile);
 const temporary = [];
-test.afterEach(async () => Promise.all(temporary.splice(0).map((item) => rm(item, { force: true, recursive: true }))));
+let sharedArtifact;
+let sharedArtifactDirectory;
+test.afterEach(async () => {
+  await Promise.all(temporary.splice(0).map((item) => rm(item, { force: true, recursive: true })));
+});
+test.after(async () => { if (sharedArtifactDirectory) await rm(sharedArtifactDirectory, { force: true, recursive: true }); });
 
 async function homeFixture() {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-home-"));
@@ -44,6 +50,148 @@ function fileGuard(contents) {
   return { kind: "file", digest: createHash("sha256").update(contents).digest("hex") };
 }
 
+async function archiveFixture(root = sourceRoot, revision = "b".repeat(40), persistent = false) {
+  const outputDirectory = await mkdtemp(path.join(os.tmpdir(), "agent-team-install-artifact-"));
+  if (persistent) sharedArtifactDirectory = outputDirectory;
+  else temporary.push(outputDirectory);
+  const { archives: [archive] } = await buildArtifacts({ sourceRoot: root, outputDirectory, sourceRevision: revision });
+  const checksums = path.join(outputDirectory, "SHA256SUMS");
+  await writeFile(checksums, `${createHash("sha256").update(await readFile(archive)).digest("hex")}  ${path.basename(archive)}\n`);
+  return { archive, checksums };
+}
+
+async function installPackage(input) {
+  if (input.archive) return installReleasePackage(input);
+  const { sourceRoot: root, ...options } = input;
+  const artifact = root === sourceRoot ? sharedArtifact ??= archiveFixture(root, "b".repeat(40), true) : archiveFixture(root);
+  return installReleasePackage({ ...await artifact, ...options });
+}
+
+test("artifact install writes schema 4 provenance and remains verifiable after temporary inputs disappear", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-sealed-install-"));
+  temporary.push(home);
+  const artifact = await archiveFixture();
+  const result = await installPackage({ ...artifact, home, host: "both", scope: "user" });
+  assert.equal(result.status, "installed");
+  const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
+  const before = await readFile(receiptPath);
+  const receipt = JSON.parse(before);
+  assert.equal(receipt.schemaVersion, 4);
+  assert.equal(Object.hasOwn(receipt, "sourceRoot"), false);
+  assert.equal(receipt.artifact.sourceRevision, "b".repeat(40));
+  assert.deepEqual(Object.keys(receipt.installedFileMaps).sort(), ["claude", "codex"]);
+  await rm(path.dirname(artifact.archive), { recursive: true });
+  const health = await getHealth({ home });
+  assert.equal(health.runtimes.codex.artifact.status, "current");
+  const again = await installPackage({ ...await archiveFixture(), home, host: "both", scope: "user" });
+  assert.equal(again.changed, false);
+  assert.deepEqual(await readFile(receiptPath), before);
+});
+
+test("artifact replacement after verification cannot change sealed install bytes", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-opened-artifact-"));
+  temporary.push(home);
+  const artifact = await archiveFixture();
+  const expected = await readFile(path.join(sourceRoot, "SKILL.md"));
+  const result = await __installTest.installPackage({ ...artifact, home, host: "codex", scope: "user" }, {
+    afterArchiveVerified: async () => {
+      await writeFile(artifact.archive, "replaced archive");
+      await writeFile(artifact.checksums, "replaced checksums\n");
+    },
+  });
+  assert.equal(result.status, "installed");
+  assert.deepEqual(await readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), expected);
+});
+
+test("both-host artifact install rolls back the first swap and prior receipt on injected failure", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-both-rollback-"));
+  temporary.push(home);
+  const artifact = await archiveFixture();
+  await assert.rejects(__installTest.installPackage({ ...artifact, home, host: "both", scope: "user" }, { failAfterFirstSwap: true }), /injected_after_first_swap/);
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".agent-team-hooks", "install.json")), { code: "ENOENT" });
+});
+
+test("staged artifact drift between host swaps aborts and rolls both hosts back", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-staged-drift-"));
+  temporary.push(home);
+  const artifact = await archiveFixture();
+  await assert.rejects(__installTest.installPackage({ ...artifact, home, host: "both", scope: "user" }, {
+    beforeTargetSwap: async ({ index }) => {
+      if (index !== 1) return;
+      const sealed = (await readdir(path.join(home, ".agent-team-hooks"))).find((name) => name.startsWith(".agent-team-sealed-"));
+      await writeFile(path.join(home, ".agent-team-hooks", sealed, "agent-team", "SKILL.md"), "tampered staging\n");
+    },
+  }), /staged_file_map_mismatch/);
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+});
+
+test("both-host publication preserves a concurrently appeared second target and rolls back the first", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-target-race-"));
+  temporary.push(home);
+  const artifact = await archiveFixture();
+  const raced = path.join(home, ".claude", "skills", "agent-team");
+  let identity;
+  await assert.rejects(__installTest.installPackage({ ...artifact, home, host: "both", scope: "user" }, {
+    beforeTargetSwap: async ({ index }) => {
+      if (index !== 1) return;
+      await mkdir(raced, { recursive: true });
+      const metadata = await import("node:fs/promises").then(({ lstat }) => lstat(raced));
+      identity = { dev: metadata.dev, ino: metadata.ino };
+    },
+  }), { code: "EEXIST" });
+  const after = await import("node:fs/promises").then(({ lstat }) => lstat(raced));
+  assert.deepEqual({ dev: after.dev, ino: after.ino }, identity);
+  assert.deepEqual(await readdir(raced), []);
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+});
+
+test("pre-receipt failure restores packages roles configs and prior receipt", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-pre-receipt-"));
+  temporary.push(home);
+  const artifact = await archiveFixture();
+  await assert.rejects(__installTest.installPackage({ ...artifact, home, host: "both", scope: "user" }, { failBeforeReceipt: true }), /injected_before_receipt/);
+  for (const file of [
+    path.join(home, ".agents", "skills", "agent-team", "SKILL.md"),
+    path.join(home, ".claude", "skills", "agent-team", "SKILL.md"),
+    path.join(home, ".codex", "hooks.json"),
+    path.join(home, ".claude", "settings.json"),
+    path.join(home, ".agent-team-hooks", "install.json"),
+  ]) await assert.rejects(readFile(file), { code: "ENOENT" });
+});
+
+test("health reports artifact mode drift and labels schema 3 provenance unverified legacy", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-artifact-health-"));
+  temporary.push(home);
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  const target = path.join(home, ".agents", "skills", "agent-team");
+  await chmod(path.join(target, "SKILL.md"), 0o600);
+  assert.equal((await getHealth({ home })).runtimes.codex.artifact.status, "drifted");
+  const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
+  const receipt = JSON.parse(await readFile(receiptPath));
+  await writeFile(receiptPath, `${JSON.stringify({ schemaVersion: 3, targets: receipt.targets }, null, 2)}\n`);
+  assert.equal((await getHealth({ home })).runtimes.codex.artifact.status, "unverified_legacy");
+});
+
+test("artifact installer denies semantic downgrade without changing the current receipt", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-downgrade-"));
+  const newer = await mkdtemp(path.join(os.tmpdir(), "agent-team-newer-source-"));
+  temporary.push(home, newer);
+  await copyTrackedSource(sourceRoot, newer);
+  const manifestPath = path.join(newer, "hooks", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath));
+  manifest.version = "7.2.0";
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await installPackage({ sourceRoot: newer, home, host: "codex", scope: "user" });
+  const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
+  const before = await readFile(receiptPath);
+  const denied = await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  assert.equal(denied.status, "downgrade_denied");
+  assert.deepEqual(await readFile(receiptPath), before);
+});
+
 test("target resolution rejects missing or ambiguous metadata and never guesses both", async () => {
   // Accepting no host or an ambiguous metadata value would silently configure an unauthorized host.
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-target-home-"));
@@ -60,6 +208,7 @@ test("target resolution rejects missing or ambiguous metadata and never guesses 
     installPackage({ sourceRoot, home, host: "codex", scope: "user", projectRoot: path.join(home, "ignored-project") }),
     /projectRoot.*user scope|ineffective/i,
   );
+  await assert.rejects(installReleasePackage({ sourceRoot, home, host: "codex", scope: "user" }), /Unsupported install authority/);
 });
 
 test("installer preserves an unreceipted custom skill directory and does not register its hooks", async () => {
@@ -757,8 +906,10 @@ test("a subsequent CLI invocation recovers ownership after abrupt process termin
   const configPath = path.join(home, ".codex", "hooks.json");
   await mkdir(path.dirname(configPath), { recursive: true });
   await writeFile(configPath, JSON.stringify({ padding: "x".repeat(16 * 1024 * 1024), hooks: {} }));
+  const artifact = await archiveFixture();
+  const installArgs = [cli, "install", "--archive", artifact.archive, "--checksums", artifact.checksums, "--home", home, "--host", "codex", "--scope", "user"];
 
-  const child = spawn(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"], {
+  const child = spawn(process.execPath, installArgs, {
     stdio: "ignore",
   });
   let interruptedBackup;
@@ -783,8 +934,8 @@ test("a subsequent CLI invocation recovers ownership after abrupt process termin
   await assert.rejects(readFile(path.join(legacy, "original.txt")), { code: "ENOENT" });
 
   const recovered = await Promise.all([
-    run(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"]),
-    run(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"]),
+    run(process.execPath, installArgs),
+    run(process.execPath, installArgs),
   ]);
   const recoveredResults = recovered.map(({ stdout }) => JSON.parse(stdout));
   assert.equal(recoveredResults.filter(({ recovery }) => recovery?.action === "rolled_back").length, 1);
@@ -804,7 +955,9 @@ test("recovery preserves a user replacement created after abrupt termination", a
   const configPath = path.join(home, ".codex", "hooks.json");
   await mkdir(path.dirname(configPath), { recursive: true });
   await writeFile(configPath, JSON.stringify({ padding: "x".repeat(16 * 1024 * 1024), hooks: {} }));
-  const child = spawn(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"], {
+  const artifact = await archiveFixture();
+  const installArgs = [cli, "install", "--archive", artifact.archive, "--checksums", artifact.checksums, "--home", home, "--host", "codex", "--scope", "user"];
+  const child = spawn(process.execPath, installArgs, {
     stdio: "ignore",
   });
   let interruptedBackup;
@@ -830,7 +983,7 @@ test("recovery preserves a user replacement created after abrupt termination", a
   await writeFile(path.join(legacy, "USER.md"), "created after crash\n");
 
   await assert.rejects(
-    run(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"]),
+    run(process.execPath, installArgs),
     (error) => /recovery conflict/i.test(error.stdout),
   );
   assert.equal(await readFile(path.join(legacy, "USER.md"), "utf8"), "created after crash\n");

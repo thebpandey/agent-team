@@ -1,196 +1,90 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { createHash } from "node:crypto";
+import { open, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const crcTable = Array.from({ length: 256 }, (_, index) => {
-  let value = index;
-  for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
-  return value >>> 0;
-});
+const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+const MAX_CHECKSUM_BYTES = 64 * 1024;
+const REPOSITORY = "https://github.com/thebpandey/agent-team";
+const METADATA_KEYS = ["hosts", "name", "packageContentDigest", "packageFileMap", "releaseTag", "releaseUrl", "repository", "sourceRevision", "updateUrl", "version"].sort();
+const MANIFEST_KEYS = ["activationSupport", "artifacts", "entrypoints", "files", "includeRoots", "legacy", "name", "policies", "registrationTargets", "repository", "requiredEvents", "rootFiles", "runtimeDeclarations", "schemaVersion", "version"].sort();
+const crcTable = Array.from({ length: 256 }, (_, index) => { let value = index; for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1; return value >>> 0; });
+function crc32(data) { let value = 0xffffffff; for (const byte of data) value = crcTable[(value ^ byte) & 0xff] ^ (value >>> 8); return (value ^ 0xffffffff) >>> 0; }
+function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
+function deepFreeze(value) { if (!value || typeof value !== "object" || Buffer.isBuffer(value) || Object.isFrozen(value)) return value; for (const child of Object.values(value)) deepFreeze(child); return Object.freeze(value); }
+function mapCopy(map) { return Object.fromEntries(Object.entries(map).sort(([a], [b]) => Buffer.from(a).compare(Buffer.from(b))).map(([name, value]) => [name, { sha256: value.sha256, mode: value.mode, size: value.size }])); }
+export function fileMapDigest(map) { return sha256(Buffer.from(`${JSON.stringify(Object.entries(mapCopy(map)).map(([name, value]) => [name, value.sha256, value.mode, value.size]))}\n`)); }
 
-function crc32(data) {
-  let value = 0xffffffff;
-  for (const byte of data) value = crcTable[(value ^ byte) & 0xff] ^ (value >>> 8);
-  return (value ^ 0xffffffff) >>> 0;
+function localHeader(name, data, checksum, raw = {}) { const header = Buffer.alloc(30); header.writeUInt32LE(0x04034b50, 0); header.writeUInt16LE(20, 4); header.writeUInt16LE(raw.localFlags ?? 0, 6); header.writeUInt16LE(raw.localMethod ?? 0, 8); header.writeUInt16LE(0, 10); header.writeUInt16LE(0x21, 12); header.writeUInt32LE(raw.localCrc ?? checksum, 14); header.writeUInt32LE(raw.localCompressedSize ?? data.length, 18); header.writeUInt32LE(raw.localSize ?? data.length, 22); header.writeUInt16LE(name.length, 26); return header; }
+function centralHeader(name, data, checksum, offset, mode, raw = {}) { const header = Buffer.alloc(46); header.writeUInt32LE(0x02014b50, 0); header.writeUInt16LE(0x0314, 4); header.writeUInt16LE(20, 6); header.writeUInt16LE(raw.centralFlags ?? 0, 8); header.writeUInt16LE(raw.centralMethod ?? 0, 10); header.writeUInt16LE(0, 12); header.writeUInt16LE(0x21, 14); header.writeUInt32LE(raw.centralCrc ?? checksum, 16); header.writeUInt32LE(raw.centralCompressedSize ?? data.length, 20); header.writeUInt32LE(raw.centralSize ?? data.length, 24); header.writeUInt16LE(name.length, 28); header.writeUInt32LE(((raw.centralMode ?? mode) & 0xffff) << 16 >>> 0, 38); header.writeUInt32LE(raw.localOffset ?? offset, 42); return header; }
+async function writeZipInternal(file, inputEntries, allowRaw) {
+  const entries = inputEntries.map((entry) => ({ name: entry.name, localName: allowRaw ? entry.localName ?? entry.name : entry.name, data: Buffer.from(entry.data), mode: entry.mode ?? 0o100644, raw: allowRaw ? entry.raw ?? {} : {} })).sort((a, b) => a.name.localeCompare(b.name));
+  const local = [], central = []; let offset = 0;
+  for (const entry of entries) { const localName = Buffer.from(entry.localName), centralName = Buffer.from(entry.name), checksum = crc32(entry.data); const header = localHeader(localName, entry.data, checksum, entry.raw); local.push(header, localName, entry.data); central.push(centralHeader(centralName, entry.data, checksum, offset, entry.mode, entry.raw), centralName); offset += header.length + localName.length + entry.data.length; }
+  const centralSize = central.reduce((size, buffer) => size + buffer.length, 0), end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(centralSize, 12); end.writeUInt32LE(offset, 16); await writeFile(file, Buffer.concat([...local, ...central, end]));
 }
-
-function localHeader(name, data, checksum) {
-  const header = Buffer.alloc(30);
-  header.writeUInt32LE(0x04034b50, 0);
-  header.writeUInt16LE(20, 4);
-  header.writeUInt16LE(0, 6);
-  header.writeUInt16LE(0, 8);
-  header.writeUInt16LE(0, 10);
-  header.writeUInt16LE(0x21, 12);
-  header.writeUInt32LE(checksum, 14);
-  header.writeUInt32LE(data.length, 18);
-  header.writeUInt32LE(data.length, 22);
-  header.writeUInt16LE(name.length, 26);
-  return header;
-}
-
-function centralHeader(name, data, checksum, offset, mode) {
-  const header = Buffer.alloc(46);
-  header.writeUInt32LE(0x02014b50, 0);
-  header.writeUInt16LE(0x0314, 4);
-  header.writeUInt16LE(20, 6);
-  header.writeUInt16LE(0, 8);
-  header.writeUInt16LE(0, 10);
-  header.writeUInt16LE(0, 12);
-  header.writeUInt16LE(0x21, 14);
-  header.writeUInt32LE(checksum, 16);
-  header.writeUInt32LE(data.length, 20);
-  header.writeUInt32LE(data.length, 24);
-  header.writeUInt16LE(name.length, 28);
-  header.writeUInt32LE(((mode & 0xffff) << 16) >>> 0, 38);
-  header.writeUInt32LE(offset, 42);
-  return header;
-}
-
-/** Write a deterministic stored ZIP. It is also used by defect fixtures. */
-export async function writeZip(file, inputEntries) {
-  const entries = inputEntries.map((entry) => ({
-    name: entry.name,
-    data: Buffer.from(entry.data),
-    mode: entry.mode ?? 0o100644,
-  })).sort((left, right) => left.name.localeCompare(right.name));
-  const local = [];
-  const central = [];
-  let offset = 0;
-  for (const entry of entries) {
-    const name = Buffer.from(entry.name);
-    const checksum = crc32(entry.data);
-    const header = localHeader(name, entry.data, checksum);
-    local.push(header, name, entry.data);
-    central.push(centralHeader(name, entry.data, checksum, offset, entry.mode), name);
-    offset += header.length + name.length + entry.data.length;
-  }
-  const centralSize = central.reduce((size, buffer) => size + buffer.length, 0);
-  const end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(entries.length, 8);
-  end.writeUInt16LE(entries.length, 10);
-  end.writeUInt32LE(centralSize, 12);
-  end.writeUInt32LE(offset, 16);
-  await writeFile(file, Buffer.concat([...local, ...central, end]));
-}
-
-/** Read stored ZIP members from the central directory and verify their CRC values. */
-export async function readZip(file) {
-  const archive = await readFile(file);
-  const endOffset = archive.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
-  if (endOffset < 0 || endOffset + 22 > archive.length) throw new Error("ZIP end record is missing.");
-  const count = archive.readUInt16LE(endOffset + 10);
-  let cursor = archive.readUInt32LE(endOffset + 16);
-  const entries = [];
+export async function writeZip(file, inputEntries) { return writeZipInternal(file, inputEntries, false); }
+function zipError(reason) { throw new Error(reason); }
+function safeMemberName(name, prefix) { if (!name || !name.startsWith(prefix) || name.includes("\\") || name.includes("\0") || name.normalize("NFC") !== name || name.startsWith("/") || /^[a-z]:/i.test(name)) return false; return !name.split("/").some((part) => !part || part === "." || part === ".."); }
+function parseZipBytes(input) {
+  const archive = Buffer.from(input), endOffset = archive.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (endOffset < 0 || endOffset + 22 !== archive.length || archive.readUInt16LE(endOffset + 4) || archive.readUInt16LE(endOffset + 6) || archive.readUInt16LE(endOffset + 20)) zipError("archive_header_mismatch");
+  const count = archive.readUInt16LE(endOffset + 10), centralSize = archive.readUInt32LE(endOffset + 12), centralOffset = archive.readUInt32LE(endOffset + 16);
+  if (archive.readUInt16LE(endOffset + 8) !== count || centralOffset + centralSize !== endOffset) zipError("archive_header_mismatch");
+  let cursor = centralOffset; const entries = [], ranges = [];
   for (let index = 0; index < count; index += 1) {
-    if (archive.readUInt32LE(cursor) !== 0x02014b50) throw new Error("ZIP central entry is invalid.");
-    const method = archive.readUInt16LE(cursor + 10);
-    const checksum = archive.readUInt32LE(cursor + 16);
-    const compressedSize = archive.readUInt32LE(cursor + 20);
-    const size = archive.readUInt32LE(cursor + 24);
-    const nameLength = archive.readUInt16LE(cursor + 28);
-    const extraLength = archive.readUInt16LE(cursor + 30);
-    const commentLength = archive.readUInt16LE(cursor + 32);
-    const mode = archive.readUInt32LE(cursor + 38) >>> 16;
-    const localOffset = archive.readUInt32LE(cursor + 42);
-    const name = archive.subarray(cursor + 46, cursor + 46 + nameLength).toString("utf8");
-    if (method !== 0) throw new Error(`Unsupported ZIP compression method ${method}.`);
-    if (archive.readUInt32LE(localOffset) !== 0x04034b50) throw new Error("ZIP local entry is invalid.");
-    const localNameLength = archive.readUInt16LE(localOffset + 26);
-    const localExtraLength = archive.readUInt16LE(localOffset + 28);
-    const start = localOffset + 30 + localNameLength + localExtraLength;
-    const data = archive.subarray(start, start + compressedSize);
-    if (data.length !== size || crc32(data) !== checksum) throw new Error(`ZIP member checksum failed: ${name}`);
-    entries.push({ name, data: Buffer.from(data), mode });
-    cursor += 46 + nameLength + extraLength + commentLength;
+    if (cursor + 46 > endOffset || archive.readUInt32LE(cursor) !== 0x02014b50) zipError("archive_header_mismatch");
+    const flags = archive.readUInt16LE(cursor + 8), method = archive.readUInt16LE(cursor + 10), checksum = archive.readUInt32LE(cursor + 16), compressedSize = archive.readUInt32LE(cursor + 20), size = archive.readUInt32LE(cursor + 24), nameLength = archive.readUInt16LE(cursor + 28), extraLength = archive.readUInt16LE(cursor + 30), commentLength = archive.readUInt16LE(cursor + 32), mode = archive.readUInt32LE(cursor + 38) >>> 16, localOffset = archive.readUInt32LE(cursor + 42), centralEnd = cursor + 46 + nameLength + extraLength + commentLength;
+    if (centralEnd > endOffset || extraLength || commentLength || flags || method) zipError("archive_header_mismatch");
+    const nameBytes = archive.subarray(cursor + 46, cursor + 46 + nameLength), name = nameBytes.toString("utf8"); if (!Buffer.from(name).equals(nameBytes)) zipError("unsafe_archive_entry");
+    if (localOffset + 30 > centralOffset || archive.readUInt32LE(localOffset) !== 0x04034b50) zipError("archive_header_mismatch");
+    const localFlags = archive.readUInt16LE(localOffset + 6), localMethod = archive.readUInt16LE(localOffset + 8), localCrc = archive.readUInt32LE(localOffset + 14), localCompressed = archive.readUInt32LE(localOffset + 18), localSize = archive.readUInt32LE(localOffset + 22), localNameLength = archive.readUInt16LE(localOffset + 26), localExtraLength = archive.readUInt16LE(localOffset + 28), localNameBytes = archive.subarray(localOffset + 30, localOffset + 30 + localNameLength);
+    if (localCompressed !== compressedSize || localSize !== size) zipError("archive_size_mismatch");
+    if (localFlags !== flags || localMethod !== method || localCrc !== checksum || localExtraLength || !localNameBytes.equals(nameBytes)) zipError("archive_header_mismatch");
+    const start = localOffset + 30 + localNameLength, end = start + compressedSize; if (end > centralOffset || compressedSize !== size) zipError("archive_size_mismatch"); const data = archive.subarray(start, end); if (data.length !== size) zipError("archive_size_mismatch"); if (crc32(data) !== checksum) zipError("archive_checksum_mismatch");
+    ranges.push([localOffset, end]); entries.push({ name, data: Buffer.from(data), mode }); cursor = centralEnd;
   }
-  return entries;
+  if (cursor !== endOffset || entries.length !== count) zipError("archive_header_mismatch"); ranges.sort((a, b) => a[0] - b[0]); if (!ranges.length || ranges[0][0] !== 0 || ranges.some((range, index) => index && range[0] !== ranges[index - 1][1])) zipError("archive_header_mismatch"); return entries;
 }
+export async function readZip(file) { return parseZipBytes(await readFile(file)); }
 
-async function manifestAt(sourceRoot) {
-  return JSON.parse(await readFile(path.join(sourceRoot, "hooks", "manifest.json"), "utf8"));
+async function readStableFile(file, maximum, label) {
+  let handle;
+  try {
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); const before = await handle.stat({ bigint: true }); if (!before.isFile() || before.size > BigInt(maximum)) throw new Error(`${label}_invalid`);
+    const bytes = Buffer.alloc(Number(before.size)); let offset = 0; while (offset < bytes.length) { const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset); if (!bytesRead) throw new Error(`${label}_identity_changed`); offset += bytesRead; }
+    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead) throw new Error(`${label}_identity_changed`); const after = await handle.stat({ bigint: true }), fields = ["dev", "ino", "size", "mtimeNs", "ctimeNs"]; if (!after.isFile() || fields.some((key) => before[key] !== after[key])) throw new Error(`${label}_identity_changed`);
+    return { bytes, identity: deepFreeze(Object.fromEntries(fields.map((key) => [key, String(after[key])])))};
+  } catch (error) { if (["ELOOP", "ENXIO"].includes(error.code)) throw new Error(`${label}_invalid`); throw error; } finally { await handle?.close(); }
 }
+async function readArchiveOnce(file) { const opened = await readStableFile(file, MAX_ARCHIVE_BYTES, "archive"), stored = Buffer.from(opened.bytes), value = { archiveName: path.basename(file), identity: opened.identity }; Object.defineProperty(value, "bytes", { enumerable: true, get: () => Buffer.from(stored) }); return Object.freeze(value); }
+function parseSha256Sums(source) { const text = Buffer.isBuffer(source) ? source.toString("utf8") : String(source); if (/^(?:\r?\n)|(?:\r?\n){2,}/.test(text)) throw new Error("checksum_manifest_mismatch"); const match = text.match(/^([0-9a-f]{64}) [ *]([^\0\r\n]+)\r?\n?$/); if (!match || path.basename(match[2]) !== match[2] || match[2].includes("\\") || /^[a-z]:/i.test(match[2])) throw new Error("checksum_manifest_mismatch"); return Object.freeze({ digest: match[1], name: match[2] }); }
+function exactFileMap(value) { return value && typeof value === "object" && !Array.isArray(value) && Object.entries(value).every(([name, item]) => safeMemberName(`agent-team/${name}`, "agent-team/") && item && typeof item === "object" && !Array.isArray(item) && Object.keys(item).sort().join(",") === "mode,sha256,size" && /^[0-9a-f]{64}$/.test(item.sha256) && [0o644, 0o755].includes(item.mode) && Number.isSafeInteger(item.size) && item.size >= 0); }
+function inspectArchiveClosedBytes(bytes, { prefix = "agent-team/", metadata = "agent-team/.agent-team-source.json", archiveName } = {}) {
+  const entries = parseZipBytes(Buffer.from(bytes)), seen = new Set(), archiveFileMap = {}, byName = new Map();
+  for (const entry of entries) { if (seen.has(entry.name)) zipError("duplicate_archive_entry"); seen.add(entry.name); if (!safeMemberName(entry.name, prefix)) zipError("unsafe_archive_entry"); const type = entry.mode & 0o170000, permission = entry.mode & 0o777; if (type !== 0o100000) zipError("unsafe_archive_entry"); if (![0o644, 0o755].includes(permission)) zipError("archive_mode_mismatch"); const relative = entry.name.slice(prefix.length); archiveFileMap[relative] = { sha256: sha256(entry.data), mode: permission, size: entry.data.length }; byName.set(entry.name, entry); }
+  let source; try { source = JSON.parse(byName.get(metadata)?.data.toString("utf8") ?? ""); } catch { zipError("archive_manifest_mismatch"); }
+  if (!source || Object.keys(source).sort().join("\0") !== METADATA_KEYS.join("\0") || source.name !== "agent-team" || JSON.stringify(source.hosts) !== JSON.stringify(["codex", "claude-code"]) || source.repository !== REPOSITORY || !/^\d+\.\d+\.\d+$/.test(source.version) || source.releaseTag !== `v${source.version}` || source.releaseUrl !== `${source.repository}/releases/tag/${source.releaseTag}` || source.updateUrl !== `${source.repository}/releases/latest` || !/^[0-9a-f]{40}$/.test(source.sourceRevision) || (archiveName && archiveName !== `agent-team-${source.version}.zip`) || !exactFileMap(source.packageFileMap) || source.packageContentDigest !== fileMapDigest(source.packageFileMap)) zipError("archive_manifest_mismatch");
+  let manifest; try { manifest = JSON.parse(byName.get(`${prefix}hooks/manifest.json`)?.data.toString("utf8") ?? ""); } catch { zipError("archive_manifest_mismatch"); }
+  if (!manifest || Object.keys(manifest).sort().join("\0") !== MANIFEST_KEYS.join("\0") || manifest.schemaVersion !== 2 || manifest.name !== source.name || manifest.version !== source.version || manifest.repository !== source.repository || manifest.artifacts?.prefix !== prefix || manifest.artifacts?.metadata !== metadata || !Array.isArray(manifest.files) || new Set(manifest.files).size !== manifest.files.length) zipError("archive_manifest_mismatch");
+  const expected = [...manifest.files, metadata.slice(prefix.length)].sort(), actual = Object.keys(archiveFileMap).sort(); if (JSON.stringify(actual) !== JSON.stringify(expected)) zipError("archive_manifest_mismatch"); const packageFileMap = Object.fromEntries(Object.entries(archiveFileMap).filter(([name]) => name !== metadata.slice(prefix.length))); if (JSON.stringify(mapCopy(packageFileMap)) !== JSON.stringify(mapCopy(source.packageFileMap))) zipError("archive_file_map_mismatch"); for (const entrypoint of manifest.entrypoints ?? []) if (packageFileMap[entrypoint]?.mode !== 0o755) zipError("archive_mode_mismatch");
+  return deepFreeze({ metadata: structuredClone(source), manifest: structuredClone(manifest), packageFileMap: mapCopy(packageFileMap), packageContentDigest: source.packageContentDigest, archiveFileMap: mapCopy(archiveFileMap), archiveContentDigest: fileMapDigest(archiveFileMap) });
+}
+function verifyReleaseArtifactBytes({ archiveName, bytes, checksum, checksumFileName = "SHA256SUMS", checksumFileSha256, checksumIdentity }) { if (!checksum || checksum.name !== archiveName) throw new Error("checksum_manifest_mismatch"); const openedBytes = Buffer.from(bytes), archiveSha256 = sha256(openedBytes); if (archiveSha256 !== checksum.digest) throw new Error("archive_checksum_mismatch"); const inspected = inspectArchiveClosedBytes(openedBytes, { archiveName }), stored = Buffer.from(openedBytes), entryMap = new Map(parseZipBytes(stored).map((entry) => [entry.name.slice("agent-team/".length), Buffer.from(entry.data)])), value = { ...inspected, archiveName, archiveSha256, checksumFileName, checksumFileSha256, checksumIdentity }; Object.defineProperty(value, "bytes", { enumerable: true, get: () => Buffer.from(stored) }); Object.defineProperty(value, "entryBytes", { enumerable: false, value(name) { const entry = entryMap.get(name); if (!entry) throw new Error("archive_manifest_mismatch"); return Buffer.from(entry); } }); return Object.freeze(value); }
+export async function verifyReleaseArtifact({ archive, checksums }) { const opened = await readArchiveOnce(archive); if (path.basename(checksums) !== "SHA256SUMS") throw new Error("checksum_manifest_mismatch"); const checksumOpened = await readStableFile(checksums, MAX_CHECKSUM_BYTES, "checksums"), checksum = parseSha256Sums(checksumOpened.bytes); return verifyReleaseArtifactBytes({ ...opened, checksum, checksumFileName: path.basename(checksums), checksumFileSha256: sha256(checksumOpened.bytes), checksumIdentity: checksumOpened.identity }); }
 
+async function manifestAt(sourceRoot) { return JSON.parse(await readFile(path.join(sourceRoot, "hooks", "manifest.json"), "utf8")); }
 async function expectedEntries(sourceRoot, manifest, sourceRevision) {
-  const entries = [];
-  for (const file of manifest.files.toSorted()) {
-    const source = path.join(sourceRoot, file);
-    entries.push({
-      name: `${manifest.artifacts.prefix}${file}`,
-      data: await readFile(source),
-      // Checkout umasks must not change release bytes; preserve executability only.
-      mode: (await stat(source)).mode & 0o111 ? 0o100755 : 0o100644,
-    });
-  }
-  entries.push({
-    name: manifest.artifacts.metadata,
-    data: Buffer.from(`${JSON.stringify({
-      name: manifest.name,
-      version: manifest.version,
-      hosts: ["codex", "claude-code"],
-      repository: manifest.repository,
-      releaseTag: `v${manifest.version}`,
-      releaseUrl: `${manifest.repository}/releases/tag/v${manifest.version}`,
-      updateUrl: `${manifest.repository}/releases/latest`,
-      sourceRevision,
-    }, null, 2)}\n`),
-  });
-  return entries.sort((left, right) => left.name.localeCompare(right.name));
+  const packageEntries = [], packageFileMap = {};
+  for (const file of manifest.files.toSorted()) { const source = path.join(sourceRoot, file), data = await readFile(source), mode = (await stat(source)).mode & 0o111 ? 0o100755 : 0o100644; packageEntries.push({ name: `${manifest.artifacts.prefix}${file}`, data, mode }); packageFileMap[file] = { sha256: sha256(data), mode: mode & 0o777, size: data.length }; }
+  const metadata = { name: manifest.name, version: manifest.version, hosts: ["codex", "claude-code"], repository: manifest.repository, releaseTag: `v${manifest.version}`, releaseUrl: `${manifest.repository}/releases/tag/v${manifest.version}`, updateUrl: `${manifest.repository}/releases/latest`, sourceRevision, packageFileMap: mapCopy(packageFileMap), packageContentDigest: fileMapDigest(packageFileMap) };
+  return [...packageEntries, { name: manifest.artifacts.metadata, data: Buffer.from(`${JSON.stringify(metadata, null, 2)}\n`), mode: 0o100644 }].sort((a, b) => a.name.localeCompare(b.name));
 }
-
-/** Build one reproducible archive containing the complete cross-host consumer package. */
-export async function buildArtifacts({ sourceRoot, outputDirectory, sourceRevision }) {
-  const manifest = await manifestAt(sourceRoot);
-  const file = path.join(outputDirectory, `agent-team-${manifest.version}.zip`);
-  await writeZip(file, await expectedEntries(sourceRoot, manifest, sourceRevision));
-  const archives = [file];
-  return { status: "built", sourceRevision, archives };
-}
-
-function unsafe(name) {
-  const normalized = name.replaceAll("\\", "/");
-  return normalized.startsWith("/") || /^[a-z]:\//i.test(normalized) || normalized.split("/").includes("..") || normalized.includes("\0");
-}
-
-/** Compare supplied archives with the manifest, source bytes, platform, and source revision. */
+export async function buildArtifacts({ sourceRoot, outputDirectory, sourceRevision }) { const manifest = await manifestAt(sourceRoot), file = path.join(outputDirectory, `agent-team-${manifest.version}.zip`); await writeZip(file, await expectedEntries(sourceRoot, manifest, sourceRevision)); return { status: "built", sourceRevision, archives: [file] }; }
 export async function checkArtifacts({ sourceRoot, archives = [], expectedRevision }) {
-  if (!archives.length) return { status: "not_applicable", reason: "no_archive", errors: [] };
-  const manifest = await manifestAt(sourceRoot);
-  const errors = [];
-  if (archives.length !== 1) errors.push(`Expected one universal archive, received ${archives.length}.`);
-  for (const archive of archives) {
-    let entries;
-    try {
-      entries = await readZip(archive);
-    } catch (error) {
-      errors.push(`${path.basename(archive)}: ${error.message}`);
-      continue;
-    }
-    const names = entries.map(({ name }) => name);
-    for (const name of names) if (unsafe(name)) errors.push(`${path.basename(archive)} has an unsafe path: ${name}`);
-    for (const name of new Set(names)) if (names.filter((entry) => entry === name).length > 1) errors.push(`${path.basename(archive)} has a duplicate entry: ${name}`);
-    const metadataEntry = entries.find(({ name }) => name === manifest.artifacts.metadata);
-    let metadata;
-    try {
-      metadata = JSON.parse(metadataEntry?.data.toString("utf8") ?? "");
-    } catch {
-      errors.push(`${path.basename(archive)} has invalid source metadata.`);
-      continue;
-    }
-    if (JSON.stringify(metadata.hosts) !== JSON.stringify(["codex", "claude-code"])) errors.push(`${path.basename(archive)} does not identify both supported hosts.`);
-    if (metadata.sourceRevision !== expectedRevision) errors.push(`${path.basename(archive)} has stale source revision metadata.`);
-    if (metadata.version !== manifest.version) errors.push(`${path.basename(archive)} has stale version metadata.`);
-    if (metadata.repository !== manifest.repository) errors.push(`${path.basename(archive)} has stale repository metadata.`);
-    if (metadata.releaseTag !== `v${manifest.version}`) errors.push(`${path.basename(archive)} has stale release tag metadata.`);
-    const expected = await expectedEntries(sourceRoot, manifest, expectedRevision);
-    const expectedMap = new Map(expected.map((entry) => [entry.name, entry]));
-    const actualMap = new Map(entries.map((entry) => [entry.name, entry]));
-    for (const [name, expectedEntry] of expectedMap) {
-      if (!actualMap.has(name)) errors.push(`${path.basename(archive)} omits ${name}.`);
-      else if (!actualMap.get(name).data.equals(expectedEntry.data)) errors.push(`${path.basename(archive)} has stale content for ${name}.`);
-      else if (expectedEntry.mode !== undefined && (actualMap.get(name).mode & 0o777) !== (expectedEntry.mode & 0o777)) errors.push(`${path.basename(archive)} has stale mode for ${name}.`);
-    }
-    for (const name of actualMap.keys()) if (!expectedMap.has(name)) errors.push(`${path.basename(archive)} has unexpected entry ${name}.`);
-  }
+  if (!archives.length) return { status: "not_applicable", reason: "no_archive", errors: [] }; const manifest = await manifestAt(sourceRoot), expected = await expectedEntries(sourceRoot, manifest, expectedRevision), expectedMap = new Map(expected.map((entry) => [entry.name, entry])), errors = []; if (archives.length !== 1) errors.push(`Expected one universal archive, received ${archives.length}.`);
+  for (const archive of archives) { let entries; try { entries = parseZipBytes(await readFile(archive)); } catch (error) { errors.push(`${path.basename(archive)}: ${error.message}`); continue; } const names = entries.map(({ name }) => name); if (new Set(names).size !== names.length) errors.push(`${path.basename(archive)} has a duplicate entry.`); const actualMap = new Map(entries.map((entry) => [entry.name, entry])); for (const [name, wanted] of expectedMap) { const actual = actualMap.get(name); if (!actual) errors.push(`${path.basename(archive)} omits ${name}.`); else if (!actual.data.equals(wanted.data)) errors.push(`${path.basename(archive)} has stale content for ${name}.`); else if ((actual.mode & 0o777) !== (wanted.mode & 0o777)) errors.push(`${path.basename(archive)} has stale mode for ${name}.`); } for (const name of actualMap.keys()) if (!expectedMap.has(name)) errors.push(`${path.basename(archive)} has unexpected entry ${name}.`); }
   return { status: errors.length ? "failed" : "passed", errors };
 }
+export const __artifactTest = Object.freeze({ inspectArchiveClosedBytes, parseSha256Sums, readArchiveOnce, verifyReleaseArtifactBytes,
+  writeZipRaw(file, entries) { return writeZipInternal(file, entries, true); } });

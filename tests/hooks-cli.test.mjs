@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
 import { policyFixture } from "./hook-test-helpers.mjs";
+import { buildArtifacts } from "../hooks/lib/artifacts.mjs";
 
 const run = promisify(execFile);
 const sourceRoot = path.resolve(import.meta.dirname, "..");
@@ -69,22 +71,29 @@ test("CLI install and rollback require effective target flags and reject unknown
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-cli-install-home-"));
   const projectRoot = await mkdtemp(path.join(os.tmpdir(), "agent-team-cli-project-root-"));
   try {
+    const { archives: [archive] } = await buildArtifacts({ sourceRoot, outputDirectory: home, sourceRevision: "d".repeat(40) });
+    const checksums = path.join(home, "SHA256SUMS");
+    await writeFile(checksums, `${createHash("sha256").update(await readFile(archive)).digest("hex")}  ${path.basename(archive)}\n`);
     const failures = [
       ["health", "--unknown", "value"],
       ["install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user", "--project", projectRoot],
       ["install", "--source", sourceRoot, "--home", home, "--host"],
       ["install", "unexpected", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"],
+      ["install", "--checksums", checksums, "--home", home, "--host", "codex", "--scope", "user"],
+      ["install", "--archive", archive, "--home", home, "--host", "codex", "--scope", "user"],
+      ["install", "--archive", archive, "--archive", archive, "--checksums", checksums, "--home", home, "--host", "codex", "--scope", "user"],
+      ["install", "--archive", archive, "--checksums", checksums, "--checksums", checksums, "--home", home, "--host", "codex", "--scope", "user"],
     ];
     for (const args of failures) {
       await assert.rejects(run(process.execPath, [cli, ...args]), (error) => {
         const result = JSON.parse(error.stdout);
         assert.equal(result.status, "failed");
-        assert.match(result.error, /unsupported|ineffective|missing|unexpected/i);
+        assert.match(result.error, /unsupported|ineffective|missing|unexpected|duplicate/i);
         return true;
       });
     }
 
-    const installed = JSON.parse((await run(process.execPath, [cli, "install", "--source", sourceRoot, "--home", home, "--host", "codex", "--scope", "user"])).stdout);
+    const installed = JSON.parse((await run(process.execPath, [cli, "install", "--archive", archive, "--checksums", checksums, "--home", home, "--host", "codex", "--scope", "user"])).stdout);
     assert.equal(installed.status, "installed");
     await readFile(path.join(home, ".codex", "hooks.json"));
     await assert.rejects(readFile(path.join(home, ".claude", "settings.json")), { code: "ENOENT" });

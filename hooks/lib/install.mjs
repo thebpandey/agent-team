@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, chmod, copyFile, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, copyFile, lstat, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { checkInstalledPackage } from "./package-validator.mjs";
+import { fileMapDigest, verifyReleaseArtifact } from "./artifacts.mjs";
 
 async function present(file) {
   try {
@@ -21,11 +22,45 @@ async function readJson(file, fallback = {}) {
   }
 }
 
+async function syncDirectory(directoryPath) {
+  const directory = await open(directoryPath, constants.O_RDONLY);
+  try { await directory.sync(); } finally { await directory.close(); }
+}
+
+async function durableCopyFile(source, destination) {
+  await copyFile(source, destination);
+  const handle = await open(destination, constants.O_RDONLY);
+  try { await handle.sync(); } finally { await handle.close(); }
+  await syncDirectory(path.dirname(destination));
+}
+
+async function durableWriteExclusive(file, bytes, mode) {
+  const handle = await open(file, "wx", mode);
+  try {
+    await handle.writeFile(bytes);
+    await handle.chmod(mode);
+    await handle.sync();
+  } finally { await handle.close(); }
+  await syncDirectory(path.dirname(file));
+}
+
 async function atomicText(file, value, mode = 0o600) {
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, value, { mode });
-  await rename(temporary, file);
+  let handle;
+  try {
+    handle = await open(temporary, "wx", mode);
+    await handle.writeFile(value);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporary, file);
+    await syncDirectory(path.dirname(file));
+  } catch (error) {
+    await handle?.close();
+    await rm(temporary, { force: true });
+    throw error;
+  }
 }
 
 async function atomicJson(file, value) {
@@ -33,7 +68,8 @@ async function atomicJson(file, value) {
 }
 
 function textGuard(value) {
-  return { kind: "file", digest: hashBytes(Buffer.from(value)) };
+  const bytes = Buffer.from(value);
+  return { kind: "file", digest: hashBytes(bytes), size: bytes.length, mode: 0o600 };
 }
 
 function same(left, right) {
@@ -216,6 +252,22 @@ function hashBytes(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+async function stableRegularBytes(file) {
+  let handle;
+  try {
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) throw new Error("sealed_file_invalid");
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    if (!after.isFile() || bytes.length !== Number(after.size)
+      || ["dev", "ino", "size", "mtimeNs", "ctimeNs"].some((key) => before[key] !== after[key])) throw new Error("sealed_file_changed");
+    return { bytes, mode: Number(after.mode & 0o777n), size: Number(after.size) };
+  } finally {
+    await handle?.close();
+  }
+}
+
 async function fileDigest(file) {
   try {
     return hashBytes(await readFile(file));
@@ -224,11 +276,11 @@ async function fileDigest(file) {
   }
 }
 
-async function packageDigest(sourceRoot, files) {
+async function packageDigest(root, files) {
   const hash = createHash("sha256");
   for (const file of [...files].sort()) {
     hash.update(file);
-    hash.update(await readFile(path.join(sourceRoot, file)));
+    hash.update((await stableRegularBytes(path.join(root, file))).bytes);
   }
   return hash.digest("hex");
 }
@@ -253,15 +305,65 @@ async function managedPackageDigest(root, files) {
   }
 }
 
+async function exactFileMap(root, expectedNames) {
+  const result = {};
+  const actual = (await listFiles(root)).sort();
+  const expected = [...expectedNames].sort();
+  if (!same(actual, expected)) throw new Error("installed_file_map_mismatch");
+  for (const name of actual) {
+    const file = path.join(root, name);
+    const opened = await stableRegularBytes(file);
+    result[name] = { sha256: hashBytes(opened.bytes), mode: opened.mode, size: opened.size };
+  }
+  return result;
+}
+
+async function assertFileMap(root, expected) {
+  const actual = await exactFileMap(root, Object.keys(expected));
+  if (!same(actual, expected)) throw new Error("staged_file_map_mismatch");
+  return actual;
+}
+
+async function extractVerifiedArchiveBytesToSameFilesystem(artifact, targetParent) {
+  await mkdir(targetParent, { recursive: true, mode: 0o700 });
+  const transactionRoot = path.join(targetParent, `.agent-team-sealed-${randomUUID()}`);
+  const packageRoot = path.join(transactionRoot, "agent-team");
+  await mkdir(packageRoot, { recursive: true, mode: 0o700 });
+  try {
+    for (const [name, record] of Object.entries(artifact.archiveFileMap)) {
+      const target = path.join(packageRoot, ...name.split("/"));
+      await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+      await durableWriteExclusive(target, artifact.entryBytes(name), record.mode);
+    }
+    await assertFileMap(packageRoot, artifact.archiveFileMap);
+    return { transactionRoot, packageRoot };
+  } catch (error) {
+    await rm(transactionRoot, { force: true, recursive: true });
+    throw error;
+  }
+}
+
+function compareSemver(left, right) {
+  const parse = (value) => String(value ?? "").split(".").map((part) => Number(part));
+  const a = parse(left), b = parse(right);
+  for (let index = 0; index < 3; index += 1) if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
+  return 0;
+}
+
 async function resourceGuard(file, files) {
-  if (files) return { kind: "package", files, digest: await managedPackageDigest(file, files) };
+  if (files) {
+    const digest = await managedPackageDigest(file, files);
+    let fileMap;
+    try { fileMap = await exactFileMap(file, files); } catch {}
+    return { kind: "package", files, digest, ...(fileMap ? { fileMap } : {}) };
+  }
   try {
     const metadata = await stat(file);
     if (metadata.isDirectory()) {
       const entries = (await listFiles(file)).sort();
       return { kind: "directory", files: entries, digest: await packageDigest(file, entries) };
     }
-    return { kind: "file", digest: await fileDigest(file) };
+    return { kind: "file", digest: await fileDigest(file), size: metadata.size, mode: metadata.mode & 0o777 };
   } catch (error) {
     if (error.code === "ENOENT") return { kind: "absent" };
     throw error;
@@ -273,25 +375,41 @@ async function guardMatches(file, guard) {
   if (guard.kind === "absent") return !(await present(file));
   const actual = await resourceGuard(file, guard.kind === "package" ? guard.files : undefined);
   return actual.kind === guard.kind && actual.digest === guard.digest
+    && (guard.mode === undefined || actual.mode === guard.mode)
+    && (guard.size === undefined || actual.size === guard.size)
+    && (guard.fileMap === undefined || same(actual.fileMap, guard.fileMap))
     && (guard.kind !== "directory" || same(actual.files, guard.files));
 }
 
-async function copyPackage(sourceRoot, target, files) {
-  const parent = path.dirname(target);
-  const staging = path.join(parent, `.agent-team-install-${randomUUID()}`);
-  await mkdir(staging, { recursive: true, mode: 0o700 });
+async function copyPackage(sealedRoot, target, files) {
+  let created;
   try {
+    await mkdir(target, { mode: 0o700 });
+    const identity = await lstat(target);
+    created = { dev: identity.dev, ino: identity.ino };
     for (const file of files) {
-      const source = path.join(sourceRoot, file);
-      const destination = path.join(staging, file);
+      const source = path.join(sealedRoot, file);
+      const destination = path.join(target, file);
       await mkdir(path.dirname(destination), { recursive: true });
-      await copyFile(source, destination);
-      const mode = (await stat(source)).mode & 0o777;
-      if (mode & 0o111) await chmod(destination, mode);
+      const opened = await stableRegularBytes(source);
+      await durableWriteExclusive(destination, opened.bytes, opened.mode);
     }
-    await rename(staging, target);
-  } finally {
-    await rm(staging, { force: true, recursive: true });
+  } catch (error) {
+    if (created) {
+      try {
+        const current = await lstat(target);
+        const actual = await listFiles(target);
+        let onlyInvocationFiles = current.dev === created.dev && current.ino === created.ino;
+        for (const name of actual) {
+          if (!files.includes(name) || hashBytes(await readFile(path.join(target, name))) !== hashBytes(await readFile(path.join(sealedRoot, name)))) {
+            onlyInvocationFiles = false;
+            break;
+          }
+        }
+        if (onlyInvocationFiles) await rm(target, { force: true, recursive: true });
+      } catch {}
+    }
+    throw error;
   }
 }
 
@@ -326,7 +444,7 @@ async function applyUndo(action) {
     if (!(await guardMatches(action.target, action.targetGuard))) {
       return { kind: "recovery", target: action.target, reason: "post_crash_resource_changed" };
     }
-    await atomicText(action.target, await readFile(action.backup));
+    await atomicText(action.target, await readFile(action.backup), action.preimageGuard?.mode ?? 0o600);
     return null;
   }
   throw new Error(`Unsupported transaction undo action: ${action.kind}`);
@@ -533,8 +651,8 @@ function selection({ host, scope, projectRoot, trustedHost }) {
   };
 }
 
-async function hookDeclaration(sourceRoot, runtime, selected) {
-  const declaration = await readJson(path.join(sourceRoot, "hooks", `${runtime}-hooks.json`));
+async function hookDeclaration(sealedRoot, runtime, selected) {
+  const declaration = JSON.parse((await stableRegularBytes(path.join(sealedRoot, "hooks", `${runtime}-hooks.json`))).bytes.toString("utf8"));
   if (selected.scope !== "project") return declaration;
   const serialized = JSON.stringify(declaration);
   const userSkill = runtime === "codex"
@@ -559,11 +677,14 @@ function runtimePaths({ home, scope, projectRoot }, runtime) {
   };
 }
 
-async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
-  const manifest = await readJson(path.join(sourceRoot, "hooks", "manifest.json"));
-  const digest = await packageDigest(sourceRoot, manifest.files);
+async function installLocked({ sealedRoot, home, now, selected, artifact, testHooks = {}, recovery }, stateRoot) {
+  const manifest = artifact.manifest;
+  const digest = await packageDigest(sealedRoot, manifest.files);
   const receiptPath = path.join(stateRoot, "install.json");
   const previousReceipt = await readJson(receiptPath, null);
+  if (previousReceipt?.artifact?.version && compareSemver(artifact.metadata.version, previousReceipt.artifact.version) < 0) {
+    return { status: "downgrade_denied", changed: false, receipt: receiptPath, backups: [], conflicts: [] };
+  }
   const backupRoot = path.join(stateRoot, "backups", `${stamp(now)}-${randomUUID().slice(0, 8)}`);
   const backups = [];
   const conflicts = [];
@@ -576,11 +697,11 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
       ? { runtime: index === 0 ? "codex" : "claude", path: entry, mode: "legacy", digest: previousReceipt.digest }
       : entry);
     const targets = previousTargets.filter((entry) => !selected.runtimes.includes(entry.runtime));
-    const sourceIdentity = await realpath(sourceRoot);
+    let swapIndex = 0;
     for (const runtime of selected.runtimes) {
+      await assertFileMap(sealedRoot, artifact.archiveFileMap);
       const { target } = runtimePaths({ home, ...selected }, runtime);
       const targetPresent = await present(target);
-      const sourceIsTarget = targetPresent && await realpath(target) === sourceIdentity;
       const previous = targetRecord(previousReceipt, runtime, target);
       const previousDigest = targetPresent && previous
         ? await managedPackageDigest(target, previous.files ?? manifest.files)
@@ -596,12 +717,6 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
         unavailableRuntimes.add(runtime);
         continue;
       }
-      if (sourceIsTarget) {
-        targets.push(previous?.mode === "copied"
-          ? previous
-          : { runtime, path: target, mode: "source", digest, files: manifest.files, preexisting: true });
-        continue;
-      }
       if (targetPresent && previous?.mode === "copied" && previousDigest !== previous.digest) {
         conflicts.push({ kind: "skill", runtime, target, reason: "managed_target_changed" });
         targets.push(previous);
@@ -609,7 +724,9 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
       }
       const currentDigest = targetPresent ? await managedPackageDigest(target, manifest.files) : undefined;
       if (targetPresent && currentDigest === digest) {
-        targets.push({ runtime, path: target, mode: "copied", digest, files: manifest.files, preexisting: previous?.preexisting ?? !previous });
+        targets.push(previous && previous.digest === digest
+          ? previous
+          : { runtime, path: target, mode: "copied", digest, files: manifest.files, preexisting: !previous });
         continue;
       }
       if (targetPresent && !previous) {
@@ -617,6 +734,8 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
         unavailableRuntimes.add(runtime);
         continue;
       }
+      await testHooks.beforeTargetSwap?.({ runtime, index: swapIndex });
+      await assertFileMap(sealedRoot, artifact.archiveFileMap);
       await mkdir(path.dirname(target), { recursive: true });
       if (targetPresent) {
         const backup = path.join(backupRoot, "skills", runtime === "codex" ? "agents-agent-team" : "claude-agent-team");
@@ -625,10 +744,13 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
         await rename(target, backup);
         backups.push({ kind: "skill", target, backup, purpose: previous ? "update_snapshot" : "preinstall_restore", transactionId });
       }
-      await addUndo({ kind: "remove_path", path: target, recursive: true, guard: { kind: "package", files: manifest.files, digest } });
-      await copyPackage(sourceRoot, target, manifest.files);
+      await addUndo({ kind: "remove_path", path: target, recursive: true,
+        guard: { kind: "package", files: manifest.files, digest, fileMap: artifact.packageFileMap } });
+      await copyPackage(sealedRoot, target, manifest.files);
       targets.push({ runtime, path: target, mode: "copied", digest, files: manifest.files });
       changed = true;
+      swapIndex += 1;
+      if (testHooks.failAfterFirstSwap && swapIndex === 1) throw new Error("injected_after_first_swap");
     }
 
     const legacy = path.join(home, ".codex", "skills", "agent-team");
@@ -649,13 +771,24 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
     const handlerConflictReceipts = (previousReceipt?.handlerConflicts ?? []).filter((entry) => retainedRuntime(entry.runtime));
     const resourceConflictReceipts = (previousReceipt?.resourceConflicts ?? []).filter((entry) => retainedRuntime(entry.runtime));
     for (const sourceFile of selected.runtimes.includes("claude") && !unavailableRuntimes.has("claude") ? manifest.files.filter((file) => file.startsWith("assets/claude-agents/") && file.endsWith(".md")) : []) {
+      await assertFileMap(sealedRoot, artifact.archiveFileMap);
       const target = path.join(runtimePaths({ home, ...selected }, "claude").agentsRoot, path.basename(sourceFile));
-      const source = path.join(sourceRoot, sourceFile);
-      const desiredDigest = await fileDigest(source);
+      const source = path.join(sealedRoot, sourceFile);
+      const desired = await stableRegularBytes(source);
+      const desiredDigest = hashBytes(desired.bytes);
+      const desiredMode = desired.mode;
+      const desiredSize = desired.size;
       const currentDigest = await fileDigest(target);
       const previous = previousReceipt?.claudeAgents?.find((entry) => entry.path === target);
-      if (currentDigest === desiredDigest) {
-        claudeAgents.push({ path: target, source: sourceFile, digest: desiredDigest, preexisting: previous?.preexisting ?? !previous });
+      const currentMetadata = currentDigest ? await lstat(target) : null;
+      const currentExact = currentDigest === desiredDigest && (currentMetadata.mode & 0o777) === desiredMode && currentMetadata.size === desiredSize;
+      if (currentDigest === desiredDigest && (!previous || previous.preexisting)) {
+        claudeAgents.push(previous ?? { path: target, source: sourceFile, digest: desiredDigest,
+          mode: currentMetadata.mode & 0o777, size: currentMetadata.size, preexisting: true });
+        continue;
+      }
+      if (currentExact) {
+        claudeAgents.push(previous);
         continue;
       }
       if (previous?.preexisting) {
@@ -668,6 +801,12 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
         if (previous) claudeAgents.push(previous);
         continue;
       }
+      if (currentDigest && previous && (previous.mode !== undefined
+        && ((currentMetadata.mode & 0o777) !== previous.mode || currentMetadata.size !== previous.size))) {
+        conflicts.push({ kind: "claude_agent", target, reason: "custom_definition" });
+        claudeAgents.push(previous);
+        continue;
+      }
       if (currentDigest) {
         const backup = path.join(backupRoot, "claude-agents", path.basename(target));
         await mkdir(path.dirname(backup), { recursive: true });
@@ -676,21 +815,22 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
           target,
           backup,
           preimageGuard: await resourceGuard(target),
-          targetGuard: { kind: "file", digest: desiredDigest },
+          targetGuard: { kind: "file", digest: desiredDigest, mode: desiredMode, size: desiredSize },
         });
-        await copyFile(target, backup);
+        await durableCopyFile(target, backup);
         backups.push({ kind: "claude_agent", target, backup, purpose: "update_snapshot", transactionId });
       } else {
-        await addUndo({ kind: "remove_path", path: target, guard: { kind: "file", digest: desiredDigest } });
+        await addUndo({ kind: "remove_path", path: target, guard: { kind: "file", digest: desiredDigest, mode: desiredMode, size: desiredSize } });
       }
-      await atomicText(target, await readFile(source, "utf8"));
-      claudeAgents.push({ path: target, source: sourceFile, digest: desiredDigest });
+      await atomicText(target, desired.bytes, desiredMode);
+      claudeAgents.push({ path: target, source: sourceFile, digest: desiredDigest, mode: desiredMode, size: desiredSize });
       changed = true;
     }
 
     for (const runtime of selected.runtimes.filter((runtime) => !unavailableRuntimes.has(runtime))) {
+      await assertFileMap(sealedRoot, artifact.archiveFileMap);
       const { configPath } = runtimePaths({ home, ...selected }, runtime);
-      const declaration = await hookDeclaration(sourceRoot, runtime, selected);
+      const declaration = await hookDeclaration(sealedRoot, runtime, selected);
       const configPresent = await present(configPath);
       const original = configPresent ? await readFile(configPath, "utf8") : undefined;
       const config = configPresent ? JSON.parse(original) : {};
@@ -710,7 +850,7 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
           const backup = path.join(backupRoot, "config", runtime === "codex" ? "hooks.json" : "settings.json");
           await mkdir(path.dirname(backup), { recursive: true });
           await addUndo({ kind: "restore_file", target: configPath, backup, preimageGuard: await resourceGuard(configPath), targetGuard: mergedGuard });
-          await copyFile(configPath, backup);
+          await durableCopyFile(configPath, backup);
           backups.push({ kind: "config", target: configPath, backup, purpose: "update_snapshot", transactionId });
         } else {
           await addUndo({ kind: "remove_path", path: configPath, guard: mergedGuard });
@@ -723,13 +863,36 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
     const installedRuntimes = [...new Set([...targets.map(({ runtime }) => runtime), ...handlerReceipts.map(({ runtime }) => runtime)])];
     const resourceConflicts = [...new Map([...resourceConflictReceipts, ...conflicts.filter(({ kind }) => kind === "skill")]
       .map((entry) => [`${entry.kind}:${entry.runtime}:${entry.target}:${entry.reason}`, entry])).values()];
+    const installedFileMaps = {};
+    for (const target of targets.filter(({ runtime }) => ["codex", "claude"].includes(runtime))) {
+      try {
+        const files = await exactFileMap(target.path, manifest.files);
+        if (same(files, artifact.packageFileMap)) installedFileMaps[target.runtime] = { target: target.path, digest: fileMapDigest(files), files };
+      } catch {}
+    }
+    for (const [runtime, value] of Object.entries(previousReceipt?.installedFileMaps ?? {})) if (!installedFileMaps[runtime] && targets.some((target) => target.runtime === runtime)) installedFileMaps[runtime] = value;
     const receipt = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       transactionId,
       version: manifest.version,
       installedAt: now.toISOString(),
-      sourceRoot,
-      digest,
+      artifact: {
+        archiveName: artifact.archiveName,
+        releaseTag: artifact.metadata.releaseTag,
+        releaseUrl: artifact.metadata.releaseUrl,
+        updateUrl: artifact.metadata.updateUrl,
+        repository: artifact.metadata.repository,
+        version: artifact.metadata.version,
+        sourceRevision: artifact.metadata.sourceRevision,
+        archiveSha256: artifact.archiveSha256,
+        checksumFileName: artifact.checksumFileName,
+        checksumFileSha256: artifact.checksumFileSha256,
+        packageContentDigest: artifact.packageContentDigest,
+        packageFileMap: artifact.packageFileMap,
+        archiveContentDigest: artifact.archiveContentDigest,
+        archiveFileMap: artifact.archiveFileMap,
+      },
+      installedFileMaps,
       host: installedRuntimes.length === 2 ? "both" : installedRuntimes[0] === "claude" ? "claude-code" : installedRuntimes[0],
       scope: selected.scope,
       projectRoot: selected.projectRoot,
@@ -739,15 +902,21 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
       handlerConflicts: handlerConflictReceipts,
       resourceConflicts,
       backups: [...(previousReceipt?.backups ?? []), ...backups],
+      recovery: { journalSchemaVersion: 1, lastRecoveryId: recovery?.transactionId ?? previousReceipt?.recovery?.lastRecoveryId ?? null,
+        status: recovery ? "recovered" : previousReceipt?.recovery?.status ?? "clean" },
     };
-    if (changed || !previousReceipt || previousReceipt.schemaVersion !== 3 || !Array.isArray(previousReceipt.handlers)) {
+    if (testHooks.failBeforeReceipt) throw new Error("injected_before_receipt");
+    const identicalArtifact = previousReceipt?.schemaVersion === 4 && previousReceipt.artifact?.archiveSha256 === artifact.archiveSha256
+      && same(previousReceipt.installedFileMaps, installedFileMaps) && same(previousReceipt.targets, targets)
+      && same(previousReceipt.handlers, handlerReceipts) && same(previousReceipt.claudeAgents, claudeAgents);
+    if (changed || !identicalArtifact || !Array.isArray(previousReceipt?.handlers)) {
       const receiptText = `${JSON.stringify(receipt, null, 2)}\n`;
       const receiptGuard = textGuard(receiptText);
       if (previousReceipt) {
         const backup = path.join(backupRoot, "receipt", "install.json");
         await mkdir(path.dirname(backup), { recursive: true });
         await addUndo({ kind: "restore_file", target: receiptPath, backup, preimageGuard: await resourceGuard(receiptPath), targetGuard: receiptGuard });
-        await copyFile(receiptPath, backup);
+        await durableCopyFile(receiptPath, backup);
       } else {
         await addUndo({ kind: "remove_path", path: receiptPath, guard: receiptGuard });
       }
@@ -757,11 +926,14 @@ async function installLocked({ sourceRoot, home, now, selected }, stateRoot) {
   });
 }
 
-/** Install only the selected host/scope, preserving exact handler ownership under one scope lock. */
-export async function installPackage({ sourceRoot, home, host, scope, projectRoot, trustedHost, now = new Date() }) {
+async function installPackageInternal(input, testHooks = {}) {
+  const { archive, checksums, home, host, scope, projectRoot, trustedHost, now = new Date() } = input;
+  const allowed = new Set(["archive", "checksums", "home", "host", "scope", "projectRoot", "trustedHost", "now"]);
+  const unexpected = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unexpected.length) throw new Error(`Unsupported install authority: ${unexpected.join(", ")}`);
+  if (typeof archive !== "string" || !path.isAbsolute(archive)) throw new Error("archive must be an absolute path");
+  if (typeof checksums !== "string" || !path.isAbsolute(checksums)) throw new Error("checksums must be an absolute path");
   const selected = selection({ host, scope, projectRoot, trustedHost });
-  const validation = await checkInstalledPackage(sourceRoot);
-  if (validation.status !== "passed") throw new Error(`Invalid installable package: ${validation.errors.join("; ")}`);
   const stateRoot = path.join(selected.scope === "project" ? selected.projectRoot : home, ".agent-team-hooks");
   const result = await withRecoverableInstallLock(stateRoot, {
     pid: process.pid,
@@ -770,11 +942,18 @@ export async function installPackage({ sourceRoot, home, host, scope, projectRoo
   }, async () => {
     const recovery = await recoverTransaction(stateRoot);
     if (recovery?.conflicts?.length) throw new Error(`Recovery conflicts require manual resolution: ${recovery.conflicts.map(({ target, reason }) => `${target}: ${reason}`).join("; ")}`);
-    return { ...await installLocked({ sourceRoot, home, now, selected }, stateRoot), ...(recovery ? { recovery } : {}) };
+    const artifact = await verifyReleaseArtifact({ archive, checksums });
+    await testHooks.afterArchiveVerified?.();
+    const sealed = await extractVerifiedArchiveBytesToSameFilesystem(artifact, stateRoot);
+    try {
+      return { ...await installLocked({ sealedRoot: sealed.packageRoot, home, now, selected, artifact, testHooks, recovery }, stateRoot), ...(recovery ? { recovery } : {}) };
+    } finally {
+      await rm(sealed.transactionRoot, { force: true, recursive: true });
+    }
   }, { timeoutMs: 5000 });
   return {
     ...result,
-    validation,
+    validation: { status: "passed", authority: "release_artifact" },
     selection: {
       host: selected.host,
       scope: selected.scope,
@@ -786,6 +965,11 @@ export async function installPackage({ sourceRoot, home, host, scope, projectRoo
       trust: "required",
     })),
   };
+}
+
+/** Install only a verified release artifact into the selected host and scope. */
+export async function installPackage(input) {
+  return installPackageInternal(input);
 }
 
 async function uninstallLocked({ home, selected }, stateRoot) {
@@ -825,7 +1009,7 @@ async function uninstallLocked({ home, selected }, stateRoot) {
           const backup = path.join(removalRoot, "config", runtime === "codex" ? "hooks.json" : "settings.json");
           await mkdir(path.dirname(backup), { recursive: true });
           await addUndo({ kind: "restore_file", target: configPath, backup, preimageGuard: await resourceGuard(configPath), targetGuard: cleanedGuard });
-          await copyFile(configPath, backup);
+          await durableCopyFile(configPath, backup);
         } else {
           await addUndo({ kind: "remove_path", path: configPath, guard: cleanedGuard });
         }
@@ -843,7 +1027,15 @@ async function uninstallLocked({ home, selected }, stateRoot) {
       let files = target.files;
       if (!files) files = (await readJson(path.join(target.path, "hooks", "manifest.json"), { files: [] })).files;
       const currentDigest = await managedPackageDigest(target.path, files ?? []);
-      if (!currentDigest || currentDigest !== target.digest) {
+      const installedRecord = receipt.schemaVersion === 4 ? receipt.installedFileMaps?.[target.runtime] : undefined;
+      let installedMapMatches = true;
+      if (installedRecord) {
+        try {
+          const currentMap = await exactFileMap(target.path, Object.keys(installedRecord.files));
+          installedMapMatches = same(currentMap, installedRecord.files) && fileMapDigest(currentMap) === installedRecord.digest;
+        } catch { installedMapMatches = false; }
+      }
+      if (!currentDigest || currentDigest !== target.digest || !installedMapMatches) {
         conflicts.push({ kind: "skill", runtime: target.runtime, target: target.path, reason: "managed_target_changed" });
         continue;
       }
@@ -868,7 +1060,9 @@ async function uninstallLocked({ home, selected }, stateRoot) {
         conflicts.push({ kind: "claude_agent", runtime: "claude", target: agent.path, reason: "preexisting_definition" });
         continue;
       }
-      if (await fileDigest(agent.path) !== agent.digest) {
+      const currentMetadata = await lstat(agent.path);
+      if (await fileDigest(agent.path) !== agent.digest || (agent.mode !== undefined && (currentMetadata.mode & 0o777) !== agent.mode)
+        || (agent.size !== undefined && currentMetadata.size !== agent.size)) {
         conflicts.push({ kind: "claude_agent", runtime: "claude", target: agent.path, reason: "custom_definition" });
         continue;
       }
@@ -936,7 +1130,7 @@ async function uninstallLocked({ home, selected }, stateRoot) {
       preimageGuard: await resourceGuard(receiptPath),
       targetGuard: nextReceiptText ? textGuard(nextReceiptText) : { kind: "absent" },
     });
-    await copyFile(receiptPath, receiptBackup);
+    await durableCopyFile(receiptPath, receiptBackup);
     if (nextReceiptText) await atomicText(receiptPath, nextReceiptText);
     else await rm(receiptPath, { force: true });
     return { status: conflicts.length ? "uninstalled_with_conflicts" : "uninstalled", changed: true, conflicts };
@@ -965,5 +1159,9 @@ export async function uninstallPackage({ home, host, scope, projectRoot, trusted
 export async function rollbackPackage(options) {
   return uninstallPackage(options);
 }
+
+export const __installTest = Object.freeze({
+  installPackage(input, hooks = {}) { return installPackageInternal(input, Object.freeze({ ...hooks })); },
+});
 
 export { mergeHooks, removeOwnedHooks };
