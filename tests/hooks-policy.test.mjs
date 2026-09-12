@@ -8,7 +8,9 @@ import test from "node:test";
 import { classifyOperation } from "../hooks/lib/operation.mjs";
 import { loadCanonicalState } from "../hooks/lib/canonical-state.mjs";
 import { resolveProject } from "../hooks/lib/project.mjs";
-import { evaluatePolicy } from "../hooks/lib/policy.mjs";
+import { evaluatePolicy, releaseAuthorityReady } from "../hooks/lib/policy.mjs";
+import { projectRunState } from "../hooks/lib/recovery.mjs";
+import { createStatusModel } from "../hooks/lib/status.mjs";
 import { hookEvent, policyFixture, saveState } from "./hook-test-helpers.mjs";
 
 const temporary = [];
@@ -78,6 +80,28 @@ test("release requires exact frozen selected IDs across every record", async () 
     const changed = structuredClone(canonical); alter(changed);
     assert.equal((await evaluatePolicy(event, value.project, { canonical: changed, now: new Date("2026-09-06T12:01:00Z") })).allow, false);
   }
+});
+
+test("canonical HEAD drift denies the shared release authority used by policy status and recovery", async () => {
+  const value = await fixture();
+  const exact = modernReleaseCanonical(value, await loadCanonicalState(value.project));
+  exact.state.run.autoDeploy = false;
+  exact.tasks[0].owner = "";
+  exact.state.release.autoDeploy = false;
+  exact.state.release.runMode = "manual";
+  exact.state.release.run.mode = "manual";
+  const now = new Date("2026-09-06T12:01:00Z");
+  assert.equal(releaseAuthorityReady(exact, { now, process: "npm" }), true);
+  assert.equal(createStatusModel(value.project, exact, { now }).targets["test-registry"].status, "ready");
+  assert.equal(projectRunState(exact, undefined, now).nextAction.kind, "manual_release_available");
+
+  const changed = structuredClone(exact);
+  changed.git.headRevision = "b".repeat(40);
+  assert.equal(releaseAuthorityReady(changed, { now, process: "npm" }), false);
+  assert.notEqual(createStatusModel(value.project, changed, { now }).targets["test-registry"].status, "ready");
+  assert.notEqual(projectRunState(changed, undefined, now).nextAction.kind, "manual_release_available");
+  const event = hookEvent(value, { sessionId: "owner-session", operation: { kind: "release", process: "npm" } });
+  assert.equal((await evaluatePolicy(event, value.project, { canonical: changed, now })).allow, false);
 });
 
 test("terminal underfill never bypasses ordinary release gates", async () => {

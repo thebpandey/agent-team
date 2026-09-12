@@ -292,6 +292,7 @@ export function releaseAuthorityReady(canonical, { now = new Date(), process } =
     && gate.ownerSessionId === registry.integrationOwner && gate.ownershipEpoch === registry.ownershipEpoch
     && gate.authorized === true && boundedString(gate.target, 4096) && boundedString(gate.process, 256)
     && (process === undefined || process === gate.process) && gate.trackerFingerprint === canonical.tracker?.fingerprint
+    && canonical.git?.headRevision === gate.expectedRevision
     && typeof authorization.source === "string" && authorization.source.trim() && authorization.source.length <= 256
     && authorization.scope === gate.batchId && authorization.ownerSessionId === gate.ownerSessionId
     && authorization.target === gate.target && authorization.process === gate.process && authorization.grantedAt
