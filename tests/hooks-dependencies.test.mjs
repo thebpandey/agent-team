@@ -226,13 +226,20 @@ test("multi-path manual classification retains every selected conservative compo
     compatibility: { kind: "required-files", entrypoint: "SKILL.md", allowUnrelatedRegularFiles: true, selectedPaths: paths.map((selectedPath) => ({
       selectedPath, requiredFiles: [{ path: "SKILL.md", digest: { algorithm: "sha256", value: createHash("sha256").update(bytes).digest("hex") } }],
     })) } };
+  await writeFile(path.join(skillRoot, "second", ".agent-team-source.json"), JSON.stringify({
+    source: dependency.install.source, revision: dependency.version, selectedPath: "skills/second",
+  }));
   const runner = createDependencyRunner({ host: "codex", scope: "project",
     paths: { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot } });
   const result = await runner({ dependency, phase: "probe" });
   assert.equal(result.status, "manual_action");
   assert.deepEqual(result.paths, paths.map((selected) => path.join(skillRoot, path.basename(selected))));
   assert.equal(result.components.length, 2);
-  assert.ok(result.components.every(({ lifecycleOwnership }) => lifecycleOwnership === "unowned"));
+  assert.deepEqual(result.components.map(({ lifecycleOwnership, installed }) => ({ lifecycleOwnership, installed })), [
+    { lifecycleOwnership: "unowned", installed: "preserved" },
+    { lifecycleOwnership: "managed", installed: "reused" },
+  ]);
+  assert.equal(result.lifecycleOwnership, "unowned");
 });
 
 test("probe ownership metadata survives functional and worker readiness failures", async () => {
@@ -995,6 +1002,61 @@ test("skill installation reclassifies destinations that appear after the absent 
   assert.equal(incompatible.status, "manual_action");
   assert.equal(incompatible.lifecycleOwnership, "unowned");
   assert.equal(await readFile(path.join(destination, "SKILL.md"), "utf8"), "operator edit\n");
+});
+
+test("fresh local git skills publish completely as installed and prevalidate every source", async (t) => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-fresh-git-skill-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, "source");
+  const skillRoot = path.join(root, "skills");
+  await mkdir(path.join(source, "skills", "first"), { recursive: true });
+  await writeFile(path.join(source, "skills", "first", "SKILL.md"), "# first\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: source });
+  execFileSync("git", ["add", "."], { cwd: source });
+  execFileSync("git", ["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "fixture"], { cwd: source });
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
+  const selected = "skills/first";
+  const dependency = { id: "fresh", version: revision, install: { kind: "git-skill", repository: source, source, revision, paths: [selected] },
+    compatibility: { kind: "required-files", entrypoint: "SKILL.md", allowUnrelatedRegularFiles: true, selectedPaths: [{ selectedPath: selected,
+      requiredFiles: [{ path: "SKILL.md", digest: { algorithm: "sha256", value: createHash("sha256").update("# first\n").digest("hex") } }] }] } };
+  const runner = createDependencyRunner({ host: "codex", scope: "project",
+    paths: { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot } });
+  const installed = await runner({ dependency, phase: "install" });
+  assert.equal(installed.status, "passed");
+  assert.equal(installed.installed, "installed");
+  assert.deepEqual(installed.components.map(({ installed: disposition, lifecycleOwnership }) => ({ disposition, lifecycleOwnership })), [
+    { disposition: "installed", lifecycleOwnership: "managed" },
+  ]);
+  assert.equal(await readFile(path.join(skillRoot, "first", "SKILL.md"), "utf8"), "# first\n");
+
+  const incomplete = { ...dependency, id: "incomplete", install: { ...dependency.install, paths: [selected, "skills/missing"] },
+    compatibility: { ...dependency.compatibility, selectedPaths: [...dependency.compatibility.selectedPaths,
+      { selectedPath: "skills/missing", requiredFiles: [] }] } };
+  const incompleteRoot = path.join(root, "incomplete-skills");
+  const incompleteRunner = createDependencyRunner({ host: "codex", scope: "project",
+    paths: { projectRoot: root, toolRoot: path.join(root, "incomplete-tools"), skillRoot: incompleteRoot } });
+  const failed = await incompleteRunner({ dependency: incomplete, phase: "install" });
+  assert.equal(failed.status, "failed");
+  await assert.rejects(readFile(path.join(incompleteRoot, "first", "SKILL.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(incompleteRoot, "missing", "SKILL.md")), { code: "ENOENT" });
+
+  await writeFile(path.join(source, selected, ".agent-team-source.json"), `${JSON.stringify({
+    source, revision: "fixture-version", selectedPath: selected,
+  }, null, 2)}\n`);
+  execFileSync("git", ["add", "."], { cwd: source });
+  execFileSync("git", ["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "partial fixture"], { cwd: source });
+  const partialRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
+  const partialDependency = { ...dependency, id: "partial", version: "fixture-version",
+    install: { ...dependency.install, revision: partialRevision } };
+  const partialRoot = path.join(root, "partial-skills");
+  const partialRunner = createDependencyRunner({ host: "codex", scope: "project",
+    paths: { projectRoot: root, toolRoot: path.join(root, "partial-tools"), skillRoot: partialRoot } });
+  const partial = await partialRunner({ dependency: partialDependency, phase: "install" });
+  assert.equal(partial.status, "manual_action");
+  assert.equal(partial.installed, "preserved");
+  assert.equal(partial.lifecycleOwnership, "unowned");
+  assert.equal(await readFile(path.join(partialRoot, "first", "SKILL.md"), "utf8"), "# first\n");
 });
 
 test("default LeanCTX gate overrides inherited directory pins for its narrow read", async (t) => {

@@ -619,9 +619,7 @@ async function inspectSkillDestinations(dependency, paths, { budget, bounded = f
   }
   if (problems.length) {
     return { status: "manual_action", installed: "preserved", lifecycleOwnership: "unowned", path: components[0].path,
-      paths: components.map(({ path: selected }) => selected), components: components.map((component) => ({
-        ...component, lifecycleOwnership: "unowned", installed: "preserved",
-      })), evidence: problems.join(" ") };
+      paths: components.map(({ path: selected }) => selected), components, evidence: problems.join(" ") };
   }
   const lifecycleOwnership = components.every(({ lifecycleOwnership }) => lifecycleOwnership === "managed") ? "managed" : "unowned";
   return { status: "passed", version: dependency.version, path: components[0].path, paths: components.map(({ path: selected }) => selected), components,
@@ -646,6 +644,18 @@ async function installGitSkills(dependency, paths, budget) {
   if (checkedOut.status !== "passed") return checkedOut;
   const afterFetch = await inspectSkillDestinations(dependency, paths, { budget, bounded: true });
   if (afterFetch.status !== "not_found") return afterFetch;
+  try {
+    for (const selectedPath of dependency.install.paths) {
+      if (selectedPath === ".") {
+        for (const includedPath of dependency.install.includePaths ?? []) await lstat(path.join(sourceRoot, includedPath));
+      } else {
+        await skillContents(path.join(sourceRoot, selectedPath), budget);
+      }
+    }
+  } catch (error) {
+    if (error.code === "EVENT_DEADLINE") throw error;
+    return { status: "failed", evidence: `Pinned skill source prevalidation failed before publication: ${error.message}` };
+  }
   await mkdir(paths.skillRoot, { recursive: true, mode: 0o700 });
   const created = [];
   for (const selectedPath of dependency.install.paths) {
@@ -659,24 +669,38 @@ async function installGitSkills(dependency, paths, budget) {
       throw error;
     }
   }
-  for (const selectedPath of dependency.install.paths) {
-    const destination = skillDestination(dependency, paths, selectedPath);
-    if (selectedPath === ".") {
-      for (const includedPath of dependency.install.includePaths ?? []) {
-        await cp(path.join(sourceRoot, includedPath), path.join(destination, includedPath), { recursive: true, errorOnExist: true, force: false });
+  try {
+    for (const selectedPath of dependency.install.paths) {
+      const destination = skillDestination(dependency, paths, selectedPath);
+      if (selectedPath === ".") {
+        for (const includedPath of dependency.install.includePaths ?? []) {
+          await cp(path.join(sourceRoot, includedPath), path.join(destination, includedPath), { recursive: true, errorOnExist: true, force: false });
+        }
+      } else {
+        for await (const entry of await opendir(path.join(sourceRoot, selectedPath))) {
+          await cp(path.join(sourceRoot, selectedPath, entry.name), path.join(destination, entry.name), { recursive: true, errorOnExist: true, force: false });
+        }
       }
-    } else {
-      for (const entry of await opendir(path.join(sourceRoot, selectedPath))) {
-        await cp(path.join(sourceRoot, selectedPath, entry.name), path.join(destination, entry.name), { recursive: true, errorOnExist: true, force: false });
-      }
+      await writeFile(path.join(destination, ".agent-team-source.json"), `${JSON.stringify({
+        source: dependency.install.source,
+        revision: dependency.version,
+        selectedPath,
+      }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     }
-    await writeFile(path.join(destination, ".agent-team-source.json"), `${JSON.stringify({
-      source: dependency.install.source,
-      revision: dependency.version,
-      selectedPath,
-    }, null, 2)}\n`, { mode: 0o600 });
+  } catch (error) {
+    if (error.code === "EVENT_DEADLINE") throw error;
+    const partial = await inspectSkillDestinations(dependency, paths, { budget, bounded: true });
+    return partial.status === "not_found" ? { status: "failed", evidence: error.message }
+      : { ...partial, status: "manual_action", installed: "preserved", lifecycleOwnership: "unowned",
+        evidence: `Preserved partial invocation-owned destinations after publication failed: ${error.message} ${partial.evidence ?? ""}`.trim() };
   }
-  return inspectSkillDestinations(dependency, paths, { budget, bounded: true });
+  const installed = await inspectSkillDestinations(dependency, paths, { budget, bounded: true });
+  if (installed.status !== "passed") return installed;
+  const createdSet = new Set(created);
+  const components = installed.components.map((component) => createdSet.has(component.path)
+    ? { ...component, installed: "installed", lifecycleOwnership: "managed" } : component);
+  return { ...installed, installed: components.every(({ installed: disposition }) => disposition === "installed") ? "installed" : installed.installed,
+    lifecycleOwnership: components.every(({ lifecycleOwnership }) => lifecycleOwnership === "managed") ? "managed" : "unowned", components };
 }
 
 function playwrightSkill(dependency) {
