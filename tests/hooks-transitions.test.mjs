@@ -592,7 +592,7 @@ if (process.argv[2] === "writer") {
     const sha256 = "a".repeat(64);
     const checksumSha256 = "b".repeat(64);
     const evidence = {
-      status: "passed", revision: value.revision, taskIds: ["AT-001"], ownerSessionId: "owner-session", authorized: true,
+      status: "passed", revision: value.revision, taskIds: ["AT-001"], selectedTaskIds: ["AT-001"], ownerSessionId: "owner-session", authorized: true,
       expectedRevision: value.revision, target: "github:example/project:v1.0.0", process: "gh-release",
       authorization: { source: "explicit user authorization", target: "github:example/project:v1.0.0", process: "gh-release",
         scope: "batch-1", ownerSessionId: "owner-session", grantedAt: "2026-09-10" },
@@ -644,6 +644,7 @@ if (process.argv[2] === "writer") {
     assert.equal(typeof release.evidenceAt, "string");
     assert.equal(release.trackerFingerprint, value.canonical.tracker.fingerprint);
     assert.equal(release.recordedEvidence.revision, value.revision);
+    assert.deepEqual(release.recordedEvidence.selectedTaskIds, ["AT-001"]);
     const policy = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", cwd: value.root,
       operation: { kind: "shell", command: "gh release create v1.0.0" } }), value.project, { now: new Date() });
     assert.equal(policy.allow, true, JSON.stringify(policy));
@@ -674,6 +675,14 @@ if (process.argv[2] === "writer") {
       ["paused run", (evidence) => { evidence.run.paused = true; }],
       ["missing batch", (evidence) => { delete evidence.batch; }],
       ["wrong batch tasks", (evidence) => { evidence.batch.taskIds = ["AT-002"]; }],
+      ["missing selected tasks", (evidence) => { delete evidence.selectedTaskIds; }],
+      ["empty selected tasks", (evidence) => { evidence.selectedTaskIds = []; }],
+      ["duplicate selected tasks", (evidence) => { evidence.selectedTaskIds = ["AT-001", "AT-001"]; }],
+      ["reordered selected tasks", (evidence) => { evidence.selectedTaskIds = ["AT-002", "AT-001"]; }],
+      ["extra selected task", (evidence) => { evidence.selectedTaskIds = ["AT-001", "AT-002", "AT-003"]; }],
+      ["omitted selected task", (evidence) => { evidence.selectedTaskIds = ["AT-001"]; }],
+      ["substituted selected task", (evidence) => { evidence.selectedTaskIds = ["AT-001", "AT-003"]; }],
+      ["malformed selected task", (evidence) => { evidence.selectedTaskIds = ["AT-001", "x".repeat(129)]; }],
       ["stale expected revision", (evidence) => { evidence.expectedRevision = "deadbeef"; }],
       ["missing artifact checksum", (evidence) => { delete evidence.artifact.sha256; }],
       ["stale artifact", (evidence) => { evidence.artifact.revision = "deadbeef"; }],
@@ -698,33 +707,33 @@ if (process.argv[2] === "writer") {
       const seeded = structuredClone((await loadCanonicalState(value.project)).state);
       seeded.release = { ownerSessionId: "owner-session", authorized: false, autoDeploy: false, hold: true };
       const integrationEvidencePath = path.join(value.root, ".agent-team/integration.json");
-      Object.assign(seeded.integration, { taskIds: ["AT-001"], remoteRef: "refs/heads/main", remoteMainDeploys: true,
-        recordedEvidence: { path: integrationEvidencePath, fingerprint: "c".repeat(64), revision: value.revision, taskIds: ["AT-001"] } });
+      Object.assign(seeded.integration, { taskIds: ["AT-001", "AT-002"], remoteRef: "refs/heads/main", remoteMainDeploys: true,
+        recordedEvidence: { path: integrationEvidencePath, fingerprint: "c".repeat(64), revision: value.revision, taskIds: ["AT-001", "AT-002"] } });
       await writeFile(value.project.paths.state, JSON.stringify(seeded));
-      const evidence = { status: "passed", revision: value.revision, taskIds: ["AT-001"], ownerSessionId: "owner-session", authorized: true,
+      const evidence = { status: "passed", revision: value.revision, taskIds: ["AT-001", "AT-002"], selectedTaskIds: ["AT-001", "AT-002"], ownerSessionId: "owner-session", authorized: true,
         expectedRevision: value.revision, target: "github:example/project:v1.0.0", process: "gh-release",
         authorization: { source: "explicit user authorization", target: "github:example/project:v1.0.0", process: "gh-release",
           scope: "batch-1", ownerSessionId: "owner-session", grantedAt: "2026-09-10" },
-        run: { id: "release-1", mode: "auto_deploy", taskIds: ["AT-001"], paused: false }, runMode: "auto_deploy", autoDeploy: true,
-        batchId: "batch-1", batch: { id: "batch-1", taskIds: ["AT-001"] },
-        artifact: { id: "artifact-1", revision: value.revision, taskIds: ["AT-001"], sha256: "a".repeat(64) },
-        integration: { status: "passed", revision: value.revision, taskIds: ["AT-001"], recordedTaskIds: ["AT-001"],
+        run: { id: "release-1", mode: "auto_deploy", taskIds: ["AT-001", "AT-002"], paused: false }, runMode: "auto_deploy", autoDeploy: true,
+        batchId: "batch-1", batch: { id: "batch-1", taskIds: ["AT-001", "AT-002"] },
+        artifact: { id: "artifact-1", revision: value.revision, taskIds: ["AT-001", "AT-002"], sha256: "a".repeat(64) },
+        integration: { status: "passed", revision: value.revision, taskIds: ["AT-001", "AT-002"], recordedTaskIds: ["AT-001", "AT-002"],
           evidencePath: integrationEvidencePath, remoteName: "origin", baseRef: "refs/heads/main", baseRevision: value.revision,
           targetRef: "refs/heads/main", targetRevision: value.revision, remoteMainDeploys: true },
-        verification: { status: "passed", revision: value.revision, taskIds: ["AT-001"] },
+        verification: { status: "passed", revision: value.revision, taskIds: ["AT-001", "AT-002"] },
         preview: { required: false, status: "not_required", revision: value.revision },
-        delta: { status: "clean", revision: value.revision, taskIds: ["AT-001"] },
+        delta: { status: "clean", revision: value.revision, taskIds: ["AT-001", "AT-002"] },
         recovery: { status: "verified", artifactId: "git:known-good", action: "restore the known-good revision" },
         projectPaused: false, hold: false };
       invalidate(evidence);
       const evidencePath = path.join(value.root, `.agent-team/release-${name.replaceAll(" ", "-")}.json`);
       await writeFile(evidencePath, JSON.stringify(evidence));
-      const before = structuredClone((await loadCanonicalState(value.project)).state.release);
+      const before = await readFile(value.project.paths.state);
       const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: `release-${name.replaceAll(" ", "-")}`,
-        expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint, gate: "release", taskIds: ["AT-001"],
+        expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint, gate: "release", taskIds: ["AT-001", "AT-002"],
         expectedRevision: value.revision, evidencePath });
       assert.deepEqual(result, { status: "conflict", reason: "release_evidence_mismatch" }, name);
-      assert.deepEqual((await loadCanonicalState(value.project)).state.release, before, name);
+      assert.deepEqual(await readFile(value.project.paths.state), before, name);
     });
   });
 

@@ -490,6 +490,10 @@ export async function recordGateEvidence(project, request, options = {}) {
       const releasePreview = evidence.preview;
       const delta = evidence.delta;
       const releaseRecovery = evidence.recovery;
+      const selectedTaskIds = evidence.selectedTaskIds;
+      const selectedTaskIdsValid = Array.isArray(selectedTaskIds) && selectedTaskIds.length > 0
+        && new Set(selectedTaskIds).size === selectedTaskIds.length && selectedTaskIds.every(validId)
+        && stable(selectedTaskIds) === stable(request.taskIds);
       const runModeMatches = evidence.runMode === runRecord?.mode && ["auto_deploy", "manual"].includes(evidence.runMode)
         && ((evidence.runMode === "auto_deploy" && evidence.autoDeploy === true)
           || (evidence.runMode === "manual" && evidence.autoDeploy === false));
@@ -525,7 +529,7 @@ export async function recordGateEvidence(project, request, options = {}) {
         || authorization.target !== evidence.target || authorization.process !== evidence.process
         || authorization.scope !== evidence.batchId || authorization.ownerSessionId !== ownerSessionId
         || !boundedString(authorization.grantedAt, 128) || !Number.isFinite(Date.parse(authorization.grantedAt))
-        || !runRecord || typeof runRecord !== "object" || !boundedString(runRecord.id, 128) || !runModeMatches
+        || !selectedTaskIdsValid || !runRecord || typeof runRecord !== "object" || !boundedString(runRecord.id, 128) || !runModeMatches
         || !sameIds(runRecord.taskIds, request.taskIds) || runRecord.paused !== false
         || !boundedString(evidence.batchId, 128) || batch?.id !== evidence.batchId || !sameIds(batch.taskIds, request.taskIds)
         || !artifactMetadataValid || !integrationBindingValid || !releaseRecord(verification, "passed")
@@ -570,7 +574,8 @@ export async function recordGateEvidence(project, request, options = {}) {
     }
     const observedAt = new Date().toISOString();
     const recordedEvidence = { path: request.evidencePath, fingerprint: createHash("sha256").update(source).digest("hex"), revision,
-      taskIds: [...request.taskIds], operationId: request.operationId, observedAt };
+      taskIds: [...request.taskIds], operationId: request.operationId, observedAt,
+      ...(request.gate === "release" ? { selectedTaskIds: [...evidence.selectedTaskIds] } : {}) };
     if (["completion", "integration"].includes(request.gate) && validId(state.run?.id) && state.ownership) {
       bindTaskDeliveryReceipts(state, request.gate, request.taskIds, revision, evidence, recordedEvidence);
     }

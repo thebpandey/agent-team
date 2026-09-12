@@ -340,7 +340,7 @@ test("real CLI maps one release batch before allowing its deployment-triggering 
   const afterIntegration = await loadCanonicalState(value.project);
   const releasePath = path.join(value.root, ".agent-team", "evidence", "release.json");
   const releaseEvidence = {
-    status: "passed", revision: value.revision, taskIds: ["AT-001"], ownerSessionId: "owner-session", authorized: true,
+    status: "passed", revision: value.revision, taskIds: ["AT-001"], selectedTaskIds: ["AT-001"], ownerSessionId: "owner-session", authorized: true,
     expectedRevision: value.revision, target: "github:example/project:v1.0.0", process: "gh-release",
     authorization: { source: "explicit one-time user authorization", target: "github:example/project:v1.0.0", process: "gh-release",
       scope: "batch-1", ownerSessionId: "owner-session", grantedAt: "2026-09-10" },
@@ -394,6 +394,7 @@ test("real CLI maps one release batch before allowing its deployment-triggering 
   assert.equal(release.autoDeploy, true);
   assert.equal(release.remoteMainDeploys, true);
   assert.deepEqual(release.taskIds, ["AT-001"]);
+  assert.deepEqual(release.recordedEvidence.selectedTaskIds, releaseEvidence.selectedTaskIds);
 
   execFileSync("git", ["push", "-q", "origin", "HEAD:refs/heads/main"], { cwd: value.feature });
   const beforeTag = await loadCanonicalState(value.project);
