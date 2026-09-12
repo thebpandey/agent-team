@@ -184,3 +184,80 @@ test("initialized Project Kickoff capabilities flow unchanged into readiness", a
   assert.ok(readiness.missing.some(({ id }) => id === "capability:graphify"));
   assert.deepEqual(await readFile(setupPath), before);
 });
+
+const journeyChoices = { models: [
+  { id: "quality", recommended: true, available: true, efforts: ["high"] },
+  { id: "fast", available: true, efforts: ["low"] },
+] };
+
+async function initializedJourney() {
+  const root = await fixture();
+  const file = await request(root, "native-setup-initialization", planRequest());
+  const nativeIdentity = { host: "codex", sessionId: "project-owner", observed: true, cwd: root };
+  const initialized = await runCommand("project-initialize", { project: root, request: file }, { nativeIdentity });
+  assert.equal(initialized.status, "applied");
+  return { root, nativeIdentity: { ...nativeIdentity, ownershipEpoch: 1 }, setupPath: path.join(root, ".agent-team", "setup.json") };
+}
+
+test("native setup prepares dependencies saves settings and returns readiness summary", async () => {
+  const { orchestrateSetup } = await import("../hooks/lib/setup-cli.mjs");
+  const value = await initializedJourney();
+  const events = [];
+  const result = await orchestrateSetup({
+    project: value.root, host: "codex", scope: "project",
+    dependencies: { action: "prepare", expectedVersion: 1, operationId: "journey-dependencies", selections: { defaults: [] } },
+    settings: { operationId: "journey-settings" },
+  }, {
+    nativeIdentity: value.nativeIdentity, nativeChoices: journeyChoices,
+    createDependencyRunner: () => async ({ dependency, phase }) => {
+      events.push(`dependency:${phase}`);
+      return { status: "passed", version: dependency.version, evidence: "journey setup evidence" };
+    },
+    interactSettings: async () => {
+      events.push("settings");
+      return { kind: "save", draft: { runDefaults: { parallel_teams: 2 }, roles: { developer: { model: "fast", effort: "low" } } } };
+    },
+  });
+  assert.ok(events.some((entry) => entry.startsWith("dependency:")));
+  assert.equal(events.at(-1), "settings");
+  assert.equal(result.settingsOutcome, "saved");
+  assert.ok(result.readiness);
+  assert.equal(result.settings.runDefaults.parallel_teams, 2);
+  const setup = JSON.parse(await readFile(value.setupPath, "utf8"));
+  assert.equal(setup.setupOperations.filter(({ id }) => id === "journey-settings").length, 1);
+});
+
+test("repeated native setup keeps existing settings after dependency preparation", async () => {
+  const { orchestrateSetup } = await import("../hooks/lib/setup-cli.mjs");
+  const value = await initializedJourney();
+  let checkpoint;
+  let interactions = 0;
+  const result = await orchestrateSetup({
+    project: value.root, host: "codex", scope: "project",
+    dependencies: { action: "prepare", expectedVersion: 1, operationId: "journey-repeat-dependencies", selections: { defaults: [] } },
+    settings: { operationId: "journey-repeat-settings" },
+  }, {
+    nativeIdentity: value.nativeIdentity, nativeChoices: journeyChoices,
+    createDependencyRunner: () => async ({ dependency }) => ({ status: "passed", version: dependency.version, evidence: "journey repeat evidence" }),
+    interactSettings: async () => {
+      interactions += 1;
+      checkpoint = await readFile(value.setupPath);
+      return { kind: "keep_existing" };
+    },
+  });
+  assert.equal(interactions, 1);
+  assert.equal(result.settingsOutcome, "kept_existing");
+  assert.deepEqual(await readFile(value.setupPath), checkpoint);
+  assert.ok(JSON.parse(checkpoint).setupOperations.some(({ id }) => id === "journey-repeat-dependencies"));
+});
+
+test("read-only status bypasses setup orchestration", async () => {
+  const value = await initializedJourney();
+  const before = await readFile(value.setupPath);
+  const result = await runCommand("status", { project: value.root }, {
+    nativeIdentity: value.nativeIdentity,
+    interactSettings: async () => { throw new Error("read-only status entered setup"); },
+  });
+  assert.equal(result.project.id, "journey");
+  assert.deepEqual(await readFile(value.setupPath), before);
+});

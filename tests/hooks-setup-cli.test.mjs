@@ -423,3 +423,170 @@ test("setup mutations cannot switch to a different project while waiting for the
   assert.deepEqual(result, { status: "conflict", reason: "project_owner_required" });
   assert.equal(JSON.parse(await readFile(original.setupPath, "utf8")).settings.runDefaults?.continuous, undefined);
 });
+
+function orchestrationInput(value, overrides = {}) {
+  return {
+    project: value.root,
+    host: "codex",
+    scope: "project",
+    dependencies: { action: "inspect" },
+    settings: { operationId: "orchestrated-settings-1" },
+    ...overrides,
+  };
+}
+
+test("state-changing setup enters dependencies settings readiness and summary in order", async (t) => {
+  const { orchestrateSetup } = await import(modulePath);
+  const value = await fixture(t);
+  const events = [];
+  const result = await orchestrateSetup(orchestrationInput(value, { dependencies: {
+    action: "prepare", expectedVersion: 3, operationId: "orchestrated-dependencies-1", selections: { defaults: [] },
+  } }), {
+    nativeIdentity: value.nativeIdentity, nativeChoices,
+    createDependencyRunner: () => async ({ dependency, phase }) => {
+      events.push(`dependencies:${phase}:${dependency.id}`);
+      return { status: "passed", version: dependency.version, evidence: "bounded setup orchestration fixture" };
+    },
+    interactSettings: async ({ overview, wizard }) => {
+      events.push("settings");
+      assert.equal(overview.host, "codex");
+      assert.equal(wizard.steps.at(-1).kind, "review");
+      return { kind: "save", draft: { runDefaults: { continuous: true }, roles: { developer: { model: "fast", effort: "low" } } } };
+    },
+  });
+  events.push("summary");
+  assert.ok(events.findIndex((entry) => entry.startsWith("dependencies:")) < events.indexOf("settings"));
+  assert.equal(events.at(-1), "summary");
+  assert.equal(result.settingsOutcome, "saved");
+  assert.equal(result.settings.runDefaults.continuous, true);
+  assert.deepEqual(result.nativeIdentity, { role: "project_owner", host: "codex", sessionId: "owner", ownershipEpoch: 1 });
+  const setup = JSON.parse(await readFile(value.setupPath, "utf8"));
+  assert.equal(setup.version, 5);
+  assert.equal(setup.setupOperations.filter(({ id }) => id === "orchestrated-settings-1").length, 1);
+});
+
+test("repeated setup always enters current-effective settings", async (t) => {
+  const { orchestrateSetup } = await import(modulePath);
+  const value = await fixture(t);
+  let interactions = 0;
+  const context = {
+    nativeIdentity: value.nativeIdentity, nativeChoices,
+    interactSettings: async ({ overview }) => {
+      interactions += 1;
+      assert.equal(overview.runDefaults.parallel_teams, interactions === 1 ? undefined : 4);
+      return interactions === 1
+        ? { kind: "save", draft: { runDefaults: { parallel_teams: 4 } } }
+        : { kind: "keep_existing" };
+    },
+  };
+  assert.equal((await orchestrateSetup(orchestrationInput(value), context)).settingsOutcome, "saved");
+  assert.equal((await orchestrateSetup(orchestrationInput(value, { settings: { operationId: "orchestrated-settings-2" } }), context)).settingsOutcome, "kept_existing");
+  assert.equal(interactions, 2);
+});
+
+test("non-consent outcomes preserve post-dependency bytes and continue to summary", async (t) => {
+  const { orchestrateSetup } = await import(modulePath);
+  const cases = [
+    ["keep_existing", { kind: "keep_existing" }], ["cancel", { kind: "cancel" }], ["back", { kind: "back" }],
+    ["undefined", undefined], ["no_answer", { kind: "no_answer" }], ["timeout", { kind: "timeout" }],
+    ["returned-interrupted", { kind: "interrupted" }], ["thrown-interrupted", "throw"],
+  ];
+  for (const [label, outcome] of cases) await t.test(label, async () => {
+    const value = await fixture(t);
+    let checkpoint;
+    let interactions = 0;
+    const result = await orchestrateSetup(orchestrationInput(value, { dependencies: {
+      action: "prepare", expectedVersion: 3, operationId: `dependencies-${label}`, selections: { defaults: [] },
+    }, settings: { operationId: `settings-${label}` } }), {
+      nativeIdentity: value.nativeIdentity, nativeChoices,
+      createDependencyRunner: () => async ({ dependency }) => ({ status: "passed", version: dependency.version, evidence: "non-consent fixture" }),
+      interactSettings: async () => {
+        interactions += 1;
+        checkpoint = await readFile(value.setupPath);
+        if (outcome === "throw") { const error = new Error("host interrupted"); error.code = "SETUP_INTERACTION_INTERRUPTED"; throw error; }
+        return outcome;
+      },
+    });
+    assert.equal(interactions, 1);
+    assert.equal(result.settingsOutcome, "kept_existing");
+    assert.ok(result.readiness);
+    assert.deepEqual(await readFile(value.setupPath), checkpoint);
+    const setup = JSON.parse(checkpoint);
+    assert.ok(setup.dependencies.hosts.codex.receipts.length >= 2);
+    assert.equal(setup.setupOperations.some(({ id }) => id === `settings-${label}`), false);
+  });
+});
+
+test("native setup authority cannot come from flags requests or caller epochs", async (t) => {
+  const { orchestrateSetup } = await import(modulePath);
+  const cases = [
+    ["missing", undefined],
+    ["unobserved", { host: "codex", sessionId: "owner", observed: false, cwd: null }],
+    ["wrong host", { host: "claude-code", sessionId: "owner", observed: true }],
+    ["wrong session", { host: "codex", sessionId: "other", observed: true }],
+    ["wrong cwd", { host: "codex", sessionId: "owner", observed: true, cwd: os.tmpdir() }],
+  ];
+  for (const [label, native] of cases) {
+    const value = await fixture(t);
+    let interacted = false;
+    const result = await orchestrateSetup(orchestrationInput(value), {
+      nativeIdentity: native && { ...native, cwd: native.cwd ?? value.root }, nativeChoices,
+      interactSettings: async () => { interacted = true; return { kind: "keep_existing" }; },
+    });
+    assert.deepEqual(result, { status: "conflict", reason: "project_owner_required" }, label);
+    assert.equal(interacted, false);
+  }
+  const value = await fixture(t);
+  await assert.rejects(orchestrateSetup({ ...orchestrationInput(value), writer: { id: "owner" }, ownershipEpoch: 1 }, {
+    nativeIdentity: value.nativeIdentity, interactSettings: async () => ({ kind: "keep_existing" }),
+  }), /Unsupported setup input field/);
+  assert.deepEqual(await orchestrateSetup(orchestrationInput(value), {}), { status: "conflict", reason: "project_owner_required" });
+});
+
+test("setup summary is pure and projects only qualified identity", async () => {
+  const { buildSetupSummary } = await import(modulePath);
+  const input = {
+    project: { projectId: "pure", root: "/project", secret: "omit" }, dependencies: { status: "ready", nested: { value: 1 } },
+    readiness: { readyForDispatch: true, eligibleTask: { id: "T-1" } }, settings: { host: "codex", runDefaults: { parallel_teams: 2 } },
+    settingsOutcome: "kept_existing", nativeIdentity: { role: "project_owner", host: "codex", sessionId: "owner", ownershipEpoch: 4, raw: "omit" },
+  };
+  const before = structuredClone(input);
+  const result = buildSetupSummary(input);
+  assert.deepEqual(input, before);
+  assert.deepEqual(result.project, { id: "pure", root: "/project" });
+  assert.deepEqual(result.nativeIdentity, { role: "project_owner", host: "codex", sessionId: "owner", ownershipEpoch: 4 });
+  input.dependencies.nested.value = 2;
+  assert.equal(result.dependencies.nested.value, 1);
+  assert.equal(result.status, "ready");
+});
+
+test("read-only actions and shell setup bypass orchestration without writes", async (t) => {
+  const { runSetupCommand, setupCommandFlags } = await import(modulePath);
+  const value = await fixture(t);
+  const before = await readFile(value.setupPath);
+  assert.equal(Object.hasOwn(setupCommandFlags, "setup"), false);
+  await assert.rejects(runSetupCommand("setup", value.options, { interactSettings: async () => { throw new Error("wizard entered"); } }), /Unknown setup command/);
+  await value.invoke("settings");
+  await value.invoke("readiness");
+  const cli = path.resolve(import.meta.dirname, "../hooks/agent-team-cli.mjs");
+  await exec(process.execPath, [cli, "status", "--project", value.root]);
+  await exec(process.execPath, [cli, "health", "--project", value.root]);
+  await assert.rejects(exec(process.execPath, [cli, "setup", "--project", value.root]),
+    (error) => /Unknown command: setup/.test(error.stdout));
+  assert.deepEqual(await readFile(value.setupPath), before);
+});
+
+test("unknown settings interaction and arbitrary errors are not relabeled as consent", async (t) => {
+  const { orchestrateSetup } = await import(modulePath);
+  for (const [label, interactSettings, message] of [
+    ["unknown", async () => ({ kind: "default" }), /Unknown settings interaction outcome/],
+    ["arbitrary", async () => { throw new Error("programmer failure"); }, /programmer failure/],
+  ]) {
+    const value = await fixture(t);
+    const before = await readFile(value.setupPath);
+    await assert.rejects(orchestrateSetup(orchestrationInput(value, { settings: { operationId: `unknown-${label}` } }), {
+      nativeIdentity: value.nativeIdentity, nativeChoices, interactSettings,
+    }), message);
+    assert.deepEqual(await readFile(value.setupPath), before);
+  }
+});

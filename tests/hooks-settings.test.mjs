@@ -328,3 +328,124 @@ test("simultaneous settings writers produce one applied update and one version c
   assert.deepEqual(results.map(({ status }) => status).sort(), ["applied", "conflict"]);
   assert.ok([2, 3].includes(JSON.parse(await readFile(setupPath, "utf8")).settings.runDefaults.parallel_teams));
 });
+
+function completeSettingsFixture() {
+  return {
+    skill: "agent-team", projectId: "settings-project", version: 9,
+    tracker: { kind: "markdown", path: ".agent-team/TASKS.md", root: "." },
+    initialization: { schemaVersion: 1, operationId: "initialize-settings", status: "complete",
+      initialTaskIds: ["T-1"], trackerFingerprint: "a".repeat(64),
+      handoff: { generatedBy: { name: "project-kickoff", version: "0.4.1" }, testedAgainst: { name: "agent-team", version: "7.2.0" } } },
+    ownership: { epoch: 3, current: { host: "codex", sessionId: "owner", since: "2026-09-12T00:00:00.000Z", operationId: "recover-3" } },
+    ownerRecoveryHistory: [{ operationId: "recover-3", previousEpoch: 2 }],
+    dependencies: { hosts: { codex: { scope: "project", receipts: [{ id: "serena", status: "ready" }] } } },
+    settings: {
+      profile: "quality", custom: { retain: true },
+      runDefaults: { parallel_teams: 2, continuous: false, auto_deploy: false, deploy_batch_tasks: 4 },
+      hosts: {
+        codex: { custom: "codex", roles: {
+          project_orchestrator: { model: "quality", effort: "high", source: "override", note: "keep" },
+          complex_developer: { model: "quality", effort: "high", source: "override" },
+          developer: { model: "quality", effort: "high", source: "override" },
+          routine_developer: { model: "fast", effort: "low", source: "override" },
+          reviewer: { model: "quality", effort: "high", source: "override" },
+          visual_reviewer: { model: "quality", effort: "high", source: "override" },
+        }, fallbacks: { developer: { routes: [{ model: "fast", effort: "low" }], escalation: true } } },
+        "claude-code": { custom: "claude", roles: { developer: { model: "opus", effort: "high", source: "override" } },
+          fallbacks: { developer: { routes: [{ model: "sonnet", effort: "medium" }], escalation: false } } },
+      },
+    },
+    activeRun: { routing: { developer: { model: "quality", effort: "high" } }, taskIds: ["T-1"] },
+    dashboard: { snapshot: true, graph: { enabled: false, termsAcknowledged: false }, extension: "keep" },
+    deployment: { auto: false, target: { kind: "origin", ref: "main" }, authority: { source: "user" } },
+    setupOperations: [{ id: "dependency-9", signature: "b".repeat(64), kind: "dependencies", writer: "owner", version: 9 }],
+    vendorExtension: { nested: { keep: true } },
+  };
+}
+
+const settingsNativeChoices = { models: [
+  { id: "quality", efforts: ["medium", "high"] },
+  { id: "fast", efforts: ["low"] },
+] };
+
+function draftCall(setupPath, overrides = {}) {
+  return {
+    setupPath, host: "codex", expectedVersion: 9,
+    writer: { id: "owner", role: "project_orchestrator", host: "codex", ownershipEpoch: 3 },
+    operationId: "settings-draft-10",
+    loadRegistry: async () => ({ projectOwner: "owner", projectOwnerHost: "codex", ownershipEpoch: 3 }),
+    nativeChoices: settingsNativeChoices,
+    draft: { runDefaults: { parallel_teams: 3, auto_deploy: true },
+      roles: { developer: { model: "fast", effort: "low" }, reviewer: { model: "quality", effort: "medium" } } },
+    ...overrides,
+  };
+}
+
+test("cancel and back preserve complete setup bytes and report kept existing", async () => {
+  const { updateSettings } = await import("../hooks/lib/settings.mjs");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-settings-complete-"));
+  const setupPath = path.join(directory, "setup.json");
+  await writeFile(setupPath, `${JSON.stringify(completeSettingsFixture(), null, 2)}\n`);
+  const before = await readFile(setupPath);
+  for (const kind of ["cancel", "back"]) {
+    const result = await updateSettings({ ...draftCall(setupPath), operationId: `settings-${kind}`, change: { kind } });
+    assert.deepEqual(result, { status: kind, settingsOutcome: "kept_existing" });
+    assert.deepEqual(await readFile(setupPath), before);
+  }
+});
+
+test("reviewed settings draft saves as one versioned atomic mutation", async () => {
+  const { saveSettingsDraft } = await import("../hooks/lib/settings.mjs");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-settings-draft-"));
+  const setupPath = path.join(directory, "setup.json");
+  const original = completeSettingsFixture();
+  await writeFile(setupPath, `${JSON.stringify(original, null, 2)}\n`);
+  const result = await saveSettingsDraft(draftCall(setupPath));
+  const saved = JSON.parse(await readFile(setupPath, "utf8"));
+  assert.equal(result.status, "applied");
+  assert.equal(saved.version, 10);
+  assert.equal(saved.setupOperations.length, original.setupOperations.length + 1);
+  assert.deepEqual(saved.setupOperations.at(-1), { id: "settings-draft-10", signature: saved.setupOperations.at(-1).signature,
+    kind: "settings", writer: "owner", version: 10 });
+  assert.deepEqual(saved.settings.runDefaults, { ...original.settings.runDefaults, parallel_teams: 3, auto_deploy: true });
+  assert.deepEqual(saved.settings.hosts.codex.roles.developer, { ...original.settings.hosts.codex.roles.developer, model: "fast", effort: "low", source: "override" });
+  assert.deepEqual(saved.settings.hosts.codex.roles.reviewer, { ...original.settings.hosts.codex.roles.reviewer, effort: "medium", source: "override" });
+  assert.deepEqual(saved.settings.hosts["claude-code"], original.settings.hosts["claude-code"]);
+  assert.deepEqual(saved.activeRun, original.activeRun);
+  assert.deepEqual(saved.vendorExtension, original.vendorExtension);
+});
+
+test("empty or unchanged reviewed settings draft does not write", async () => {
+  const { saveSettingsDraft } = await import("../hooks/lib/settings.mjs");
+  for (const [label, draft] of [["empty", {}], ["unchanged", {
+    runDefaults: { parallel_teams: 2, continuous: false },
+    roles: { developer: { model: "quality", effort: "high" } },
+  }]]) {
+    const directory = await mkdtemp(path.join(os.tmpdir(), `agent-team-settings-${label}-`));
+    const setupPath = path.join(directory, "setup.json");
+    await writeFile(setupPath, `${JSON.stringify(completeSettingsFixture(), null, 2)}\n`);
+    const before = await readFile(setupPath);
+    const result = await saveSettingsDraft(draftCall(setupPath, { operationId: `settings-${label}`, draft }));
+    assert.deepEqual(result, { status: "kept_existing", settingsOutcome: "kept_existing" });
+    assert.deepEqual(await readFile(setupPath), before);
+  }
+});
+
+test("confirmed settings draft replay and conflicts preserve bytes", async () => {
+  const { saveSettingsDraft } = await import("../hooks/lib/settings.mjs");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-settings-replay-"));
+  const setupPath = path.join(directory, "setup.json");
+  await writeFile(setupPath, `${JSON.stringify(completeSettingsFixture(), null, 2)}\n`);
+  const call = draftCall(setupPath);
+  assert.equal((await saveSettingsDraft(call)).status, "applied");
+  const committed = await readFile(setupPath);
+  assert.equal((await saveSettingsDraft(call)).status, "duplicate");
+  assert.deepEqual(await readFile(setupPath), committed);
+  assert.equal((await saveSettingsDraft({ ...call, draft: { runDefaults: { parallel_teams: 4 } } })).reason, "operation_id_reused");
+  assert.deepEqual(await readFile(setupPath), committed);
+  assert.equal((await saveSettingsDraft({ ...call, expectedVersion: 9, operationId: "stale-settings-11" })).reason, "version_changed");
+  assert.deepEqual(await readFile(setupPath), committed);
+  await assert.rejects(saveSettingsDraft({ ...call, expectedVersion: 10, operationId: "invalid-settings-11",
+    draft: { roles: { developer: { model: "fast", effort: "low", fallback: true } } } }), /Unsupported settings draft role/);
+  assert.deepEqual(await readFile(setupPath), committed);
+});

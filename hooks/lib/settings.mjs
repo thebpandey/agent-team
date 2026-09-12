@@ -201,6 +201,7 @@ export async function mutateSetup({ setupPath, expectedVersion, writer, operatio
     if (actualVersion !== expectedVersion) return { status: "conflict", reason: "version_changed", expectedVersion, actualVersion };
     const outcome = await mutate(structuredClone(setup));
     budget?.check();
+    if (outcome.write === false) return outcome.result;
     const next = outcome.setup;
     next.version = actualVersion + 1;
     next.setupOperations = [
@@ -210,6 +211,76 @@ export async function mutateSetup({ setupPath, expectedVersion, writer, operatio
     await atomicJson(setupPath, next, budget);
     return { status: "applied", version: next.version, setup: next, ...(outcome.result ?? {}) };
   }, { budget });
+}
+
+const DRAFT_RUN_SETTINGS = Object.freeze({
+  parallel_teams: (value) => Number.isInteger(value) && value >= 1 && value <= 6,
+  continuous: (value) => typeof value === "boolean",
+  auto_deploy: (value) => typeof value === "boolean",
+  deploy_batch_tasks: (value) => value === null || (Number.isInteger(value) && value > 0),
+});
+const DRAFT_ROLES = new Set(ROLE_DEFINITIONS.map(({ id }) => id));
+
+function exactObject(value, allowed, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object.`);
+  for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new Error(`Unsupported ${label} field: ${key}.`);
+  return value;
+}
+
+function validateSettingsDraft(draft, nativeChoices) {
+  exactObject(draft, ["runDefaults", "roles"], "settings draft");
+  if (draft.runDefaults !== undefined) {
+    exactObject(draft.runDefaults, Object.keys(DRAFT_RUN_SETTINGS), "settings draft runDefaults");
+    for (const [key, value] of Object.entries(draft.runDefaults)) {
+      if (!DRAFT_RUN_SETTINGS[key](value)) throw new Error(`Invalid run setting ${key}.`);
+    }
+  }
+  if (draft.roles !== undefined) {
+    exactObject(draft.roles, [...DRAFT_ROLES], "settings draft roles");
+    for (const [role, route] of Object.entries(draft.roles)) {
+      exactObject(route, ["model", "effort"], `settings draft role ${role}`);
+      if (Object.keys(route).length !== 2 || typeof route.model !== "string" || !route.model
+        || typeof route.effort !== "string" || !route.effort) throw new Error(`Settings draft role ${role} requires model and effort.`);
+      const model = nativeChoices.models?.find(({ id }) => id === route.model);
+      if (!model) throw new Error(`Unsupported model: ${route.model}.`);
+      if (!model.efforts?.includes(route.effort)) throw new Error(`Unsupported effort for ${route.model}: ${route.effort}.`);
+    }
+  }
+  return structuredClone(draft);
+}
+
+/** Persist one complete, positively reviewed wizard draft as one setup operation. */
+export async function saveSettingsDraft({ setupPath, host, expectedVersion, writer, operationId, loadRegistry, draft, nativeChoices = {}, budget }) {
+  if (!HOSTS.has(host)) throw new Error(`Unknown settings host: ${host ?? "missing"}.`);
+  if (!validWriter(writer)) throw new Error("A settings writer identity and role are required.");
+  const reviewed = validateSettingsDraft(draft, nativeChoices);
+  return mutateSetup({
+    setupPath, expectedVersion, writer, operationId, loadRegistry, budget,
+    operation: { kind: "settings", host, draft: reviewed },
+    mutate: async (setup) => {
+      let changed = false;
+      const next = structuredClone(setup);
+      next.settings ??= {};
+      for (const [setting, value] of Object.entries(reviewed.runDefaults ?? {})) {
+        if (next.settings.runDefaults?.[setting] === value) continue;
+        next.settings.runDefaults ??= {};
+        next.settings.runDefaults[setting] = value;
+        changed = true;
+      }
+      for (const [role, route] of Object.entries(reviewed.roles ?? {})) {
+        const current = next.settings.hosts?.[host]?.roles?.[role];
+        if (current?.model === route.model && current?.effort === route.effort) continue;
+        next.settings.hosts ??= {};
+        next.settings.hosts[host] ??= {};
+        next.settings.hosts[host].roles ??= {};
+        next.settings.hosts[host].roles[role] = { ...(current ?? {}), ...route, source: "override" };
+        changed = true;
+      }
+      return changed
+        ? { setup: next }
+        : { write: false, result: { status: "kept_existing", settingsOutcome: "kept_existing" } };
+    },
+  });
 }
 
 function applyChange(setup, host, change, nativeChoices) {
@@ -268,7 +339,7 @@ function applyChange(setup, host, change, nativeChoices) {
 export async function updateSettings({ setupPath, host, expectedVersion, writer, operationId, loadRegistry, change, nativeChoices = {}, budget }) {
   if (!HOSTS.has(host)) throw new Error(`Unknown settings host: ${host ?? "missing"}.`);
   if (!validWriter(writer)) throw new Error("A settings writer identity and role are required.");
-  if (["cancel", "back"].includes(change?.kind)) return { status: change.kind };
+  if (["cancel", "back"].includes(change?.kind)) return { status: change.kind, settingsOutcome: "kept_existing" };
   return mutateSetup({
     setupPath, expectedVersion, writer, operationId, loadRegistry, budget,
     operation: { kind: "settings", host, change },
