@@ -1,6 +1,7 @@
 import { loadCanonicalState } from "./canonical-state.mjs";
 import { resolveProject } from "./project.mjs";
 import { createEventBudget } from "./budget.mjs";
+import { readRunDecision } from "./run-state.mjs";
 
 const STATUS_READ_TIMEOUT_MS = 5000;
 const completed = new Set(["completed", "complete", "done", "closed"]);
@@ -130,6 +131,33 @@ function cleanupFor(state, taskId) {
   };
 }
 
+function targetsFor(project, canonical, runDecision) {
+  const state = canonical.state ?? {};
+  const result = {};
+  const integration = state.integration;
+  for (const evidence of Object.values(canonical.deliveryEvidence ?? {})) {
+    const observed = evidence?.target?.target;
+    if (typeof observed !== "string" || !observed) continue;
+    const key = observed === "refs/heads/main" && integration?.remoteName === "origin" ? "origin/main" : observed;
+    const ids = result[key]?.taskIds ?? [];
+    result[key] = { kind: "integration", status: evidence.target.status === "authorized" ? "ready" : "held",
+      reason: evidence.target.status === "authorized" ? null : "target_authority_required", taskIds: [...new Set([...ids, evidence.taskId])].filter(Boolean) };
+  }
+  if (typeof integration?.remoteName === "string" && typeof integration?.remoteRef === "string") {
+    const branch = integration.remoteRef.replace(/^refs\/heads\//, "");
+    result[`${integration.remoteName}/${branch}`] = { kind: "integration", status: integration.hold === true ? "held" : "ready",
+      reason: integration.hold === true ? "integration_hold" : null, taskIds: [...(integration.taskIds ?? runDecision.effectiveRun?.taskIds ?? [])] };
+  }
+  if (typeof state.release?.target === "string" && state.release.target) {
+    result[state.release.target] = { kind: "release", status: state.release.hold === true ? "held" : "ready",
+      reason: state.release.hold === true ? "release_hold" : null, taskIds: [...(state.release.taskIds ?? runDecision.effectiveRun?.taskIds ?? [])] };
+  } else if (runDecision.status === "available" && runDecision.effectiveRun.autoDeploy) {
+    result.deployment = { kind: "deployment", status: "enabled_but_held", reason: "target_required", taskIds: [...runDecision.effectiveRun.taskIds] };
+  }
+  if (project?.setup?.tracker?.kind === "beads") result.database = { kind: "database", status: "local_only", reason: null, taskIds: [] };
+  return result;
+}
+
 /** Build one immutable, read-only status view from canonical task and team records. */
 export function createStatusModel(project, canonical = {}, options = {}) {
   const freshness = freshnessFor(canonical.tracker);
@@ -148,6 +176,7 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     updatedAt: value(team, "last update", "updated at", "updated") || null,
   }));
   const unavailable = freshness.status === "unavailable" || freshness.status === "unknown";
+  const runDecision = readRunDecision(canonical, { writerLiveness: options.writerLiveness });
   const execution = (task) => task.runtime?.compute && task.runtime.compute !== "unknown"
     ? task.runtime.compute
     : ["active", "in_progress", "working"].includes(task.status) ? "active" : ["parked", "paused"].includes(task.status) ? task.status : "unknown";
@@ -159,7 +188,11 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     capacity: capacityFor(options.capacity ?? state.capacity),
   };
   return deepFreeze({
-    project: { id: canonical.registry?.projectId || project?.projectId || "unknown", root: project?.root || null },
+    stateVersion: freshness.status === "current" ? version(state.stateVersion ?? 0) : null,
+    project: { id: canonical.registry?.projectId || project?.projectId || "unknown", root: project?.root || null,
+      ownerSessionId: canonical.registry?.projectOwner ?? null, ownerHost: canonical.registry?.projectOwnerHost ?? null,
+      ownershipEpoch: version(canonical.registry?.ownershipEpoch) },
+    tracker: { status: freshness.status, fingerprint: freshness.status === "current" ? canonical.tracker?.fingerprint ?? null : null },
     mode: options.mode === "live" ? "live" : "snapshot",
     freshness,
     versions: {
@@ -171,9 +204,19 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     teams,
     tasks,
     run: {
+      ...(runDecision.status === "available" ? structuredClone(runDecision.effectiveRun) : {}),
+      status: runDecision.status,
+      reason: runDecision.status === "available" ? null : runDecision.holdReasons[0] ?? "effective_run_unavailable",
+      fingerprint: runDecision.effectiveRunFingerprint,
+      taskIds: runDecision.status === "available" ? [...runDecision.effectiveRun.taskIds] : [],
+      selectedBatchTaskIds: [...runDecision.selectedBatchTaskIds],
+      terminalClassification: runDecision.status === "available" ? runDecision.classification.kind : "unknown",
+      deploymentHeld: runDecision.deploymentHeld,
+      holdReasons: [...runDecision.holdReasons],
+      provenance: runDecision.runProvenance,
       paused: typeof state.run?.paused === "boolean" ? state.run.paused : null,
       current: typeof state.run?.id === "string" ? state.run.id : typeof state.run?.current === "string" ? state.run.current : "unknown",
-      blockers: Array.isArray(state.run?.blockers) ? state.run.blockers.filter((entry) => typeof entry === "string") : [],
+      blockers: Array.isArray(state.run?.blockers) ? structuredClone(state.run.blockers) : [],
       blockerStatus: Array.isArray(state.run?.blockers) ? "known" : "unknown",
       scope: Array.isArray(state.run?.taskIds)
         ? { status: "partial", taskIds: state.run.taskIds.filter((entry) => typeof entry === "string") }
@@ -183,6 +226,15 @@ export function createStatusModel(project, canonical = {}, options = {}) {
       integration: state.integration?.status ? { status: state.integration.status } : { status: "unknown" },
       release: state.release?.status ? { status: state.release.status } : { status: "unknown" },
     },
+    targets: targetsFor(project, canonical, runDecision),
+    provenance: {
+      generatedBy: project?.setup?.initialization?.handoff?.generatedBy ?? { status: "unknown" },
+      testedAgainst: project?.setup?.initialization?.handoff?.testedAgainst ?? { status: "unknown" },
+      loadedRuntime: options.authenticatedLoadedRuntime ?? { status: "unknown" },
+      sourceCandidate: options.observedSourceCandidate ?? { status: "unknown", authoritative: false },
+      readiness: options.currentReadinessEvidence ?? { status: "unknown" },
+    },
+    recurring: { frequency: "none", scheduledExecutions: 0 },
   });
 }
 
@@ -211,7 +263,7 @@ export async function readStatus(cwd, options = {}) {
   try {
     project ??= await budget.run(() => resolve(cwd, { budget }));
     if (!project?.active) throw new Error("An active Agent-Team project is required for status.");
-    return createStatusModel(project, await budget.run(() => load(project, { budget })), options);
+    return createStatusModel(project, await budget.run(() => load(project, { budget, readOnly: true })), options);
   } catch (error) {
     if (!project?.active) throw error;
     const previous = options.lastGood;
@@ -219,7 +271,7 @@ export async function readStatus(cwd, options = {}) {
       tracker: { kind: previous?.freshness?.source === "TASKS.md" ? "tasks" : "unknown", id: previous?.freshness?.source || "canonical tracker", path: previous?.freshness?.source || "canonical tracker", status: "unavailable", reason: String(error.message || error) },
       registry: { projectId: previous?.project?.id || project.projectId, teams: previous?.teams || [] },
       tasks: previous?.tasks || [],
-      state: previous?.state || {},
+      state: {},
     }, options);
   } finally { if (!options.budget) base.close(); }
 }

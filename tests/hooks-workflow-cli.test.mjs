@@ -102,7 +102,8 @@ test("real CLI exposes read-only status, usage, recovery, and eligibility withou
   assert.equal(status.project.id, "project-1");
   assert.equal(usage.status, "completed");
   assert.equal(usage.source.kind, "operational_state");
-  assert.equal(recovery.nextAction, "Continue the assigned task.");
+  assert.deepEqual(recovery.nextAction, { kind: "start_or_reconcile_run", taskIds: [] });
+  assert.equal(recovery.checkpoint.nextAction, "Continue the assigned task.");
   assert.deepEqual(eligibility.held.map(({ id }) => id), ["AT-001"]);
   await assert.rejects(access(path.join(value.root, ".agent-team", "dashboard", "index.html")), { code: "ENOENT" });
 });

@@ -14,6 +14,7 @@ import {
 import { runLintChecks, lintMessages } from "./lint.mjs";
 import { classifyOperation } from "./operation.mjs";
 import { resolveProject } from "./project.mjs";
+import { readRunDecision, validateEffectiveRun } from "./run-state.mjs";
 
 const run = promisify(execFile);
 
@@ -175,6 +176,9 @@ async function integrationGate(event, project, canonical, operation, now, budget
   if (gate.updatesRemoteMain && gate.remoteMainDeploys) {
     const release = canonical.state.release ?? {};
     const authorization = release.authorization ?? {};
+    if (canonical.registry.projectOwnerHost && !exactFrozenRelease(canonical)) {
+      return deny("The deployment-triggering integration does not match the exact frozen selected task IDs.");
+    }
     if (!release.autoDeploy) return deny("Updating remote main is a deployment trigger, but automatic deployment is off.");
     if (release.authorized !== true || release.runMode !== "auto_deploy" || release.ownerSessionId !== canonical.registry.integrationOwner
       || release.expectedRevision !== gate.expectedRevision || release.trackerFingerprint !== canonical.tracker.fingerprint
@@ -223,6 +227,36 @@ function sameIds(left, right) {
     && [...left].sort().every((value, index) => value === [...right].sort()[index]);
 }
 
+function consequentialScope(canonical, operation) {
+  const run = canonical.state?.run;
+  const problem = validateEffectiveRun(run, canonical.tasks ?? []);
+  if (problem) return `The ${operation.kind} effective run is unavailable (${problem}).`;
+  const ids = operation.kind === "completion" ? [operation.taskId ?? canonical.state.completion?.taskId]
+    : canonical.state?.[operation.kind]?.taskIds;
+  if (!Array.isArray(ids) || !ids.length || new Set(ids).size !== ids.length || ids.some((id) => !run.taskIds.includes(id))) {
+    return `The ${operation.kind} operation is outside the effective run scope.`;
+  }
+  const tasks = new Map((canonical.tasks ?? []).map((task) => [task.id, task]));
+  if (ids.some((id) => { const task = tasks.get(id); return !task || task.isTopLevelDelivery === false || task.parentId !== null && task.parentId !== undefined; })) {
+    return `The ${operation.kind} operation is outside the admitted top-level scope.`;
+  }
+  if ((canonical.state.quarantinedEvidence ?? []).some((entry) => ids.includes(entry?.taskId) && !entry?.reboundByOperationId)) {
+    return "The consequential operation is quarantined pending explicit evidence rebind.";
+  }
+  return null;
+}
+
+function exactFrozenRelease(canonical) {
+  const gate = canonical.state.release ?? {};
+  const selected = readRunDecision(canonical).selectedBatchTaskIds;
+  if (!selected.length || !sameIds(gate.taskIds, selected) || !sameIds(gate.recordedEvidence?.selectedTaskIds, selected)
+    || !sameIds(gate.recordedEvidence?.taskIds, selected)) return false;
+  for (const name of ["batch", "authorization", "artifact", "integration", "verification", "delta"]) {
+    if (!sameIds(gate[name]?.taskIds, selected)) return false;
+  }
+  return selected.every((id) => canonical.deliveryEvidence?.[id]?.taskId === id);
+}
+
 function boundedString(value, maximum = 256) {
   return typeof value === "string" && value.trim() === value && value.length > 0 && value.length <= maximum;
 }
@@ -249,6 +283,7 @@ function releaseArtifact(record, revision, taskIds) {
 
 async function releaseGate(event, project, canonical, operation, now, budget) {
   const gate = canonical.state.release ?? {};
+  if (canonical.registry.projectOwnerHost && !exactFrozenRelease(canonical)) return deny("Release evidence does not match the exact frozen selected task IDs and current owner generation.");
   if (!currentOwner(canonical, event, gate) || event.sessionId !== canonical.registry.integrationOwner) return deny("The registered release owner must run this operation.");
   if (!gate.authorized) return deny("Release authorization is missing.");
   if (!gate.target) return deny("The release target is unknown.");
@@ -395,7 +430,7 @@ export async function evaluatePolicy(event, project, { now = new Date(), canonic
   let canonical;
   let operation;
   try {
-    canonical = suppliedCanonical ?? await bounded(() => loadCanonicalState(project, { includeTasks: false, budget }));
+    canonical = suppliedCanonical ?? await bounded(() => loadCanonicalState(project, { includeTasks: false, includeDeliveryEvidence: false, budget }));
     progress.canonical = canonical;
     operation = classifyOperation(event, validateOperationMappings(canonical.state.operationMappings ?? inventory), { tracker: project.tracker });
     progress.operation = operation;
@@ -407,6 +442,17 @@ export async function evaluatePolicy(event, project, { now = new Date(), canonic
   if (["completion", "release", "integration"].includes(operation.kind)) {
     if (canonical.tracker?.status === "not_read") Object.assign(canonical, await loadCanonicalTracker(project, { budget, runBeads }));
     if (canonical.tracker?.status !== "current") return deny(`The selected canonical tracker is unavailable (${canonical.tracker?.reason ?? "not_read"}).`);
+    const scopeProblem = consequentialScope(canonical, operation);
+    if (scopeProblem) return deny(scopeProblem);
+    const recordedFingerprint = canonical.state[operation.kind]?.trackerFingerprint;
+    if (recordedFingerprint && recordedFingerprint !== canonical.tracker.fingerprint) return deny("The selected tracker changed; recorded gate evidence is stale.");
+  }
+  if (!suppliedCanonical && ["completion", "release", "integration"].includes(operation.kind)) {
+    try { canonical = await bounded(() => loadCanonicalState(project, { budget })); }
+    catch { return unavailableDecision({ ...event, operation }, inventory, { inventoryStatus }); }
+    progress.canonical = canonical;
+    const scopeProblem = consequentialScope(canonical, operation);
+    if (scopeProblem) return deny(scopeProblem);
     const recordedFingerprint = canonical.state[operation.kind]?.trackerFingerprint;
     if (recordedFingerprint && recordedFingerprint !== canonical.tracker.fingerprint) return deny("The selected tracker changed; recorded gate evidence is stale.");
   }

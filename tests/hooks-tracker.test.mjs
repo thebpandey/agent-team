@@ -18,7 +18,13 @@ async function fixture(tracker) {
   await writeFile(path.join(root, ".agent-team/setup.json"), JSON.stringify({ skill: "agent-team", projectId: "project-1", tracker }));
   return result;
 }
-const beads = async () => ({ stdout: JSON.stringify([{ id: "AT-001", title: "Complete fixture work", assignee: "TEAM-001", status: "in_progress", updated_at: "2026-09-08T10:00:00Z" }]) });
+function effectiveRun(ownerHost = "codex") {
+  return { id: "verification-run", ownerSessionId: "owner-session", ownerHost, ownershipEpoch: 1, mode: "finite", taskIds: ["AT-001"],
+    teamLimit: 1, autoDeploy: true, batchSize: 1, source: "explicit_run",
+    settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+    paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
+}
+const beads = async () => ({ stdout: JSON.stringify([{ id: "AT-001", title: "Complete fixture work", assignee: "TEAM-001", status: "in_progress", dependency_count: 0, updated_at: "2026-09-08T10:00:00Z" }]) });
 
 async function delayedBeads(root) {
   const executable = path.join(root, "delayed-bd.mjs");
@@ -66,6 +72,7 @@ for (const tracker of [{ kind: "markdown", path: "TASKS.md" }, { kind: "markdown
     assert.equal(main.paths.tasks, path.join(value.root, tracker.path ?? ".beads"));
     assert.deepEqual(main.tracker, linked.tracker);
     const canonical = await loadCanonicalState(linked, { runBeads: beads });
+    canonical.state.run = effectiveRun();
     assert.equal(canonical.tracker.status, "current");
     assert.match(canonical.tracker.fingerprint, /^[a-f0-9]{64}$/);
     assert.deepEqual(canonical.tasks.map(({ id, owner, status }) => ({ id, owner, status })), [{ id: "AT-001", owner: "TEAM-001", status: "in_progress" }]);
@@ -150,6 +157,7 @@ test("recorded tracker fingerprints invalidate completion evidence after task ch
   const value = await fixture({ kind: "markdown", path: ".agent-team/TASKS.md" });
   const project = await resolveProject(value.feature);
   const first = await loadCanonicalState(project);
+  value.state.run = effectiveRun();
   value.state.completion.trackerFingerprint = first.tracker.fingerprint;
   await writeFile(project.paths.state, JSON.stringify(value.state));
   await writeFile(project.paths.tasks, (await readFile(project.paths.tasks, "utf8")).replace("Complete fixture work", "Complete changed work"));
@@ -195,6 +203,7 @@ test("mapped provider tracker edits cannot bypass completion verification", asyn
   const value = await fixture({ kind: "markdown", path: "TASKS.md" });
   await writeFile(path.join(value.root, "TASKS.md"), await readFile(path.join(value.root, ".agent-team/TASKS.md")));
   value.state.completion.checks = [{ name: "lint", status: "failed", revision: value.revision }];
+  value.state.run = effectiveRun();
   await writeFile(path.join(value.root, ".agent-team/state.json"), JSON.stringify(value.state));
   const result = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation: {
     kind: "provider", tool: "mcp__filesystem__write", input: { path: "TASKS.md", content: "| AT-001 | TEAM-001 | verified |" },
@@ -207,6 +216,7 @@ test("selected Beads close and closed-status commands use the completion gate", 
   const value = await fixture({ kind: "beads" });
   const project = await resolveProject(value.feature);
   value.state.completion.checks = [{ name: "lint", status: "failed", revision: value.revision }];
+  value.state.run = effectiveRun();
   await writeFile(project.paths.state, JSON.stringify(value.state));
   for (const command of ["bd close AT-001", "bd update AT-001 --status closed", "bd close AT-001 AT-002"]) {
     const result = await evaluatePolicy(hookEvent(value, { operation: { kind: "shell", command } }), project, { runBeads: beads });
@@ -217,6 +227,8 @@ test("selected Beads close and closed-status commands use the completion gate", 
 
 test("mapped provider final tracker writes preserve shared project-owner enforcement", async () => {
   const value = await fixture({ kind: "markdown", path: ".agent-team/TASKS.md" });
+  value.state.run = effectiveRun();
+  await writeFile(path.join(value.root, ".agent-team/state.json"), JSON.stringify(value.state));
   const project = await resolveProject(value.feature);
   const result = await evaluatePolicy(hookEvent(value, { operation: { kind: "provider", tool: "mcp__filesystem__write", input: {
     path: project.paths.tasks, content: "| AT-001 | TEAM-001 | verified |",
@@ -227,6 +239,8 @@ test("mapped provider final tracker writes preserve shared project-owner enforce
 
 test("Markdown transitions compare terminal status per task ID and reject multiple new completions", async () => {
   const value = await fixture({ kind: "markdown", path: ".agent-team/TASKS.md" });
+  value.state.run = effectiveRun();
+  await writeFile(path.join(value.root, ".agent-team/state.json"), JSON.stringify(value.state));
   const project = await resolveProject(value.root);
   for (const [previousContent, changedContent] of [
     ["| AT-001 | TEAM-001 | verified |\n| AT-002 | TEAM-001 | in_progress |", "| AT-001 | TEAM-001 | verified |\n| AT-002 | TEAM-001 | verified |"],

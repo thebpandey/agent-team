@@ -20,11 +20,95 @@ async function fixture() {
   const value = await policyFixture(root);
   temporary.push(value.remote);
   const state = structuredClone(value.state);
+  state.run = { id: "fixture-run", ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1, mode: "finite", taskIds: ["AT-001"],
+    teamLimit: 1, autoDeploy: true, batchSize: 1, source: "explicit_run",
+    settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+    paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
   state.integration.taskIds = ["AT-001"];
   state.integration.authorization = { source: "fixture", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"], observedAt: "2026-09-06T12:00:00.000Z" };
   await saveState(value, state);
   return { ...value, state, project: await resolveProject(value.feature) };
 }
+
+function modernReleaseCanonical(value, canonical) {
+  const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
+  const task = { ...canonical.tasks[0], status: "completed", parentId: null, taskType: "task", isTopLevelDelivery: true, dependencies: [] };
+  const run = { id: "policy-run", ...actor, mode: "finite", taskIds: ["AT-001"], teamLimit: 1, autoDeploy: true, batchSize: 2, source: "explicit_run",
+    settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+    paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: ["AT-001"], deployedTaskIds: [], terminalClassification: "finite_exhausted" };
+  const authority = { status: "authorized", source: "fixture", target: "origin/main", revision: value.revision, taskIds: ["AT-001"], ...actor };
+  const delivery = { taskId: "AT-001", sourceRevision: value.revision, revision: value.revision, integratedRevision: value.revision,
+    completion: { taskId: "AT-001", status: "passed", sourceRevision: value.revision },
+    integration: { taskId: "AT-001", status: "passed", sourceRevision: value.revision, boundaryRevision: value.revision, ...actor },
+    review: { taskId: "AT-001", status: "passed", revision: value.revision }, checks: [{ name: "unit", status: "passed" }],
+    preview: { taskId: "AT-001", status: "not_required", required: false, revision: value.revision, ...actor },
+    target: { taskId: "AT-001", status: "authorized", target: "origin/main", revision: value.revision, authority, ...actor },
+    recovery: { taskId: "AT-001", status: "ready", artifact: "release-tag", action: "rollback", revision: value.revision, ...actor } };
+  const release = { ...canonical.state.release, ...actor, authorization: { ...canonical.state.release.authorization, ...actor }, trackerFingerprint: canonical.tracker.fingerprint,
+    recordedEvidence: { path: ".agent-team/release.json", fingerprint: "e".repeat(64), revision: value.revision, taskIds: ["AT-001"],
+      selectedTaskIds: ["AT-001"], operationId: "release", observedAt: "2026-09-06T12:00:00.000Z" } };
+  return { ...canonical, tasks: [task], registry: { ...canonical.registry, projectOwnerHost: "codex", integrationOwnerHost: "codex", ownershipEpoch: 1 },
+    state: { ...canonical.state, ownership: { epoch: 1 }, run, integration: { ...canonical.state.integration, ...actor }, release },
+    deliveryEvidence: { "AT-001": delivery }, git: { headRevision: value.revision } };
+}
+
+test("policy rejects consequential IDs outside the valid effective run before probes", async () => {
+  const value = await fixture();
+  const canonical = await loadCanonicalState(value.project);
+  canonical.state.run = { taskIds: ["AT-001"] };
+  const before = structuredClone(canonical);
+  const decision = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "completion", taskId: "AT-001", outcome: "verified" } }),
+    { ...value.project, worktreeRoot: path.join(value.root, "must-not-probe") }, { canonical });
+  assert.equal(decision.allow, false);
+  assert.match(decision.messages.join("\n"), /effective run|scope/i);
+  assert.deepEqual(canonical, before);
+});
+
+test("release requires exact frozen selected IDs across every record", async () => {
+  const value = await fixture();
+  const canonical = modernReleaseCanonical(value, await loadCanonicalState(value.project));
+  const event = hookEvent(value, { sessionId: "owner-session", operation: { kind: "release", process: "npm" } });
+  assert.equal((await evaluatePolicy(event, value.project, { canonical, now: new Date("2026-09-06T12:01:00Z") })).allow, true);
+  for (const alter of [
+    (value) => { value.state.release.recordedEvidence.selectedTaskIds = ["AT-002"]; },
+    (value) => { value.state.release.recordedEvidence.taskIds = ["AT-002"]; },
+    (value) => { value.state.release.batch.taskIds = ["AT-002"]; },
+    (value) => { delete value.deliveryEvidence["AT-001"]; },
+  ]) {
+    const changed = structuredClone(canonical); alter(changed);
+    assert.equal((await evaluatePolicy(event, value.project, { canonical: changed, now: new Date("2026-09-06T12:01:00Z") })).allow, false);
+  }
+});
+
+test("terminal underfill never bypasses ordinary release gates", async () => {
+  const value = await fixture();
+  const canonical = modernReleaseCanonical(value, await loadCanonicalState(value.project));
+  delete canonical.state.release.recovery;
+  const result = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "release", process: "npm" } }), value.project,
+    { canonical, now: new Date("2026-09-06T12:01:00Z") });
+  assert.equal(result.allow, false);
+});
+
+test("target authority and holds remain independently scoped", async () => {
+  const value = await fixture();
+  const state = structuredClone(value.state);
+  state.release.hold = true;
+  state.integration.remoteMainDeploys = false;
+  await saveState(value, state);
+  const result = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session",
+    operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:feature` } }), value.project,
+  { now: new Date("2026-09-06T12:01:00Z") });
+  assert.equal(result.allow, true);
+});
+
+test("owner generation and task receipts fence consequential operations", async () => {
+  const value = await fixture();
+  const canonical = modernReleaseCanonical(value, await loadCanonicalState(value.project));
+  canonical.deliveryEvidence["AT-001"].target.ownerHost = "claude-code";
+  const result = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "release", process: "npm" } }), value.project,
+    { canonical, now: new Date("2026-09-06T12:01:00Z") });
+  assert.equal(result.allow, false);
+});
 
 test("canonical ownership allows assigned files and blocks unowned, shared, main, and symlink targets", async () => {
   // This test catches trust in caller role text or a path-prefix check before symlink resolution.

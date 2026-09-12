@@ -93,7 +93,7 @@ test("actual project CLI connects initialization, settings, claims, checkpoints 
       revision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), nextAction: "Run the required verification." } });
   assert.equal((await runCommand("checkpoint", { project: root, request: checkpoint }, { nativeIdentity: ownerIdentity })).status, "applied");
   assert.match(await readFile(path.join(root, ".agent-team/dashboard/index.html"), "utf8"), /WORK-1/);
-  assert.equal((await invoke("recovery", root, "--session", "project-owner")).nextAction, "Run the required verification.");
+  assert.equal((await invoke("recovery", root, "--session", "project-owner")).checkpoint.nextAction, "Run the required verification.");
   assert.equal((await invoke("readiness", root, "--host", "codex", "--scope", "user")).readyForDispatch, false);
 });
 
@@ -285,5 +285,32 @@ test("read-only status bypasses setup orchestration", async () => {
     interactSettings: async () => { throw new Error("read-only status entered setup"); },
   });
   assert.equal(result.project.id, "journey");
+  assert.deepEqual(await readFile(value.setupPath), before);
+});
+
+test("terminal underfilled publication remains gated while status and recovery stay read only", async () => {
+  const value = await initializedJourney();
+  const { loadCanonicalState } = await import("../hooks/lib/canonical-state.mjs");
+  const { resolveProject } = await import("../hooks/lib/project.mjs");
+  const { evaluatePolicy } = await import("../hooks/lib/policy.mjs");
+  const { readStatus } = await import("../hooks/lib/status.mjs");
+  const { inspectRecovery } = await import("../hooks/lib/recovery.mjs");
+  const project = await resolveProject(value.root);
+  const canonical = structuredClone(await loadCanonicalState(project));
+  canonical.tasks.find(({ id }) => id === "WORK-1").status = "completed";
+  canonical.state.run = {
+    id: "journey-release", ownerSessionId: "project-owner", ownerHost: "codex", ownershipEpoch: 1,
+    mode: "finite", taskIds: ["WORK-1"], teamLimit: 1, autoDeploy: false, batchSize: 2,
+    source: "explicit_run", settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+    paused: false, operationalVersion: canonical.state.stateVersion, blockers: [], pendingDeliveryIds: ["WORK-1"], deployedTaskIds: [], terminalClassification: "finite_exhausted",
+  };
+  const before = await readFile(value.setupPath);
+  const release = await evaluatePolicy({ event: "PreToolUse", runtime: "codex", sessionId: "project-owner",
+    operation: { kind: "release", process: "npm", command: "npm publish" } }, project, { canonical });
+  assert.equal(release.allow, false);
+  const status = await readStatus(project, { loadCanonicalState: async () => canonical });
+  assert.equal(status.run.terminalClassification, "finite_exhausted");
+  const recovery = await inspectRecovery(project, { canonical, loadCanonicalState: async () => canonical });
+  assert.notEqual(recovery.nextAction?.kind, "complete");
   assert.deepEqual(await readFile(value.setupPath), before);
 });

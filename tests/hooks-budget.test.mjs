@@ -21,6 +21,13 @@ async function fixture() {
   return policyFixture(root);
 }
 
+function effectiveRun(ownerHost = "codex") {
+  return { id: "verification-run", ownerSessionId: "owner-session", ownerHost, ownershipEpoch: 1, mode: "finite", taskIds: ["AT-001"],
+    teamLimit: 1, autoDeploy: true, batchSize: 1, source: "explicit_run",
+    settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+    paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
+}
+
 async function withGuardedFifoWriter(statePath, startWriter, action) {
   const fifo = await open(statePath, "r+");
   let writer;
@@ -77,6 +84,7 @@ test("ordinary advisory events do not query Beads", async () => {
 
 test("same-revision lint evidence cannot complete changed tracked content, but repair remains allowed", async () => {
   const value = await fixture();
+  value.state.run = effectiveRun();
   value.state.completion.checks = [{ name: "lint", status: "passed", revision: value.revision }];
   await writeFile(path.join(value.root, ".agent-team/state.json"), JSON.stringify(value.state));
   await writeFile(path.join(value.feature, "src/owned.js"), "missingName();\n");

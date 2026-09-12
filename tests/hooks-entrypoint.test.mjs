@@ -24,6 +24,13 @@ async function fixture() {
   return { ...(await policyFixture(root)), home };
 }
 
+function effectiveRun(ownerHost) {
+  return { id: "verification-run", ownerSessionId: "owner-session", ownerHost, ownershipEpoch: 1, mode: "finite", taskIds: ["AT-001"],
+    teamLimit: 1, autoDeploy: true, batchSize: 1, source: "explicit_run",
+    settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+    paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
+}
+
 async function inactiveFixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-entry-inactive-"));
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-entry-home-"));
@@ -139,6 +146,8 @@ function invokeCli(command, options) {
 for (const runtime of ["codex", "claude"]) {
   test(`${runtime} mapped-provider tracker completion requires the project owner (synthetic host payload)`, async () => {
     const value = await fixture();
+    value.state.run = effectiveRun(runtime === "claude" ? "claude-code" : "codex");
+    await writeFile(path.join(value.root, ".agent-team/state.json"), JSON.stringify(value.state));
     const result = invoke(runtime, "PreToolUse", { cwd: value.feature, session_id: "developer-session",
       tool_name: "mcp__filesystem__write", tool_input: { path: path.join(value.root, ".agent-team/TASKS.md"), content: "| AT-001 | TEAM-001 | verified |" },
     }, value.home);

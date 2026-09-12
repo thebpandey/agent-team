@@ -57,6 +57,74 @@ function canonical(overrides = {}) {
   };
 }
 
+function effectiveCanonical(overrides = {}) {
+  const task = { id: "AT-001", title: "Release", status: "completed", owner: "TEAM-001", parentId: null,
+    taskType: "task", isTopLevelDelivery: true, dependencies: [] };
+  const run = { id: "run-1", ownerSessionId: "owner", ownerHost: "codex", ownershipEpoch: 3, mode: "finite", taskIds: ["AT-001"],
+    teamLimit: 2, autoDeploy: false, batchSize: 2, source: "explicit_run",
+    settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+    paused: false, operationalVersion: 4, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "finite_exhausted" };
+  return {
+    tracker: { kind: "tasks", id: "TASKS.md", path: "TASKS.md", status: "current", fingerprint: "f".repeat(64) },
+    registry: { projectId: "project-1", projectOwner: "owner", projectOwnerHost: "codex", integrationOwner: "owner", integrationOwnerHost: "codex", ownershipEpoch: 3, teams: [] },
+    state: { stateVersion: 4, ownership: { epoch: 3 }, run,
+      integration: { ownerSessionId: "owner", ownerHost: "codex", ownershipEpoch: 3, remoteName: "origin", remoteRef: "refs/heads/main", remoteMainDeploys: false },
+      release: { ownerSessionId: "owner", ownerHost: "codex", ownershipEpoch: 3, target: "vercel", process: "vercel", hold: true } },
+    tasks: [task], deliveryEvidence: { "AT-001": { target: { target: "refs/heads/main", taskIds: ["AT-001"] } } }, git: { headRevision: "a".repeat(40) },
+    ...overrides,
+  };
+}
+
+test("status exposes immutable effective run target and migration provenance", () => {
+  const source = effectiveCanonical();
+  const model = createStatusModel({ ...project, setup: { initialization: { handoff: { generatedBy: { skill: "project-kickoff" }, testedAgainst: { skill: "agent-team" } } } } }, source);
+  assert.equal(model.stateVersion, 4);
+  assert.deepEqual(model.project, { id: "project-1", root: "/project", ownerSessionId: "owner", ownerHost: "codex", ownershipEpoch: 3 });
+  assert.equal(model.run.status, "available");
+  assert.match(model.run.fingerprint, /^[a-f0-9]{64}$/);
+  assert.deepEqual(model.run.taskIds, ["AT-001"]);
+  assert.equal(model.targets["origin/main"].status, "ready");
+  assert.equal(model.targets.vercel.status, "held");
+  assert.deepEqual(model.provenance.generatedBy, { skill: "project-kickoff" });
+  assert.throws(() => { model.run.taskIds.push("AT-002"); }, TypeError);
+});
+
+test("status separates loaded runtime source candidate handoff and readiness", () => {
+  const model = createStatusModel(project, effectiveCanonical(), {
+    authenticatedLoadedRuntime: { status: "current", version: "7.2.0" },
+    observedSourceCandidate: { status: "current", version: "7.2.1", authoritative: false },
+    currentReadinessEvidence: { status: "passed", worker: "fresh" },
+  });
+  assert.deepEqual(model.provenance.loadedRuntime, { status: "current", version: "7.2.0" });
+  assert.deepEqual(model.provenance.sourceCandidate, { status: "current", version: "7.2.1", authoritative: false });
+  assert.deepEqual(model.provenance.readiness, { status: "passed", worker: "fresh" });
+  assert.notDeepEqual(model.provenance.loadedRuntime, model.provenance.sourceCandidate);
+});
+
+test("status reports local-only and target-required without globalizing holds", () => {
+  const source = effectiveCanonical();
+  source.state.run.autoDeploy = true;
+  delete source.state.release.target;
+  const model = createStatusModel({ ...project, setup: { tracker: { kind: "beads", executable: "/bin/bd" } } }, source);
+  assert.deepEqual(model.targets.deployment, { kind: "deployment", status: "enabled_but_held", reason: "target_required", taskIds: ["AT-001"] });
+  assert.equal(model.targets.database.status, "local_only");
+  assert.equal(model.targets["origin/main"].status, "ready");
+  assert.equal(model.targets.vercel, undefined);
+  assert.equal(model.targets.dns, undefined);
+});
+
+test("status last-good fallback never presents stale authority as current", async () => {
+  const lastGood = createStatusModel(project, effectiveCanonical());
+  let optionsSeen;
+  const model = await readStatus(project, { lastGood, loadCanonicalState: async (_project, options) => { optionsSeen = options; throw new Error("generation mismatch"); } });
+  assert.equal(optionsSeen.readOnly, true);
+  assert.equal(model.tracker.fingerprint, null);
+  assert.equal(model.run.fingerprint, null);
+  assert.deepEqual(model.run.selectedBatchTaskIds, []);
+  assert.equal(model.project.ownerSessionId, null);
+  assert.deepEqual(model.targets, {});
+});
+
 test("status model keeps every task visible while counting only unique actionable leaves", () => {
   const model = createStatusModel(project, canonical());
 

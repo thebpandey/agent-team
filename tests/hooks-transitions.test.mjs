@@ -669,17 +669,7 @@ if (process.argv[2] === "writer") {
     assert.equal(release.authorization.ownershipEpoch, 1);
     const policy = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", cwd: value.root,
       operation: { kind: "shell", command: "gh release create v1.0.0" } }), value.project, { now: new Date() });
-    assert.equal(policy.allow, true, JSON.stringify(policy));
-    for (const [field, replacement] of [["ownerHost", "claude-code"], ["ownershipEpoch", 2]]) {
-      const changed = JSON.parse(await readFile(value.project.paths.state, "utf8"));
-      changed.release[field] = replacement;
-      await writeFile(value.project.paths.state, JSON.stringify(changed));
-      const denied = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", cwd: value.root,
-        operation: { kind: "shell", command: "gh release create v1.0.0" } }), value.project, { now: new Date() });
-      assert.equal(denied.allow, false, field);
-      changed.release[field] = release[field];
-      await writeFile(value.project.paths.state, JSON.stringify(changed));
-    }
+    assert.equal(policy.allow, false, "aggregate release evidence cannot replace a fresh joined task-keyed selection");
   });
 
   test("legacy release authorization remains session-only", async () => {
