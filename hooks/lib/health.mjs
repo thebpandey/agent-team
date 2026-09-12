@@ -136,6 +136,8 @@ export async function resolveHookEvidenceRoot(packageRoot, runtime) {
   const expected = path.join(root, runtime === 'codex' ? '.agents' : '.claude', 'skills', 'agent-team');
   if (path.resolve(packageRoot) !== expected) return null;
   const receipt = await json(path.join(root, '.agent-team-hooks/install.json'));
+  const legacyTarget = receipt?.targets?.some((entry) => entry?.runtime === runtime && entry?.path === expected);
+  if (receipt.schemaVersion !== 4) return legacyTarget ? root : null;
   const installed = await present(path.join(expected, "SKILL.md"));
   return (await artifactHealth(root, runtime, installed, receipt)).status === "current" ? root : null;
 }
