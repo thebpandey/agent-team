@@ -261,9 +261,13 @@ function orchestrationRegistryLoader(projectRoot, budget) {
     let canonical;
     try { canonical = await loadCanonicalState(qualifiedProject, { includeTasks: false, budget }); }
     catch { return { projectOwner: null }; }
-    return initializationRecordProblem(qualifiedProject.setup, canonical, {
+    if (initializationRecordProblem(qualifiedProject.setup, canonical, {
       projectRoot: qualifiedProject.root, validateTracker: false, allowLegacy: true,
-    }) ? { projectOwner: null } : canonical.registry;
+    }) || !validateQualifiedOwnership(canonical.setup.ownership)
+      || !Number.isSafeInteger(canonical.registry.ownershipEpoch) || canonical.registry.ownershipEpoch < 1) {
+      return { projectOwner: null };
+    }
+    return canonical.registry;
   };
 }
 

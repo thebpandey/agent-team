@@ -93,6 +93,31 @@ async function legacyBrainVaultFixture(t) {
   return { ...value, legacyInitialization: JSON.stringify(setup.initialization) };
 }
 
+async function downgradeToCoherentLegacyOwnership(value) {
+  const setup = JSON.parse(await readFile(value.setupPath, "utf8"));
+  delete setup.initialization.initialTaskIds;
+  delete setup.initialization.trackerFingerprint;
+  delete setup.initialization.trackerSelection.root;
+  delete setup.tracker.root;
+  delete setup.ownership;
+  await writeFile(value.setupPath, `${JSON.stringify(setup, null, 2)}\n`);
+  const state = JSON.parse(await readFile(value.statePath, "utf8"));
+  delete state.ownership;
+  for (const gate of [state.integration, state.release]) { delete gate.ownerHost; delete gate.ownershipEpoch; }
+  await writeFile(value.statePath, `${JSON.stringify(state, null, 2)}\n`);
+  const teamsPath = path.join(value.root, ".agent-team", "TEAMS.md");
+  await writeFile(teamsPath, (await readFile(teamsPath, "utf8")).replace(/^Project owner host:.*\n/m, "").replace(/^Integration owner host:.*\n/m, ""));
+  await rm(path.join(value.root, ".agent-team", "owner-history.json"));
+}
+
+async function ownershipRecords(value) {
+  const relatives = ["setup.json", "state.json", "TEAMS.md", "owner-history.json"];
+  return Promise.all(relatives.map(async (name) => {
+    try { return await readFile(path.join(value.root, ".agent-team", name)); }
+    catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  }));
+}
+
 test("Node consumer inspects settings/dependencies without writes or invented native choices", async (t) => {
   const value = await fixture(t);
   const before = await readFile(value.setupPath, "utf8");
@@ -562,6 +587,46 @@ test("legacy unqualified ownership cannot authorize native setup across host cwd
     assert.equal(interacted, false);
     assert.deepEqual(await readFile(value.setupPath), before);
   }
+});
+
+test("legacy ownership lock wait cannot downgrade settings save or dependency preparation authority", async (t) => {
+  const { orchestrateSetup } = await import(modulePath);
+  for (const operation of ["settings", "dependencies"]) await t.test(operation, async () => {
+    const value = await fixture(t);
+    const lock = path.join(value.root, ".agent-team", ".locks", "setup.lock");
+    await mkdir(lock, { recursive: true });
+    let interacted = false;
+    let dependencyRuns = 0;
+    const input = orchestrationInput(value, operation === "dependencies" ? { dependencies: {
+      action: "prepare", expectedVersion: 3, operationId: "lock-wait-dependencies", selections: { defaults: [] },
+    } } : {});
+    const pending = orchestrateSetup(input, {
+      nativeIdentity: value.nativeIdentity, nativeChoices,
+      createDependencyRunner: () => async ({ dependency }) => {
+        dependencyRuns += 1;
+        return { status: "passed", version: dependency.version, evidence: "must not run after ownership downgrade" };
+      },
+      interactSettings: async () => {
+        interacted = true;
+        return { kind: "save", draft: { runDefaults: { continuous: true } } };
+      },
+    });
+    if (operation === "settings") {
+      for (let attempt = 0; attempt < 40 && !interacted; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(interacted, true);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(interacted, false);
+    }
+    await downgradeToCoherentLegacyOwnership(value);
+    const downgraded = await ownershipRecords(value);
+    await rm(lock, { recursive: true });
+    const result = await pending;
+    assert.equal(result.status, "conflict");
+    assert.equal(result.reason, "project_owner_required");
+    assert.deepEqual(await ownershipRecords(value), downgraded);
+    if (operation === "dependencies") assert.equal(dependencyRuns, 0);
+  });
 });
 
 test("dependency inspection reports selected scope mismatch and still enters settings summary", async (t) => {
