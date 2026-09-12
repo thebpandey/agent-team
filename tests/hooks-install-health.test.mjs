@@ -159,6 +159,75 @@ test("present-target preflight rejects root and nested links and special entries
   });
 });
 
+test("unsupported descriptor platforms and traversal fail before the install lock or mutation", async (context) => {
+  const cases = [
+    ["platform", { platform: "darwin" }],
+    ["descriptor traversal", { descriptorRoot: "/definitely-missing-agent-team-proc-fd" }],
+  ];
+  for (const [label, hooks] of cases) await context.test(label, async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-unsupported-install-"));
+    temporary.push(home);
+    const artifact = await archiveFixture();
+
+    const result = await __installTest.installPackage({ ...artifact, home, host: "both", scope: "user" }, hooks);
+
+    assert.equal(result.status, "unsupported_platform");
+    assert.equal(result.changed, false);
+    await assert.rejects(lstat(path.join(home, ".agent-team-hooks")), { code: "ENOENT" });
+    await assert.rejects(lstat(path.join(home, ".agents")), { code: "ENOENT" });
+    await assert.rejects(lstat(path.join(home, ".claude")), { code: "ENOENT" });
+    await assert.rejects(lstat(path.join(home, ".codex")), { code: "ENOENT" });
+  });
+});
+
+test("a late 500-file reservation rename never writes through the replaced canonical target", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-reserved-target-race-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-reserved-source-"));
+  temporary.push(home, changedSource);
+  await copyTrackedSource(sourceRoot, changedSource);
+  const manifestPath = path.join(changedSource, "hooks", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const bulkNames = Array.from({ length: 500 }, (_, index) => `fixtures/reservation/file-${String(index).padStart(3, "0")}.txt`);
+  await mkdir(path.join(changedSource, "fixtures", "reservation"), { recursive: true });
+  for (const name of bulkNames) await writeFile(path.join(changedSource, name), `reserved ${name}\n`);
+  manifest.files.push(...bulkNames);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const artifact = await archiveFixture(changedSource);
+  const target = path.join(home, ".agents", "skills", "agent-team");
+  const moved = path.join(home, "invocation-reservation-moved");
+  let reservedIdentity;
+  let operatorIdentity;
+
+  await assert.rejects(__installTest.installPackage({ ...artifact, home, host: "codex", scope: "user" }, {
+    afterTargetReserved: async ({ runtime, index }) => {
+      assert.deepEqual({ runtime, index }, { runtime: "codex", index: 0 });
+      const reserved = await lstat(target);
+      reservedIdentity = { dev: reserved.dev, ino: reserved.ino };
+      await rename(target, moved);
+      await mkdir(target);
+      await writeFile(path.join(target, "OPERATOR.md"), "operator replacement\n");
+      const operator = await lstat(target);
+      operatorIdentity = { dev: operator.dev, ino: operator.ino };
+    },
+  }), /target_changed_after_reservation/);
+
+  const operatorAfter = await lstat(target);
+  assert.deepEqual({ dev: operatorAfter.dev, ino: operatorAfter.ino }, operatorIdentity);
+  assert.deepEqual(await readdir(target), ["OPERATOR.md"]);
+  assert.equal(await readFile(path.join(target, "OPERATOR.md"), "utf8"), "operator replacement\n");
+  const movedAfter = await lstat(moved);
+  assert.deepEqual({ dev: movedAfter.dev, ino: movedAfter.ino }, reservedIdentity);
+  assert.equal(await readFile(path.join(moved, bulkNames.at(-1)), "utf8"), `reserved ${bulkNames.at(-1)}\n`);
+  await assert.rejects(lstat(path.join(home, ".codex")), { code: "ENOENT" });
+  await assert.rejects(lstat(path.join(home, ".claude")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".agent-team-hooks", "install.json")), { code: "ENOENT" });
+  const journal = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "transaction.json"), "utf8"));
+  assert.equal(journal.status, "recovery_conflicts");
+  assert.equal(journal.recoveryConflicts.some((entry) => entry.target === target && entry.unresolvedPath === true
+    && entry.reservedIdentity?.dev === String(reservedIdentity.dev)
+    && entry.reservedIdentity?.ino === String(reservedIdentity.ino)), true);
+});
+
 test("artifact replacement after verification cannot change sealed install bytes", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-opened-artifact-"));
   temporary.push(home);

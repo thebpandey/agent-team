@@ -285,17 +285,22 @@ async function packageDigest(root, files) {
   return hash.digest("hex");
 }
 
-async function inspectPackageTree(root) {
+const DESCRIPTOR_ROOT = "/proc/self/fd";
+
+function descriptorPath(handle, ...parts) {
+  return path.join(DESCRIPTOR_ROOT, String(handle.fd), ...parts);
+}
+
+async function inspectPackageHandle(rootHandle) {
   const files = {};
   const contents = [];
-  const descriptorRoot = (handle) => process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : `/dev/fd/${handle.fd}`;
   const sameIdentity = (left, right) => ["dev", "ino"].every((key) => left[key] === right[key]);
   const sameDirectory = (left, right) => ["dev", "ino", "mtimeNs", "ctimeNs"].every((key) => left[key] === right[key]);
   async function walk(directory, relative = "") {
-    const entries = await readdir(descriptorRoot(directory), { withFileTypes: true });
+    const entries = await readdir(descriptorPath(directory), { withFileTypes: true });
     for (const entry of entries.sort((left, right) => Buffer.from(left.name).compare(Buffer.from(right.name)))) {
       const name = path.posix.join(relative, entry.name);
-      const child = path.join(descriptorRoot(directory), entry.name);
+      const child = descriptorPath(directory, entry.name);
       const namedBefore = await lstat(child, { bigint: true });
       if (!namedBefore.isDirectory() && !namedBefore.isFile()) throw new Error("installed_entry_invalid");
       let handle;
@@ -322,6 +327,21 @@ async function inspectPackageTree(root) {
       } finally { await handle?.close(); }
     }
   }
+  const before = await rootHandle.stat({ bigint: true });
+  if (!before.isDirectory()) throw new Error("installed_root_invalid");
+  await walk(rootHandle);
+  const after = await rootHandle.stat({ bigint: true });
+  if (!sameDirectory(before, after)) throw new Error("installed_root_changed");
+  const digest = createHash("sha256");
+  for (const [name, bytes] of contents.sort(([left], [right]) => Buffer.from(left).compare(Buffer.from(right)))) {
+    digest.update(name);
+    digest.update(bytes);
+  }
+  return { files, digest: digest.digest("hex"), identity: { dev: String(after.dev), ino: String(after.ino) } };
+}
+
+async function inspectPackageTree(root) {
+  const sameIdentity = (left, right) => ["dev", "ino"].every((key) => left[key] === right[key]);
   const namedBefore = await lstat(root, { bigint: true });
   if (!namedBefore.isDirectory()) throw new Error("installed_root_invalid");
   let rootHandle;
@@ -329,17 +349,11 @@ async function inspectPackageTree(root) {
     rootHandle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const before = await rootHandle.stat({ bigint: true });
     if (!before.isDirectory() || !sameIdentity(namedBefore, before)) throw new Error("installed_root_changed");
-    await walk(rootHandle);
-    const after = await rootHandle.stat({ bigint: true });
+    const observed = await inspectPackageHandle(rootHandle);
     const namedAfter = await lstat(root, { bigint: true });
-    if (!sameDirectory(before, after) || !sameIdentity(after, namedAfter)) throw new Error("installed_root_changed");
+    if (!sameIdentity(before, namedAfter)) throw new Error("installed_root_changed");
+    return observed;
   } finally { await rootHandle?.close(); }
-  const digest = createHash("sha256");
-  for (const [name, bytes] of contents.sort(([left], [right]) => Buffer.from(left).compare(Buffer.from(right)))) {
-    digest.update(name);
-    digest.update(bytes);
-  }
-  return { files, digest: digest.digest("hex") };
 }
 
 async function listFiles(root) {
@@ -360,6 +374,14 @@ async function managedPackageDigest(root, files) {
 
 async function exactFileMap(root, expectedNames) {
   const observed = await inspectPackageTree(root);
+  const actual = Object.keys(observed.files).sort();
+  const expected = [...expectedNames].sort();
+  if (!same(actual, expected)) throw new Error("installed_file_map_mismatch");
+  return observed.files;
+}
+
+async function exactFileMapHandle(handle, expectedNames) {
+  const observed = await inspectPackageHandle(handle);
   const actual = Object.keys(observed.files).sort();
   const expected = [...expectedNames].sort();
   if (!same(actual, expected)) throw new Error("installed_file_map_mismatch");
@@ -429,36 +451,44 @@ async function guardMatches(file, guard) {
     && (guard.kind !== "directory" || same(actual.files, guard.files));
 }
 
-async function copyPackage(sealedRoot, target, files) {
-  let created;
+async function descriptorInstallationSupported(testHooks = {}) {
+  if ((testHooks.platform ?? process.platform) !== "linux") return false;
+  const root = testHooks.descriptorRoot ?? DESCRIPTOR_ROOT;
+  let directory;
+  let child;
   try {
-    await mkdir(target, { mode: 0o700 });
-    const identity = await lstat(target);
-    created = { dev: identity.dev, ino: identity.ino };
-    for (const file of files) {
-      const source = path.join(sealedRoot, file);
-      const destination = path.join(target, file);
-      await mkdir(path.dirname(destination), { recursive: true });
-      const opened = await stableRegularBytes(source);
-      await durableWriteExclusive(destination, opened.bytes, opened.mode);
-    }
-  } catch (error) {
-    if (created) {
-      try {
-        const current = await lstat(target);
-        const actual = await listFiles(target);
-        let onlyInvocationFiles = current.dev === created.dev && current.ino === created.ino;
-        for (const name of actual) {
-          if (!files.includes(name) || hashBytes(await readFile(path.join(target, name))) !== hashBytes(await readFile(path.join(sealedRoot, name)))) {
-            onlyInvocationFiles = false;
-            break;
-          }
-        }
-        if (onlyInvocationFiles) await rm(target, { force: true, recursive: true });
-      } catch {}
-    }
-    throw error;
+    directory = await open(import.meta.dirname, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    child = await open(path.join(root, String(directory.fd), path.basename(import.meta.filename)),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    return (await child.stat()).isFile();
+  } catch { return false; } finally {
+    await child?.close();
+    await directory?.close();
   }
+}
+
+async function copyPackage(sealedRoot, target, files, onCreated, onReserved) {
+  await mkdir(target, { mode: 0o700 });
+  const created = await lstat(target, { bigint: true });
+  const createdIdentity = { dev: String(created.dev), ino: String(created.ino) };
+  await onCreated(createdIdentity);
+  const handle = await open(target, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const identity = await handle.stat({ bigint: true });
+  const named = await lstat(target, { bigint: true });
+  if (!identity.isDirectory() || identity.dev !== named.dev || identity.ino !== named.ino) {
+    await handle.close();
+    throw new Error("target_reservation_changed");
+  }
+  const reservation = { handle, root: descriptorPath(handle), identity: createdIdentity };
+  await onReserved(reservation);
+  for (const file of files) {
+    const source = path.join(sealedRoot, file);
+    const destination = descriptorPath(handle, ...file.split("/"));
+    await mkdir(path.dirname(destination), { recursive: true });
+    const opened = await stableRegularBytes(source);
+    await durableWriteExclusive(destination, opened.bytes, opened.mode);
+  }
+  return reservation;
 }
 
 function stamp(now) {
@@ -467,9 +497,10 @@ function stamp(now) {
 
 async function applyUndo(action) {
   if (action.kind === "remove_path") {
-    if (!(await present(action.path))) return null;
+    try { await lstat(action.path); } catch (error) { if (error.code === "ENOENT") return null; throw error; }
     if (!action.internal && !(await guardMatches(action.path, action.guard))) {
-      return { kind: "recovery", target: action.path, reason: "post_crash_resource_changed" };
+      return { kind: "recovery", target: action.path, reason: "post_crash_resource_changed",
+        ...(action.reservedIdentity ? { reservedIdentity: action.reservedIdentity, unresolvedPath: true } : {}) };
     }
     await rm(action.path, { force: true, recursive: Boolean(action.recursive) });
     return null;
@@ -762,7 +793,9 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
   if (replacementConflicts.length) return { status: "update_requires_manual_replacement", changed: false,
     receipt: receiptPath, backups: [], conflicts: replacementConflicts };
 
-  return durableTransaction(stateRoot, "install", async (addUndo, transactionId) => {
+  const reservations = new Map();
+  try {
+    return await durableTransaction(stateRoot, "install", async (addUndo, transactionId) => {
     await addUndo({ kind: "remove_path", path: backupRoot, recursive: true, internal: true });
     for (const observed of targetPreflight) {
       let current;
@@ -835,9 +868,26 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       }
       await mkdir(path.dirname(target), { recursive: true });
       if (!targetPresent) {
-        await addUndo({ kind: "remove_path", path: target, recursive: true,
-          guard: { kind: "package", files: installedNames, digest, fileMap: artifact.archiveFileMap } });
-        await copyPackage(sealedRoot, target, installedNames);
+        let createdIdentity;
+        await copyPackage(sealedRoot, target, installedNames, async (identity) => {
+          createdIdentity = identity;
+          await addUndo({ kind: "remove_path", path: target, recursive: true,
+            guard: { kind: "package", files: installedNames, digest, fileMap: artifact.archiveFileMap },
+            reservedIdentity: identity });
+        }, async (reservation) => {
+          if (reservation.identity.dev !== createdIdentity.dev || reservation.identity.ino !== createdIdentity.ino) {
+            throw new Error("target_reservation_changed");
+          }
+          reservations.set(runtime, reservation);
+          await testHooks.afterTargetReserved?.({ runtime, index: swapIndex });
+        });
+        const reservation = reservations.get(runtime);
+        const files = await exactFileMapHandle(reservation.handle, installedNames);
+        if (!same(files, artifact.archiveFileMap)) throw new Error("installed_file_map_mismatch");
+        const named = await lstat(target, { bigint: true });
+        if (String(named.dev) !== reservation.identity.dev || String(named.ino) !== reservation.identity.ino) {
+          throw new Error("target_changed_after_reservation");
+        }
       }
       targets.push({ runtime, path: target, mode: "copied", digest, files: installedNames });
       changed = true;
@@ -964,8 +1014,17 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       }
       if (unavailableRuntimes.has(target.runtime)) continue;
       await testHooks.afterInstalledFileMap?.({ runtime: target.runtime });
-      const files = await exactFileMap(target.path, installedNames);
+      const reservation = reservations.get(target.runtime);
+      const files = reservation
+        ? await exactFileMapHandle(reservation.handle, installedNames)
+        : await exactFileMap(target.path, installedNames);
       if (!same(files, artifact.archiveFileMap)) throw new Error("installed_file_map_mismatch");
+      if (reservation) {
+        const named = await lstat(target.path, { bigint: true });
+        if (String(named.dev) !== reservation.identity.dev || String(named.ino) !== reservation.identity.ino) {
+          throw new Error("target_changed_after_reservation");
+        }
+      }
       installedFileMaps[target.runtime] = { target: target.path, digest: fileMapDigest(files), files };
     }
     const receipt = {
@@ -1022,8 +1081,11 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       }
       await atomicText(receiptPath, receiptText);
     }
-    return { status: "installed", changed, receipt: receiptPath, backups, conflicts };
-  });
+      return { status: "installed", changed, receipt: receiptPath, backups, conflicts };
+    });
+  } finally {
+    await Promise.all([...reservations.values()].map(({ handle }) => handle.close()));
+  }
 }
 
 async function installPackageInternal(input, testHooks = {}) {
@@ -1034,6 +1096,13 @@ async function installPackageInternal(input, testHooks = {}) {
   if (typeof archive !== "string" || !path.isAbsolute(archive)) throw new Error("archive must be an absolute path");
   if (typeof checksums !== "string" || !path.isAbsolute(checksums)) throw new Error("checksums must be an absolute path");
   const selected = selection({ host, scope, projectRoot, trustedHost });
+  if (!(await descriptorInstallationSupported(testHooks))) return {
+    status: "unsupported_platform",
+    changed: false,
+    validation: { status: "unavailable", authority: "descriptor_root" },
+    selection: { host: selected.host, scope: selected.scope, ...(selected.projectRoot ? { projectRoot: selected.projectRoot } : {}) },
+    configured: [],
+  };
   const stateRoot = path.join(selected.scope === "project" ? selected.projectRoot : home, ".agent-team-hooks");
   const result = await withRecoverableInstallLock(stateRoot, {
     pid: process.pid,
