@@ -175,6 +175,14 @@ async function prepareOne(dependency, runner, budget) {
     };
   }
   const compatible = probe.status === "passed" && (dependency.version === null || probe.version === dependency.version);
+  if (["graphify", "ast-grep"].includes(dependency.id) && probe.status === "passed" && !compatible
+    && ownership.lifecycleOwnership === "unowned") {
+    return {
+      id: dependency.id, version: probe.version ?? null, detected: true, installed: "preserved", ...ownership,
+      functional: "not_run", availableToWorker: "not_run", status: "manual_action", observedAt,
+      boundary: `The canonical unowned ${dependency.id} executable reports ${probe.version ?? "an unknown version"}; expected ${dependency.version}. It was preserved without installer mutation.`,
+    };
+  }
   if (dependency.executable && !compatible && (probe.status === "passed" || dependency.id === "beads-viewer")) {
     return {
       id: dependency.id, version: probe.version ?? null, detected: true, installed: "preserved", ...ownership,
@@ -187,13 +195,23 @@ async function prepareOne(dependency, runner, budget) {
   if (!compatible) {
     const installation = await run({ dependency, phase: "install" });
     if (installation.status !== "passed") {
+      const installationOwnership = details(installation);
+      if (["manual_action", "customized"].includes(installation.status)) {
+        return {
+          id: dependency.id, version: installation.version ?? probe.version ?? null, detected,
+          installed: installation.installed ?? "preserved", ...installationOwnership,
+          functional: "not_run", availableToWorker: "not_run",
+          status: installation.status === "manual_action" ? "manual_action" : "cannot_use", observedAt,
+          boundary: dependencyBoundary(dependency, installation, "A destination appeared during installation and was preserved."),
+        };
+      }
       return {
         id: dependency.id, version: installation.version ?? probe.version ?? null, detected,
         installed: "not_installed", functional: "not_run", availableToWorker: "not_run", status: "failed",
         boundary: dependencyBoundary(dependency, installation, "Installation failed."), observedAt,
       };
     }
-    installed = "installed";
+    installed = installation.installed ?? "installed";
     const createdOwnership = details(installation);
     const installedProbe = await run({ dependency, phase: "probe" });
     ownership = details(installedProbe);
@@ -517,11 +535,22 @@ async function inspectSkillDestinations(dependency, paths, { budget, bounded = f
   }
   if (!present.length) return { status: "not_found" };
   if (absent.length) {
-    return manualSkillResult(dependency, paths, present[0].selectedPath, present[0].destination,
-      `Preserved mixed partial skill destinations ${present.map(({ destination }) => destination).join(", ")}; missing ${absent.map(({ destination }) => destination).join(", ")}.`, "partial");
+    const evidence = `Preserved mixed partial skill destinations ${present.map(({ destination }) => destination).join(", ")}; missing ${absent.map(({ destination }) => destination).join(", ")}.`;
+    const selected = [...present, ...absent].sort((left, right) => dependency.install.paths.indexOf(left.selectedPath) - dependency.install.paths.indexOf(right.selectedPath));
+    const classified = await Promise.all(selected.map(({ selectedPath, destination }) => manualSkillResult(
+      dependency, paths, selectedPath, destination, evidence, "partial")));
+    return { status: "manual_action", installed: "preserved", lifecycleOwnership: "unowned",
+      path: classified[0].path, paths: classified.map(({ path: selectedPath }) => selectedPath),
+      components: classified.flatMap(({ components }) => components), evidence };
   }
   const components = [];
-  for (const { selectedPath, destination } of present) {
+  const problems = [];
+  const preserve = async (selectedPath, destination, evidence, status) => {
+    const result = await manualSkillResult(dependency, paths, selectedPath, destination, evidence, status);
+    components.push(...result.components);
+    problems.push(result.evidence);
+  };
+  destinationLoop: for (const { selectedPath, destination } of present) {
     budget?.check();
     const requirement = dependency.compatibility?.selectedPaths?.find((entry) => entry.selectedPath === selectedPath);
     let allFiles;
@@ -529,12 +558,14 @@ async function inspectSkillDestinations(dependency, paths, { budget, bounded = f
       allFiles = await skillContents(destination, budget);
       const entrypoints = Object.keys(allFiles).filter((file) => path.posix.basename(file) === (dependency.compatibility?.entrypoint ?? "SKILL.md"));
       if (entrypoints.length !== 1 || entrypoints[0] !== (dependency.compatibility?.entrypoint ?? "SKILL.md")) {
-        return manualSkillResult(dependency, paths, selectedPath, destination,
+        await preserve(selectedPath, destination,
           `Preserved ambiguous skill entrypoint(s): ${entrypoints.join(", ") || "none"}.`, "ambiguous_entrypoint");
+        continue destinationLoop;
       }
     } catch (error) {
       if (error.code === "EVENT_DEADLINE") throw error;
-      return manualSkillResult(dependency, paths, selectedPath, destination, error.message);
+      await preserve(selectedPath, destination, error.message);
+      continue;
     }
     const metadataPath = path.join(destination, ".agent-team-source.json");
     let metadata;
@@ -543,17 +574,20 @@ async function inspectSkillDestinations(dependency, paths, { budget, bounded = f
       metadata = JSON.parse((await companionBytes(metadataPath, budget, 64 * 1024)).toString("utf8"));
       metadataPresent = true;
       if (metadata.source !== dependency.install.source || metadata.revision !== dependency.version || metadata.selectedPath !== selectedPath) {
-        return manualSkillResult(dependency, paths, selectedPath, destination, `Preserved existing skill path with different provenance: ${destination}`);
+        await preserve(selectedPath, destination, `Preserved existing skill path with different provenance: ${destination}`);
+        continue destinationLoop;
       }
     } catch (error) {
       if (error.code === "EVENT_DEADLINE") throw error;
       budget?.check();
-      if (error.code !== "ENOENT") return manualSkillResult(dependency, paths, selectedPath, destination,
-        `Preserved malformed or non-regular skill provenance: ${destination}. ${error.message}`);
+      if (error.code !== "ENOENT") {
+        await preserve(selectedPath, destination, `Preserved malformed or non-regular skill provenance: ${destination}. ${error.message}`);
+        continue destinationLoop;
+      }
     }
     if (!metadataPresent && !requirement) {
-      return manualSkillResult(dependency, paths, selectedPath, destination,
-        `Preserved existing skill path without a pinned compatibility declaration: ${destination}.`, "undeclared");
+      await preserve(selectedPath, destination, `Preserved existing skill path without a pinned compatibility declaration: ${destination}.`, "undeclared");
+      continue;
     }
     const requiredFiles = [];
     for (const required of requirement?.requiredFiles ?? []) {
@@ -565,12 +599,14 @@ async function inspectSkillDestinations(dependency, paths, { budget, bounded = f
           ? createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex")
           : createHash("sha256").update(bytes).digest("hex");
         if (actual !== required.digest.value) {
-          return manualSkillResult(dependency, paths, selectedPath, destination, `Preserved incompatible required skill file: ${file}.`);
+          await preserve(selectedPath, destination, `Preserved incompatible required skill file: ${file}.`);
+          continue destinationLoop;
         }
         requiredFiles.push({ path: required.path, digest: structuredClone(required.digest), size: bytes.length });
       } catch (error) {
         if (error.code === "EVENT_DEADLINE") throw error;
-        return manualSkillResult(dependency, paths, selectedPath, destination, `Preserved missing or invalid required skill file: ${file}. ${error.message}`);
+        await preserve(selectedPath, destination, `Preserved missing or invalid required skill file: ${file}. ${error.message}`);
+        continue destinationLoop;
       }
     }
     const ownership = metadataPresent ? "managed" : "unowned";
@@ -580,6 +616,12 @@ async function inspectSkillDestinations(dependency, paths, { budget, bounded = f
       compatibility: { status: requirement ? "exact" : "not_applicable", entrypoint: requirement ? dependency.compatibility.entrypoint : null,
         requiredFiles, unrelatedRegularFilesPreserved: requirement ? Object.keys(allFiles).some((file) => !requiredFiles.some(({ path: requiredPath }) => requiredPath === file)) : false },
     });
+  }
+  if (problems.length) {
+    return { status: "manual_action", installed: "preserved", lifecycleOwnership: "unowned", path: components[0].path,
+      paths: components.map(({ path: selected }) => selected), components: components.map((component) => ({
+        ...component, lifecycleOwnership: "unowned", installed: "preserved",
+      })), evidence: problems.join(" ") };
   }
   const lifecycleOwnership = components.every(({ lifecycleOwnership }) => lifecycleOwnership === "managed") ? "managed" : "unowned";
   return { status: "passed", version: dependency.version, path: components[0].path, paths: components.map(({ path: selected }) => selected), components,
@@ -1382,8 +1424,8 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       if (dependency.id === "graphify" && dependency.executable && dependency.executable !== canonicalGraphify) {
         return manualExecutableResult(canonicalGraphify, null, `Graphify must use the selected canonical path ${canonicalGraphify}.`);
       }
-      if (dependency.id === "ast-grep") ({ executable, identity } = await astGrepExecutable(dependency, paths, budget));
-      if (dependency.id === "graphify") identity = await stableExecutableIdentity({ executable, requested: executable,
+      if (phase !== "install" && dependency.id === "ast-grep") ({ executable, identity } = await astGrepExecutable(dependency, paths, budget));
+      if (phase !== "install" && dependency.id === "graphify") identity = await stableExecutableIdentity({ executable, requested: executable,
         canonical: canonicalGraphify, paths, budget });
     } catch (error) {
       if (error.code === "EVENT_DEADLINE") throw error;

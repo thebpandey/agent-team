@@ -211,6 +211,30 @@ test("Impeccable guidance is inspected separately and exact existing bytes are r
   assert.equal(receipt.lifecycleOwnership, "unowned", "a managed CLI must not confer lifecycle authority on unowned guidance");
 });
 
+test("multi-path manual classification retains every selected conservative component", async () => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-multi-manual-"));
+  const skillRoot = path.join(root, "skills");
+  const bytes = Buffer.from("# exact\n");
+  const paths = ["skills/first", "skills/second"];
+  for (const selected of paths) {
+    const destination = path.join(skillRoot, path.basename(selected));
+    await mkdir(destination, { recursive: true });
+    await writeFile(path.join(destination, "SKILL.md"), selected.endsWith("first") ? "edited\n" : bytes);
+  }
+  const dependency = { id: "multi", version: "1", install: { kind: "git-skill", source: "fixture", revision: "1", paths },
+    compatibility: { kind: "required-files", entrypoint: "SKILL.md", allowUnrelatedRegularFiles: true, selectedPaths: paths.map((selectedPath) => ({
+      selectedPath, requiredFiles: [{ path: "SKILL.md", digest: { algorithm: "sha256", value: createHash("sha256").update(bytes).digest("hex") } }],
+    })) } };
+  const runner = createDependencyRunner({ host: "codex", scope: "project",
+    paths: { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot } });
+  const result = await runner({ dependency, phase: "probe" });
+  assert.equal(result.status, "manual_action");
+  assert.deepEqual(result.paths, paths.map((selected) => path.join(skillRoot, path.basename(selected))));
+  assert.equal(result.components.length, 2);
+  assert.ok(result.components.every(({ lifecycleOwnership }) => lifecycleOwnership === "unowned"));
+});
+
 test("probe ownership metadata survives functional and worker readiness failures", async () => {
   const { prepareDependencies } = await import("../hooks/lib/dependencies.mjs");
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-receipt-metadata-"));
@@ -280,6 +304,86 @@ test("an exact canonical Graphify executable is reused unowned without invoking 
   const linkedRunner = createDependencyRunner({ host: "codex", scope: "project",
     paths: { projectRoot: root, toolRoot: linkedRoot, skillRoot: path.join(root, "skills") } });
   assert.equal((await linkedRunner({ dependency: { ...dependency }, phase: "probe" })).status, "manual_action");
+});
+
+test("missing Graphify and ast-grep reach their fresh installers before identity binding", async (t) => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const { CATALOG_BY_ID } = await import("../hooks/lib/dependency-catalog.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-absent-executable-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const toolRoot = path.join(root, "tools");
+  const bin = path.join(toolRoot, "bin");
+  await mkdir(bin, { recursive: true });
+  const uv = path.join(bin, "uv");
+  const graphify = path.join(bin, "graphify");
+  await writeFile(uv, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(graphify)},'#!${process.execPath}\\nconsole.log("graphify 0.9.57")\\n',{mode:0o755});\n`, { mode: 0o755 });
+  const wrapper = path.join(root, "wrapper");
+  await mkdir(wrapper);
+  await writeFile(path.join(wrapper, "npm"), `#!${process.execPath}\nprocess.exit(7);\n`, { mode: 0o755 });
+  const priorPath = process.env.PATH;
+  process.env.PATH = `${wrapper}${path.delimiter}${priorPath}`;
+  t.after(() => { process.env.PATH = priorPath; });
+  const paths = { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") };
+  const runner = createDependencyRunner({ host: "codex", scope: "project", paths });
+  assert.equal((await runner({ dependency: CATALOG_BY_ID.get("graphify"), phase: "install" })).status, "passed");
+  assert.equal((await runner({ dependency: CATALOG_BY_ID.get("ast-grep"), phase: "install" })).status, "failed");
+});
+
+test("canonical incompatible Graphify is preserved without invoking its installer", async () => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const { CATALOG_BY_ID } = await import("../hooks/lib/dependency-catalog.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-incompatible-graphify-"));
+  const toolRoot = path.join(root, "tools");
+  const executable = path.join(toolRoot, "bin", "graphify");
+  await mkdir(path.dirname(executable), { recursive: true });
+  await writeFile(executable, `#!${process.execPath}\nconsole.log('graphify 0.1.0');\n`, { mode: 0o755 });
+  const dependency = CATALOG_BY_ID.get("graphify");
+  const actual = createDependencyRunner({ host: "codex", scope: "project",
+    paths: { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") } });
+  const calls = [];
+  const setupPath = path.join(root, "setup.json");
+  await writeFile(setupPath, `${JSON.stringify({ skill: "agent-team", projectId: "p", version: 1,
+    tracker: { kind: "markdown", path: "TASKS.md" }, plan: { requiredCapabilities: ["graphify"] } })}\n`);
+  const { prepareDependencies } = await import("../hooks/lib/dependencies.mjs");
+  const result = await prepareDependencies({ setupPath, expectedVersion: 1, operationId: "wrong-graphify",
+    writer: { id: "owner", role: "project_orchestrator" }, loadRegistry: async () => ({ projectOwner: "owner" }),
+    host: "codex", scope: "project", selections: { defaults: [] }, paths: { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") },
+    runner: async (request) => { if (request.dependency.id === "graphify") { calls.push(request.phase); return actual(request); }
+      return { status: "passed", version: request.dependency.version }; } });
+  const receipt = result.receipts.find(({ id }) => id === "graphify");
+  assert.equal(receipt.status, "manual_action");
+  assert.deepEqual(calls, ["probe"]);
+  assert.equal(receipt.path, executable);
+  assert.equal(receipt.lifecycleOwnership, "unowned");
+  assert.equal(await readFile(executable, "utf8"), `#!${process.execPath}\nconsole.log('graphify 0.1.0');\n`);
+});
+
+test("prepareOne preserves exact and manual race-time installation classifications", async () => {
+  const { prepareDependencies } = await import("../hooks/lib/dependencies.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-install-classification-"));
+  const selectedPath = path.join(root, "skills", "using-superpowers");
+  const component = { id: "skill", path: selectedPath, realpath: selectedPath, installed: "reused_unowned",
+    lifecycleOwnership: "unowned", compatibility: { status: "exact", entrypoint: "SKILL.md", requiredFiles: [], unrelatedRegularFilesPreserved: true } };
+  for (const [name, installation, expected] of [
+    ["exact", { status: "passed", installed: "reused_unowned", lifecycleOwnership: "unowned", path: selectedPath, paths: [selectedPath], components: [component] }, "reused_unowned"],
+    ["manual", { status: "manual_action", installed: "preserved", lifecycleOwnership: "unowned", path: selectedPath, paths: [selectedPath],
+      components: [{ ...component, installed: "preserved", compatibility: { ...component.compatibility, status: "incompatible" } }] }, "manual_action"],
+  ]) {
+    const setupPath = path.join(root, `${name}.json`);
+    await writeFile(setupPath, `${JSON.stringify({ skill: "agent-team", projectId: "p", version: 1, tracker: { kind: "markdown", path: "TASKS.md" } })}\n`);
+    let installed = false;
+    const result = await prepareDependencies({ setupPath, expectedVersion: 1, operationId: name,
+      writer: { id: "owner", role: "project_orchestrator" }, loadRegistry: async () => ({ projectOwner: "owner" }),
+      host: "codex", scope: "project", selections: { defaults: ["superpowers"] }, paths: { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot: path.join(root, "skills") },
+      runner: async ({ dependency, phase }) => dependency.id !== "superpowers" ? { status: "passed", version: dependency.version }
+        : phase === "probe" ? installed ? installation : { status: "not_found" }
+        : phase === "install" ? (installed = true, installation) : { status: "passed" } });
+    const receipt = result.receipts.find(({ id }) => id === "superpowers");
+    assert.equal(name === "exact" ? receipt.installed : receipt.status, expected);
+    assert.equal(receipt.path, selectedPath);
+    assert.equal(receipt.lifecycleOwnership, "unowned");
+    assert.deepEqual(receipt.components, installation.components);
+  }
 });
 
 test("ast-grep uses its canonical absolute entrypoint and accepts only a verified same-package sg alias", async () => {
