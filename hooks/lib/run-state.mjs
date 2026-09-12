@@ -24,6 +24,7 @@ const blocked = new Set(["blocked", "parked", "waiting"]);
 const unclaimed = new Set(["", "none", "unassigned", "-"]);
 const conflict = (reason) => ({ status: "conflict", reason });
 const unique = (items) => Array.isArray(items) && new Set(items).size === items.length;
+const dependencyEvidenceUnavailable = (task) => ["unavailable", "unknown"].includes(String(task?.dependencyEvidence ?? "").toLowerCase());
 
 export function effectiveRunFingerprint(run) {
   return createHash("sha256").update(stable(run)).digest("hex");
@@ -56,6 +57,7 @@ export function validateEffectiveRun(run, canonicalTasks) {
   for (const id of run.taskIds) {
     const task = taskById.get(id);
     if (task.hierarchyUnknown) return "invalid_effective_run";
+    if (dependencyEvidenceUnavailable(task)) return "unresolved_scope_dependency";
     for (const dependency of dependencies(task)) {
       const predecessor = taskById.get(dependency);
       if (!scope.has(dependency) && (!predecessor || !completed.has(String(predecessor.status).toLowerCase()) && !cancelled.has(String(predecessor.status).toLowerCase()))) return "unresolved_scope_dependency";
@@ -124,6 +126,7 @@ export async function reconcileRun(project, request, options = {}) {
   return mutateOperationalState(project, effectiveRequest, async (state, canonical) => {
     const previousRun = structuredClone(state.run);
     if (!previousRun) return conflict("run_not_active");
+    if (previousRun.paused !== undefined && typeof previousRun.paused !== "boolean") return conflict("invalid_effective_run");
     if (previousRun.paused) return conflict("paused");
     const current = await loadCanonicalTracker(project, { budget: options.budget });
     if (current.tracker.status !== "current") return conflict("tracker_unavailable");
@@ -146,6 +149,8 @@ export async function reconcileRun(project, request, options = {}) {
     const run = { ...structuredClone(request.run), ...provenance, paused: previousRun.paused ?? false, operationalVersion: (canonical.state.stateVersion ?? 0) + 1,
       blockers: structuredClone(previousRun.blockers ?? []), pendingDeliveryIds: [...(previousRun.pendingDeliveryIds ?? [])], deployedTaskIds: [...(previousRun.deployedTaskIds ?? [])],
       terminalClassification: previousRun.terminalClassification ?? "unknown" };
+    const constructedProblem = validateEffectiveRun(run, current.tasks);
+    if (constructedProblem) return conflict(constructedProblem);
     const result = { previousRun, run: structuredClone(run), authenticatedActor: effectiveRequest.authenticatedActor, authoritativeSource: request.authoritativeSource,
       reason: request.reason, affectedTaskIds: [...request.affectedTaskIds], trackerFingerprint: current.tracker.fingerprint,
       deploymentHeld: request.authoritativeSource === "compatibility_migration" || run.autoDeploy === false };
@@ -157,7 +162,7 @@ function safeEligible(tasks, run) {
   const taskById = new Map(tasks.map((task) => [task.id, task]));
   const explicitlyBlocked = new Set((run?.blockers ?? []).map(({ taskId }) => taskId));
   return tasks.filter((task) => run?.taskIds?.includes(task.id) && topLevel(task) && actionable.has(String(task.status).toLowerCase())
-    && !explicitlyBlocked.has(task.id) && unclaimed.has(task.owner ?? "")
+    && !dependencyEvidenceUnavailable(task) && !explicitlyBlocked.has(task.id) && unclaimed.has(task.owner ?? "")
     && dependencies(task).every((id) => completed.has(String(taskById.get(id)?.status).toLowerCase()) || cancelled.has(String(taskById.get(id)?.status).toLowerCase()))).map(({ id }) => id);
 }
 
@@ -196,12 +201,28 @@ function sameOwner(value, expected) {
     && validId(value?.ownerSessionId) && Number.isSafeInteger(value?.ownershipEpoch) && value.ownershipEpoch > 0;
 }
 
+const joinedEvidenceKeys = ["taskId", "sourceRevision", "revision", "integratedRevision", "completion", "integration", "review", "checks", "preview", "target", "recovery"];
+const fullRevision = (value) => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+const boundedAuthority = (value) => typeof value === "string" && value.trim() === value && value.length > 0 && Buffer.byteLength(value) <= 4096;
+
 function evidenceReady(evidence, id, canonical) {
   const integrationOwner = canonical.state?.integration;
   const releaseOwner = canonical.state?.release;
-  return evidence?.taskId === id && evidence.completion?.status === "passed" && evidence.integration?.status === "passed"
-    && evidence.revision === evidence.integratedRevision && evidence.review?.status === "passed" && Array.isArray(evidence.checks) && evidence.checks.length > 0
-    && evidence.checks.every((check) => check?.status === "passed") && ["passed", "not_required"].includes(evidence.preview?.status)
+  const source = evidence?.sourceRevision;
+  const boundary = evidence?.revision;
+  return exactKeys(evidence, joinedEvidenceKeys) && evidence.taskId === id && fullRevision(source) && fullRevision(boundary)
+    && evidence.integratedRevision === boundary
+    && evidence.completion?.taskId === id && evidence.completion?.status === "passed" && evidence.completion?.sourceRevision === source
+    && evidence.integration?.taskId === id && evidence.integration?.status === "passed" && evidence.integration?.sourceRevision === source
+    && evidence.integration?.boundaryRevision === boundary
+    && evidence.review?.taskId === id && evidence.review?.status === "passed" && evidence.review?.revision === source
+    && Array.isArray(evidence.checks) && evidence.checks.length > 0
+    && evidence.checks.every((check) => check && check.status === "passed" && boundedAuthority(check.name))
+    && evidence.preview?.taskId === id && evidence.preview?.revision === boundary && typeof evidence.preview?.required === "boolean"
+    && (evidence.preview.required ? evidence.preview.status === "passed" : evidence.preview.status === "not_required")
+    && evidence.target?.taskId === id && evidence.target?.revision === boundary && boundedAuthority(evidence.target?.target)
+    && evidence.recovery?.taskId === id && evidence.recovery?.revision === boundary
+    && boundedAuthority(evidence.recovery?.artifact) && boundedAuthority(evidence.recovery?.action)
     && evidence.target?.status === "authorized" && evidence.recovery?.status === "ready"
     && sameOwner(evidence.integration, integrationOwner) && sameOwner(evidence.preview, integrationOwner)
     && sameOwner(evidence.target, releaseOwner) && sameOwner(evidence.recovery, releaseOwner)
@@ -228,10 +249,10 @@ export function readRunDecision(canonical, { writerLiveness = {} } = {}) {
   const runProvenance = valid ? { ownerHost: run.ownerHost, ownerSessionId: run.ownerSessionId, ownershipEpoch: run.ownershipEpoch,
     historical: !currentOwner || run.ownerHost !== currentOwner.ownerHost || run.ownerSessionId !== currentOwner.ownerSessionId || run.ownershipEpoch !== currentOwner.ownershipEpoch } : null;
   const holdReasons = [];
+  const selectedBatchTaskIds = valid ? selectReleaseBatch(canonical, classification) : [];
   if (!valid || classification.kind === "unknown") holdReasons.push("effective_run_unavailable");
   if (valid && !run.autoDeploy) holdReasons.push("auto_deploy_disabled");
-  if (runProvenance?.historical) holdReasons.push("historical_run_provenance");
-  const selectedBatchTaskIds = valid ? selectReleaseBatch(canonical, classification) : [];
+  if (runProvenance?.historical && selectedBatchTaskIds.length === 0) holdReasons.push("historical_run_provenance");
   if (valid && run.autoDeploy && selectedBatchTaskIds.length === 0) holdReasons.push("batch_not_ready");
   return { status: valid ? "available" : "unavailable", effectiveRun: run ? structuredClone(run) : null,
     effectiveRunFingerprint: valid ? effectiveRunFingerprint(run) : null, classification, selectedBatchTaskIds,

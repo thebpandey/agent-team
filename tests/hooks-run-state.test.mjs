@@ -37,6 +37,7 @@ test("effective run validation is closed complete and fingerprint stable", () =>
     { ...valid, teamLimit: 65 }, { ...valid, batchSize: 0 }, { ...valid, blockers: [{ taskId: "AT-001", reason: "" }] },
     { ...valid, pendingDeliveryIds: ["AT-001"], deployedTaskIds: ["AT-001"] },
   ]) assert.equal(validateEffectiveRun(invalid, [task("AT-001")]), "invalid_effective_run");
+  assert.equal(validateEffectiveRun(valid, [task("AT-001", "ready", { dependencyEvidence: "unavailable" })]), "unresolved_scope_dependency");
   assert.notEqual(effectiveRunFingerprint(valid), effectiveRunFingerprint({ ...valid, taskIds: ["AT-001", "AT-002"] }));
 });
 
@@ -58,6 +59,8 @@ test("classification recomputes every disjoint run state from canonical facts", 
   assert.equal(classifyRun(canonical(run({ mode: "continuous", deployedTaskIds: ["AT-001"] }), [task("AT-001", "closed")])).kind, "continuous_scope_exhausted");
   assert.equal(classifyRun(canonical(run({ blockers: [{ taskId: "AT-001", reason: "Needs authority." }] }), [task("AT-001", "blocked")])).kind, "blocked_tail");
   assert.equal(classifyRun(canonical({ ...run(), extra: true }, [task("AT-001")])).kind, "unknown");
+  const unavailable = canonical(run(), [task("AT-001", "ready", { dependencyEvidence: "unknown" })]);
+  assert.deepEqual(classifyRun(unavailable), { kind: "unknown", eligibleTaskIds: [], blockedTaskIds: [] });
 });
 
 test("qualified writer liveness never aliases equal sessions across hosts", () => {
@@ -111,6 +114,29 @@ test("legacy reconciliation fills provenance once and preserves runtime facts", 
   assert.equal(result.result.run.ownerHost, "codex");
 });
 
+test("legacy reconciliation rejects malformed preserved runtime before write", async () => {
+  const value = await fixture();
+  const base = { mode: "finite", taskIds: ["AT-001"], paused: false, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "unknown" };
+  const malformed = [
+    { ...base, blockers: [{ taskId: "AT-001", reason: "" }] },
+    { ...base, pendingDeliveryIds: ["AT-001", "AT-001"] },
+    { ...base, pendingDeliveryIds: ["AT-001"], deployedTaskIds: ["AT-001"] },
+    { ...base, terminalClassification: "claimed_done" },
+    { ...base, paused: "false" },
+  ];
+  for (const [index, legacy] of malformed.entries()) {
+    await writeFile(value.project.paths.state, JSON.stringify({ ...value.current.state, run: legacy }, null, 2));
+    const current = await loadCanonicalState(value.project);
+    const request = { operationId: `legacy-malformed-${index}`, expectedTrackerFingerprint: current.tracker.fingerprint,
+      expectedRunFingerprint: effectiveRunFingerprint(legacy), authoritativeSource: "compatibility_migration", reason: "Reject malformed legacy runtime.",
+      affectedTaskIds: ["AT-001"], run: proposed("compatibility_migration") };
+    const before = await readFile(value.project.paths.state);
+    const result = await reconcileRun(value.project, request, { actorSessionId: "owner-session", expectedVersion: current.state.stateVersion ?? 0, nativeIdentity: value.nativeIdentity });
+    assert.equal(result.status, "conflict");
+    assert.deepEqual(await readFile(value.project.paths.state), before);
+  }
+});
+
 test("ordinary reconciliation preserves historical run provenance", async () => {
   const value = await fixture();
   const existing = run({ autoDeploy: false });
@@ -125,9 +151,13 @@ test("ordinary reconciliation preserves historical run provenance", async () => 
 
 function joinedEvidence(id, revision = "a".repeat(40)) {
   const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
-  return { taskId: id, sourceRevision: revision, revision, integratedRevision: revision, completion: { status: "passed" }, integration: { status: "passed", ...actor },
-    review: { status: "passed" }, checks: [{ name: "unit", status: "passed" }], preview: { status: "not_required", required: false, revision, ...actor },
-    target: { status: "authorized", revision, ...actor }, recovery: { status: "ready", revision, ...actor } };
+  return { taskId: id, sourceRevision: revision, revision, integratedRevision: revision,
+    completion: { taskId: id, status: "passed", sourceRevision: revision },
+    integration: { taskId: id, status: "passed", sourceRevision: revision, boundaryRevision: revision, ...actor },
+    review: { taskId: id, status: "passed", revision }, checks: [{ name: "unit", status: "passed" }],
+    preview: { taskId: id, status: "not_required", required: false, revision, ...actor },
+    target: { taskId: id, status: "authorized", target: "origin/main", revision, ...actor },
+    recovery: { taskId: id, status: "ready", artifact: "release-tag", action: "rollback", revision, ...actor } };
 }
 
 test("delivery evidence joins exact passed lineage and current generation", async () => {
@@ -163,6 +193,20 @@ test("release batches are oldest first full or terminally underfilled", () => {
   const stale = structuredClone(view);
   stale.deliveryEvidence["AT-001"].target.ownershipEpoch = 0;
   assert.deepEqual(selectReleaseBatch(stale, { kind: "finite_exhausted", eligibleTaskIds: [], blockedTaskIds: [] }), []);
+  const invalid = [
+    (evidence) => { evidence.extra = true; },
+    (evidence) => { evidence.completion.sourceRevision = "b".repeat(40); },
+    (evidence) => { evidence.integration.boundaryRevision = "b".repeat(40); },
+    (evidence) => { evidence.preview.required = true; },
+    (evidence) => { evidence.target.target = ""; },
+    (evidence) => { delete evidence.recovery.artifact; },
+    (evidence) => { evidence.recovery.action = ""; },
+  ];
+  for (const alter of invalid) {
+    const malformed = structuredClone(view);
+    alter(malformed.deliveryEvidence["AT-001"]);
+    assert.deepEqual(selectReleaseBatch(malformed, { kind: "finite_exhausted", eligibleTaskIds: [], blockedTaskIds: [] }), []);
+  }
 });
 
 test("run decision is a pure held projection of one canonical snapshot", () => {
@@ -173,4 +217,17 @@ test("run decision is a pure held projection of one canonical snapshot", () => {
   assert.equal(decision.deploymentHeld, true);
   assert.deepEqual(decision.holdReasons, ["auto_deploy_disabled"]);
   assert.deepEqual(input, before);
+});
+
+test("historical run provenance is held only without current generation batch authority", () => {
+  const historical = run({ ownerSessionId: "former-owner", pendingDeliveryIds: ["AT-001"], batchSize: 2 });
+  const terminal = { kind: "finite_exhausted", eligibleTaskIds: [], blockedTaskIds: [] };
+  const withoutEvidence = canonical(historical, [task("AT-001", "done")]);
+  assert.ok(readRunDecision(withoutEvidence).holdReasons.includes("historical_run_provenance"));
+  const authorized = canonical(historical, [task("AT-001", "done")], { deliveryEvidence: { "AT-001": joinedEvidence("AT-001") } });
+  const decision = readRunDecision(authorized);
+  assert.deepEqual(decision.classification, terminal);
+  assert.deepEqual(decision.selectedBatchTaskIds, ["AT-001"]);
+  assert.equal(decision.holdReasons.includes("historical_run_provenance"), false);
+  assert.equal(decision.deploymentHeld, false);
 });
