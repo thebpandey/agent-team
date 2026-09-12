@@ -150,7 +150,38 @@ No skill can guarantee periodic messages after a final response or host terminat
 
 The 60-second heartbeat is a new recurring schedule relative to Agent-Team 7.1.x. It exists only while an authorized orchestration turn has active workers; it creates no cron job, daemon, hosted monitor, or activity after the turn ends. Each heartbeat consumes the host's ordinary model and output-token usage. Exact incremental cost is unknown because account pricing and cache behavior are not exposed here; implementations must keep the message to one compact state line and must not create extra verifier/developer calls solely to populate a heartbeat.
 
-### 9. Status language separates history, runtime, readiness, and authority
+### 9. Batch exhaustion and active run state are evidence-based
+
+A configured deployment batch size is a preferred full-batch threshold, not a minimum release cardinality. The orchestrator never asks for a one-time exception merely because the final eligible set contains fewer than the configured batch size.
+
+The orchestrator submits a smaller final batch only after proving one of these terminal conditions from canonical state:
+
+- the admitted finite task set is exhausted;
+- a continuous run's explicitly scoped task list is exhausted; or
+- every remaining scoped task is blocked, no safe independent work is eligible, and the smaller batch is otherwise release-ready.
+
+Open, in-progress, unclaimed-but-eligible, or unreconciled scoped tasks mean the run is not exhausted. The orchestrator continues supervision, claims/refills eligible work, or performs the supported scope/ownership reconciliation. It does not reinterpret “no agent currently running” as “no tasks remain.”
+
+At run start, Agent-Team copies the effective run choices into active operational state with their provenance:
+
+```json
+{
+  "mode": "finite | continuous",
+  "taskIds": ["canonical delivery IDs"],
+  "teamLimit": 1,
+  "autoDeploy": false,
+  "batchSize": 1,
+  "source": "explicit_run | saved_default | compatibility_migration"
+}
+```
+
+Active state cannot omit these values and later infer them again from mutable setup defaults. If setup, tracker, recovery, and active state disagree, deployment is held and the owner performs a versioned reconciliation. Independent safe development continues. The reconciliation records the prior values, chosen authoritative source, affected task IDs, owner, operation ID, and new operational version; it never silently enables deployment or widens scope.
+
+Release selection counts unique eligible top-level delivery IDs, not commits, subagents, tests, subtasks, or narrative summaries. Every candidate delivery must carry exact integrated revision, review/check evidence, preview state when applicable, and deployment-target/recovery authority. Unlinked claims such as test counts in a status message are not release evidence.
+
+Database migrations, Vercel, DNS, credentials, and other external gates block only their affected tasks or release batch unless the dependency graph proves they are global. While such a decision is pending, the orchestrator reports it immediately, continues unrelated teams, refills freed slots, and includes the unchanged blocker in its bounded heartbeat. A final blocking question is permitted only when no authorized independent work remains.
+
+### 10. Status language separates history, runtime, readiness, and authority
 
 Status output uses four distinct labels:
 
@@ -218,6 +249,8 @@ The host already owns turn lifecycle and worker controls. A second scheduler can
 ### Orchestrator behavior
 
 Pressure scenarios verify that a user status question during active work receives an answer and the run continues; completed workers trigger review; freed slots refill; task-scoped blockers do not stop other work; unchanged active work emits bounded heartbeats; and a global blocker produces a durable recovery record before the final question.
+
+Batch/run scenarios verify that a finite exhausted run automatically submits one eligible delivery against a larger configured batch size; a non-exhausted run with one completed delivery keeps working; a continuous scoped run flushes only at scoped exhaustion; all-blocked exhaustion permits the final smaller batch only when its release gates pass; contradictory setup/active settings hold deployment but preserve independent work; effective run settings remain fixed after setup defaults change; top-level delivery IDs are counted once; and unlinked test-count prose cannot satisfy release evidence.
 
 Skill-instruction changes follow writing-skills RED/GREEN pressure testing. Runtime changes follow code TDD, complete suite verification, independent review, exact artifact checks, and fresh host installation/readiness verification.
 
