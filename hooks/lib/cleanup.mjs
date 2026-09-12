@@ -19,6 +19,7 @@ export async function cleanupDevelopmentWorktree(project, request, options = {})
       maxBuffer: 1024 * 1024, ...(budget ? { signal: budget.signal } : {}) });
   };
   return mutateOperationalState(project, request, async (state, canonical, { persistIntent }) => {
+    if (state.run !== undefined && (!Array.isArray(state.run?.taskIds) || !state.run.taskIds.includes(request.taskId))) return retained("outside_scope");
     const gate = state.cleanup?.[request.taskId];
     const target = path.resolve(request.worktree ?? project.root);
     if (!gate || gate.worktree !== target || gate.revision !== request.expectedRevision) return retained("retain_identity_mismatch");

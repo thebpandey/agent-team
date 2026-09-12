@@ -115,6 +115,45 @@ export async function startRun(project, request, options = {}) {
   }, { ...options, nativeIdentity: actor.nativeIdentity });
 }
 
+export async function extendRunScope(project, request, options = {}) {
+  if (!exactKeys(request, ["operationId", "expectedTrackerFingerprint", "taskIds", "reason"]) || !validId(request?.operationId)
+    || !/^[a-f0-9]{64}$/.test(request?.expectedTrackerFingerprint ?? "") || !validReason(request?.reason)
+    || !unique(request?.taskIds) || !request.taskIds.length || request.taskIds.some((id) => !validId(id))) return conflict("invalid_request");
+  const actor = await authenticatedActor(project, options);
+  if (!actor) return conflict("project_owner_required");
+  const authenticated = { ownerHost: actor.ownerHost, ownerSessionId: actor.ownerSessionId, ownershipEpoch: actor.ownershipEpoch };
+  const effectiveRequest = { ...request, actorSessionId: options.actorSessionId, expectedVersion: options.expectedVersion, authenticatedActor: authenticated };
+  return mutateOperationalState(project, effectiveRequest, async (state, canonical) => {
+    const previousRun = structuredClone(state.run);
+    if (!previousRun) return conflict("run_not_active");
+    if (previousRun.paused) return conflict("paused");
+    const current = await loadCanonicalTracker(project, { budget: options.budget });
+    if (current.tracker.status !== "current") return conflict("tracker_unavailable");
+    if (current.tracker.fingerprint !== request.expectedTrackerFingerprint) return conflict("stale_tracker");
+    if (validateEffectiveRun(previousRun, current.tasks)) return conflict("invalid_effective_run");
+    if (canonical.registry.projectOwnerHost !== actor.ownerHost || canonical.registry.projectOwner !== actor.ownerSessionId
+      || canonical.registry.ownershipEpoch !== actor.ownershipEpoch) return conflict("project_owner_required");
+    const prior = new Set(previousRun.taskIds);
+    const additions = request.taskIds.map((id) => current.tasks.find((task) => task.id === id));
+    if (additions.some((task, index) => !task || prior.has(request.taskIds[index]) || !topLevel(task) || task.hierarchyUnknown)) {
+      return conflict("scope_extension_not_strict_addition");
+    }
+    const taskIds = [...previousRun.taskIds, ...request.taskIds];
+    const run = { ...previousRun, taskIds };
+    const problem = validateEffectiveRun(run, current.tasks);
+    if (problem) return conflict(problem);
+    const previousRunFingerprint = effectiveRunFingerprint(previousRun);
+    const runFingerprint = effectiveRunFingerprint(run);
+    const appliedAt = (options.now ?? (() => new Date().toISOString()))();
+    const extension = { operationId: request.operationId, authenticatedActor: authenticated, reason: request.reason,
+      previousTaskIds: [...previousRun.taskIds], addedTaskIds: [...request.taskIds], taskIds, trackerFingerprint: current.tracker.fingerprint,
+      previousRunFingerprint, runFingerprint, resultingStateVersion: (canonical.state.stateVersion ?? 0) + 1, appliedAt };
+    const result = { previousTaskIds: [...previousRun.taskIds], addedTaskIds: [...request.taskIds], taskIds, trackerFingerprint: current.tracker.fingerprint,
+      previousRunFingerprint, runFingerprint, authenticatedActor: authenticated };
+    return { state: { ...state, run, scopeExtensions: [...(state.scopeExtensions ?? []), extension] }, result };
+  }, { ...options, nativeIdentity: actor.nativeIdentity });
+}
+
 export async function reconcileRun(project, request, options = {}) {
   if (!exactKeys(request, ["operationId", "expectedTrackerFingerprint", "expectedRunFingerprint", "authoritativeSource", "reason", "affectedTaskIds", "run"])
     || !validId(request?.operationId) || ![request?.expectedTrackerFingerprint, request?.expectedRunFingerprint].every((value) => /^[a-f0-9]{64}$/.test(value ?? ""))

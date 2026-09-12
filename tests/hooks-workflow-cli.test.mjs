@@ -131,6 +131,36 @@ test("run command routing is exact native-qualified and shell mutation safe", as
   await assert.rejects(runWorkflowCommand("run-begin", { project: root, request }), /Unknown workflow command/);
 });
 
+test("scoped migration routes are exact closed and native qualified", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-workflow-scope-"));
+  temporary.push(root, `${root}-feature`, `${root}-remote`);
+  await policyFixture(root, { qualifiedOwnership: true });
+  const project = await resolveProject(root);
+  const state = (await loadCanonicalState(project)).state;
+  state.run = { id: "scope-run", ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1, mode: "finite", taskIds: ["AT-001"],
+    teamLimit: 1, autoDeploy: false, batchSize: 1, source: "explicit_run", settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+    paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
+  await writeFile(project.paths.state, JSON.stringify(state, null, 2));
+  await writeFile(project.paths.tasks, `${await readFile(project.paths.tasks, "utf8")}| AT-002 | Later | none | AT-001 | ready | none | Claim. | task | |\n`);
+  const current = await loadCanonicalState(project);
+  const body = { operationId: "workflow-scope-extension", expectedTrackerFingerprint: current.tracker.fingerprint, taskIds: ["AT-002"], reason: "Admit later work." };
+  const file = await requestFile({ requests: path.join(root, ".agent-team") }, "workflow-scope-extension", envelope("owner-session", current.state.stateVersion ?? 0, body));
+  const before = await readFile(project.paths.state);
+  assert.equal((await invoke("run-scope-extend", "--project", root, "--request", file)).reason, "project_owner_required");
+  assert.deepEqual(await readFile(project.paths.state), before);
+  assert.equal((await runWorkflowCommand("run-scope-extend", { project: root, request: file }, { nativeIdentity: {
+    host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1,
+  } })).status, "applied");
+  const malformed = await requestFile({ requests: path.join(root, ".agent-team") }, "workflow-scope-extra", envelope("owner-session", 1, { ...body, operationId: "extra", extra: true }));
+  assert.equal((await runWorkflowCommand("run-scope-extend", { project: root, request: malformed }, { nativeIdentity: {
+    host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1,
+  } })).reason, "invalid_request");
+});
+
+test("obsolete evidence root route is unknown before project access", async () => {
+  await assert.rejects(runWorkflowCommand("evidence-root-register", { project: path.join(os.tmpdir(), "does-not-exist"), request: "missing" }), /Unknown workflow command/);
+});
+
 test("run decision is shell-readable and byte identical", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-workflow-decision-"));
   temporary.push(root, `${root}-feature`, `${root}-remote`);

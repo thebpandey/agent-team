@@ -37,10 +37,12 @@ const legacyTrackerSelection = (tracker) => tracker?.kind === "beads"
   : trackerSelection(tracker);
 function completeState(state, { taskIds, integrationOwner, branch }) {
   const booleanFields = (record, fields) => record && fields.every((field) => typeof record[field] === "boolean");
+  const admittedLater = new Set([...(state?.scopeExtensions ?? []).flatMap((entry) => entry?.addedTaskIds ?? []),
+    ...(state?.completionHistory ?? []).filter((entry) => entry?.intent === "admit_and_record").map((entry) => entry.taskId)]);
   if (state?.schemaVersion !== 1 || !Number.isSafeInteger(state.stateVersion) || state.stateVersion < 0
     || !["finite", "continuous"].includes(state.run?.mode) || typeof state.run.paused !== "boolean"
     || !Array.isArray(state.run.taskIds) || new Set(state.run.taskIds).size !== state.run.taskIds.length
-    || state.run.taskIds.some((id) => !validId(id) || !taskIds.includes(id))
+    || state.run.taskIds.some((id) => !validId(id) || !taskIds.includes(id) && !admittedLater.has(id))
     || (state.stateVersion === 0 && state.run.taskIds.length !== taskIds.length)
     || !booleanFields(state.integration, ["authorized", "paused", "hold"])
     || !validId(integrationOwner) || state.integration.ownerSessionId !== integrationOwner || state.integration.baseRef !== branch
@@ -218,7 +220,7 @@ export function initializationRecordProblem(setup, canonical, { projectRoot, val
   if (validateTracker) {
     if (canonical.tracker?.status !== "current") return "tracker_unavailable";
     const actual = canonical.tasks.map(({ id }) => id);
-    if (ids.some((id) => !actual.includes(id))) return "existing_task_identity_conflict";
+    if ([...ids, ...(canonical.state.run?.taskIds ?? [])].some((id) => !actual.includes(id))) return "existing_task_identity_conflict";
   }
   return undefined;
 }
@@ -402,6 +404,8 @@ export async function initializeProject(projectPath, request, options = {}) {
           operationId: request.operationId, writer } };
         const teams = `# Agent-Team teams\nProject: ${request.projectId}\nProject owner: ${actorSessionId}\nProject owner host: ${ownerHost}\nIntegration owner: ${actorSessionId}\nIntegration owner host: ${ownerHost}\n\n| Team ID | Name | Session | Worktree | Branch | Owned paths | Tasks | Status |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n`;
         const initialState = { schemaVersion: 1, stateVersion: 0, ownership, run: { mode: "finite", taskIds, paused: false },
+          deliveryReceipts: Object.fromEntries(["completion", "review", "checks", "integration", "preview", "target", "recovery"].map((category) => [category, {}])),
+          scopeExtensions: [], evidenceStores: {}, completionHistory: [], quarantinedEvidence: [],
           integration: { ownerSessionId: actorSessionId, ownerHost, ownershipEpoch: 1, authorized: false, baseRef: request.plan.branch, paused: false, hold: false },
           release: { ownerSessionId: actorSessionId, ownerHost, ownershipEpoch: 1, authorized: false, autoDeploy: false, hold: true },
           completion: { requirementsReconciled: false, checks: [] }, operationMappings: { providers: {}, shell: [] } };

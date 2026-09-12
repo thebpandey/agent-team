@@ -291,6 +291,23 @@ test("canonical readiness holds tasks outside the active run and when capacity i
   assert.equal(full.eligibleTask, null);
 });
 
+test("readiness follows admitted live scope while ignoring unrelated tracker additions", async (t) => {
+  const { runSetupCommand } = await import(modulePath);
+  const value = await fixture(t);
+  const setupBefore = await readFile(value.setupPath);
+  await writeFile(value.tasksPath, `${await readFile(value.tasksPath, "utf8")}| T-3 | none | ready |\n`);
+  const grown = await runSetupCommand("readiness", value.options);
+  assert.equal(grown.readyForDispatch, true);
+  assert.equal(grown.eligibleTask.id, "T-2");
+  assert.deepEqual(await readFile(value.setupPath), setupBefore);
+  const state = JSON.parse(await readFile(value.statePath, "utf8"));
+  state.stateVersion = 1;
+  state.run.taskIds = ["T-1", "T-2", "T-3"];
+  await writeFile(value.statePath, JSON.stringify(state));
+  await writeFile(value.tasksPath, (await readFile(value.tasksPath, "utf8")).split("\n").filter((line) => !line.includes("T-3")).join("\n"));
+  assert.equal((await runSetupCommand("readiness", value.options)).readyForDispatch, false);
+});
+
 test("dashboard configuration requires Beads and explicit graph terms and preserves custom fields", async (t) => {
   const { runSetupCommand } = await import(modulePath);
   const markdown = await fixture(t);

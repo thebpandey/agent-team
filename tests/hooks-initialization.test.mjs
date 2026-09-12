@@ -71,7 +71,7 @@ if (process.argv[2] === "initialize-worker") {
   test("standalone initialization publishes canonical records from the canonical checkout and never grants verified gates", async () => {
     const value = await fixture();
     const result = await initialize(value.root, value.request);
-    assert.equal(result.status, "applied");
+    assert.equal(result.status, "applied", JSON.stringify(result));
     assert.equal(result.ready, true);
     const main = await resolveProject(value.root);
     const linked = await resolveProject(value.feature);
@@ -168,6 +168,47 @@ if (process.argv[2] === "initialize-worker") {
     assert.deepEqual(setup.initialization.handoff, { ...value.request.handoff,
       consumptionOperationId: value.request.operationId, consumedAt: setup.initialization.handoff.consumedAt });
     assert.match(setup.initialization.handoff.consumedAt, /^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test("immutable initialization accepts unrelated tracker growth but requires every admitted id", async () => {
+    const { initializationRecordProblem } = await import(modulePath);
+    const value = await fixture();
+    await initialize(value.root, value.request);
+    const project = await resolveProject(value.root);
+    const setupBytes = await readFile(project.paths.setup);
+    await writeFile(project.paths.tasks, `${await readFile(project.paths.tasks, "utf8")}| AT-002 | Later task | none | AT-001 | ready | none | Claim. |\n`);
+    let state = JSON.parse(await readFile(project.paths.state, "utf8"));
+    state.stateVersion = 1;
+    state.run.taskIds = ["AT-001", "AT-002"];
+    state.scopeExtensions = [{ addedTaskIds: ["AT-002"] }];
+    await writeFile(project.paths.state, JSON.stringify(state, null, 2));
+    let canonical = await loadCanonicalState(project);
+    assert.equal(initializationRecordProblem(project.setup, canonical, { projectRoot: project.root, validateTracker: true }), undefined);
+    assert.deepEqual(await readFile(project.paths.setup), setupBytes);
+    await writeFile(project.paths.tasks, (await readFile(project.paths.tasks, "utf8")).split("\n").filter((line) => !line.includes("AT-002")).join("\n"));
+    canonical = await loadCanonicalState(project);
+    assert.equal(initializationRecordProblem(project.setup, canonical, { projectRoot: project.root, validateTracker: true }), "existing_task_identity_conflict");
+  });
+
+  test("scope extension never rewrites initialization provenance", async () => {
+    const value = await fixture();
+    await initialize(value.root, value.request);
+    const project = await resolveProject(value.root);
+    const before = await readFile(project.paths.setup);
+    await writeFile(project.paths.tasks, `${await readFile(project.paths.tasks, "utf8")}| AT-002 | Later task | none | AT-001 | ready | none | Claim. |\n`);
+    const seeded = JSON.parse(await readFile(project.paths.state, "utf8"));
+    seeded.run = { id: "initial-run", ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1, mode: "finite", taskIds: ["AT-001"],
+      teamLimit: 1, autoDeploy: false, batchSize: 1, source: "explicit_run", settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+      paused: false, operationalVersion: seeded.stateVersion, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
+    await writeFile(project.paths.state, JSON.stringify(seeded, null, 2));
+    const current = await loadCanonicalState(project);
+    const { extendRunScope } = await import("../hooks/lib/run-state.mjs");
+    assert.equal(typeof extendRunScope, "function");
+    const result = await extendRunScope(project, { operationId: "extend-init-at-002", expectedTrackerFingerprint: current.tracker.fingerprint,
+      taskIds: ["AT-002"], reason: "Admit later tracked work." }, { actorSessionId: "owner-session", expectedVersion: current.state.stateVersion,
+      nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: value.root, ownershipEpoch: 1 } });
+    assert.equal(result.status, "applied", JSON.stringify(result));
+    assert.deepEqual(await readFile(project.paths.setup), before);
   });
 
   test("new Beads initialization normalizes the project root and rejects alternate or malformed roots before mutation", async (t) => {

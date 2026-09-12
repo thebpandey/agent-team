@@ -116,6 +116,7 @@ export async function loadCanonicalState(project, options = {}) {
     },
     tasks: taskResult?.tasks ?? [],
     tracker: taskResult?.tracker ?? { ...project.tracker, status: "not_read", fingerprint: null },
+    sources: { teams: teamsText },
   };
   const headRevision = await loadHeadRevision(project, options.budget);
   canonical.git = { headRevision };
@@ -178,6 +179,67 @@ function exactTaskIds(value, expected) {
     && JSON.stringify(value) === JSON.stringify(expected);
 }
 
+const receiptCategories = ["completion", "integration", "review", "checks", "preview", "target", "recovery"];
+const stableValue = (value) => JSON.stringify(value && typeof value === "object"
+  ? Array.isArray(value) ? value.map((entry) => JSON.parse(stableValue(entry)))
+    : Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(stableValue(value[key]))])) : value);
+const validReceiptId = (value) => typeof value === "string" && /^[\w.:-]{1,128}$/.test(value);
+const validObservedAt = (value) => typeof value === "string" && value.length <= 128 && Number.isFinite(Date.parse(value));
+const relativeEvidencePath = (value) => typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 4096
+  && !path.isAbsolute(value) && path.normalize(value) === value && !value.split(/[\\/]/).includes("..") && !/[\r\n\0]/.test(value);
+
+function evidencePointerKind(value, state, taskId, category) {
+  if (exactObjectKeys(value, ["path", "fingerprint", "revision", "taskIds", "operationId", "observedAt"])
+    && typeof value.path === "string" && value.path.length > 0 && Buffer.byteLength(value.path) <= 4096
+    && /^[a-f0-9]{64}$/.test(value.fingerprint ?? "") && revisionPattern.test(value.revision ?? "")
+    && validReceiptId(value.operationId) && validObservedAt(value.observedAt)
+    && Array.isArray(value.taskIds) && value.taskIds.includes(taskId) && new Set(value.taskIds).size === value.taskIds.length) {
+    const expected = ["completion", "review", "checks"].includes(category) ? state.completion?.recordedEvidence : state.integration?.recordedEvidence;
+    return stableValue(value) === stableValue(expected) ? "live" : null;
+  }
+  if (exactObjectKeys(value, ["evidenceStoreId", "relativePath", "sha256", "operationId", "observedAt"])
+    && validReceiptId(value.evidenceStoreId) && state.evidenceStores?.[value.evidenceStoreId]
+    && relativeEvidencePath(value.relativePath) && /^[a-f0-9]{64}$/.test(value.sha256 ?? "")
+    && validReceiptId(value.operationId) && validObservedAt(value.observedAt)) {
+    const field = ["completion", "review", "checks"].includes(category) ? "completionEvidence" : "integrationEvidence";
+    const matching = (state.completionHistory ?? []).some((entry) => entry?.taskId === taskId && stableValue(entry[field]) === stableValue(value));
+    return matching ? "history" : null;
+  }
+  return null;
+}
+
+function receiptShape(part, state, taskId) {
+  const pointerKinds = {};
+  for (const category of receiptCategories) {
+    const receipt = part[category];
+    pointerKinds[category] = evidencePointerKind(receipt?.evidence, state, taskId, category);
+    if (!pointerKinds[category]) return false;
+  }
+  const historical = pointerKinds.completion === "history";
+  if (Object.values(pointerKinds).some((kind) => kind !== (historical ? "history" : "live"))) return false;
+  const history = historical && (state.completionHistory ?? []).find((entry) => entry?.taskId === taskId
+    && stableValue(entry.completionEvidence) === stableValue(part.completion.evidence)
+    && stableValue(entry.integrationEvidence) === stableValue(part.integration.evidence));
+  if (historical && (!history || history.completionOperationId !== part.completion.completionOperationId
+    || history.completionResultFingerprint !== part.completion.completionResultFingerprint
+    || history.integrationOperationId !== part.integration.integrationOperationId)) return false;
+  const completionKeys = historical
+    ? ["taskId", "status", "sourceRevision", "completionOperationId", "completionResultFingerprint", "evidence"]
+    : ["taskId", "status", "sourceRevision", "evidence"];
+  return exactObjectKeys(part.completion, completionKeys)
+    && (!historical || validReceiptId(part.completion.completionOperationId) && /^[a-f0-9]{64}$/.test(part.completion.completionResultFingerprint ?? ""))
+    && exactObjectKeys(part.review, ["taskId", "status", "revision", "evidence"])
+    && exactObjectKeys(part.checks, ["taskId", "revision", "results", "evidence"]) && Array.isArray(part.checks.results) && part.checks.results.length > 0
+    && part.checks.results.every((check) => exactObjectKeys(check, ["name", "status"])
+      && typeof check.name === "string" && check.name.trim() === check.name && check.name.length > 0 && Buffer.byteLength(check.name) <= 256)
+    && exactObjectKeys(part.integration, ["taskId", "status", "sourceRevision", "boundaryRevision", "integratedRevision", "integrationOperationId",
+      "ownerHost", "ownerSessionId", "ownershipEpoch", "evidence"])
+    && validReceiptId(part.integration.integrationOperationId)
+    && exactObjectKeys(part.preview, ["taskId", "revision", "required", "status", "ownerHost", "ownerSessionId", "ownershipEpoch", "evidence"])
+    && exactObjectKeys(part.target, ["taskId", "revision", "status", "target", "authority", "ownerHost", "ownerSessionId", "ownershipEpoch", "evidence"])
+    && exactObjectKeys(part.recovery, ["taskId", "revision", "status", "artifact", "action", "ownerHost", "ownerSessionId", "ownershipEpoch", "evidence"]);
+}
+
 function targetAuthorityValid(value, { taskId, boundaryRevision, target, releaseOwner, integrationTaskIds }) {
   return exactObjectKeys(value, ["status", "source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"])
     && value.status === "authorized"
@@ -187,9 +249,10 @@ function targetAuthorityValid(value, { taskId, boundaryRevision, target, release
 }
 
 async function loadDeliveryEvidence(project, state, canonical, budget) {
-  const categories = ["completion", "integration", "review", "checks", "preview", "target", "recovery"];
+  const categories = receiptCategories;
   const receipts = state.deliveryReceipts;
-  if (!revisionPattern.test(canonical.git?.headRevision ?? "") || !receipts || typeof receipts !== "object" || Array.isArray(receipts)) return {};
+  if (!revisionPattern.test(canonical.git?.headRevision ?? "") || !exactObjectKeys(receipts, categories)
+    || categories.some((category) => !receipts[category] || typeof receipts[category] !== "object" || Array.isArray(receipts[category]))) return {};
   const ids = new Set(categories.flatMap((category) => Object.keys(receipts[category] ?? {})));
   const ancestry = new Map();
   const isAncestor = async (ancestor, descendant) => {
@@ -213,7 +276,7 @@ async function loadDeliveryEvidence(project, state, canonical, budget) {
   const output = {};
   for (const taskId of ids) {
     const part = Object.fromEntries(categories.map((category) => [category, receipts[category]?.[taskId]]));
-    if (Object.values(part).some((value) => !value || typeof value !== "object" || value.taskId !== taskId)) continue;
+    if (Object.values(part).some((value) => !value || typeof value !== "object" || value.taskId !== taskId) || !receiptShape(part, state, taskId)) continue;
     const sourceRevision = part.completion.sourceRevision;
     const boundaryRevision = part.integration.boundaryRevision;
     if (!revisionPattern.test(sourceRevision) || !revisionPattern.test(boundaryRevision)

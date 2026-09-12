@@ -10,10 +10,10 @@ import { createBeadsGraphCommandAdapter, createLoopbackDashboard, createSnapshot
 import { resolveProject } from "./project.mjs";
 import { inspectRecovery } from "./recovery.mjs";
 import { readStatus } from "./status.mjs";
-import { recordGateEvidence, taskEligibility, transitionTask } from "./task-transitions.mjs";
+import { quarantineCompletion, rebindCompletion, reconcileCompletionHistory, recordGateEvidence, registerEvidenceStore, taskEligibility, transitionTask } from "./task-transitions.mjs";
 import { readUsageReport } from "./usage.mjs";
 import { createEventBudget } from './budget.mjs';
-import { readRunDecision, reconcileRun, startRun } from "./run-state.mjs";
+import { extendRunScope, readRunDecision, reconcileRun, startRun } from "./run-state.mjs";
 
 const requestLimit = 256 * 1024;
 const actorPattern = /^[\w.:-]{1,128}$/;
@@ -32,6 +32,11 @@ export const workflowCommandFlags = Object.freeze({
   "dashboard-start": new Set(["project", "port"]),
   "run-start": new Set(["project", "request"]),
   "run-reconcile": new Set(["project", "request"]),
+  "run-scope-extend": new Set(["project", "request"]),
+  "completion-quarantine": new Set(["project", "request"]),
+  "completion-rebind": new Set(["project", "request"]),
+  "evidence-store-register": new Set(["project", "request"]),
+  "completion-history-reconcile": new Set(["project", "request"]),
   "run-decision": new Set(["project"]),
 });
 
@@ -265,6 +270,7 @@ async function runDashboard(project, options, context) {
 
 /** Route agent-facing workflow commands through the accepted state APIs. */
 export async function runWorkflowCommand(command, options, context = {}) {
+  if (!Object.hasOwn(workflowCommandFlags, command)) throw new Error(`Unknown workflow command: ${command ?? "missing"}`);
   const project = await activeProject(options.project);
   if (command === "run-decision") {
     try { return readRunDecision(await loadCanonicalState(project, { readOnly: true })); }
@@ -291,12 +297,22 @@ export async function runWorkflowCommand(command, options, context = {}) {
     const canonical = await loadCanonicalState(project);
     return { status: "completed", ...taskEligibility(canonical, { scopeTaskIds: canonical.state.run?.taskIds, capacity: canonical.state.capacity }) };
   }
-  if (["run-start", "run-reconcile"].includes(command)) {
+  if (["run-start", "run-reconcile", "run-scope-extend"].includes(command)) {
     const envelope = await readRequestEnvelope(options.request);
     if (!exactKeys(envelope, ["schemaVersion", "actorSessionId", "expectedVersion", "request"])) return { status: "conflict", reason: "invalid_request" };
     return command === "run-start"
       ? startRun(project, envelope.request, { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion })
-      : reconcileRun(project, envelope.request, { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion });
+      : command === "run-reconcile" ? reconcileRun(project, envelope.request, { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion })
+        : extendRunScope(project, envelope.request, { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion });
+  }
+  if (["completion-quarantine", "completion-rebind", "evidence-store-register", "completion-history-reconcile"].includes(command)) {
+    const envelope = await readRequestEnvelope(options.request);
+    if (!exactKeys(envelope, ["schemaVersion", "actorSessionId", "expectedVersion", "request"])) return { status: "conflict", reason: "invalid_request" };
+    const mutationOptions = { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion };
+    if (command === "completion-quarantine") return quarantineCompletion(project, envelope.request, mutationOptions);
+    if (command === "completion-rebind") return rebindCompletion(project, envelope.request, mutationOptions);
+    if (command === "evidence-store-register") return registerEvidenceStore(project, envelope.request, mutationOptions);
+    return reconcileCompletionHistory(project, envelope.request, mutationOptions);
   }
   if (["checkpoint", "task-transition", "gate-evidence", "cleanup"].includes(command)) {
     const envelope = await readRequestEnvelope(options.request);

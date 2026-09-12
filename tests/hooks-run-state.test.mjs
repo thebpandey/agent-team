@@ -149,6 +149,31 @@ test("ordinary reconciliation preserves historical run provenance", async () => 
   assert.deepEqual([result.result.run.ownerHost, result.result.run.ownerSessionId, result.result.run.ownershipEpoch], ["codex", "owner-session", 1]);
 });
 
+test("scope extension uses one locked tracker snapshot and is strict additive", async () => {
+  const value = await fixture();
+  await writeFile(value.project.paths.tasks, `${await readFile(value.project.paths.tasks, "utf8")}| AT-002 | Later delivery | none | AT-001 | ready | none | Claim. | task | |\n`);
+  const current = await loadCanonicalState(value.project);
+  const active = run();
+  await writeFile(value.project.paths.state, JSON.stringify({ ...current.state, stateVersion: 3, run: active }, null, 2));
+  const beforeSetup = await readFile(value.project.paths.setup);
+  const module = await import("../hooks/lib/run-state.mjs");
+  assert.equal(typeof module.extendRunScope, "function");
+  const request = { operationId: "extend-at-002", expectedTrackerFingerprint: (await loadCanonicalState(value.project)).tracker.fingerprint,
+    taskIds: ["AT-002"], reason: "Admit the tracked dependent delivery." };
+  const options = { actorSessionId: "owner-session", expectedVersion: 3, nativeIdentity: value.nativeIdentity };
+  const applied = await module.extendRunScope(value.project, request, options);
+  assert.equal(applied.status, "applied");
+  assert.deepEqual(applied.result.previousTaskIds, ["AT-001"]);
+  assert.deepEqual(applied.result.taskIds, ["AT-001", "AT-002"]);
+  assert.notEqual(applied.result.previousRunFingerprint, applied.result.runFingerprint);
+  assert.equal((await module.extendRunScope(value.project, request, options)).status, "duplicate");
+  assert.equal((await module.extendRunScope(value.project, { ...request, taskIds: ["AT-001"] }, options)).reason, "operation_identity_reused");
+  const state = (await loadCanonicalState(value.project)).state;
+  assert.deepEqual(state.run.taskIds, ["AT-001", "AT-002"]);
+  assert.deepEqual(state.scopeExtensions[0].addedTaskIds, ["AT-002"]);
+  assert.deepEqual(await readFile(value.project.paths.setup), beforeSetup);
+});
+
 function joinedEvidence(id, revision = "a".repeat(40), authorityTaskIds = [id]) {
   const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
   const authority = { status: "authorized", source: "explicit-release-authorization", target: "origin/main", revision, taskIds: [...authorityTaskIds], ...actor };
@@ -167,14 +192,21 @@ test("delivery evidence joins exact passed lineage and current generation", asyn
   const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
   const authorityTaskIds = ["AT-001", "AT-002"];
   const authority = { status: "authorized", source: "explicit-release-authorization", target: "origin/main", revision, taskIds: authorityTaskIds, ...actor };
-  const receipt = (status, extra = {}) => ({ taskId: "AT-001", status, ...extra });
-  const state = { ...value.current.state, integration: { ...value.current.state.integration, taskIds: authorityTaskIds }, release: { ...value.current.state.release,
+  const completionEvidence = { path: path.join(value.root, ".agent-team/completion.json"), fingerprint: "c".repeat(64), revision,
+    taskIds: ["AT-001"], operationId: "completion-one", observedAt: "2026-09-12T12:00:00.000Z" };
+  const integrationEvidence = { path: path.join(value.root, ".agent-team/integration.json"), fingerprint: "d".repeat(64), revision,
+    taskIds: authorityTaskIds, operationId: "integration-one", observedAt: "2026-09-12T12:01:00.000Z" };
+  const state = { ...value.current.state, completion: { ...value.current.state.completion, recordedEvidence: completionEvidence },
+    integration: { ...value.current.state.integration, taskIds: authorityTaskIds, recordedEvidence: integrationEvidence }, release: { ...value.current.state.release,
     authorization: { ...value.current.state.release.authorization, ...actor } }, deliveryReceipts: {
-    completion: { "AT-001": receipt("passed", { sourceRevision: revision }) }, review: { "AT-001": receipt("passed", { revision }) },
-    checks: { "AT-001": receipt("passed", { revision, results: [{ name: "unit", status: "passed" }] }) },
-    integration: { "AT-001": receipt("passed", { sourceRevision: revision, boundaryRevision: revision, ...actor }) },
-    preview: { "AT-001": receipt("not_required", { revision, required: false, ...actor }) }, target: { "AT-001": receipt("authorized", { revision, target: "origin/main", authority, ...actor }) },
-    recovery: { "AT-001": receipt("ready", { revision, artifact: "tag", action: "rollback", ...actor }) },
+    completion: { "AT-001": { taskId: "AT-001", status: "passed", sourceRevision: revision, evidence: completionEvidence } },
+    review: { "AT-001": { taskId: "AT-001", status: "passed", revision, evidence: completionEvidence } },
+    checks: { "AT-001": { taskId: "AT-001", revision, results: [{ name: "unit", status: "passed" }], evidence: completionEvidence } },
+    integration: { "AT-001": { taskId: "AT-001", status: "passed", sourceRevision: revision, boundaryRevision: revision,
+      integratedRevision: revision, integrationOperationId: "integration-one", ...actor, evidence: integrationEvidence } },
+    preview: { "AT-001": { taskId: "AT-001", status: "not_required", revision, required: false, ...actor, evidence: integrationEvidence } },
+    target: { "AT-001": { taskId: "AT-001", status: "authorized", revision, target: "origin/main", authority, ...actor, evidence: integrationEvidence } },
+    recovery: { "AT-001": { taskId: "AT-001", status: "ready", revision, artifact: "tag", action: "rollback", ...actor, evidence: integrationEvidence } },
   } };
   await writeFile(value.project.paths.state, JSON.stringify(state, null, 2));
   const loaded = await loadCanonicalState(value.project);
@@ -204,6 +236,49 @@ test("delivery evidence joins exact passed lineage and current generation", asyn
   delete missingIntegrationSet.integration.taskIds;
   await writeFile(value.project.paths.state, JSON.stringify(missingIntegrationSet, null, 2));
   assert.equal((await loadCanonicalState(value.project)).deliveryEvidence["AT-001"], undefined);
+});
+
+test("each of seven task receipt categories independently gates batch selection", async () => {
+  const value = await fixture();
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+  const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
+  const evidence = { path: path.join(value.root, ".agent-team", "integration.json"), fingerprint: "e".repeat(64), revision,
+    taskIds: ["AT-001"], operationId: "integration-one", observedAt: "2026-09-12T12:00:00.000Z" };
+  const completionEvidence = { ...evidence, path: path.join(value.root, ".agent-team", "completion.json"), operationId: "completion-one" };
+  const authority = { status: "authorized", source: "explicit-release-authorization", target: "origin/main", revision, taskIds: ["AT-001"], ...actor };
+  const receipts = {
+    completion: { "AT-001": { taskId: "AT-001", status: "passed", sourceRevision: revision, evidence: completionEvidence } },
+    review: { "AT-001": { taskId: "AT-001", status: "passed", revision, evidence: completionEvidence } },
+    checks: { "AT-001": { taskId: "AT-001", revision, results: [{ name: "unit", status: "passed" }], evidence: completionEvidence } },
+    integration: { "AT-001": { taskId: "AT-001", status: "passed", sourceRevision: revision, boundaryRevision: revision,
+      integratedRevision: revision, integrationOperationId: "integration-one", ...actor, evidence } },
+    preview: { "AT-001": { taskId: "AT-001", status: "not_required", required: false, revision, ...actor, evidence } },
+    target: { "AT-001": { taskId: "AT-001", status: "authorized", target: "origin/main", revision, authority, ...actor, evidence } },
+    recovery: { "AT-001": { taskId: "AT-001", status: "ready", artifact: "release-tag", action: "rollback", revision, ...actor, evidence } },
+  };
+  const base = { ...value.current.state, run: run({ pendingDeliveryIds: ["AT-001"], batchSize: 1 }),
+    integration: { ...value.current.state.integration, taskIds: ["AT-001"], recordedEvidence: evidence },
+    completion: { ...value.current.state.completion, recordedEvidence: completionEvidence },
+    release: { ...value.current.state.release, authorization: { ...value.current.state.release.authorization, ...actor } }, deliveryReceipts: receipts };
+  await writeFile(value.project.paths.state, JSON.stringify(base, null, 2));
+  assert.ok((await loadCanonicalState(value.project)).deliveryEvidence["AT-001"]);
+  for (const category of Object.keys(receipts)) {
+    const changed = structuredClone(base);
+    delete changed.deliveryReceipts[category]["AT-001"];
+    await writeFile(value.project.paths.state, JSON.stringify(changed, null, 2));
+    assert.deepEqual((await loadCanonicalState(value.project)).deliveryEvidence, {}, category);
+  }
+  for (const alter of [
+    (state) => { state.deliveryReceipts.completion["AT-001"].extra = true; },
+    (state) => { state.deliveryReceipts.integration["AT-001"].authenticatedActor = actor; },
+    (state) => { state.deliveryReceipts.recovery["AT-001"].artifact = ""; },
+    (state) => { state.deliveryReceipts.target["AT-001"].evidence = { ...evidence, relativePath: "absolute/mixed" }; },
+    (state) => { state.deliveryReceipts.checks["AT-001"].results[0].extra = true; },
+  ]) {
+    const changed = structuredClone(base); alter(changed);
+    await writeFile(value.project.paths.state, JSON.stringify(changed, null, 2));
+    assert.deepEqual((await loadCanonicalState(value.project)).deliveryEvidence, {});
+  }
 });
 
 test("release batches are oldest first full or terminally underfilled", () => {

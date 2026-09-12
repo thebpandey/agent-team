@@ -97,6 +97,32 @@ test("actual project CLI connects initialization, settings, claims, checkpoints 
   assert.equal((await invoke("readiness", root, "--host", "codex", "--scope", "user")).readyForDispatch, false);
 });
 
+test("native scoped migration commands route replay and preserve unrelated state", async () => {
+  const root = await fixture();
+  const initialization = await request(root, "scope-initialization", planRequest());
+  const nativeIdentity = { host: "codex", sessionId: "project-owner", observed: true, cwd: root };
+  await runCommand("project-initialize", { project: root, request: initialization }, { nativeIdentity });
+  const ownerIdentity = { ...nativeIdentity, ownershipEpoch: 1 };
+  const statePath = path.join(root, ".agent-team/state.json");
+  const state = JSON.parse(await readFile(statePath, "utf8"));
+  state.unrelated = { keep: true };
+  state.run = { id: "journey-run", ownerSessionId: "project-owner", ownerHost: "codex", ownershipEpoch: 1, mode: "finite", taskIds: ["WORK-1"],
+    teamLimit: 1, autoDeploy: false, batchSize: 1, source: "explicit_run", settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+    paused: false, operationalVersion: state.stateVersion, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
+  await writeFile(statePath, JSON.stringify(state, null, 2));
+  const trackerPath = path.join(root, "TASKS.md");
+  await writeFile(trackerPath, `${await readFile(trackerPath, "utf8")}| WORK-2 | Later delivery | none | WORK-1 | ready | none | Claim. |\n`);
+  const { loadCanonicalState } = await import("../hooks/lib/canonical-state.mjs");
+  const { resolveProject } = await import("../hooks/lib/project.mjs");
+  const canonical = await loadCanonicalState(await resolveProject(root));
+  const scopeRequest = await request(root, "scope-extension", { schemaVersion: 1, actorSessionId: "project-owner", expectedVersion: canonical.state.stateVersion,
+    request: { operationId: "extend-work-2", expectedTrackerFingerprint: canonical.tracker.fingerprint, taskIds: ["WORK-2"], reason: "Admit later delivery." } });
+  const applied = await runCommand("run-scope-extend", { project: root, request: scopeRequest }, { nativeIdentity: ownerIdentity });
+  assert.equal(applied.status, "applied", JSON.stringify(applied));
+  assert.equal((await runCommand("run-scope-extend", { project: root, request: scopeRequest }, { nativeIdentity: ownerIdentity })).status, "duplicate");
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).unrelated, { keep: true });
+});
+
 test("initialization CLI cannot replace the envelope actor with a body owner claim", async () => {
   const root = await fixture();
   const value = planRequest();

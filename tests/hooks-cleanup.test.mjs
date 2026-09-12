@@ -64,6 +64,29 @@ test("cleanup reconciles removal after a lost state receipt without another dest
   assert.equal(recovered.result.reconciled, true);
 });
 
+test("outside-scope cleanup rejects before every probe and removal", async () => {
+  const value = await fixture();
+  const state = JSON.parse(await readFile(value.project.paths.state, "utf8"));
+  state.run = { taskIds: ["AT-OTHER"] };
+  await writeFile(value.project.paths.state, JSON.stringify(state));
+  let gitProbes = 0;
+  const before = await readFile(value.project.paths.state);
+  const result = await cleanup(value.project, value.request, { runGit: async () => { gitProbes += 1; throw new Error("must not probe"); } });
+  assert.deepEqual(result, { status: "conflict", reason: "outside_scope" });
+  assert.equal(gitProbes, 0);
+  assert.deepEqual(await readFile(value.project.paths.state), before);
+  await access(value.feature);
+});
+
+test("in-scope cleanup still uses one locked tracker snapshot", async () => {
+  const value = await fixture();
+  const state = JSON.parse(await readFile(value.project.paths.state, "utf8"));
+  state.run = { taskIds: ["AT-001"] };
+  await writeFile(value.project.paths.state, JSON.stringify(state));
+  assert.equal((await cleanup(value.project, value.request)).status, "applied");
+  await assert.rejects(access(value.feature), { code: "ENOENT" });
+});
+
 for (const kind of ["tracked", "untracked", "ignored", "user_owned", "unknown_writer", "different_pid_namespace", "missing_pid_namespace", "preview"]) {
   test(`cleanup retains ${kind} resources`, async () => {
     const value = await fixture();

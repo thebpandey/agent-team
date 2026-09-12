@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -804,5 +805,193 @@ if (process.argv[2] === "writer") {
     value.canonical.state.deliveryReceipts = { completion: { "AT-001": { taskId: "AT-001", status: "passed", sourceRevision: value.revision } } };
     await writeFile(value.project.paths.state, JSON.stringify(value.canonical.state, null, 2));
     assert.deepEqual((await loadCanonicalState(value.project)).deliveryEvidence, {});
+  });
+
+  const nativeOptions = (value, expectedVersion = 0) => ({ actorSessionId: "owner-session", expectedVersion,
+    nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: value.root, ownershipEpoch: 1 } });
+  const stableJson = (value) => JSON.stringify(value && typeof value === "object" ? Array.isArray(value)
+    ? value.map((entry) => JSON.parse(stableJson(entry)))
+    : Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(stableJson(value[key]))])) : value);
+  const fingerprint = (value) => createHash("sha256").update(stableJson(value)).digest("hex");
+
+  test("completion and integration bind seven task-keyed receipts from one evidence read", async () => {
+    const { recordGateEvidence } = await api();
+    const value = await fixture({ qualifiedOwnership: true });
+    value.canonical.state.run = { id: "delivery-run", ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1,
+      mode: "finite", taskIds: ["AT-001"], teamLimit: 1, autoDeploy: true, batchSize: 1, source: "explicit_run",
+      settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+      paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: ["AT-001"], deployedTaskIds: [], terminalClassification: "progress_possible" };
+    await writeFile(value.project.paths.state, JSON.stringify(value.canonical.state, null, 2));
+    const completionPath = path.join(value.root, ".agent-team/completion-rel004.json");
+    await writeFile(completionPath, JSON.stringify({ status: "passed", revision: value.revision, taskIds: ["AT-001"], requirementsReconciled: true,
+      review: { status: "passed", revision: value.revision, taskId: "AT-001" }, checks: [{ name: "unit", status: "passed", revision: value.revision, taskId: "AT-001" }] }));
+    const completion = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "rel004-completion", expectedVersion: 0,
+      expectedFingerprint: value.canonical.tracker.fingerprint, gate: "completion", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath: completionPath }, nativeOptions(value));
+    assert.equal(completion.status, "applied");
+    const integrationPath = path.join(value.root, ".agent-team/integration-rel004.json");
+    const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
+    await writeFile(integrationPath, JSON.stringify({ status: "passed", revision: value.revision, taskIds: ["AT-001"], sourceRevisions: { "AT-001": value.revision },
+      remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/heads/feature", targetRevision: value.revision },
+      authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
+      targetAuthorization: { status: "authorized", source: "explicit-release-authorization", target: "refs/heads/feature", revision: value.revision, taskIds: ["AT-001"], ...actor },
+      recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"], artifactId: "git:known-good", action: "rollback" },
+      preview: { required: false }, remoteMainDeploys: false }));
+    const current = await loadCanonicalState(value.project);
+    const integration = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "rel004-integration", expectedVersion: current.state.stateVersion,
+      expectedFingerprint: current.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath: integrationPath }, nativeOptions(value, current.state.stateVersion));
+    assert.equal(integration.status, "applied");
+    const state = (await loadCanonicalState(value.project)).state;
+    assert.deepEqual(Object.keys(state.deliveryReceipts).sort(), ["checks", "completion", "integration", "preview", "recovery", "review", "target"]);
+    assert.equal(state.deliveryReceipts.recovery["AT-001"].artifact, "git:known-good");
+    assert.equal(state.deliveryReceipts.integration["AT-001"].ownerHost, "codex");
+    assert.deepEqual(state.deliveryReceipts.target["AT-001"].authority.taskIds, ["AT-001"]);
+    assert.deepEqual(state.deliveryReceipts.completion["AT-001"].evidence, state.completion.recordedEvidence);
+    assert.deepEqual(state.deliveryReceipts.integration["AT-001"].evidence, state.integration.recordedEvidence);
+  });
+
+  test("completion quarantine preserves history and clears only matching active evidence", async () => {
+    const { quarantineCompletion } = await api();
+    assert.equal(typeof quarantineCompletion, "function");
+    const value = await fixture({ qualifiedOwnership: true });
+    const evidencePath = path.join(value.root, ".agent-team/outside-completion.json");
+    const bytes = Buffer.from(`${JSON.stringify({ taskId: "AT-002", taskIds: ["AT-002"], revision: value.revision, status: "passed" })}\n`);
+    await writeFile(evidencePath, bytes);
+    const pointer = { path: evidencePath, fingerprint: createHash("sha256").update(bytes).digest("hex"), revision: value.revision, taskIds: ["AT-002"] };
+    value.canonical.state.run = { taskIds: ["AT-001"], paused: false };
+    value.canonical.state.completion = { ...value.canonical.state.completion, taskId: "AT-002", recordedEvidence: pointer };
+    await writeFile(value.project.paths.state, JSON.stringify(value.canonical.state, null, 2));
+    const result = await quarantineCompletion(value.project, { operationId: "quarantine-at-002", taskId: "AT-002", reason: "task_outside_admitted_run_scope", expectedEvidence: pointer }, nativeOptions(value));
+    assert.equal(result.status, "applied");
+    const state = (await loadCanonicalState(value.project)).state;
+    assert.equal(state.quarantinedEvidence.length, 1);
+    assert.equal(Object.hasOwn(state.completion, "recordedEvidence"), false);
+  });
+
+  test("completion rebind accepts source boundary head ancestry without equality", async () => {
+    const { rebindCompletion } = await api();
+    assert.equal(typeof rebindCompletion, "function");
+    const value = await fixture({ qualifiedOwnership: true });
+    const sourceRevision = value.revision;
+    execFileSync("git", ["commit", "--allow-empty", "-qm", "integration boundary"], { cwd: value.root });
+    const boundaryRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+    execFileSync("git", ["commit", "--allow-empty", "-qm", "later head"], { cwd: value.root });
+    const evidencePath = path.join(value.root, ".agent-team/rebind-completion.json");
+    const evidenceBytes = Buffer.from(`${JSON.stringify({ status: "passed", revision: sourceRevision, taskId: "AT-001", requirementsReconciled: true,
+      review: { status: "passed", revision: sourceRevision }, checks: [{ name: "unit", status: "passed", revision: sourceRevision }] })}\n`);
+    await writeFile(evidencePath, evidenceBytes);
+    const evidenceFingerprint = createHash("sha256").update(evidenceBytes).digest("hex");
+    const quarantineId = `completion:AT-001:${evidenceFingerprint}`;
+    value.canonical.state.run = { taskIds: ["AT-001"], paused: false };
+    value.canonical.state.quarantinedEvidence = [{ quarantineId, taskId: "AT-001", evidence: { path: evidencePath, fingerprint: evidenceFingerprint,
+      revision: sourceRevision, taskIds: ["AT-001"] } }];
+    value.canonical.state.deliveryReceipts = { integration: { "AT-001": { taskId: "AT-001", status: "passed", sourceRevision,
+      boundaryRevision, integratedRevision: boundaryRevision } } };
+    await writeFile(value.project.paths.state, JSON.stringify(value.canonical.state, null, 2));
+    const tracker = await loadCanonicalState(value.project);
+    const result = await rebindCompletion(value.project, { operationId: "rebind-at-001", taskId: "AT-001", quarantineId,
+      expectedTrackerFingerprint: tracker.tracker.fingerprint, evidencePath, expectedEvidenceFingerprint: evidenceFingerprint,
+      expectedSourceRevision: sourceRevision, expectedBoundaryRevision: boundaryRevision }, nativeOptions(value));
+    assert.equal(result.status, "applied", JSON.stringify(result));
+    const state = (await loadCanonicalState(value.project)).state;
+    assert.equal(state.quarantinedEvidence[0].reboundByOperationId, "rebind-at-001");
+    assert.equal(state.deliveryReceipts.completion["AT-001"].sourceRevision, sourceRevision);
+    assert.notEqual(result.result.currentRevision, boundaryRevision);
+  });
+
+  test("registered evidence store confines one-open historical reads", async () => {
+    const { registerEvidenceStore } = await api();
+    assert.equal(typeof registerEvidenceStore, "function");
+    const value = await fixture({ qualifiedOwnership: true });
+    const store = await mkdtemp(path.join(os.tmpdir(), "agent-team-evidence-store-")); temporary.push(store);
+    const teams = `${await readFile(value.project.paths.teams, "utf8")}Evidence root: ${store}/<team>/.\n`;
+    await writeFile(value.project.paths.teams, teams);
+    const result = await registerEvidenceStore(value.project, { operationId: "register-store", storeId: "fixture-store", realpath: store,
+      expectedTeamsFingerprint: createHash("sha256").update(teams).digest("hex"), declaration: `Evidence root: ${store}/<team>/.`,
+      projectId: "project-1", expectedOwnershipEpoch: 1 }, nativeOptions(value));
+    assert.equal(result.status, "applied");
+    assert.equal((await loadCanonicalState(value.project)).state.evidenceStores["fixture-store"].realpath, store);
+  });
+
+  test("history reconciliation imports two sources at one boundary and preserves singleton", async () => {
+    const { reconcileCompletionHistory, registerEvidenceStore } = await api();
+    assert.equal(typeof reconcileCompletionHistory, "function");
+    const value = await fixture({ qualifiedOwnership: true });
+    const sourceA = value.revision;
+    execFileSync("git", ["commit", "--allow-empty", "-qm", "second source"], { cwd: value.root });
+    const sourceB = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+    execFileSync("git", ["commit", "--allow-empty", "-qm", "shared boundary"], { cwd: value.root });
+    const boundaryRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+    execFileSync("git", ["commit", "--allow-empty", "-qm", "later main"], { cwd: value.root });
+    const headRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+    await writeFile(value.project.paths.tasks, "| ID | Requirement / acceptance | Owner | Depends on | Status | Revision / evidence | Next action | Type | Parent ID |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| AT-001 | First | none | none | done | source | Reconcile. | task | |\n| AT-002 | Second | none | none | done | source | Reconcile. | task | |\n");
+    const store = await mkdtemp(path.join(os.tmpdir(), "agent-team-history-store-")); temporary.push(store);
+    const teams = `${await readFile(value.project.paths.teams, "utf8")}Evidence root: ${store}/<team>/.\n`;
+    await writeFile(value.project.paths.teams, teams);
+    const registered = await registerEvidenceStore(value.project, { operationId: "register-history-store", storeId: "history-store", realpath: store,
+      expectedTeamsFingerprint: createHash("sha256").update(teams).digest("hex"), declaration: `Evidence root: ${store}/<team>/.`, projectId: "project-1",
+      expectedOwnershipEpoch: 1 }, nativeOptions(value));
+    assert.equal(registered.status, "applied");
+    const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
+    const authority = { status: "authorized", source: "migration-approval", target: "origin/main", revision: boundaryRevision,
+      taskIds: ["AT-001", "AT-002"], ...actor };
+    const integrationEvidence = { status: "passed", operationId: "historical-integration", revision: boundaryRevision, taskIds: ["AT-001", "AT-002"],
+      sourceRevisions: { "AT-001": sourceA, "AT-002": sourceB }, preview: { required: false }, targetAuthorization: authority,
+      recovery: { artifactId: "git:known-good", action: "rollback" } };
+    const integrationBytes = Buffer.from(`${JSON.stringify(integrationEvidence)}\n`);
+    await writeFile(path.join(store, "integration.json"), integrationBytes);
+    let state = (await loadCanonicalState(value.project)).state;
+    state.run = { id: "history-run", ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1, mode: "finite", taskIds: ["AT-001", "AT-002"],
+      teamLimit: 2, autoDeploy: true, batchSize: 2, source: "compatibility_migration", settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "compatibility_migration"])),
+      paused: false, operationalVersion: state.stateVersion, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "unreconciled_completion" };
+    state.integration.taskIds = ["AT-001", "AT-002"];
+    state.release.authorization = { ...state.release.authorization, ...actor };
+    state.completion = { ...state.completion, taskId: "AT-009", operationId: "unrelated-completion", resultFingerprint: "9".repeat(64) };
+    await writeFile(value.project.paths.state, JSON.stringify(state, null, 2));
+    const singleton = structuredClone(state.completion);
+    for (const [index, [taskId, sourceRevision]] of [["AT-001", sourceA], ["AT-002", sourceB]].entries()) {
+      const resultFingerprint = String(index + 1).repeat(64);
+      const completionOperationId = `historical-completion-${index + 1}`;
+      const completion = { status: "passed", operationId: completionOperationId, resultFingerprint, revision: sourceRevision, taskId,
+        requirementsReconciled: true, review: { status: "passed", revision: sourceRevision }, checks: [{ name: "unit", status: "passed", revision: sourceRevision }] };
+      const completionBytes = Buffer.from(`${JSON.stringify(completion)}\n`);
+      const completionRelativePath = `completion-${index + 1}.json`;
+      await writeFile(path.join(store, completionRelativePath), completionBytes);
+      const current = await loadCanonicalState(value.project);
+      const request = { operationId: `history-${index + 1}`, taskId, intent: "record_existing_scope", completionOperationId,
+        completionResultFingerprint: resultFingerprint, evidenceStoreId: "history-store", completionRelativePath,
+        completionSha256: createHash("sha256").update(completionBytes).digest("hex"), sourceRevision,
+        integrationOperationId: "historical-integration", integrationRelativePath: "integration.json",
+        integrationSha256: createHash("sha256").update(integrationBytes).digest("hex"), boundaryRevision,
+        expectedTrackerFingerprint: current.tracker.fingerprint, expectedStateFingerprint: fingerprint(current.state),
+        expectedRunFingerprint: fingerprint(current.state.run), expectedTeamsFingerprint: createHash("sha256").update(teams).digest("hex"),
+        expectedOwnershipEpoch: 1, expectedActiveCompletion: { taskId: "AT-009", operationId: "unrelated-completion", resultFingerprint: "9".repeat(64) },
+        publicationTarget: "origin:refs/heads/main", observedRemoteRevision: headRevision };
+      const imported = await reconcileCompletionHistory(value.project, request, { ...nativeOptions(value, current.state.stateVersion),
+        observePublicationTarget: async () => ({ revision: headRevision }) });
+      assert.equal(imported.status, "applied", JSON.stringify(imported));
+    }
+    const imported = await loadCanonicalState(value.project);
+    assert.deepEqual(imported.state.completion, singleton);
+    assert.equal(imported.state.completionHistory.length, 2);
+    assert.deepEqual(imported.state.completionHistory[0].activeCompletion,
+      { taskId: "AT-009", operationId: "unrelated-completion", resultFingerprint: "9".repeat(64) });
+    assert.deepEqual([imported.state.deliveryReceipts.integration["AT-001"].ownerHost,
+      imported.state.deliveryReceipts.target["AT-001"].ownerHost], ["codex", "codex"]);
+    assert.deepEqual(imported.state.run.deployedTaskIds, ["AT-001", "AT-002"]);
+    assert.equal(imported.deliveryEvidence["AT-001"].sourceRevision, sourceA);
+    assert.equal(imported.deliveryEvidence["AT-002"].sourceRevision, sourceB);
+  });
+
+  test("history reconciliation drift and uncertain operation are byte identical", async () => {
+    const { reconcileCompletionHistory } = await api();
+    assert.equal(typeof reconcileCompletionHistory, "function");
+    const value = await fixture({ qualifiedOwnership: true });
+    value.canonical.state.run = { taskIds: ["AT-001"], paused: false };
+    value.canonical.state.pendingOperations = { uncertain: { phase: "uncertain", taskId: "AT-001" } };
+    await writeFile(value.project.paths.state, JSON.stringify(value.canonical.state, null, 2));
+    const before = await readFile(value.project.paths.state);
+    const invalid = await reconcileCompletionHistory(value.project, { operationId: "history-invalid" }, nativeOptions(value));
+    assert.equal(invalid.reason, "invalid_request");
+    assert.deepEqual(await readFile(value.project.paths.state), before);
   });
 }

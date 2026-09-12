@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readFile, readlink, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readFile, readlink, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs";
@@ -32,6 +33,66 @@ const recovery = (value, { revision, taskIds }) => value && value.status === "re
   && Array.isArray(value.taskIds) && JSON.stringify([...value.taskIds].sort()) === JSON.stringify([...taskIds].sort());
 const preview = (value, revision) => value && typeof value.required === "boolean"
   && (!value.required || value.approvedRevision === revision);
+const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value)
+  && Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
+const validId = (value) => typeof value === "string" && /^[\w.:-]{1,128}$/.test(value)
+  && !["none", "unknown", "unassigned", "-"].includes(value.toLowerCase());
+const hex = (value, size) => typeof value === "string" && new RegExp(`^[a-f0-9]{${size}}$`).test(value);
+const stable = (value) => JSON.stringify(value && typeof value === "object"
+  ? Array.isArray(value) ? value.map((entry) => JSON.parse(stable(entry)))
+    : Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(stable(value[key]))])) : value);
+const stateFingerprint = (value) => digest(stable(value));
+const admittedProblem = (state, taskIds) => state.run !== undefined
+  && (!Array.isArray(taskIds) || !taskIds.length || taskIds.some((id) => !state.run?.taskIds?.includes(id))) ? "outside_scope" : undefined;
+const relativePath = (value) => typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 4096
+  && !path.isAbsolute(value) && path.normalize(value) === value && !value.split(/[\\/]/).includes("..") && !/[\r\n\0]/.test(value);
+
+async function readSealed(file, { maximum = 256 * 1024, expectedUid } = {}) {
+  let handle;
+  try {
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const before = await handle.stat();
+    if (!before.isFile() || before.size > maximum || expectedUid !== undefined && before.uid !== expectedUid) throw new Error("unsafe_evidence_file");
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (!bytesRead) break;
+      offset += bytesRead;
+    }
+    const after = await handle.stat();
+    if (offset !== bytes.length || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+      || before.mtimeMs !== after.mtimeMs) throw new Error("evidence_changed_during_read");
+    return { bytes, parsed: JSON.parse(bytes.toString("utf8")), sha256: createHash("sha256").update(bytes).digest("hex"), stat: after };
+  } finally { await handle?.close(); }
+}
+
+function bindTaskDeliveryReceipts(state, gate, taskIds, revision, evidence, recordedEvidence) {
+  const categories = ["completion", "review", "checks", "integration", "preview", "target", "recovery"];
+  state.deliveryReceipts ??= Object.fromEntries(categories.map((category) => [category, {}]));
+  for (const category of categories) state.deliveryReceipts[category] ??= {};
+  const put = (category, taskId, value) => { state.deliveryReceipts[category][taskId] = { taskId, ...value }; };
+  for (const taskId of taskIds) {
+    if (gate === "completion") {
+      put("completion", taskId, { status: "passed", sourceRevision: revision, evidence: recordedEvidence });
+      put("review", taskId, { status: "passed", revision, evidence: recordedEvidence });
+      put("checks", taskId, { revision, results: evidence.checks.map(({ name, status }) => ({ name, status })), evidence: recordedEvidence });
+    } else if (gate === "integration") {
+      const sourceRevision = evidence.sourceRevisions?.[taskId];
+      if (!hex(sourceRevision, 40) || state.deliveryReceipts.completion?.[taskId]?.sourceRevision !== sourceRevision) throw new Error("integration_source_revision_mismatch");
+      const integrationActor = { ownerHost: state.integration.ownerHost, ownerSessionId: state.integration.ownerSessionId, ownershipEpoch: state.integration.ownershipEpoch };
+      const releaseActor = { ownerHost: state.release.ownerHost, ownerSessionId: state.release.ownerSessionId, ownershipEpoch: state.release.ownershipEpoch };
+      put("integration", taskId, { status: "passed", sourceRevision, boundaryRevision: revision, integratedRevision: revision,
+        integrationOperationId: recordedEvidence.operationId, ...integrationActor, evidence: recordedEvidence });
+      put("preview", taskId, { revision, required: evidence.preview.required, status: evidence.preview.required ? "passed" : "not_required",
+        ...integrationActor, evidence: recordedEvidence });
+      put("target", taskId, { revision, status: "authorized", target: evidence.targetAuthorization.target,
+        authority: structuredClone(evidence.targetAuthorization), ...releaseActor, evidence: recordedEvidence });
+      put("recovery", taskId, { revision, status: "ready", artifact: evidence.recovery.artifactId, action: evidence.recovery.action,
+        ...releaseActor, evidence: recordedEvidence });
+    }
+  }
+}
 
 function pendingAffectsTask(entry, task, canonical, project) {
   const taskIds = [...(entry.taskId ? [entry.taskId] : []), ...(Array.isArray(entry.taskIds) ? entry.taskIds : [])];
@@ -323,6 +384,7 @@ export async function recordGateEvidence(project, request, options = {}) {
   const bounded = (action) => budget ? budget.run(action) : action();
   return mutateOperationalState(project, request, async (state, canonicalState) => {
     if (!["completion", "integration", "release"].includes(request.gate)) return conflict("unsupported_gate");
+    if (admittedProblem(state, request.taskIds)) return conflict("outside_scope");
     const canonical = await loadCanonicalTracker(project, options);
     if (canonical.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable" };
     if (canonical.tracker.fingerprint !== request.expectedFingerprint) return conflict("stale_tracker");
@@ -332,8 +394,9 @@ export async function recordGateEvidence(project, request, options = {}) {
     const revision = (await git(["rev-parse", "HEAD"])).stdout.trim();
     if (revision !== request.expectedRevision) return conflict("stale_revision");
     if ((await git(["status", "--porcelain", "--untracked-files=all"])).stdout.trim()) return conflict("dirty_revision");
-    const source = await bounded(() => readFile(request.evidencePath, "utf8"));
-    const evidence = JSON.parse(source);
+    const sealed = await bounded(() => readSealed(request.evidencePath));
+    const source = sealed.bytes;
+    const evidence = sealed.parsed;
     if (evidence.status !== "passed" || evidence.revision !== revision || !Array.isArray(evidence.taskIds)
       || JSON.stringify([...evidence.taskIds].sort()) !== JSON.stringify([...request.taskIds].sort())) return conflict("evidence_mismatch");
     if (request.gate === "completion") {
@@ -363,6 +426,17 @@ export async function recordGateEvidence(project, request, options = {}) {
         || !provenance(evidence.authorization, { ownerSessionId, revision, taskIds: request.taskIds })
         || !recovery(evidence.recovery, { revision, taskIds: request.taskIds }) || !preview(evidence.preview, revision)
         || typeof evidence.remoteMainDeploys !== "boolean") return conflict("integration_evidence_mismatch");
+      if (validId(state.run?.id)) {
+        const authority = evidence.targetAuthorization;
+        const authorityKeys = ["status", "source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"];
+        const expectedTaskIds = [...request.taskIds].sort();
+        if (!evidence.sourceRevisions || !exactKeys(evidence.sourceRevisions, request.taskIds)
+          || !exactKeys(authority, authorityKeys) || authority.status !== "authorized" || !boundedString(authority.source)
+          || authority.target !== remote.targetRef || authority.revision !== revision || stable(authority.taskIds) !== stable(expectedTaskIds)
+          || authority.ownerHost !== state.release?.ownerHost || authority.ownerSessionId !== state.release?.ownerSessionId
+          || authority.ownershipEpoch !== state.release?.ownershipEpoch || !boundedString(evidence.recovery.artifactId, 4096)
+          || !boundedString(evidence.recovery.action, 4096)) return conflict("integration_delivery_evidence_mismatch");
+      }
       const observedAt = new Date().toISOString();
       const authorization = { source: evidence.authorization.source, scope: "integration", ownerSessionId, revision,
         taskIds: [...request.taskIds].sort(), observedAt };
@@ -466,10 +540,309 @@ export async function recordGateEvidence(project, request, options = {}) {
         hold: false,
       };
     }
-    const current = await loadCanonicalTracker(project, options);
-    if (current.tracker.status !== "current" || current.tracker.fingerprint !== canonical.tracker.fingerprint) return conflict("stale_tracker");
-    state[request.gate] = { ...state[request.gate], trackerFingerprint: current.tracker.fingerprint,
-      recordedEvidence: { path: request.evidencePath, fingerprint: digest(source), revision, taskIds: request.taskIds, observedAt: new Date().toISOString() } };
-    return { state, result: { gate: request.gate, trackerFingerprint: current.tracker.fingerprint, revision } };
+    const observedAt = new Date().toISOString();
+    const recordedEvidence = { path: request.evidencePath, fingerprint: createHash("sha256").update(source).digest("hex"), revision,
+      taskIds: [...request.taskIds], operationId: request.operationId, observedAt };
+    if (["completion", "integration"].includes(request.gate) && validId(state.run?.id)) {
+      bindTaskDeliveryReceipts(state, request.gate, request.taskIds, revision, evidence, recordedEvidence);
+    }
+    state[request.gate] = { ...state[request.gate], trackerFingerprint: canonical.tracker.fingerprint, recordedEvidence };
+    return { state, result: { gate: request.gate, trackerFingerprint: canonical.tracker.fingerprint, revision } };
+  }, options);
+}
+
+function mutationRequest(request, options) {
+  return { ...request, actorSessionId: options.actorSessionId, expectedVersion: options.expectedVersion };
+}
+
+function currentActor(state) {
+  return { ownerHost: state.ownership?.current?.host, ownerSessionId: state.ownership?.current?.sessionId, ownershipEpoch: state.ownership?.epoch };
+}
+
+function completionIdentity(value) {
+  return value && { path: value.path, fingerprint: value.fingerprint, revision: value.revision, taskIds: value.taskIds };
+}
+
+function completionEvidenceValid(evidence, taskId, revision) {
+  return evidence?.status === "passed" && evidence.revision === revision && sameIds(evidence.taskIds ?? [evidence.taskId], [taskId])
+    && evidence.requirementsReconciled === true && evidence.review?.status === "passed"
+    && (evidence.review.revision === undefined || evidence.review.revision === revision)
+    && Array.isArray(evidence.checks) && evidence.checks.length > 0
+    && evidence.checks.every((check) => boundedString(check?.name) && check.status === "passed"
+      && (check.revision === undefined || check.revision === revision));
+}
+
+async function gitObservation(project, options = {}) {
+  const git = options.runGit ?? ((args) => run("git", args, { cwd: project.root, encoding: "utf8", timeout: options.budget?.timeout(1500) ?? 1500,
+    maxBuffer: 1024 * 1024, ...(options.budget ? { signal: options.budget.signal } : {}) }));
+  const output = (value) => typeof value === "string" ? value : value.stdout;
+  const revision = output(await git(["rev-parse", "HEAD"])).trim();
+  const clean = !output(await git(["status", "--porcelain", "--untracked-files=all"])).trim();
+  return { revision, clean, git };
+}
+
+async function ancestor(git, left, right) {
+  try { await git(["merge-base", "--is-ancestor", left, right]); return true; }
+  catch { return false; }
+}
+
+export async function quarantineCompletion(project, request, options = {}) {
+  if (!exactKeys(request, ["operationId", "taskId", "reason", "expectedEvidence"]) || !validId(request?.operationId) || !validId(request?.taskId)
+    || request.reason !== "task_outside_admitted_run_scope" || !exactKeys(request.expectedEvidence, ["path", "fingerprint", "revision", "taskIds"])
+    || !boundedString(request.expectedEvidence.path, 4096) || !hex(request.expectedEvidence.fingerprint, 64)
+    || !hex(request.expectedEvidence.revision, 40) || !sameIds(request.expectedEvidence.taskIds, [request.taskId])) return conflict("invalid_request");
+  return mutateOperationalState(project, mutationRequest(request, options), async (state) => {
+    if (state.run?.paused) return conflict("paused");
+    if (state.run?.taskIds?.includes(request.taskId)) return conflict("quarantine_scope_mismatch");
+    if (state.completion?.taskId !== request.taskId
+      || stable(completionIdentity(state.completion.recordedEvidence)) !== stable(request.expectedEvidence)) return conflict("completion_evidence_changed");
+    const tracker = await loadCanonicalTracker(project, options);
+    if (tracker.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable" };
+    if (!tracker.tasks.some((task) => task.id === request.taskId)) return conflict("quarantine_scope_mismatch");
+    const sealed = await readSealed(request.expectedEvidence.path);
+    if (sealed.sha256 !== request.expectedEvidence.fingerprint || sealed.parsed.revision !== request.expectedEvidence.revision
+      || !sameIds(sealed.parsed.taskIds ?? [sealed.parsed.taskId], [request.taskId])) return conflict("completion_evidence_changed");
+    const quarantineId = `completion:${request.taskId}:${request.expectedEvidence.fingerprint}`;
+    const { recordedEvidence: _removed, ...completion } = state.completion;
+    if (state.deliveryReceipts?.completion) delete state.deliveryReceipts.completion[request.taskId];
+    const quarantinedAt = (options.now ?? (() => new Date().toISOString()))();
+    const record = { quarantineId, taskId: request.taskId, evidence: structuredClone(request.expectedEvidence),
+      historicalOwnerSessionId: state.completion.ownerSessionId ?? null, historicalOperationId: state.completion.operationId ?? state.completion.recordedEvidence.operationId ?? null,
+      authenticatedActor: currentActor(state), reason: request.reason, quarantinedAt };
+    return { state: { ...state, completion, quarantinedEvidence: [...(state.quarantinedEvidence ?? []), record] },
+      result: { quarantineId, taskId: request.taskId, reason: request.reason, evidence: request.expectedEvidence, activeCompletionCleared: true } };
+  }, options);
+}
+
+export async function rebindCompletion(project, request, options = {}) {
+  if (!exactKeys(request, ["operationId", "taskId", "quarantineId", "expectedTrackerFingerprint", "evidencePath", "expectedEvidenceFingerprint",
+    "expectedSourceRevision", "expectedBoundaryRevision"]) || ![request?.operationId, request?.taskId, request?.quarantineId].every(validId)
+    || !hex(request.expectedTrackerFingerprint, 64) || !boundedString(request.evidencePath, 4096) || !hex(request.expectedEvidenceFingerprint, 64)
+    || !hex(request.expectedSourceRevision, 40) || !hex(request.expectedBoundaryRevision, 40)) return conflict("invalid_request");
+  return mutateOperationalState(project, mutationRequest(request, options), async (state) => {
+    if (admittedProblem(state, [request.taskId])) return conflict("outside_scope");
+    if (state.run?.paused) return conflict("paused");
+    const tracker = await loadCanonicalTracker(project, options);
+    if (tracker.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable" };
+    if (tracker.tracker.fingerprint !== request.expectedTrackerFingerprint) return conflict("stale_tracker");
+    if (!tracker.tasks.some((task) => task.id === request.taskId)) return conflict("task_identity_mismatch");
+    const quarantined = state.quarantinedEvidence?.find((entry) => entry.quarantineId === request.quarantineId);
+    const wanted = { path: request.evidencePath, fingerprint: request.expectedEvidenceFingerprint, revision: request.expectedSourceRevision, taskIds: [request.taskId] };
+    if (!quarantined || quarantined.reboundByOperationId || stable(quarantined.evidence) !== stable(wanted)) return conflict("invalid_quarantine_identity");
+    const sealed = await readSealed(request.evidencePath);
+    if (sealed.sha256 !== request.expectedEvidenceFingerprint || !completionEvidenceValid(sealed.parsed, request.taskId, request.expectedSourceRevision)) return conflict("completion_evidence_changed");
+    const integration = state.deliveryReceipts?.integration?.[request.taskId];
+    if (integration?.status !== "passed" || integration.sourceRevision !== request.expectedSourceRevision
+      || integration.boundaryRevision !== request.expectedBoundaryRevision || integration.integratedRevision !== request.expectedBoundaryRevision) return conflict("integration_evidence_mismatch");
+    const repository = await gitObservation(project, options);
+    if (!repository.clean || !await ancestor(repository.git, request.expectedSourceRevision, request.expectedBoundaryRevision)
+      || !await ancestor(repository.git, request.expectedBoundaryRevision, repository.revision)) return conflict("invalid_completion_lineage");
+    const observedAt = (options.now ?? (() => new Date().toISOString()))();
+    const pointer = { path: request.evidencePath, fingerprint: request.expectedEvidenceFingerprint, revision: request.expectedSourceRevision,
+      taskIds: [request.taskId], operationId: request.operationId, observedAt };
+    state.deliveryReceipts ??= {};
+    state.deliveryReceipts.completion = { ...(state.deliveryReceipts.completion ?? {}), [request.taskId]: { taskId: request.taskId, status: "passed",
+      sourceRevision: request.expectedSourceRevision, evidence: pointer } };
+    state.deliveryReceipts.review = { ...(state.deliveryReceipts.review ?? {}), [request.taskId]: { taskId: request.taskId, status: "passed",
+      revision: request.expectedSourceRevision, evidence: pointer } };
+    state.deliveryReceipts.checks = { ...(state.deliveryReceipts.checks ?? {}), [request.taskId]: { taskId: request.taskId, revision: request.expectedSourceRevision,
+      results: sealed.parsed.checks.map(({ name, status }) => ({ name, status })), evidence: pointer } };
+    const completion = state.completion?.recordedEvidence && state.completion.taskId !== request.taskId ? state.completion
+      : { ...state.completion, taskId: request.taskId, evidenceRevision: request.expectedSourceRevision, requirementsReconciled: true,
+        review: { status: "passed", revision: request.expectedSourceRevision, taskId: request.taskId },
+        checks: sealed.parsed.checks.map(({ name, status }) => ({ name, status, revision: request.expectedSourceRevision, taskId: request.taskId })), recordedEvidence: pointer };
+    state.quarantinedEvidence = state.quarantinedEvidence.map((entry) => entry.quarantineId === request.quarantineId
+      ? { ...entry, reboundByOperationId: request.operationId, reboundAt: observedAt } : entry);
+    return { state: { ...state, completion }, result: { taskId: request.taskId, quarantineId: request.quarantineId,
+      sourceRevision: request.expectedSourceRevision, boundaryRevision: request.expectedBoundaryRevision, currentRevision: repository.revision,
+      evidenceFingerprint: request.expectedEvidenceFingerprint, trackerFingerprint: tracker.tracker.fingerprint, rebound: true } };
+  }, options);
+}
+
+async function inspectDirectoryNoFollow(directory) {
+  const resolved = await realpath(directory);
+  if (resolved !== directory) throw new Error("evidence_store_not_canonical");
+  const root = path.parse(directory).root;
+  let current = root;
+  for (const part of path.relative(root, directory).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    const metadata = await lstat(current);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("unsafe_evidence_store");
+  }
+  return lstat(directory);
+}
+
+export async function registerEvidenceStore(project, request, options = {}) {
+  if (!exactKeys(request, ["operationId", "storeId", "realpath", "expectedTeamsFingerprint", "declaration", "projectId", "expectedOwnershipEpoch"])
+    || ![request?.operationId, request?.storeId, request?.projectId].every(validId) || !path.isAbsolute(request?.realpath ?? "")
+    || path.normalize(request.realpath) !== request.realpath || !hex(request.expectedTeamsFingerprint, 64) || !boundedString(request.declaration, 4096)
+    || !Number.isSafeInteger(request.expectedOwnershipEpoch) || request.expectedOwnershipEpoch < 1) return conflict("invalid_request");
+  return mutateOperationalState(project, mutationRequest(request, options), async (state, canonical) => {
+    const teams = canonical.sources?.teams;
+    if (request.projectId !== canonical.registry.projectId || request.expectedOwnershipEpoch !== canonical.registry.ownershipEpoch) return conflict("stale_owner_generation");
+    if (typeof teams !== "string" || digest(teams) !== request.expectedTeamsFingerprint) return conflict("stale_teams");
+    const declaration = `Evidence root: ${request.realpath}/<team>/.`;
+    if (request.declaration !== declaration || teams.split(/\r?\n/).filter((line) => line === declaration).length !== 1) return conflict("evidence_store_not_declared");
+    let metadata;
+    try { metadata = await inspectDirectoryNoFollow(request.realpath); } catch { return conflict("unsafe_evidence_store"); }
+    if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) return conflict("evidence_store_owner_mismatch");
+    if ((metadata.mode & 0o002) !== 0) return conflict("unsafe_evidence_store_mode");
+    if (state.evidenceStores?.[request.storeId]) return conflict("evidence_store_already_registered");
+    const registeredAt = (options.now ?? (() => new Date().toISOString()))();
+    const store = { storeId: request.storeId, realpath: request.realpath, projectId: request.projectId, uid: metadata.uid, gid: metadata.gid,
+      mode: metadata.mode & 0o7777, dev: metadata.dev, ino: metadata.ino, teamsFingerprint: request.expectedTeamsFingerprint,
+      declaration: request.declaration, registeredBy: currentActor(state), registeredAt };
+    return { state: { ...state, evidenceStores: { ...(state.evidenceStores ?? {}), [request.storeId]: store } }, result: { store: structuredClone(store) } };
+  }, options);
+}
+
+async function readRegisteredEvidence(store, relative, expectedSha256) {
+  if (!relativePath(relative)) throw new Error("unsafe_evidence_path");
+  const rootMetadata = await inspectDirectoryNoFollow(store.realpath);
+  if (["uid", "gid", "dev", "ino"].some((field) => rootMetadata[field] !== store[field]) || (rootMetadata.mode & 0o7777) !== store.mode) throw new Error("evidence_store_changed");
+  let current = store.realpath;
+  const parts = relative.split(/[\\/]/);
+  for (const part of parts.slice(0, -1)) {
+    current = path.join(current, part);
+    const metadata = await lstat(current);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("unsafe_evidence_path");
+  }
+  const file = path.join(store.realpath, relative);
+  const final = await lstat(file);
+  if (!final.isFile() || final.isSymbolicLink()) throw new Error("unsafe_evidence_file");
+  const sealed = await readSealed(file, { expectedUid: store.uid });
+  if (sealed.stat.dev !== final.dev || sealed.stat.ino !== final.ino || sealed.sha256 !== expectedSha256) throw new Error("evidence_changed_during_read");
+  return sealed;
+}
+
+function activeCompletionProjection(state) {
+  if (!state.completion?.taskId || !state.completion?.operationId || !state.completion?.resultFingerprint) return null;
+  return { taskId: state.completion.taskId, operationId: state.completion.operationId, resultFingerprint: state.completion.resultFingerprint };
+}
+
+function strictAddition(state, tracker, taskId) {
+  if (!state.run || state.run.taskIds.includes(taskId)) return "scope_extension_not_strict_addition";
+  const task = tracker.tasks.find((entry) => entry.id === taskId);
+  if (!task || task.isEpic || task.isSubtask || task.hierarchyUnknown) return "scope_extension_not_strict_addition";
+  const admitted = new Set([...state.run.taskIds, taskId]);
+  if (split(task.dependencies ?? task["depends on"]).some((id) => !admitted.has(id)
+    && !finished.has(String(tracker.tasks.find((entry) => entry.id === id)?.status).toLowerCase()))) return "unresolved_scope_dependency";
+  return undefined;
+}
+
+export async function reconcileCompletionHistory(project, request, options = {}) {
+  const keys = ["operationId", "taskId", "intent", "completionOperationId", "completionResultFingerprint", "evidenceStoreId", "completionRelativePath",
+    "completionSha256", "sourceRevision", "integrationOperationId", "integrationRelativePath", "integrationSha256", "boundaryRevision",
+    "expectedTrackerFingerprint", "expectedStateFingerprint", "expectedRunFingerprint", "expectedTeamsFingerprint", "expectedOwnershipEpoch",
+    "expectedActiveCompletion", "publicationTarget", "observedRemoteRevision"];
+  if (!exactKeys(request, keys) || ![request?.operationId, request?.taskId, request?.completionOperationId, request?.integrationOperationId,
+    request?.evidenceStoreId].every(validId) || !["admit_and_record", "record_existing_scope", "decline_admission"].includes(request.intent)
+    || ![request.completionResultFingerprint, request.completionSha256, request.integrationSha256, request.expectedTrackerFingerprint,
+      request.expectedStateFingerprint, request.expectedRunFingerprint, request.expectedTeamsFingerprint].every((value) => hex(value, 64))
+    || ![request.sourceRevision, request.boundaryRevision, request.observedRemoteRevision].every((value) => hex(value, 40))
+    || !relativePath(request.completionRelativePath) || !relativePath(request.integrationRelativePath)
+    || !Number.isSafeInteger(request.expectedOwnershipEpoch) || request.expectedOwnershipEpoch < 1
+    || request.publicationTarget !== "origin:refs/heads/main"
+    || request.expectedActiveCompletion !== null && (!exactKeys(request.expectedActiveCompletion, ["taskId", "operationId", "resultFingerprint"])
+      || !validId(request.expectedActiveCompletion.taskId) || !validId(request.expectedActiveCompletion.operationId) || !hex(request.expectedActiveCompletion.resultFingerprint, 64))) {
+    return conflict("invalid_request");
+  }
+  return mutateOperationalState(project, mutationRequest(request, options), async (state, canonical) => {
+    if (request.intent === "record_existing_scope" && admittedProblem(state, [request.taskId])) return conflict("outside_scope");
+    if (state.run?.paused) return conflict("paused");
+    if (stateFingerprint(canonical.state) !== request.expectedStateFingerprint) return conflict("stale_state");
+    const runFingerprint = state.run ? stateFingerprint(state.run) : null;
+    if (runFingerprint !== request.expectedRunFingerprint) return conflict("stale_run");
+    if (digest(canonical.sources?.teams ?? "") !== request.expectedTeamsFingerprint) return conflict("stale_teams");
+    if (canonical.registry.ownershipEpoch !== request.expectedOwnershipEpoch) return conflict("stale_owner_generation");
+    if (stable(activeCompletionProjection(state)) !== stable(request.expectedActiveCompletion)) return conflict("active_completion_changed");
+    if (Object.entries(state.pendingOperations ?? {}).some(([id, entry]) => id !== request.operationId
+      && ["uncertain", "pending", "unknown"].includes(entry.phase ?? entry.status))) return { status: "unavailable", reason: "pending_operation_unresolved" };
+    const tracker = await loadCanonicalTracker(project, options);
+    if (tracker.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable" };
+    if (tracker.tracker.fingerprint !== request.expectedTrackerFingerprint) return conflict("stale_tracker");
+    if (request.intent === "admit_and_record") {
+      const problem = strictAddition(state, tracker, request.taskId); if (problem) return conflict(problem);
+    } else if (request.intent !== "decline_admission" && !tracker.tasks.some((task) => task.id === request.taskId)) return conflict("task_identity_mismatch");
+    const observedAt = (options.now ?? (() => new Date().toISOString()))();
+    if (request.intent === "decline_admission") {
+      const history = { operationId: request.operationId, taskId: request.taskId, intent: request.intent, authenticatedActor: currentActor(state), observedAt };
+      return { state: { ...state, completionHistory: [...(state.completionHistory ?? []), history] }, result: history };
+    }
+    const store = state.evidenceStores?.[request.evidenceStoreId];
+    if (!store) return conflict("unregistered_evidence_store");
+    let completionSealed; let integrationSealed;
+    try {
+      completionSealed = await readRegisteredEvidence(store, request.completionRelativePath, request.completionSha256);
+      integrationSealed = request.integrationRelativePath === request.completionRelativePath
+        ? completionSealed : await readRegisteredEvidence(store, request.integrationRelativePath, request.integrationSha256);
+    } catch { return conflict("historical_evidence_changed"); }
+    const completionEvidence = completionSealed.parsed;
+    const integrationEvidence = integrationSealed.parsed;
+    if (!completionEvidenceValid(completionEvidence, request.taskId, request.sourceRevision)
+      || completionEvidence.operationId !== request.completionOperationId || completionEvidence.resultFingerprint !== request.completionResultFingerprint
+      || integrationEvidence?.status !== "passed" || integrationEvidence.revision !== request.boundaryRevision
+      || integrationEvidence.operationId !== request.integrationOperationId
+      || !sameIds(integrationEvidence.taskIds, [request.taskId]) && !integrationEvidence.taskIds?.includes(request.taskId)
+      || integrationEvidence.sourceRevisions?.[request.taskId] !== request.sourceRevision) return conflict("historical_evidence_mismatch");
+    const task = tracker.tasks.find((entry) => entry.id === request.taskId);
+    if (!task || !finished.has(String(task.status).toLowerCase())) return conflict("historical_task_not_complete");
+    const repository = await gitObservation(project, options);
+    if (!repository.clean || !await ancestor(repository.git, request.sourceRevision, request.boundaryRevision)
+      || !await ancestor(repository.git, request.boundaryRevision, repository.revision)) return conflict("invalid_completion_lineage");
+    if (!options.observePublicationTarget) return { status: "unavailable", reason: "publication_observation_unavailable" };
+    const publication = await options.observePublicationTarget({ project, target: request.publicationTarget });
+    const remoteRevision = typeof publication === "string" ? publication : publication?.revision;
+    if (remoteRevision !== request.observedRemoteRevision || !await ancestor(repository.git, request.boundaryRevision, remoteRevision)) return conflict("publication_observation_changed");
+    const actor = currentActor(state);
+    const integrationActor = { ownerHost: state.integration?.ownerHost, ownerSessionId: state.integration?.ownerSessionId,
+      ownershipEpoch: state.integration?.ownershipEpoch };
+    const releaseActor = { ownerHost: state.release?.ownerHost, ownerSessionId: state.release?.ownerSessionId,
+      ownershipEpoch: state.release?.ownershipEpoch };
+    const targetAuthority = integrationEvidence.targetAuthorization;
+    if (!exactKeys(targetAuthority, ["status", "source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"])
+      || targetAuthority.status !== "authorized" || targetAuthority.revision !== request.boundaryRevision
+      || targetAuthority.target !== "origin/main" || !boundedString(targetAuthority.source)
+      || !sameIds(targetAuthority.taskIds, integrationEvidence.taskIds) || !targetAuthority.taskIds.includes(request.taskId)
+      || targetAuthority.ownerHost !== releaseActor.ownerHost || targetAuthority.ownerSessionId !== releaseActor.ownerSessionId
+      || targetAuthority.ownershipEpoch !== releaseActor.ownershipEpoch || !exactKeys(integrationEvidence.preview, ["required"])
+      || typeof integrationEvidence.preview.required !== "boolean"
+      || !exactKeys(integrationEvidence.recovery, ["artifactId", "action"])
+      || !boundedString(integrationEvidence.recovery.artifactId, 4096) || !boundedString(integrationEvidence.recovery.action, 4096)) {
+      return conflict("historical_evidence_mismatch");
+    }
+    const completionPointer = { evidenceStoreId: request.evidenceStoreId, relativePath: request.completionRelativePath, sha256: request.completionSha256,
+      operationId: request.completionOperationId, observedAt };
+    const integrationPointer = { evidenceStoreId: request.evidenceStoreId, relativePath: request.integrationRelativePath, sha256: request.integrationSha256,
+      operationId: request.integrationOperationId, observedAt };
+    const previousRunFingerprint = stateFingerprint(state.run);
+    if (request.intent === "admit_and_record") state.run = { ...state.run, taskIds: [...state.run.taskIds, request.taskId] };
+    state.deliveryReceipts ??= Object.fromEntries(["completion", "review", "checks", "integration", "preview", "target", "recovery"].map((category) => [category, {}]));
+    for (const category of ["completion", "review", "checks", "integration", "preview", "target", "recovery"]) state.deliveryReceipts[category] ??= {};
+    state.deliveryReceipts.completion[request.taskId] = { taskId: request.taskId, status: "passed", sourceRevision: request.sourceRevision,
+      completionOperationId: request.completionOperationId, completionResultFingerprint: request.completionResultFingerprint, evidence: completionPointer };
+    state.deliveryReceipts.review[request.taskId] = { taskId: request.taskId, status: "passed", revision: request.sourceRevision, evidence: completionPointer };
+    state.deliveryReceipts.checks[request.taskId] = { taskId: request.taskId, revision: request.sourceRevision,
+      results: completionEvidence.checks.map(({ name, status }) => ({ name, status })), evidence: completionPointer };
+    state.deliveryReceipts.integration[request.taskId] = { taskId: request.taskId, status: "passed", sourceRevision: request.sourceRevision,
+      boundaryRevision: request.boundaryRevision, integratedRevision: request.boundaryRevision, integrationOperationId: request.integrationOperationId,
+      ...integrationActor, evidence: integrationPointer };
+    state.deliveryReceipts.preview[request.taskId] = { taskId: request.taskId, revision: request.boundaryRevision, required: integrationEvidence.preview.required,
+      status: integrationEvidence.preview.required ? "passed" : "not_required", ...integrationActor, evidence: integrationPointer };
+    state.deliveryReceipts.target[request.taskId] = { taskId: request.taskId, revision: request.boundaryRevision, status: "authorized",
+      target: targetAuthority.target, authority: structuredClone(targetAuthority), ...releaseActor, evidence: integrationPointer };
+    state.deliveryReceipts.recovery[request.taskId] = { taskId: request.taskId, revision: request.boundaryRevision, status: "ready",
+      artifact: integrationEvidence.recovery.artifactId, action: integrationEvidence.recovery.action, ...releaseActor, evidence: integrationPointer };
+    state.run.deployedTaskIds = [...new Set([...(state.run.deployedTaskIds ?? []), request.taskId])];
+    state.run.pendingDeliveryIds = (state.run.pendingDeliveryIds ?? []).filter((id) => id !== request.taskId);
+    const history = { operationId: request.operationId, taskId: request.taskId, intent: request.intent, completionOperationId: request.completionOperationId,
+      completionResultFingerprint: request.completionResultFingerprint, integrationOperationId: request.integrationOperationId,
+      completionEvidence: completionPointer, integrationEvidence: integrationPointer, sourceRevision: request.sourceRevision,
+      boundaryRevision: request.boundaryRevision, currentRevision: repository.revision, publication: { target: request.publicationTarget, revision: remoteRevision, status: "published" },
+      authenticatedActor: actor, activeCompletion: structuredClone(request.expectedActiveCompletion), previousRunFingerprint, runFingerprint: stateFingerprint(state.run), previousTaskIds: request.intent === "admit_and_record"
+        ? state.run.taskIds.slice(0, -1) : [...state.run.taskIds], taskIds: [...state.run.taskIds], resultingStateVersion: (canonical.state.stateVersion ?? 0) + 1, observedAt };
+    state.completionHistory = [...(state.completionHistory ?? []), history];
+    return { state, result: { taskId: request.taskId, intent: request.intent, sourceRevision: request.sourceRevision,
+      boundaryRevision: request.boundaryRevision, currentRevision: repository.revision, published: true } };
   }, options);
 }
