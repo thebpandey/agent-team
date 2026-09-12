@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { access, chmod, cp, link, lstat, mkdir, mkdtemp, open, opendir, readFile, realpath, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, cp, link, lstat, mkdir, mkdtemp, open, opendir, readFile, realpath, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { CATALOG_BY_ID, DEPENDENCY_CATALOG } from "./dependency-catalog.mjs";
@@ -663,8 +663,12 @@ async function unchangedGitSkillPublication(destination, expected) {
     const stat = await lstat(destination);
     if (!stat.isDirectory() || stat.dev !== expected.identity.dev || stat.ino !== expected.identity.ino) return false;
     const files = await skillContents(destination);
-    const metadata = await companionBytes(path.join(destination, ".agent-team-source.json"), undefined, 64 * 1024);
-    return JSON.stringify(files) === JSON.stringify(expected.files) && metadata.equals(expected.metadata);
+    const expectedFiles = Object.fromEntries(Object.entries(expected.files).sort(([left], [right]) => left.localeCompare(right)));
+    if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) return false;
+    let metadata = null;
+    try { metadata = await companionBytes(path.join(destination, ".agent-team-source.json"), undefined, 64 * 1024); }
+    catch (error) { if (error.code !== "ENOENT") return false; }
+    return expected.metadata === null ? metadata === null : metadata?.equals(expected.metadata) === true;
   } catch { return false; }
 }
 
@@ -704,9 +708,7 @@ async function installGitSkills(dependency, paths, budget) {
       const files = await validateGitSkillStage(dependency, selectedPath, stage, budget);
       const metadata = Buffer.from(`${JSON.stringify({ source: dependency.install.source, revision: dependency.version, selectedPath }, null, 2)}\n`);
       await writeFile(path.join(stage, ".agent-team-source.json"), metadata, { mode: 0o600, flag: "wx" });
-      const stat = await lstat(stage);
-      staged.push({ selectedPath, stage, destination: skillDestination(dependency, paths, selectedPath),
-        expected: { files, metadata, identity: { dev: stat.dev, ino: stat.ino } } });
+      staged.push({ selectedPath, stage, destination: skillDestination(dependency, paths, selectedPath), expected: { files, metadata } });
     }
   } catch (error) {
     await rm(stageRoot, { recursive: true, force: true });
@@ -726,12 +728,35 @@ async function installGitSkills(dependency, paths, budget) {
   const published = [];
   try {
     for (const item of staged) {
-      await rename(item.stage, item.destination);
-      published.push(item);
+      await mkdir(item.destination, { mode: 0o700 });
+      const stat = await lstat(item.destination);
+      const identity = { dev: stat.dev, ino: stat.ino };
+      const reserved = { ...item, expected: { ...item.expected, identity },
+        cleanup: { files: {}, metadata: null, identity }, cleanupKnown: true };
+      published.push(reserved);
+      for await (const entry of await opendir(item.stage)) {
+        try {
+          await cp(path.join(item.stage, entry.name), path.join(item.destination, entry.name), { recursive: true, errorOnExist: true, force: false });
+        } catch (error) {
+          reserved.cleanupKnown = false;
+          throw error;
+        }
+        if (entry.name === ".agent-team-source.json") reserved.cleanup.metadata = item.expected.metadata;
+        else for (const [file, digest] of Object.entries(item.expected.files)) {
+          if (file === entry.name || file.startsWith(`${entry.name}/`)) reserved.cleanup.files[file] = digest;
+        }
+      }
+      if (!await unchangedGitSkillPublication(item.destination, reserved.expected)) {
+        const error = new Error(`Exclusive skill publication changed before commit: ${item.destination}`);
+        error.code = "PUBLICATION_CHANGED";
+        throw error;
+      }
     }
   } catch (error) {
     for (const item of published.reverse()) {
-      if (await unchangedGitSkillPublication(item.destination, item.expected)) await rm(item.destination, { recursive: true, force: true });
+      if (item.cleanupKnown && await unchangedGitSkillPublication(item.destination, item.cleanup)) {
+        await rm(item.destination, { recursive: true, force: true });
+      }
     }
     await rm(stageRoot, { recursive: true, force: true });
     if (["EEXIST", "ENOTEMPTY"].includes(error.code)) return inspectSkillDestinations(dependency, paths, { budget, bounded: true });

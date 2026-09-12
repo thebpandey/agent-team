@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1069,6 +1069,67 @@ test("fresh local git skills publish completely as installed and prevalidate eve
     assert.equal(partial.status, "failed");
     await assert.rejects(readFile(path.join(partialRoot, "first", "SKILL.md")), { code: "ENOENT" });
   });
+});
+
+test("multi-path git publication never replaces a later concurrent empty destination", async (t) => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-git-publish-race-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, "source");
+  const skillRoot = path.join(root, "skills");
+  const selectedPaths = Array.from({ length: 40 }, (_, index) => `skills/fixture-${String(index).padStart(2, "0")}`);
+  const bytes = "# exact\n";
+  for (const selectedPath of selectedPaths) {
+    await mkdir(path.join(source, selectedPath), { recursive: true });
+    await writeFile(path.join(source, selectedPath, "SKILL.md"), bytes);
+  }
+  execFileSync("git", ["init", "--quiet"], { cwd: source });
+  execFileSync("git", ["add", "."], { cwd: source });
+  execFileSync("git", ["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "fixture"], { cwd: source });
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
+  const dependency = { id: "publish-race", version: revision,
+    install: { kind: "git-skill", repository: source, source, revision, paths: selectedPaths },
+    compatibility: { kind: "required-files", entrypoint: "SKILL.md", allowUnrelatedRegularFiles: true,
+      selectedPaths: selectedPaths.map((selectedPath) => ({ selectedPath, requiredFiles: [{ path: "SKILL.md",
+        digest: { algorithm: "sha256", value: createHash("sha256").update(bytes).digest("hex") } }] })) } };
+  const first = path.join(skillRoot, path.basename(selectedPaths[0]));
+  const later = path.join(skillRoot, path.basename(selectedPaths.at(-1)));
+  const watcher = spawn(process.execPath, ["-e", `
+    const fs = require("node:fs");
+    const first = process.env.FIRST_DEST;
+    const later = process.env.LATER_DEST;
+    const deadline = Date.now() + 5000;
+    const timer = setInterval(() => {
+      if (!fs.existsSync(first)) {
+        if (Date.now() > deadline) { clearInterval(timer); process.exit(2); }
+        return;
+      }
+      clearInterval(timer);
+      fs.mkdirSync(later);
+      const stat = fs.lstatSync(later);
+      process.stdout.write(JSON.stringify({ dev: stat.dev, ino: stat.ino }));
+    }, 1);
+  `], { env: { ...process.env, FIRST_DEST: first, LATER_DEST: later }, stdio: ["ignore", "pipe", "pipe"] });
+  const observed = new Promise((resolve, reject) => {
+    let stdout = ""; let stderr = "";
+    watcher.stdout.on("data", (chunk) => { stdout += chunk; });
+    watcher.stderr.on("data", (chunk) => { stderr += chunk; });
+    watcher.on("error", reject);
+    watcher.on("close", (code) => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(`race watcher failed ${code}: ${stderr}`)));
+  });
+  const runner = createDependencyRunner({ host: "codex", scope: "project",
+    paths: { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot } });
+  const result = await runner({ dependency, phase: "install" });
+  const operatorIdentity = await observed;
+
+  assert.equal(result.status, "manual_action");
+  const current = await lstat(later);
+  assert.deepEqual({ dev: current.dev, ino: current.ino }, operatorIdentity);
+  for (const selectedPath of selectedPaths.slice(0, -1)) {
+    await assert.rejects(readFile(path.join(skillRoot, path.basename(selectedPath), "SKILL.md")), { code: "ENOENT" });
+  }
+  assert.equal(current.isDirectory(), true);
+  assert.deepEqual(await readdir(later), []);
 });
 
 test("default LeanCTX gate overrides inherited directory pins for its narrow read", async (t) => {
