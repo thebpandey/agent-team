@@ -144,6 +144,7 @@ async function canonicalReadiness(project, host, scope, context) {
   const initializationProblem = initializationRecordProblem(project.setup, canonical, {
     projectRoot: project.root,
     validateTracker: true,
+    allowLegacy: true,
   });
   result.projectInitialization = { required: Boolean(initializationProblem), projectId: project.projectId, projectOwner: canonical.registry.projectOwner ?? null,
     ...(initializationProblem ? { reason: initializationProblem } : {}) };

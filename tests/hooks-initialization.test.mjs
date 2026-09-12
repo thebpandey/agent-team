@@ -134,6 +134,27 @@ if (process.argv[2] === "initialize-worker") {
     assert.match(setup.initialization.handoff.consumedAt, /^\d{4}-\d{2}-\d{2}T/);
   });
 
+  test("new Beads initialization normalizes the project root and rejects alternate or malformed roots before mutation", async (t) => {
+    for (const root of [undefined, "."]) await t.test(root === undefined ? "omitted" : "dot", async () => {
+      const value = await fixture();
+      await mkdir(path.join(value.root, ".beads"));
+      const tracker = { kind: "beads", executable: "/selected/bin/bd", ...(root === undefined ? {} : { root }) };
+      const result = await initialize(value.root, { ...value.request, source: "existing", tracker }, {
+        runBeads: async () => ({ stdout: JSON.stringify([{ id: "AT-001", title: "Existing task", status: "open", assignee: "", dependency_count: 0 }]) }),
+      });
+      assert.equal(result.status, "applied");
+      assert.deepEqual(result.setup.tracker, { kind: "beads", root: ".", executable: "/selected/bin/bd" });
+      assert.deepEqual(result.setup.initialization.trackerSelection, result.setup.tracker);
+    });
+    for (const root of ["subdir", "..", "", "/absolute", 1, null, {}, []]) await t.test(`rejects ${JSON.stringify(root)}`, async () => {
+      const value = await fixture();
+      const result = await initialize(value.root, { ...value.request, source: "existing", tracker: { kind: "beads", root, executable: "/selected/bin/bd" } });
+      assert.equal(result.status, "conflict");
+      assert.equal(result.reason, "invalid_tracker_selection");
+      await assert.rejects(access(path.join(value.root, ".agent-team")), { code: "ENOENT" });
+    });
+  });
+
   test("handoff validation rejects incompatible hash ancestry and changed branch tip without writes", async (t) => {
     for (const problem of ["compatibility", "hash", "ancestry", "tip"]) await t.test(problem, async () => {
       const value = await fixture();
@@ -336,7 +357,7 @@ if (process.argv[2] === "initialize-worker") {
   });
 
   test("duplicate initialization rejects incomplete or inconsistent setup receipts", async (t) => {
-    for (const field of ["status", "planIds", "version", "initialRunIds", "emptyStandalone"]) await t.test(field, async () => {
+    for (const field of ["status", "planIds", "version", "initialTaskIds", "trackerFingerprint", "initialRunIds", "emptyStandalone"]) await t.test(field, async () => {
       const value = await fixture();
       value.request.plan.tasks.push({ id: "AT-002", title: "Remaining work", status: "ready" });
       await initialize(value.root, value.request);
@@ -345,6 +366,8 @@ if (process.argv[2] === "initialize-worker") {
       if (field === "status") setup.initialization.status = "pending";
       if (field === "planIds") setup.plan.taskIds = ["AT-001"];
       if (field === "version") setup.version = -1;
+      if (field === "initialTaskIds") delete setup.initialization.initialTaskIds;
+      if (field === "trackerFingerprint") delete setup.initialization.trackerFingerprint;
       if (field === "initialRunIds") {
         const state = JSON.parse(await readFile(project.paths.state, "utf8"));
         state.run.taskIds = ["AT-001"];

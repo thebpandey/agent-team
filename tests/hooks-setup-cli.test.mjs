@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -290,6 +290,35 @@ test('readiness requires a completed initialization receipt', async (t) => {
   const result = await runSetupCommand('readiness', { project: f.root, host: 'codex', scope: 'project' });
   assert.equal(result.readyForDispatch, false);
   assert.equal(result.projectInitialization.required, true);
+});
+
+test("BrainVault-shaped pre-7.2 initialization remains readable without fabricating provenance", async (t) => {
+  const value = await fixture(t, {}, { trackerKind: "beads", projectId: "brainvault-system" });
+  await writeFile(value.trackerExecutable, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify([\n  { id: "brainvault-system-6zf", title: "Historical delivery", status: "closed", assignee: "", dependency_count: 0 },\n  { id: "T-1", title: "Complete prerequisite", status: "closed", assignee: "", dependency_count: 0 },\n  { id: "T-2", title: "Repair parser", status: "open", assignee: "", dependency_count: 0 }\n]));\n`);
+  await chmod(value.trackerExecutable, 0o755);
+  const setup = JSON.parse(await readFile(value.setupPath, "utf8"));
+  delete setup.initialization.initialTaskIds;
+  delete setup.initialization.trackerFingerprint;
+  delete setup.initialization.trackerSelection.root;
+  delete setup.tracker.root;
+  await writeFile(value.setupPath, `${JSON.stringify(setup, null, 2)}\n`);
+  const paths = [value.setupPath, value.statePath, path.join(value.root, ".agent-team", "TEAMS.md")];
+  const before = await Promise.all(paths.map((file) => readFile(file, "utf8")));
+
+  const readiness = await value.invoke("readiness");
+  const settings = await value.invoke("settings");
+  const mutation = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { operationId: "legacy-write" });
+  const { runSetupCommand } = await import(modulePath);
+  const writeAttempt = await runSetupCommand("settings-update", { ...value.options, request: mutation });
+
+  assert.equal(readiness.projectInitialization.required, false, readiness.projectInitialization.reason);
+  assert.equal(readiness.projectInitialization.projectOwner, "owner");
+  assert.equal(settings.host, "codex");
+  assert.deepEqual(writeAttempt, { status: "conflict", reason: "project_owner_required" });
+  assert.equal(Object.hasOwn(JSON.parse(await readFile(value.setupPath, "utf8")).initialization, "initialTaskIds"), false);
+  assert.equal(Object.hasOwn(JSON.parse(await readFile(value.setupPath, "utf8")).initialization, "trackerFingerprint"), false);
+  assert.equal(Object.hasOwn(JSON.parse(await readFile(value.setupPath, "utf8")).initialization.trackerSelection, "root"), false);
+  assert.deepEqual(await Promise.all(paths.map((file) => readFile(file, "utf8"))), before);
 });
 
 test("readiness rejects a receipt whose required initialization state is missing", async (t) => {

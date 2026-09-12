@@ -29,6 +29,9 @@ const relative = (value) => typeof value === "string" && value && value.length <
 const trackerSelection = (tracker) => tracker?.kind === "beads"
   ? { kind: "beads", root: tracker.root ?? ".", executable: tracker.executable ?? "bd" }
   : { kind: tracker?.kind, path: tracker?.path };
+const legacyTrackerSelection = (tracker) => tracker?.kind === "beads"
+  ? { kind: "beads", executable: tracker.executable ?? "bd" }
+  : trackerSelection(tracker);
 function completeState(state, { taskIds, integrationOwner, branch }) {
   const booleanFields = (record, fields) => record && fields.every((field) => typeof record[field] === "boolean");
   if (state?.schemaVersion !== 1 || !Number.isSafeInteger(state.stateVersion) || state.stateVersion < 0
@@ -74,6 +77,7 @@ function validateRequest(request, actorSessionId) {
   if (!request.tracker || !["markdown", "beads"].includes(request.tracker.kind)) return "explicit_tracker_required";
   if (request.tracker.kind === "markdown" ? !exactKeys(request.tracker, ["kind", "path"])
     : !exactKeys(request.tracker, ["kind"], ["root", "executable"])) return "invalid_request";
+  if (request.tracker.kind === "beads" && request.tracker.root !== undefined && request.tracker.root !== ".") return "invalid_tracker_selection";
   const plan = request.plan;
   if (!exactKeys(plan, ["scope", "acceptance", "verification", "branch", "authority"], ["tasks"])
     || !exactKeys(plan?.authority, ["ownedPaths"], ["externalActions"]) || !optionalStrings(plan?.authority?.externalActions)) return "invalid_request";
@@ -150,6 +154,20 @@ function validReceiptHandoff(handoff, operationId) {
     && SUPPORTED_HANDOFFS.has(`${handoff.generatedBy.version}/${handoff.testedAgainst.version}`);
 }
 
+function validLegacyInitializationReceipt(setup, receipt, ids, owner) {
+  const plan = setup?.plan;
+  return exactKeys(receipt, ["status", "operationId", "signature", "source", "trackerSelection"])
+    && receipt.status === "complete" && validId(receipt.operationId) && /^[a-f0-9]{64}$/.test(receipt.signature ?? "")
+    && ["standalone", "existing"].includes(receipt.source) && Array.isArray(ids) && new Set(ids).size === ids.length
+    && ids.every(validId) && validId(setup?.projectId) && validId(owner)
+    && setup?.tracker && ["markdown", "beads"].includes(setup.tracker.kind)
+    && (setup.tracker.kind !== "beads" || setup.tracker.root === undefined || setup.tracker.root === ".")
+    && stable(receipt.trackerSelection) === stable(legacyTrackerSelection(setup.tracker))
+    && plan && typeof plan.scope === "string" && plan.scope.trim() && plan.scope.length <= 4096
+    && strings(plan.acceptance) && strings(plan.verification) && typeof plan.branch === "string" && plan.branch && plan.branch.length <= 256
+    && plan.authority && strings(plan.authority.ownedPaths) && plan.authority.ownedPaths.every(relative);
+}
+
 export async function nativeIdentityProblem(projectPath, actorSessionId, nativeIdentity) {
   if (nativeIdentity?.observed !== true) return "native_identity_required";
   if (!new Set(["codex", "claude-code"]).has(nativeIdentity.host)) return "native_host_unsupported";
@@ -164,24 +182,27 @@ export async function nativeIdentityProblem(projectPath, actorSessionId, nativeI
 }
 
 /** Structural readiness only; neither a receipt nor a caller identity proves native host trust. */
-export function initializationRecordProblem(setup, canonical, { projectRoot, validateTracker = false } = {}) {
+export function initializationRecordProblem(setup, canonical, { projectRoot, validateTracker = false, allowLegacy = false } = {}) {
   const receipt = setup?.initialization;
   const ids = setup?.plan?.taskIds;
   const { taskIds: _taskIds, ...receiptPlan } = setup?.plan ?? {};
   const owner = canonical?.registry?.projectOwner;
+  const legacy = validLegacyInitializationReceipt(setup, receipt, ids, owner);
+  const current = exactKeys(receipt, ["status", "operationId", "signature", "source", "trackerSelection", "initialTaskIds", "trackerFingerprint"], ["handoff"])
+    && receipt.status === "complete" && validId(receipt.operationId) && /^[a-f0-9]{64}$/.test(receipt.signature ?? "")
+    && ["standalone", "existing"].includes(receipt.source) && Array.isArray(ids) && new Set(ids).size === ids.length
+    && stable(receipt.initialTaskIds) === stable(ids) && /^[a-f0-9]{64}$/.test(receipt.trackerFingerprint ?? "")
+    && validReceiptHandoff(receipt.handoff, receipt.operationId)
+    && !validateRequest({ projectId: setup?.projectId, operationId: receipt.operationId,
+      source: receipt.source, tracker: setup?.tracker, plan: { ...receiptPlan, tasks: ids?.map((id) => ({ id })) } }, owner);
   if (setup?.schemaVersion !== 1 || setup.skill !== "agent-team" || !Number.isSafeInteger(setup.version) || setup.version < 1
-    || receipt?.status !== "complete" || !validId(receipt.operationId) || !/^[a-f0-9]{64}$/.test(receipt.signature ?? "")
-    || !["standalone", "existing"].includes(receipt.source) || !Array.isArray(ids) || new Set(ids).size !== ids.length
-    || stable(receipt.initialTaskIds) !== stable(ids) || !/^[a-f0-9]{64}$/.test(receipt.trackerFingerprint ?? "")
-    || !validReceiptHandoff(receipt.handoff, receipt.operationId)
-    || validateRequest({ projectId: setup.projectId, operationId: receipt.operationId,
-      source: receipt.source, tracker: setup.tracker, plan: { ...receiptPlan, tasks: ids?.map((id) => ({ id })) } }, owner)) return "invalid_initialization_receipt";
+    || !current && !(allowLegacy && legacy)) return "invalid_initialization_receipt";
   if (canonical.registry.projectId !== setup.projectId) return "existing_owner_conflict";
   if (typeof projectRoot !== "string" || !path.isAbsolute(projectRoot)) return "invalid_tracker_selection";
   const selected = resolveTracker(projectRoot, setup.tracker);
   if (selected.reason || !canonical.tracker || canonical.tracker.reason === "invalid_selection"
     || Object.entries(selected).some(([key, value]) => canonical.tracker[key] !== value)) return "invalid_tracker_selection";
-  if (!receipt.trackerSelection || stable(receipt.trackerSelection) !== stable(trackerSelection(setup.tracker))) return "initialization_tracker_changed";
+  if (!legacy && stable(receipt.trackerSelection) !== stable(trackerSelection(setup.tracker))) return "initialization_tracker_changed";
   if (!completeState(canonical.state, { taskIds: ids, integrationOwner: canonical.registry.integrationOwner, branch: setup.plan.branch })) return "required_state_facts_missing";
   if (validateTracker) {
     if (canonical.tracker?.status !== "current") return "tracker_unavailable";
@@ -205,6 +226,7 @@ export async function initializeProject(projectPath, request, options = {}) {
   const expectedVersion = options.expectedVersion;
   const invalid = validateRequest(request, actorSessionId);
   if (invalid) return decision("conflict", invalid);
+  request = { ...request, tracker: trackerSelection(request.tracker) };
   const identityProblem = await nativeIdentityProblem(projectPath, actorSessionId, options.nativeIdentity);
   if (identityProblem) return decision("validated", identityProblem);
   let preflightRoot;
