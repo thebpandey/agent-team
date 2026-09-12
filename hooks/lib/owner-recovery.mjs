@@ -307,6 +307,8 @@ function parseJsonBytes(source) {
   try { return JSON.parse(source); } catch { return manual(); }
 }
 
+const recordObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
 function without(value, keys) {
   const copy = structuredClone(value);
   for (const key of keys) delete copy[key];
@@ -325,6 +327,13 @@ function semanticJournalPostimages(journal, project) {
   const priorHistory = records["owner-history"].prior === null ? undefined : parseJsonBytes(records["owner-history"].prior);
   const postHistory = parseJsonBytes(records["owner-history"].post);
   const receipt = journal.receipt;
+  if (![priorState, postState, priorSetup, postSetup, priorHistory, postHistory,
+    priorState?.ownership, priorState?.ownership?.current, priorState?.integration, priorState?.release,
+    postState?.ownership, postState?.ownership?.current, postState?.integration, postState?.release,
+    priorSetup?.ownership, priorSetup?.ownership?.current, postSetup?.ownership, postSetup?.ownership?.current,
+    priorHistory?.ownership, postHistory?.ownership].every(recordObject)
+    || !Array.isArray(priorHistory.entries) || !priorHistory.entries.every(recordObject)
+    || !Array.isArray(postHistory.entries) || !postHistory.entries.every(recordObject)) manual();
   if (!priorState || !priorSetup || !priorTeams || priorIdentity.projectId !== project.projectId
     || postIdentity.projectId !== priorIdentity.projectId || postIdentity.owner !== receipt.newOwner.sessionId
     || postIdentity.ownerHost !== receipt.newOwner.host || postIdentity.integrationOwner !== receipt.newOwner.sessionId

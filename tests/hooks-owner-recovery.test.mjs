@@ -57,6 +57,10 @@ function rewritePostimage(journal, name, mutate) {
   const record = journal.records.find((candidate) => candidate.name === name);
   const value = JSON.parse(Buffer.from(record.postimageBase64, "base64"));
   mutate(value);
+  replacePostimage(journal, name, value);
+}
+function replacePostimage(journal, name, value) {
+  const record = journal.records.find((candidate) => candidate.name === name);
   const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
   record.postimageBase64 = bytes.toString("base64");
   record.postSha256 = createHash("sha256").update(bytes).digest("hex");
@@ -371,6 +375,21 @@ test("journal structure phase receipt and semantic postimages are exact before t
     ["setup epoch", (journal) => rewritePostimage(journal, "setup", (setup) => { setup.ownership.epoch += 1; })],
     ["gate triple", (journal) => rewritePostimage(journal, "state", (state) => { state.release.ownershipEpoch += 1; })],
     ["history receipt", (journal) => rewritePostimage(journal, "owner-history", (history) => { history.entries.at(-1).approvalId = "forged"; })],
+    ["null state", (journal) => replacePostimage(journal, "state", null)],
+    ["scalar state", (journal) => replacePostimage(journal, "state", 1)],
+    ["array state", (journal) => replacePostimage(journal, "state", [])],
+    ["null setup", (journal) => replacePostimage(journal, "setup", null)],
+    ["scalar setup", (journal) => replacePostimage(journal, "setup", "setup")],
+    ["array setup", (journal) => replacePostimage(journal, "setup", [])],
+    ["null history", (journal) => replacePostimage(journal, "owner-history", null)],
+    ["scalar history", (journal) => replacePostimage(journal, "owner-history", 1)],
+    ["array history", (journal) => replacePostimage(journal, "owner-history", [])],
+    ["missing state ownership", (journal) => rewritePostimage(journal, "state", (state) => { delete state.ownership; })],
+    ["array state integration", (journal) => rewritePostimage(journal, "state", (state) => { state.integration = []; })],
+    ["null state release", (journal) => rewritePostimage(journal, "state", (state) => { state.release = null; })],
+    ["missing setup ownership", (journal) => rewritePostimage(journal, "setup", (setup) => { delete setup.ownership; })],
+    ["array history ownership", (journal) => rewritePostimage(journal, "owner-history", (history) => { history.ownership = []; })],
+    ["null history entry", (journal) => rewritePostimage(journal, "owner-history", (history) => { history.entries[history.entries.length - 1] = null; })],
   ];
   const module = await testHarness();
   for (const [name, mutate] of cases) {
@@ -389,16 +408,22 @@ test("journal structure phase receipt and semantic postimages are exact before t
   }
 });
 
-test("qualified absent or malformed history refuses while exact legacy absence remains readable", async () => {
-  for (const mode of ["absent", "malformed"]) {
+test("qualified absent empty whitespace or malformed history refuses while exact legacy absence remains readable", async () => {
+  for (const [mode, source, reason] of [
+    ["absent", undefined, /owner_history_missing/],
+    ["empty", "", /owner_history_invalid/],
+    ["whitespace", " \n\t", /owner_history_invalid/],
+    ["malformed", undefined, /owner_generation/],
+  ]) {
     const project = await fixture();
     if (mode === "absent") await rm(project.paths.ownerHistory);
+    else if (source !== undefined) await writeFile(project.paths.ownerHistory, source);
     else {
       const history = JSON.parse(await readFile(project.paths.ownerHistory));
       history.extra = true;
       await writeFile(project.paths.ownerHistory, JSON.stringify(history));
     }
-    await assert.rejects(loadCanonicalState(await resolveProject(project.root)), /owner_history|owner_generation/);
+    await assert.rejects(loadCanonicalState(await resolveProject(project.root)), reason);
   }
   const legacy = await fixture();
   const state = JSON.parse(await readFile(legacy.paths.state));

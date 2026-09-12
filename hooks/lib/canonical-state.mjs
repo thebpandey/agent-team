@@ -8,7 +8,7 @@ import { assertNoOwnerRecoveryJournal, repairOwnerRecovery, validateOwnerHistory
 
 const criticalMappingKinds = new Set(["file_change", "integration", "release", "database_destructive", "completion"]);
 
-async function text(file) {
+async function text(file, { missing = "" } = {}) {
   let handle;
   try {
     handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -24,7 +24,7 @@ async function text(file) {
     if (offset !== bytes.length) throw new Error("canonical_record_changed");
     return bytes.toString("utf8");
   } catch (error) {
-    if (error.code === "ENOENT") return "";
+    if (error.code === "ENOENT") return missing;
     throw error;
   } finally { await handle?.close(); }
 }
@@ -63,7 +63,7 @@ export async function loadCanonicalState(project, options = {}) {
     options.includeTasks === false ? null : loadCanonicalTracker(project, options),
     text(project.paths.state),
     text(project.paths.setup),
-    project.paths.ownerHistory ? text(project.paths.ownerHistory) : "",
+    project.paths.ownerHistory ? text(project.paths.ownerHistory, { missing: null }) : null,
   ]);
   try { await assertNoOwnerRecoveryJournal(project); }
   catch (error) {
@@ -75,8 +75,9 @@ export async function loadCanonicalState(project, options = {}) {
   if (stateText) state = JSON.parse(stateText);
   const setup = setupText ? JSON.parse(setupText) : {};
   let ownerHistory;
-  if (ownerHistoryText) {
-    ownerHistory = JSON.parse(ownerHistoryText);
+  if (ownerHistoryText !== null) {
+    try { ownerHistory = JSON.parse(ownerHistoryText); }
+    catch { throw new Error("owner_history_invalid"); }
     const epoch = state.ownership?.epoch;
     if (!validateQualifiedOwnership(state.ownership) || !validateQualifiedOwnership(setup.ownership)
       || !validateOwnerHistory(ownerHistory, state.ownership) || !Number.isSafeInteger(epoch) || epoch < 1
