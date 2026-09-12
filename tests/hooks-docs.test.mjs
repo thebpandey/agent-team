@@ -236,14 +236,115 @@ test("settings preserve independent host routes and distinguish configured from 
   assert.doesNotMatch(settings, /remove.*role_routing.*adapter defaults/i);
 });
 
-test("settings offer targeted friendly choices and an optional complete wizard", async () => {
+test("settings keep targeted edits distinct from the mandatory setup wizard", async () => {
   const [settings, setup, actions] = await readMany(["references/settings.md", "references/setup.md", "references/actions.md"]);
   for (const pattern of [/every available role/i, /numbered choices/i, /model.*compatible effort/i,
     /Quality-first is the default/i, /Back and Cancel/i, /Cancelled\/invalid drafts cause no settings write/i,
-    /detect concurrent changes/i, /full wizard is opt-in/i, /future dispatches use them/i]) assert.match(settings, pattern);
-  assert.match(setup, /grouped choice/i);
-  assert.match(actions, /complete wizard is opt-in/i);
+    /detect concurrent changes/i, /bare.*settings.*targeted/i, /future dispatches use them/i]) assert.match(settings, pattern);
+  for (const pattern of [/every state-changing setup invocation/i, /current effective/i,
+    /settingsOutcome.*kept_existing/i, /no answer|timeout|interruption/i, /Read-only.*status.*health.*help.*version/is]) assert.match(setup, pattern);
+  assert.match(actions, /state-changing setup.*settings wizard/i);
   assert.match(settings, /neither kind waives tests or required review/i);
+});
+
+test("active orchestration follows one ordered question continuation loop", async () => {
+  const [skill, runs, actions, team] = await readMany(["SKILL.md", "references/runs.md", "references/actions.md", "references/team.md"]);
+  const loop = skill + runs;
+  for (const pattern of [
+    /consume.*user.*worker.*completion.*handoff.*review.*provider/is,
+    /replacement.*addition.*status\/question/is,
+    /status\/question.*commentary/is,
+    /reconcile.*live worker.*completed handoff/is,
+    /repair.*independent review.*serial.*integrat/is,
+    /stopped.*ownership transferred.*compute.*free/is,
+    /reserve.*review.*admit.*eligible/is,
+    /wait.*(?:at most|no more than).*60 seconds/is,
+    /heartbeat.*known.*reconcile.*repeat/is,
+  ]) assert.match(loop, pattern);
+  assert.match(actions, /question.*interrupt.*not.*pause.*cancel.*terminal/is);
+  assert.match(actions + team, /commentary.*reconcile.*review.*integrat.*refill.*wait/is);
+  assert.match(team, /completion.*independent review.*accepted.*serial.*integrat.*refill/is);
+});
+
+test("heartbeats and blockers stay in-turn scoped and finite", async () => {
+  const [skill, runs, team, recovery, codex, claude] = await readMany([
+    "SKILL.md", "references/runs.md", "references/team.md", "references/recovery.md",
+    "references/platform-codex.md", "references/platform-claude.md",
+  ]);
+  const all = [skill, runs, team, recovery, codex, claude].join("\n");
+  for (const pattern of [
+    /scoped blocker.*continue.*independent/is,
+    /unchanged blocker.*heartbeat/is,
+    /global blocker.*no authorized.*safe/is,
+    /active workers.*occupied.*free.*unknown.*slots/is,
+    /pending decision.*uncertain operation.*pending.*tail.*next eligible/is,
+    /one final.*question/is,
+    /ordinary.*model.*output.*cost.*unknown/is,
+    /no (?:cron|daemon|timer|hosted monitor|nested scheduler)/i,
+    /no.*activity.*after.*final.*interruption/is,
+  ]) assert.match(all, pattern);
+  assert.doesNotMatch(all, /guarantee.*(?:after.*final|after.*host.*interrupt)/i);
+});
+
+test("run decisions and underfilled release batches use exact canonical evidence", async () => {
+  const [runs, release, status] = await readMany(["references/runs.md", "references/release.md", "references/status.md"]);
+  const all = runs + release;
+  for (const value of ["unknown", "paused", "unreconciled_completion", "progress_possible",
+    "finite_exhausted", "continuous_scope_exhausted", "blocked_tail"]) assert.ok(all.includes(value), value);
+  for (const pattern of [
+    /unique.*top-level.*delivery.*IDs/i,
+    /progress_possible.*refill/is,
+    /unknown.*paused.*unreconciled_completion.*never.*select/is,
+    /terminal.*cardinality.*never waives.*review.*checks.*preview.*target.*authority.*recovery/is,
+    /task-keyed.*source.*integration.*review.*checks.*preview.*target.*recovery/is,
+    /outside.*run.*never.*widen.*continuous/is,
+  ]) assert.match(all, pattern);
+  assert.match(status, /run-decision.*read-only/i);
+});
+
+test("dependency instructions separate compatibility ownership and prerequisite edges", async () => {
+  const [dependencies, leanctx, graphify] = await readMany(["references/dependencies.md", "references/lean-ctx.md", "references/graphify.md"]);
+  const all = dependencies + leanctx + graphify;
+  for (const pattern of [
+    /reused_unowned/i, /lifecycleOwnership.*unowned/is, /no.*sidecar.*copy.*overwrite/is,
+    /rollback.*uninstall.*exclude/is, /required files.*unrelated.*regular/is,
+    /LeanCTX.*(?:does not|cannot).*Graphify/is, /prerequisite.*catalog.*edge/is,
+    /AST.*_origin.*INFERRED.*structural/is, /semantic.*missing.*(?:invalid|fail)/is,
+    /absolute.*canonical.*ast-grep/is, /\/usr\/bin\/sg.*(?:collision|reject|fail)/is,
+    /same.*package.*identity/is,
+  ]) assert.match(all, pattern);
+});
+
+test("native project and migration instructions expose only accepted authority", async () => {
+  const [projects, state, hooks] = await readMany(["references/projects.md", "references/state.md", "references/hooks.md"]);
+  const all = projects + state + hooks;
+  for (const required of ["project-owner-recover", "evidence-store-register", "completion-history-reconcile",
+    "run-reconcile", "run-scope-extend", "completion-quarantine", "completion-rebind", "run-decision"]) assert.ok(all.includes(required), required);
+  for (const pattern of [
+    /native.*host.*session.*cwd/is, /request.*cannot.*(?:assert|mint).*identity/is,
+    /four.*record|TEAMS\.md.*state\.json.*setup\.json.*owner-history\.json/is,
+    /initialization.*immutable.*scope.*additive.*version/is,
+    /completion.*integration.*publication.*task-keyed/is,
+    /generatedBy.*testedAgainst.*loadedRuntime.*sourceCandidate.*readiness/is,
+    /local_only/i, /enabled_but_held.*target_required/is,
+  ]) assert.match(all, pattern);
+});
+
+test("artifact instructions match the accepted Linux descriptor-root installer", async () => {
+  const hooks = await read("references/hooks.md");
+  for (const pattern of [
+    /install --archive.*--checksums.*--host.*--scope/is,
+    /reject.*install --source/is,
+    /Linux.*WSL.*\/proc\/self\/fd/is,
+    /unsupported_platform.*changed.*false.*descriptor_root/is,
+    /schema.?4.*archiveFileMap.*installedFileMaps/is,
+    /\.agent-team-source\.json/i,
+    /byte.*mode.*size.*identical.*changed.*false/is,
+    /update_requires_manual_replacement.*changed.*false/is,
+    /descriptor.*reserved.*never.*canonical/is,
+    /quiesc.*rollback.*move.*fresh/is,
+    /current.*drifted.*unverified_legacy.*missing_receipt.*not_installed/is,
+  ]) assert.match(hooks, pattern);
 });
 
 test("setup automatically prepares defaults while keeping optional and manual authority boundaries", async () => {

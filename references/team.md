@@ -10,7 +10,9 @@ The orchestrator only orchestrates. Its work is: planning discussions with the u
 
 Delegated verification is a fixed route, not a judgment call: before dispatching a planned task, send the code search, feature check or review that would inform the packet to the verifier; after a team reports completion, send the final checks, review, visual review and acceptance verification to the verifier. In Claude Code the verifier is `gpt-5.6-sol` at `medium` effort through the installed Codex plugin, falling back to a `claude-opus-5` agent when the plugin route is unavailable or fails; in Codex it is a `gpt-5.6-sol` `medium` agent. See each host adapter. The verifier reports; the owning developer repairs; the orchestrator integrates the accepted revision.
 
-Messages to and from workers do not pause orchestration. Handle each update, handoff or verdict as it arrives, dispatch the resulting action, and keep the other teams moving; end the turn only for an explicit pause, a real authority/access gap or a material product decision.
+Messages to and from workers do not pause orchestration. Follow the single [active host-turn loop](runs.md#eligibility-and-capacity): commentary answer, reconcile, review/integration/repair, refill, then a wait of no more than 60 seconds. Handle each update, handoff or verdict as it arrives and keep the other teams moving.
+
+A completion follows one route: reconcile its exact handoff, obtain independent review, repair findings, take the accepted exact revision, serially integrate it, prove the prior writer stopped or ownership transferred, then refill the proven-free development slot while reviewer capacity remains reserved. Do not wait for an original cohort, release batch, deployment, or another `continue`. Unknown writer liveness remains occupied.
 
 ## Assignment packet
 

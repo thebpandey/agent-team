@@ -70,3 +70,9 @@ Park only after checkpointing and proving the active writer stopped or transferr
 Keep native auto-compaction enabled as fallback. Use supported startup/compaction events to restore the small recovery index; verify actual installed-host behavior. Do not disable compaction, inflate a context window or choose a fixed threshold by default. A fresh worker has startup cost; compare full accepted-work cost, not only compaction count. Cached input is a price/latency property, not extra context capacity.
 
 The skill cannot guarantee automatic replacement of its parent conversation or execution after the host exits. Use such controls only if actually exposed or supplied by a separately authorized controller. A fresh-context test and simulated hook JSON do not prove native automatic compaction restoration.
+
+## Scoped and global blocker checkpoint
+
+A scoped blocker retains its task/edge/review/batch/target, claim, gates, resume condition, and checkpoint. After stopped-writer proof, park only that compute and continue independent implementation, review, integration, publication, recovery, reviewer reservation, and refill. Keep an unchanged scoped blocker in the bounded heartbeat without calling a worker/provider merely to create new content.
+
+A blocker is global only when no authorized safe work remains or one irreversible/security decision governs all remaining work. Before asking one final specific question, boundedly inspect any uncertain provider result without retrying it, exhaust safe work, and durably record active workers; occupied, free, and unknown slots; scoped/global blockers; pending decision; uncertain operation identity and evidence; pending final tail; and next eligible dispatch. Do not heartbeat forever. This creates no activity after a final response or host interruption and cannot guarantee post-host recovery work.

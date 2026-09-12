@@ -20,7 +20,18 @@ Distinguish logical task ownership from compute occupancy:
 
 Reserve capacity for independent review. Reuse a shared reviewer when appropriate; do not spawn a full extra hierarchy per task. Only the project orchestrator admits replacements. Keep scheduling event-driven with bounded waits, not repeated full-queue polling.
 
-Orchestration is continuous while any team is active. Each worker update, handoff, verifier verdict or completion notification is handled as soon as it arrives: record the fact, decide the next action (repair, verify, integrate, refill, park) and dispatch it, then return to supervising the other teams. Do not pause the run, wait for a user prompt or end the turn because a message was sent to or received from a worker; stop only for an explicit pause, a genuine authority/access gap or a material product decision.
+Orchestration is continuous while any team is active. Follow the active host-turn loop below; do not create a second schedule.
+
+1. Consume every new user message, worker update, completion, handoff, review verdict, and provider result.
+2. Classify user input as replacement, compatible addition, or status/question. Checkpoint and stop only conflicting work for a replacement; reconcile an addition against dependencies, ownership, and conflicts.
+3. Answer a status/question in commentary. It is an interrupt, not pause, cancel, ownership loss, or a terminal condition.
+4. Reconcile every live worker and completed handoff against canonical state.
+5. Route exact revisions to repair or independent review, and serially integrate only accepted work.
+6. Prove a writer stopped or ownership transferred before compute becomes free. Unknown liveness is occupied and must not create a free slot.
+7. Recompute actual capacity, reserve reviewer capacity, and admit the next authorized eligible disjoint task.
+8. While the host turn has active workers, wait no more than 60 seconds. If nothing changed, emit one compact heartbeat from known state/blocker facts, reconcile, and repeat.
+
+Thus commentary answer, reconcile, review/integrate/repair, refill, and bounded wait are one mandatory continuation. Completion does not wait for the original cohort, a release batch, deployment, or another `continue`. A scoped blocker is reported and retained while independent work continues; an unchanged blocker stays in the heartbeat without a novelty probe. No cron, daemon, timer, hosted monitor, nested scheduler, recurring job, or activity after the final response/host interruption implements this loop. Ordinary heartbeat model/output cost is real but its exact incremental amount is unknown.
 
 ## Finite and continuous scope
 
@@ -31,6 +42,12 @@ Continuous mode refills available capacity from the authorized task-list scope a
 When no eligible work exists but an active task can unblock it, keep progressing that work. When only genuine blockers remain, checkpoint/park them and report the exact external action or resume condition; do not ask for a generic continue instruction. Never invent work or waive acceptance to keep slots occupied.
 
 Automatically resume a parked external blocker only when its prerequisite is demonstrably restored and existing run scope/authority permits it. Explicit user pauses still need explicit resume. Use stable ordering/fairness so a repeatedly failing task cannot starve other eligible work.
+
+## Effective run decision
+
+Consume the read-only `run-decision` result. Its classifications are exactly `unknown`, `paused`, `unreconciled_completion`, `progress_possible`, `finite_exhausted`, `continuous_scope_exhausted`, and `blocked_tail`. `progress_possible` means continue/refill. `unknown`, `paused`, and `unreconciled_completion` never select a release. Only the three terminal classifications permit a nonempty underfilled final batch, and cardinality never waives review, checks, preview, target, authority, recovery, or exact boundary evidence.
+
+Count unique top-level delivery IDs, not commits, subtasks, checks, agents, or prose. Join task-keyed source, integration, review, checks, preview, target, authority, and recovery evidence for the exact current selected set. Work outside `run.taskIds` never widens a continuous run; extension is an owner-only additive versioned `run-scope-extend` transition.
 
 ## Durable run records
 

@@ -10,7 +10,7 @@ Read the canonical team directory, active tracker, and already available evidenc
 
 Do not interrupt, message, poll for fresh replies from, or wait on agents. Do not start tests, servers, installs, recovery, cleanup, integration, or deployment. Do not write task records or refresh checkpoints. Do not acquire a lock that blocks writers. Use a coherent tracker snapshot where available; if records change during reading, label the report approximate and keep it bounded rather than repeatedly polling.
 
-When status steers an active development session, answer briefly and continue that session's existing task without waiting for another message. A standalone status-only session returns the report and ends. Subagents continue where the host supports background execution. The orchestrator may briefly use a turn to answer; do not promise host-independent simultaneous execution or claim that stopped sessions are running.
+When status steers an active development session, answer briefly in commentary, then leave this read-only action and resume the [active host-turn loop](runs.md#eligibility-and-capacity): reconcile workers/handoffs, route review/integration/repair, refill proven-free capacity, and continue the bounded wait. Status itself performs none of those mutations. A standalone status-only session returns the report and ends. Subagents continue where the host supports background execution. The orchestrator may briefly use a turn to answer; do not promise host-independent simultaneous execution or claim that stopped sessions are running.
 
 ## Count once and state the scope
 
@@ -39,6 +39,8 @@ Required preview approval, integration, and release work must be represented in 
 For one team, show its ID/name, recorded execution phase, total, completed, in progress, not started, blocked, remaining, and task completion percentage in a table. Add Unknown when nonzero. For `status all`, use one row per team plus an unassigned row where needed and a deduplicated project total. Also show preview URL and last-known availability, approval state, deployment state, blockers, and the next milestone when known. Link large evidence instead of loading it.
 
 When a run is recorded, also show its ID/state, occupied development slots versus limit, continuous on/off, effective auto-deploy mode and batch size, number of integrated top-level tasks awaiting deployment, in-flight batch, and any scheduling/release hold. Distinguish these top-level batch counts from the actionable-task completion percentage above. Read effective run values; do not substitute newly saved defaults. Unknown run data stays unknown. Status never fills an empty slot, flushes a batch, asks for inherited auto-deploy confirmation, or changes settings.
+
+The `run-decision` helper is read-only. Project its exact classification and `eligibleTaskIds`/`blockedTaskIds`. Also expose top-level workers grouped as active, parked, paused, stopped, and unknown; occupied/free/unknown slots; blockers; pending decisions; uncertain operations; pending tail; next action; and target-keyed authority/holds. With no valid effective run, report it honestly and use `start_or_reconcile_run`, never fabricated readiness. A recorded worker without qualified stopped proof occupies capacity even when activity is unknown.
 
 Example with complete current data:
 

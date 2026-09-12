@@ -22,6 +22,12 @@ Preparation makes a capability available; it does not load all its instructions 
 
 Compatible existing installations are reused. Prepare mandatory and selected default capabilities on first run without individual plugin approval questions; optional components remain off until selected. Inspect and pin sources before installation, preserve customizations, and respect actual auth/trust/admin boundaries.
 
+Compatibility and lifecycle ownership are separate. When every catalog-required file/digest and unique entrypoint qualifies, functional and fresh-worker probes pass at the exact selected path, and no managed sidecar exists, record `status: "passed"`, `installed: "reused_unowned"`, and `lifecycleOwnership: "unowned"`. Make no sidecar, copy, overwrite, rollback entry, or uninstall authority; probes remain bound to that exact path. Unrelated regular files outside the catalog-required surface are allowed and remain byte-identical. A changed/missing required file, symlink/special entry, ambiguous entrypoint, or incompatible identity is `manual_action`/`cannot_use` with exact component/path metadata and zero write.
+
+Prerequisites are exact catalog edges, not grouped-product similarity. LeanCTX does not depend on Graphify and Graphify does not depend on LeanCTX; one failure cannot poison the other's independently qualified receipt. Preserve each selected path and component's own compatibility and ownership evidence.
+
+Bind ast-grep to its verified absolute canonical `ast-grep` executable in dependency and worker receipts. Never accept bare `/usr/bin/sg` or an unrelated same-named alias; return an actionable identity collision. Normalize an `sg` sibling only when canonical realpaths and stable package identity prove the same pinned package root.
+
 Project Kickoff is optional and independent: [thebpandey/project-kickoff](https://github.com/thebpandey/project-kickoff). Reuse its approved handoff when present. Do not install it merely to start Agent-Team or copy its private package into a public application repository.
 
 ## Skill startup for every agent

@@ -9,8 +9,8 @@ For help, show installed version and creator/source credit; the [wordmark](wordm
 | Command after the prefix | What it does | Example |
 | --- | --- | --- |
 | `help` | Show commands and examples. | `$agent-team help` |
-| `settings` | Show role/model/effort defaults and targeted choices; full wizard is optional. | `$agent-team settings` |
-| `setup` | Prepare missing mandatory and selected default capabilities; show grouped recommended defaults. | `$agent-team setup` |
+| `settings` | Show role/model/effort defaults and targeted choices without forcing the setup wizard. | `$agent-team settings` |
+| `setup` | Inspect canonical state, prepare dependencies, enter the current-effective settings wizard, then report readiness. Cancel keeps existing settings. | `$agent-team setup` |
 | `start` | Select existing ready tracker work using project defaults; built-in default is one task. | `$agent-team start` |
 | `start N` | Start up to N safe tasks; N is 1–6. Without continuous mode, finish only that set. | `$agent-team start 3` |
 | `start [N] continuous` | Refill each slot after verified integration into main. | `$agent-team start 3 continuous` |
@@ -41,5 +41,9 @@ Explain these rules below the table:
 - Preview approval, verified integration, established target authority, and production checks still apply. The skill does not keep running after the host stops.
 
 Exact rules: [actions](actions.md), [settings](settings.md), [runs](runs.md), [release](release.md).
+
+During an active run, a status/question is answered briefly in commentary and supervision continues through reconciliation, review/serial integration, refill, and an in-turn wait of no more than 60 seconds. This is not a shell command, daemon, timer, nested scheduler, or automatic updater, and creates no activity after the host turn ends.
+
+Workflow helpers use only the accepted names: `run-start`, `run-reconcile`, `run-scope-extend`, `completion-quarantine`, `completion-rebind`, `evidence-store-register`, `completion-history-reconcile`, and read-only `run-decision`. The sealed installer form is `install --archive ABSOLUTE_ZIP --checksums ABSOLUTE_SHA256SUMS --host codex|claude-code|both --scope user|project --home PATH [--project PATH]`; it is a package helper, not an invented native host command.
 
 `auto-agent start` accepts the same options as plain-language `agent-team start`. Ordinary start/resume/settings/status use compact output without branding. Ask for “change the reviewer model” to edit only that role, or “show the full settings wizard” for all choices.

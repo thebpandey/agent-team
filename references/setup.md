@@ -1,6 +1,6 @@
 # First-run setup
 
-Setup prepares the selected host/project without starting development or enabling deployment. Use [settings](settings.md) for saved defaults and [dependencies](dependencies.md) for the catalog. One short recommended path is the default; the full settings wizard remains available.
+Setup prepares the selected host/project without starting development or enabling deployment. Use [settings](settings.md) for saved defaults and [dependencies](dependencies.md) for the catalog. Every state-changing setup invocation enters the complete settings wizard after dependency preparation, seeded from current effective values. Bare `settings` remains a distinct targeted action.
 
 ## Inspect and reuse
 
@@ -20,7 +20,8 @@ Group inspection into four short results: host/access; runtimes/tools; selected 
 6. Prepare optional Context7 or dashboard/bv only if selected. Reuse working compatible dependencies instead of upgrading on every run.
 7. Verify discovery and useful operations in the actual host and relevant worktrees. Record versions, sources, capability state and configuration effects without secrets.
 8. Restart/reload the host session when installed skills/hooks are not yet visible. Review the installed definitions in the host's hook trust flow; Codex uses `/hooks`. A skill cannot fabricate trust. Claude settings changes may also require reload/review according to the installed host.
-9. Show a compact role/model/effort/defaults summary and the command to start authorized development. A setup-only request stops after this summary.
+9. Enter the settings wizard seeded from current effective values. `Cancel` means Keep Existing and reports `settingsOutcome: "kept_existing"`; it preserves the pre-wizard setup bytes, setup version, settings operation list, roles, fallbacks, run defaults, dashboard, and deployment fields while retaining completed dependency receipts.
+10. Verify readiness, show a compact role/model/effort/defaults summary and the command to start authorized development. A setup-only request stops after this summary.
 
 If an operating-system prerequisite requires administrator approval, an auth challenge, a new purchase, or overwriting a customization, explain that specific step. Do not silently bypass it. Keep successful installations and continue independent safe preparation.
 
@@ -42,11 +43,11 @@ Keep Beads when selected. If its backend is unavailable, diagnose/repair within 
 
 Ordinary install/check failures trigger bounded diagnosis, repair and recheck. Preserve already passed results and usable installations. A required capability may remain unavailable while independent work progresses; do not claim setup fully ready or pass affected acceptance until it works.
 
-Read-only status and health do not enter setup, write a receipt, repair a cache or install anything. During authorized setup/development, repair clearly owned malformed/missing artifacts; preserve uncertain user customization.
+Read-only status and health do not enter setup, write a receipt, repair a cache, increment a version, or install anything. Read-only help and version likewise never enter setup or open the settings wizard. During authorized setup/development, repair clearly owned malformed/missing artifacts; preserve uncertain user customization.
 
 ## Defaults and later changes
 
-Recommended setup shows current/recommended values together and accepts a grouped choice. Change one setting or role directly when requested. Run the complete wizard only when explicitly chosen. Save validated changes atomically, preserve concurrent edits and apply them to future runs only.
+Setup always shows current/recommended values in the current-effective wizard. Change one setting or role directly for a bare targeted settings request. Save only explicitly confirmed validated changes atomically, preserve concurrent edits and apply them to future runs only. No answer, timeout, or interruption is not consent: write no settings, setup-version increment, inferred default, or synthetic operation receipt; retain completed dependency preparation and record settings consent pending so the next native setup resumes from current effective values.
 
 Authentication, administrator permission and native hook trust are separate host/user actions, not implied by a saved installation preference. Reload does not prove hooks ran: distinguish installed, registered, trusted/unknown, supported and exercised states.
 

@@ -11,13 +11,13 @@ Accept `auto-agent start` with the same modifiers as a plain-language alias for 
 | `start [N or name] [continuous] [with-preview] [auto-deploy [B]]` | Resolve project defaults and run-only overrides using [settings](settings.md). Saved auto-deploy does not prompt for confirmation; explicit modifiers can override it for this run. Select safe tasks and run bounded or continuous teams using [runs](runs.md). N is 1–6; B counts completed top-level tasks. A name selects one feature only. |
 | `auto-deploy [B or off]` | Enable current-run deployment batches (default B=1), or stop future automatic batches with off. Include eligible integrated work, without starting teams or saving defaults. Follow [release](release.md). |
 | `help` | Show the [command list and examples](help.md) without setup, checks, or mutations. |
-| `settings` | Show [current-project](settings.md) role/model/effort defaults and targeted controls. The complete wizard is opt-in; do not start work or change an active run. |
+| `settings` | Show [current-project](settings.md) role/model/effort defaults and targeted controls. Bare settings stays targeted; do not start work or change an active run. |
 | `status [name-or-ID or all]` | Run the read-only [status procedure](status.md). Never enter setup, recovery, or development from this action. |
 | `pause [name-or-ID or all]` | Without a target, show the in-progress team picker plus All and wait for selection. Explicit all acts on all eligible teams; a name/ID targets one. Follow [recovery](recovery.md). |
 | `pause and deploy` | Pause all Agent-Team writers and project activity, then commit and deploy verified finished, integrated, approved, not-yet-deployed work through the normal release gates. |
 | `resume [name-or-ID or all]` | Without a target, show the paused team picker plus All and wait for selection. Explicit all acts on all eligible teams; a name/ID targets one. Inspect actual and saved state using recovery. |
 | `approve <name-or-ID>` | Record the user's approval of the current review version for integration using [preview approval](preview.md). |
-| `setup` | Follow [dependency setup](setup.md), automatically prepare missing mandatory and selected default capabilities, then show recommended grouped defaults or requested targeted changes. Optional choices and real auth/trust remain separate. |
+| `setup` | Follow [dependency setup](setup.md). Every state-changing setup runs canonical inspection, dependency inspection/preparation, the current-effective settings wizard, then readiness. Optional choices and real auth/trust remain separate. |
 
 Names use a short readable form such as `email-preferences`. Resolve exact name or stable team ID within the current project. Reserve action words, modifier words, `all`, and numeric selectors; never interpret user text as a shell command or path. No fuzzy selection for actions that change state. Ask one question for an ambiguous project, feature scope, or target; do not invent requirements from a name alone.
 
@@ -29,7 +29,7 @@ On `start`, check for an existing matching team and task ownership before creati
 
 A normal development invocation checks for unfinished work in its resolved scope. Use recovery when it continues that work; create a new named team only for a distinct task. A second invocation in the same conversation does not by itself start an independent session. Report the actual execution mode.
 
-Keep status separate from action. A status question during active development briefly reports recorded progress and then returns to the current task without waiting for new instructions. A standalone status request in another session ends after the report; it must not start work. A resolved pause action supersedes continued development only for its selected target, after any required picker response. Honor later user corrections and current host permissions.
+Keep status separate from action. During an active run, classify steered input as replacement, compatible addition, or status/question. A question is an interrupt, not a pause, cancel, ownership loss, or terminal condition. Answer a status/question briefly in commentary, then reconcile workers and completed handoffs, route repair/review and accepted serial integration, refill proven-free capacity with reviewer capacity reserved, and resume the bounded wait loop. A standalone status request in another session ends after the report; it must not start work. A resolved pause action supersedes continued development only for its selected target, after any required picker response. Honor later user corrections and current host permissions.
 
 These lifecycle, multi-team, and preview features belong to Pro. They are not a background service, a transcript restore system, or a promise that the host will keep executing after closure.
 

@@ -44,7 +44,7 @@ Save effective choices and their source in the canonical run record. Future sett
 
 Cancelled/invalid drafts cause no settings write. Inspecting settings never performs an automatic migration. Reset routing affects only the requested host/profile; reset run defaults affects only those defaults. Preserve other fields.
 
-The full wizard is opt-in: run defaults, then selected roles' model/effort choices, followed by one review/save. Recommended setup may accept defaults as a group instead. Do not force all questions for a one-field edit or repeated setup.
+Bare `settings` is targeted: run only the requested role/control flow and never force unrelated questions. A state-changing `setup` invocation is different: after dependency preparation it always enters the full current-effective wizard—run defaults, then selected roles' model/effort choices, followed by one review/save. Cancel is Keep Existing and preserves settings bytes/version/operations. A no-answer, timeout, or interruption infers nothing and writes no settings/default/operation. Do not change an active run; confirmed values apply only to future dispatches.
 
 ## Escalation and budgets
 

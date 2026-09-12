@@ -21,8 +21,8 @@ Use `$agent-team` in Codex, `/agent-team` in Claude Code, or a clear natural-lan
 | --- | --- |
 | Help or version | [Help](references/help.md); no setup or mutations |
 | Status | [Status](references/status.md); recorded facts only; then continue an already-authorized active run |
-| Setup | [Setup](references/setup.md); prepare selected capabilities, preserve choices and expose genuine manual steps |
-| Settings | [Settings](references/settings.md); show roles/model/effort and edit the requested setting; full wizard is optional |
+| Setup | [Setup](references/setup.md); prepare selected capabilities, then always enter the current-effective settings wizard before readiness |
+| Settings | [Settings](references/settings.md); show roles/model/effort and edit the requested setting; bare settings remains targeted |
 | Start or feature request | Establish readiness, then [runs](references/runs.md) and [team dispatch](references/team.md) |
 | Pause or resume | [Recovery](references/recovery.md); preserve explicit pauses, claims and pending operations |
 | Preview approval or release | [Preview](references/preview.md) and [release](references/release.md); exact revision and existing authority |
@@ -52,6 +52,23 @@ Claim under the selected tracker's supported atomic or single-writer controls. I
 Ordinary lint, test and review failures trigger automatic in-scope repair—never “shall I fix this?” or “continue?”. After two attempts without useful progress, diagnose and change approach or use an approved escalation. Park a genuinely blocked task after a verified safe checkpoint and stopped writer; retain its claim, gates and worktree while freeing compute for independent ready work. A retry cap never waives required acceptance.
 
 Continuous runs refill from authorized eligible tasks without new prompts. A proposed improvement is not authorized implementation; record it in Beads or the same TASKS.md, not backlog.md. Ask only for genuinely missing authority/access or a material product decision. Explicit project pause holds admission.
+
+## Active host-turn supervision
+
+While an authorized run has live work, use this one ordered loop:
+
+1. Consume every new user message, worker update, completion, handoff, review verdict, and provider result.
+2. Classify steered user input as a replacement, compatible addition, or status/question. Safely checkpoint and stop only work that a replacement conflicts with; reconcile an addition against dependencies, ownership, and conflicts before admission.
+3. Answer a status/question briefly in commentary. A question is an interrupt, not a pause, cancel, ownership loss, or terminal condition.
+4. Reconcile every live worker and completed handoff with canonical state.
+5. Route exact revisions through repair or independent review, then serially integrate only accepted work.
+6. Prove the previous writer stopped or ownership transferred before treating compute as free; unknown liveness remains occupied.
+7. Recompute actual capacity, reserve reviewer capacity, and admit the next authorized eligible disjoint task. Only the project orchestrator refills.
+8. While active workers remain in the current host turn, wait no more than 60 seconds. If nothing changed, emit exactly one compact heartbeat from already-known state and blocker facts, then reconcile and repeat.
+
+A scoped blocker is recorded and reported immediately while independent implementation, review, integration, publication, recovery, and refill continue. Repeat an unchanged blocker in the heartbeat without probing for novelty. A blocker is global only when no authorized safe work remains or one irreversible/security decision governs everything left. Before one final blocking question, boundedly inspect uncertain operations without retrying them and durably record active workers, occupied/free/unknown slots, blockers, pending decision, operation identity/evidence, pending tail, and next eligible dispatch.
+
+The host turn ends only when authorized work is complete, the user explicitly pauses or cancels the applicable scope, a genuine global blocker needs that question, or the host interrupts. This loop creates no cron, daemon, timer, hosted monitor, nested scheduler, recurring job, or activity after a final response or host interruption. Its heartbeat uses ordinary host model/output usage; exact incremental cost is unknown.
 
 ## Verify, retain and recover
 

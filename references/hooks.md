@@ -60,11 +60,13 @@ One scope-specific lock covers skill, role, configuration, backup, and receipt m
 
 LeanCTX hooks and MCP registration are unrelated configuration and must survive Agent-Team install, update, and uninstall. Neither integration replaces whole hook arrays or settings objects. Back up affected configuration and compare pre-existing handlers afterward. Do not run a broad LeanCTX initializer as an automatic repair. A healthy LeanCTX hook does not prove Agent-Team lifecycle-hook health, or vice versa. See [LeanCTX integration](lean-ctx.md).
 
-Run these commands from an inspected source checkout:
+Artifact installation accepts only sealed release inputs. Source remains valid for build/check operations, but the installer rejects `install --source`. On Linux/WSL it first proves functional `/proc/self/fd/<directory-fd>/<child>` traversal. Otherwise it returns `status: "unsupported_platform"`, `changed: false`, and `validation: { status: "unavailable", authority: "descriptor_root" }` before lock or mutation; there is no `/dev/fd`, macOS, or Windows fallback.
+
+Run these commands from the complete package:
 
 ```bash
 node hooks/agent-team-cli.mjs check-package
-node hooks/agent-team-cli.mjs install --host codex --scope user
+node hooks/agent-team-cli.mjs install --archive /absolute/agent-team.zip --checksums /absolute/SHA256SUMS --host codex --scope user --home /absolute/home
 node hooks/agent-team-cli.mjs health --project /path/to/project
 node hooks/agent-team-cli.mjs audit --tracker /path/to/.agent-team/TASKS.md --mistakes /path/to/MISTAKES.md
 node hooks/agent-team-cli.mjs build-artifacts --output /safe/output
@@ -73,6 +75,14 @@ node hooks/agent-team-cli.mjs uninstall --host codex --scope user
 ```
 
 Choose `--host claude-code` for Claude, or `--host both` only when explicitly wanted. Project scope also needs `--project /path/to/project`. `rollback` uses the same selected-host ownership removal contract as `uninstall`; it is not a version downgrade. Only receipted pre-install resources are candidates for restoration, not earlier managed update snapshots. Changed or unowned content is preserved and reported.
+
+The closed public shape is `install --archive ABSOLUTE_ZIP --checksums ABSOLUTE_SHA256SUMS --host codex|claude-code|both --scope user|project --home PATH [--project PATH]`; `--project` is valid only for project scope. One archive and one checksum file are required; duplicates and positionals are rejected.
+
+Schema 4 receipts bind version/transaction/install/host/scope/targets/roles/handlers/conflicts/backups/recovery to artifact name, version, repository, release tag, release/archive/checksum/latest URLs, source revision, archive/checksum names and digests, package/archive digests and maps, and per-runtime `installedFileMaps`. `archiveFileMap` and `installedFileMaps[runtime].files` are complete and include `.agent-team-source.json`; each installed record binds its exact target, canonical map digest, and complete file map. Health reports only `current`, `drifted`, `unverified_legacy`, `missing_receipt`, or `not_installed`; current requires canonical schema-4 reconstruction and observed byte/mode/size equality. Schema 3 remains read-only `unverified_legacy`.
+
+Automatic installation accepts an absent target or an exactly byte/mode/size-identical present target. Identical reinstall is `installed` with `changed: false` and zero target mutation. Any differing present target, including owned or schema 3, is `update_requires_manual_replacement` with `changed: false` and zero target, configuration, role, backup, or receipt mutation. A later changed release requires separately authorized quiescence and a rollback-backed move, followed by the fresh sealed procedure.
+
+After reserving an absent target, all directory creation, population, copies, and final verification use its opened descriptor-root path and never the replaceable canonical path. A late operator replacement remains unpolluted. Final identity/map mismatch prevents configuration/receipt publication and removes only proven unchanged invocation-owned paths; otherwise retain durable recovery evidence.
 
 Installation does not grant trust. `health` reports installed, registered, trusted, supported, and exercised as separate values, with per-event provenance and native support unknown until evidenced. With `--project`, it also reports a current, stale, missing, invalid, or unavailable-state mapping cache. Cache health reports that the cache is non-authoritative, comes from validated canonical state, and is only for fallback classification. Complete any native `/hooks` trust step yourself, then reload the host if it requires a new session. Approving hooks does not prove each event ran.
 
@@ -85,6 +95,7 @@ These are Node helpers from [the official Agent-Team package](https://github.com
 | Helper after `node hooks/agent-team-cli.mjs` | Contract |
 | --- | --- |
 | `project-initialize --project /path/to/project --request /path/to/request.json` | Create/adopt approved canonical records with exact owner, branch and complete tracker IDs. Reports canonical readiness separately from native/dependency readiness. |
+| `project-owner-recover --project /path/to/project --request /path/to/request.json` | Validate a closed owner-recovery request, but only native authority can execute recovery; bare CLI returns `native_owner_recovery_required`. |
 | `settings`, `settings-wizard`, `settings-update` | Require project/host/project-scope selectors. Read overview or compatible role menus; mutations require the versioned setup envelope described in [setup](setup.md). |
 | `dependencies`, `dependencies-prepare`, `readiness` | Require project/host and selected user/project capability scope. Installation is not proof of functional or fresh-worker access. |
 | `dashboard-configure` | Save explicit snapshot/optional graph preferences under setup ownership/version checks; never starts a server or installs bv. |
@@ -94,6 +105,8 @@ These are Node helpers from [the official Agent-Team package](https://github.com
 | `eligibility --project /path/to/project` | Read ready and held work under recorded scope/capacity; never claims or spawns a task. |
 | `checkpoint --project /path/to/project --request /path/to/request.json` | Save the session's versioned authored packet. Its expected version is the checkpoint version, not the operational-state version. |
 | `task-transition --project /path/to/project --request /path/to/request.json` | Claim, pause, park or resume through the canonical owner/version/identity checks. Does not terminate or spawn agents. |
+| `run-start`, `run-reconcile`, `run-scope-extend`, `completion-quarantine`, `completion-rebind`, `evidence-store-register`, `completion-history-reconcile` | Apply only their exact owner/versioned workflow transition with task-keyed provenance; scope extension is additive. |
+| `run-decision --project /path/to/project` | Read the effective run decision and exact selected/eligible/blocked IDs; no mutation or Git/delivery join. |
 | `gate-evidence --project /path/to/project --request /path/to/request.json` | Bind a passed evidence artifact to the current exact revision and task set. A `completion` artifact names exactly one task and includes `requirementsReconciled: true`, a passed `{ status, revision, taskId }` review, and one or more passed `{ name, status, revision, taskId }` checks, all for that task and revision; the helper maps only those validated fields into `state.completion` with provenance. An `integration` artifact must include exact remote name/base-ref/base-revision/target-ref evidence, with its base ref exactly `refs/heads/<configured baseRef>`, reconciled `{ status, revision, taskIds }` recovery evidence, applicable preview evidence, explicit boolean `remoteMainDeploys`, and `{ source, scope: "integration", ownerSessionId, revision, taskIds }` authorization provenance. Existing targets require `targetRevision`; a new valid tag target requires `targetAbsent: true` and omits `targetRevision`. The owner-only mutation derives clean delta and main targeting, records its own observation time, preserves registered owner/configured `baseRef`/pause/hold, and policy revalidates the exact structurally parsed non-force advance (including an immediate absent-tag re-probe and canonical base-ref binding). Does not run tests or grant caller-supplied authority. |
 | `cleanup --project /path/to/project --request /path/to/request.json` | Remove only the requested eligible verified worktree; uncertain or retained resources remain untouched. |
 | `dashboard-snapshot --project /path/to/project` | Generate `.agent-team/dashboard/index.html` once. This does not silently enable future snapshots. |
@@ -133,7 +146,7 @@ Mutation request files are schema-versioned JSON, at most 256 KiB, and must be r
 }
 ```
 
-Replace every example value with observed facts. `status.versions.operational` and `status.freshness.fingerprint` supply transition preconditions; `task.canonicalOwner` preserves Beads' empty unassigned owner, unlike the human display label. Never guess a zero version after an unavailable read. Re-read on conflict; do not reuse an operation ID with different intent. JSON identity fields are not authentication and cannot override the registered canonical owner.
+Replace every example value with observed facts. `status.versions.operational` and `status.freshness.fingerprint` supply transition preconditions; `task.canonicalOwner` preserves Beads' empty unassigned owner, unlike the human display label. Never guess a zero version after an unavailable read. Re-read on conflict; do not reuse an operation ID with different intent. JSON identity fields are not authentication and cannot override the registered canonical owner. Native command authority reaches the exported router only as `runCommand(command, options, { nativeIdentity, ...context })`; native identity binds observed host, session, and native cwd. A request, CLI `--project`, shell subprocess cwd, or syntax-valid envelope cannot assert or mint that identity.
 
 At actual worker dispatch, include its observed `writer` identity (`pid`, `startTime`, `bootId`, `host`) in the claim request. The exported `captureWriterIdentity(pid)` helper records those facts; pass the dispatched worker's PID, not the short-lived claim command's PID. Claim validates that process is active and records it under the existing state lock. Claims without a writer remain supported, but cannot establish stopped-writer evidence for parking or resumption. Never fill `state.json` with a synthetic writer to make a lifecycle check pass.
 
