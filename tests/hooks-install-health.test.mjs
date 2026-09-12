@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -80,12 +80,83 @@ test("artifact install writes schema 4 provenance and remains verifiable after t
   assert.equal(Object.hasOwn(receipt, "sourceRoot"), false);
   assert.equal(receipt.artifact.sourceRevision, "b".repeat(40));
   assert.deepEqual(Object.keys(receipt.installedFileMaps).sort(), ["claude", "codex"]);
+  const expectedNames = Object.keys(receipt.artifact.archiveFileMap).sort();
+  assert.equal(expectedNames.includes(".agent-team-source.json"), true);
+  for (const runtime of ["codex", "claude"]) {
+    const target = path.join(home, runtime === "codex" ? ".agents" : ".claude", "skills", "agent-team");
+    const installed = receipt.installedFileMaps[runtime];
+    const targetReceipt = receipt.targets.find((entry) => entry.runtime === runtime);
+    assert.deepEqual(installed.files, receipt.artifact.archiveFileMap);
+    assert.deepEqual([...targetReceipt.files].sort(), expectedNames);
+    const metadataBytes = await readFile(path.join(target, ".agent-team-source.json"));
+    const metadataStat = await lstat(path.join(target, ".agent-team-source.json"));
+    assert.deepEqual({
+      sha256: createHash("sha256").update(metadataBytes).digest("hex"),
+      mode: metadataStat.mode & 0o777,
+      size: metadataStat.size,
+    }, receipt.artifact.archiveFileMap[".agent-team-source.json"]);
+    const metadata = JSON.parse(metadataBytes);
+    assert.deepEqual(metadata.packageFileMap, receipt.artifact.packageFileMap);
+    assert.equal(Object.hasOwn(metadata.packageFileMap, ".agent-team-source.json"), false);
+  }
   await rm(path.dirname(artifact.archive), { recursive: true });
   const health = await getHealth({ home });
   assert.equal(health.runtimes.codex.artifact.status, "current");
   const again = await installPackage({ ...await archiveFixture(), home, host: "both", scope: "user" });
   assert.equal(again.changed, false);
   assert.deepEqual(await readFile(receiptPath), before);
+  await uninstallPackage({ home, host: "both", scope: "user" });
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", ".agent-team-source.json")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", ".agent-team-source.json")), { code: "ENOENT" });
+});
+
+test("present-target preflight rejects root and nested links and special entries before both-host mutation", async (context) => {
+  const cases = [
+    ["root symlink", async (target, outside) => {
+      await rename(target, outside);
+      await symlink(outside, target, "dir");
+    }],
+    ["nested symlink", async (target, outside) => {
+      await mkdir(outside);
+      await symlink(outside, path.join(target, "operator-link"), "dir");
+    }],
+    ["fifo", async (target) => {
+      await run("mkfifo", [path.join(target, "operator-fifo")]);
+    }],
+  ];
+  for (const [label, addUnsafeEntry] of cases) await context.test(label, async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-unsafe-present-target-"));
+    temporary.push(home);
+    const artifact = await archiveFixture();
+    await installPackage({ ...artifact, home, host: "codex", scope: "user" });
+    const target = path.join(home, ".agents", "skills", "agent-team");
+    const outside = path.join(home, "operator-owned-target");
+    const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
+    const configPath = path.join(home, ".codex", "hooks.json");
+    const priorReceipt = await readFile(receiptPath);
+    const priorConfig = await readFile(configPath);
+    const priorBackups = await readdir(path.join(home, ".agent-team-hooks", "backups"), { recursive: true }).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error));
+    await addUnsafeEntry(target, outside);
+
+    const result = await installPackage({ ...artifact, home, host: "both", scope: "user" });
+
+    assert.equal(result.status, "update_requires_manual_replacement");
+    assert.equal(result.changed, false);
+    assert.equal(result.conflicts.some(({ runtime, target: conflictTarget, reason }) => runtime === "codex"
+      && conflictTarget === target && reason === "differing_present_target"), true);
+    assert.deepEqual(await readFile(receiptPath), priorReceipt);
+    assert.deepEqual(await readFile(configPath), priorConfig);
+    assert.deepEqual(await readdir(path.join(home, ".agent-team-hooks", "backups"), { recursive: true }).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error)), priorBackups);
+    await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(home, ".claude", "agents", "agent-team-developer.md")), { code: "ENOENT" });
+    if (label === "root symlink") {
+      assert.equal((await lstat(target)).isSymbolicLink(), true);
+      assert.equal(await readFile(path.join(target, "SKILL.md"), "utf8").then(Boolean), true);
+    } else {
+      const unsafe = path.join(target, label === "fifo" ? "operator-fifo" : "operator-link");
+      assert.equal(label === "fifo" ? (await lstat(unsafe)).isFIFO() : (await lstat(unsafe)).isSymbolicLink(), true);
+    }
+  });
 });
 
 test("artifact replacement after verification cannot change sealed install bytes", async () => {

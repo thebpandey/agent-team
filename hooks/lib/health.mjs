@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { operationMappingHealth } from "./canonical-state.mjs";
@@ -84,6 +84,8 @@ function eventHealth(runtime, config, records) {
 
 async function observedPackage(root) {
   const files = {}, contents = [];
+  const rootBefore = await lstat(root, { bigint: true });
+  if (!rootBefore.isDirectory()) throw new Error("installed root is not a directory");
   async function walk(relative = "") {
     for (const entry of (await readdir(path.join(root, relative), { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))) {
       const name = path.posix.join(relative, entry.name);
@@ -105,6 +107,10 @@ async function observedPackage(root) {
     }
   }
   await walk();
+  const rootAfter = await lstat(root, { bigint: true });
+  if (!rootAfter.isDirectory() || ["dev", "ino"].some((key) => rootBefore[key] !== rootAfter[key])) {
+    throw new Error("installed root changed");
+  }
   const digest = createHash("sha256");
   for (const [name, bytes] of contents.sort(([left], [right]) => Buffer.from(left).compare(Buffer.from(right)))) digest.update(name).update(bytes);
   return { files, digest: digest.digest("hex") };
@@ -154,7 +160,7 @@ async function artifactHealth(root, runtime, installed, receipt) {
   const targetNames = Array.isArray(targetReceipt.files) ? [...targetReceipt.files].sort() : [];
   if (Object.keys(record).sort().join("\0") !== ["digest", "files", "target"].sort().join("\0")
     || record.target !== target
-    || JSON.stringify(record.files) !== JSON.stringify(receipt.artifact.packageFileMap)
+    || JSON.stringify(record.files) !== JSON.stringify(receipt.artifact.archiveFileMap)
     || record.digest !== fileMapDigest(record.files)
     || targetReceipt.mode !== "copied"
     || !/^[0-9a-f]{64}$/.test(targetReceipt.digest)
@@ -168,7 +174,7 @@ async function artifactHealth(root, runtime, installed, receipt) {
   try {
     const observed = await observedPackage(target);
     current = fileMapDigest(observed.files) === record.digest
-      && fileMapDigest(observed.files) === receipt.artifact.packageContentDigest
+      && fileMapDigest(observed.files) === receipt.artifact.archiveContentDigest
       && observed.digest === targetReceipt.digest;
   } catch { current = false; }
   return {

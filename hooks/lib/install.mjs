@@ -285,37 +285,85 @@ async function packageDigest(root, files) {
   return hash.digest("hex");
 }
 
-async function listFiles(root, relative = "", output = []) {
-  for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
-    const name = path.posix.join(relative.replaceAll("\\", "/"), entry.name);
-    if (entry.isDirectory()) await listFiles(root, name, output);
-    else if (entry.isFile()) output.push(name);
+async function inspectPackageTree(root) {
+  const files = {};
+  const contents = [];
+  const descriptorRoot = (handle) => process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : `/dev/fd/${handle.fd}`;
+  const sameIdentity = (left, right) => ["dev", "ino"].every((key) => left[key] === right[key]);
+  const sameDirectory = (left, right) => ["dev", "ino", "mtimeNs", "ctimeNs"].every((key) => left[key] === right[key]);
+  async function walk(directory, relative = "") {
+    const entries = await readdir(descriptorRoot(directory), { withFileTypes: true });
+    for (const entry of entries.sort((left, right) => Buffer.from(left.name).compare(Buffer.from(right.name)))) {
+      const name = path.posix.join(relative, entry.name);
+      const child = path.join(descriptorRoot(directory), entry.name);
+      const namedBefore = await lstat(child, { bigint: true });
+      if (!namedBefore.isDirectory() && !namedBefore.isFile()) throw new Error("installed_entry_invalid");
+      let handle;
+      try {
+        handle = await open(child, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const before = await handle.stat({ bigint: true });
+        if (!sameIdentity(namedBefore, before)) throw new Error("installed_entry_changed");
+        if (before.isDirectory()) {
+          await walk(handle, name);
+          const after = await handle.stat({ bigint: true });
+          if (!after.isDirectory() || !sameDirectory(before, after)) throw new Error("installed_entry_changed");
+        } else if (before.isFile()) {
+          const bytes = await handle.readFile();
+          const after = await handle.stat({ bigint: true });
+          if (!after.isFile() || bytes.length !== Number(after.size)
+            || ["dev", "ino", "size", "mtimeNs", "ctimeNs"].some((key) => before[key] !== after[key])) {
+            throw new Error("installed_entry_changed");
+          }
+          files[name] = { sha256: hashBytes(bytes), mode: Number(after.mode & 0o777n), size: bytes.length };
+          contents.push([name, bytes]);
+        } else throw new Error("installed_entry_invalid");
+        const namedAfter = await lstat(child, { bigint: true });
+        if (!sameIdentity(namedAfter, before)) throw new Error("installed_entry_changed");
+      } finally { await handle?.close(); }
+    }
   }
-  return output;
+  const namedBefore = await lstat(root, { bigint: true });
+  if (!namedBefore.isDirectory()) throw new Error("installed_root_invalid");
+  let rootHandle;
+  try {
+    rootHandle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const before = await rootHandle.stat({ bigint: true });
+    if (!before.isDirectory() || !sameIdentity(namedBefore, before)) throw new Error("installed_root_changed");
+    await walk(rootHandle);
+    const after = await rootHandle.stat({ bigint: true });
+    const namedAfter = await lstat(root, { bigint: true });
+    if (!sameDirectory(before, after) || !sameIdentity(after, namedAfter)) throw new Error("installed_root_changed");
+  } finally { await rootHandle?.close(); }
+  const digest = createHash("sha256");
+  for (const [name, bytes] of contents.sort(([left], [right]) => Buffer.from(left).compare(Buffer.from(right)))) {
+    digest.update(name);
+    digest.update(bytes);
+  }
+  return { files, digest: digest.digest("hex") };
+}
+
+async function listFiles(root) {
+  return Object.keys((await inspectPackageTree(root)).files);
 }
 
 async function managedPackageDigest(root, files) {
   try {
-    const actual = (await listFiles(root)).sort();
+    const observed = await inspectPackageTree(root);
+    const actual = Object.keys(observed.files).sort();
     const expected = [...files].sort();
     if (actual.length !== expected.length || actual.some((file, index) => file !== expected[index])) return undefined;
-    return packageDigest(root, files);
+    return observed.digest;
   } catch {
     return undefined;
   }
 }
 
 async function exactFileMap(root, expectedNames) {
-  const result = {};
-  const actual = (await listFiles(root)).sort();
+  const observed = await inspectPackageTree(root);
+  const actual = Object.keys(observed.files).sort();
   const expected = [...expectedNames].sort();
   if (!same(actual, expected)) throw new Error("installed_file_map_mismatch");
-  for (const name of actual) {
-    const file = path.join(root, name);
-    const opened = await stableRegularBytes(file);
-    result[name] = { sha256: hashBytes(opened.bytes), mode: opened.mode, size: opened.size };
-  }
-  return result;
+  return observed.files;
 }
 
 async function assertFileMap(root, expected) {
@@ -360,8 +408,8 @@ async function resourceGuard(file, files) {
   try {
     const metadata = await stat(file);
     if (metadata.isDirectory()) {
-      const entries = (await listFiles(file)).sort();
-      return { kind: "directory", files: entries, digest: await packageDigest(file, entries) };
+      const observed = await inspectPackageTree(file);
+      return { kind: "directory", files: Object.keys(observed.files).sort(), digest: observed.digest };
     }
     return { kind: "file", digest: await fileDigest(file), size: metadata.size, mode: metadata.mode & 0o777 };
   } catch (error) {
@@ -679,7 +727,8 @@ function runtimePaths({ home, scope, projectRoot }, runtime) {
 
 async function installLocked({ sealedRoot, home, now, selected, artifact, testHooks = {}, recovery }, stateRoot) {
   const manifest = artifact.manifest;
-  const digest = await packageDigest(sealedRoot, manifest.files);
+  const installedNames = Object.keys(artifact.archiveFileMap);
+  const digest = await packageDigest(sealedRoot, installedNames);
   const receiptPath = path.join(stateRoot, "install.json");
   const previousReceipt = await readJson(receiptPath, null);
   if (previousReceipt?.artifact?.version && compareSemver(artifact.metadata.version, previousReceipt.artifact.version) < 0) {
@@ -702,8 +751,8 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       continue;
     }
     let files;
-    try { files = await exactFileMap(target, manifest.files); } catch {}
-    if (!same(files, artifact.packageFileMap)) {
+    try { files = await exactFileMap(target, installedNames); } catch {}
+    if (!same(files, artifact.archiveFileMap)) {
       replacementConflicts.push({ kind: "skill", runtime, target, reason: "differing_present_target" });
       targetPreflight.push({ runtime, target, identity: { dev: identity.dev, ino: identity.ino } });
       continue;
@@ -724,7 +773,7 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
         throw error;
       }
       if (observed.identity && (!current || current.dev !== observed.identity.dev || current.ino !== observed.identity.ino
-        || !same(await exactFileMap(observed.target, manifest.files), artifact.packageFileMap))) {
+        || !same(await exactFileMap(observed.target, installedNames), artifact.archiveFileMap))) {
         throw new Error("target_changed_before_swap");
       }
     }
@@ -739,11 +788,11 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       const targetPresent = await present(target);
       const previous = targetRecord(previousReceipt, runtime, target);
       const targetIdentity = targetPresent ? await lstat(target) : null;
-      const targetGuard = targetPresent ? await resourceGuard(target, previous?.files ?? manifest.files) : { kind: "absent" };
+      const targetGuard = targetPresent ? await resourceGuard(target, previous?.files ?? installedNames) : { kind: "absent" };
       const previousDigest = targetPresent && previous ? targetGuard.digest : undefined;
       if (previous?.preexisting) {
         if (previousDigest !== previous.digest) conflicts.push({ kind: "skill", runtime, target, reason: "preexisting_target_changed" });
-        else if (await managedPackageDigest(target, manifest.files) !== digest) conflicts.push({ kind: "skill", runtime, target, reason: "preexisting_target" });
+        else if (await managedPackageDigest(target, installedNames) !== digest) conflicts.push({ kind: "skill", runtime, target, reason: "preexisting_target" });
         else {
           targets.push(previous);
           continue;
@@ -758,11 +807,11 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
         unavailableRuntimes.add(runtime);
         continue;
       }
-      const currentDigest = targetPresent ? await managedPackageDigest(target, manifest.files) : undefined;
+      const currentDigest = targetPresent ? await managedPackageDigest(target, installedNames) : undefined;
       if (targetPresent && currentDigest === digest) {
         targets.push(previous && previous.digest === digest
           ? previous
-          : { runtime, path: target, mode: "copied", digest, files: manifest.files, preexisting: !previous });
+          : { runtime, path: target, mode: "copied", digest, files: installedNames, preexisting: !previous });
         continue;
       }
       if (targetPresent && !previous) {
@@ -787,10 +836,10 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       await mkdir(path.dirname(target), { recursive: true });
       if (!targetPresent) {
         await addUndo({ kind: "remove_path", path: target, recursive: true,
-          guard: { kind: "package", files: manifest.files, digest, fileMap: artifact.packageFileMap } });
-        await copyPackage(sealedRoot, target, manifest.files);
+          guard: { kind: "package", files: installedNames, digest, fileMap: artifact.archiveFileMap } });
+        await copyPackage(sealedRoot, target, installedNames);
       }
-      targets.push({ runtime, path: target, mode: "copied", digest, files: manifest.files });
+      targets.push({ runtime, path: target, mode: "copied", digest, files: installedNames });
       changed = true;
       swapIndex += 1;
       if (testHooks.failAfterFirstSwap && swapIndex === 1) throw new Error("injected_after_first_swap");
@@ -915,8 +964,8 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       }
       if (unavailableRuntimes.has(target.runtime)) continue;
       await testHooks.afterInstalledFileMap?.({ runtime: target.runtime });
-      const files = await exactFileMap(target.path, manifest.files);
-      if (!same(files, artifact.packageFileMap)) throw new Error("installed_file_map_mismatch");
+      const files = await exactFileMap(target.path, installedNames);
+      if (!same(files, artifact.archiveFileMap)) throw new Error("installed_file_map_mismatch");
       installedFileMaps[target.runtime] = { target: target.path, digest: fileMapDigest(files), files };
     }
     const receipt = {
