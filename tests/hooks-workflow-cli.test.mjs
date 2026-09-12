@@ -25,13 +25,13 @@ const temporary = [];
 
 test.afterEach(async () => Promise.all(temporary.splice(0).map((target) => rm(target, { force: true, recursive: true }))));
 
-async function fixture() {
+async function fixture(options) {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-workflow-cli-"));
   temporary.push(root, `${root}-feature`, `${root}-remote`);
-  const value = await policyFixture(root);
+  const value = await policyFixture(root, options);
   const requests = path.join(root, ".agent-team", "requests");
   await mkdir(requests, { recursive: true });
-  return { ...value, requests, project: await resolveProject(value.feature) };
+  return { ...value, requests, project: await resolveProject(options?.qualifiedOwnership ? value.root : value.feature) };
 }
 
 async function admitRun(project, taskIds = ["AT-001"]) {
@@ -314,25 +314,43 @@ test("real CLI maps a fresh initialized integration record and a raw autoDeploy 
 
 test("real CLI maps one release batch before allowing its deployment-triggering main push", async () => {
   // This test catches a successful release evidence receipt that leaves the main deployment trigger disabled.
-  const value = await fixture();
+  const value = await fixture({ qualifiedOwnership: true });
+  const actor = { ownerHost: "codex", ownershipEpoch: 1 };
+  const nativeIdentity = { host: "codex", sessionId: "owner-session", observed: true, cwd: value.root, ownershipEpoch: 1 };
+  const record = (request) => runWorkflowCommand("gate-evidence", { project: value.root, request }, { nativeIdentity });
   const seeded = structuredClone((await admitRun(value.project)).state);
-  seeded.integration = { ownerSessionId: "owner-session", authorized: false, baseRef: "main", paused: false, hold: false };
-  seeded.release = { ownerSessionId: "owner-session", authorized: false, autoDeploy: false, hold: true };
+  seeded.run.pendingDeliveryIds = ["AT-001"];
+  seeded.integration = { ownerSessionId: "owner-session", ...actor, authorized: false, baseRef: "main", paused: false, hold: false };
+  seeded.release = { ownerSessionId: "owner-session", ...actor, authorized: false, autoDeploy: false, hold: true };
   await writeFile(value.project.paths.state, JSON.stringify(seeded));
+  const completionPath = path.join(value.root, ".agent-team", "evidence", "main-completion.json");
+  await mkdir(path.dirname(completionPath), { recursive: true });
+  await writeFile(completionPath, JSON.stringify({ status: "passed", revision: value.revision, taskIds: ["AT-001"], requirementsReconciled: true,
+    review: { status: "passed", revision: value.revision, taskId: "AT-001" }, checks: [{ name: "unit", status: "passed", revision: value.revision, taskId: "AT-001" }] }));
+  const completionResult = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "main-completion",
+    expectedVersion: seeded.stateVersion ?? 0, expectedFingerprint: (await loadCanonicalState(value.project)).tracker.fingerprint,
+    gate: "completion", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath: completionPath },
+  { nativeIdentity });
+  assert.equal(completionResult.status, "applied", JSON.stringify(completionResult));
+  await writeFile(value.project.paths.tasks, (await readFile(value.project.paths.tasks, "utf8")).replace("in_progress", "completed"));
   const canonical = await loadCanonicalState(value.project);
   const integrationPath = path.join(value.root, ".agent-team", "evidence", "main-integration.json");
   await mkdir(path.dirname(integrationPath), { recursive: true });
   await writeFile(integrationPath, JSON.stringify({
     status: "passed", revision: value.revision, taskIds: ["AT-001"],
+    sourceRevisions: { "AT-001": value.revision },
     remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/heads/main", targetRevision: value.revision },
     authorization: { source: "explicit-main-authorization", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
-    recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: true,
+    targetAuthorization: { status: "authorized", source: "explicit-main-authorization", target: "refs/heads/main", revision: value.revision,
+      taskIds: ["AT-001"], ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 },
+    recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"], artifactId: "git:known-good", action: "rollback" },
+    preview: { required: false }, remoteMainDeploys: true,
   }));
   const integrationRequest = await requestFile(value, "main-integration", envelope("owner-session", canonical.state.stateVersion ?? 0, {
     operationId: "main-integration", gate: "integration", taskIds: ["AT-001"], expectedFingerprint: canonical.tracker.fingerprint,
     expectedRevision: value.revision, evidencePath: integrationPath,
   }));
-  assert.equal((await invoke("gate-evidence", "--project", value.feature, "--request", integrationRequest)).status, "applied");
+  assert.equal((await record(integrationRequest)).status, "applied");
   const pushEvent = hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:main` } });
   const beforeRelease = await evaluatePolicy(pushEvent, value.project);
   assert.equal(beforeRelease.allow, false);
@@ -374,7 +392,7 @@ test("real CLI maps one release batch before allowing its deployment-triggering 
       operationId: `release-${name}`, gate: "release", taskIds: ["AT-001"], expectedFingerprint: afterIntegration.tracker.fingerprint,
       expectedRevision: value.revision, evidencePath: invalidPath,
     }));
-    assert.deepEqual(await invoke("gate-evidence", "--project", value.feature, "--request", invalidRequest),
+    assert.deepEqual(await record(invalidRequest),
       { status: "conflict", reason: "release_evidence_mismatch" }, name);
     assert.equal(await readFile(value.project.paths.state, "utf8"), releaseBefore, name);
   }
@@ -383,9 +401,10 @@ test("real CLI maps one release batch before allowing its deployment-triggering 
     operationId: "release", gate: "release", taskIds: ["AT-001"], expectedFingerprint: afterIntegration.tracker.fingerprint,
     expectedRevision: value.revision, evidencePath: releasePath,
   }));
-  assert.equal((await invoke("gate-evidence", "--project", value.feature, "--request", releaseRequest)).status, "applied");
+  assert.equal((await record(releaseRequest)).status, "applied");
 
-  assert.equal((await evaluatePolicy(pushEvent, value.project)).allow, true);
+  const allowedPush = await evaluatePolicy(pushEvent, value.project);
+  assert.equal(allowedPush.allow, true, JSON.stringify(allowedPush));
   const exactProcess = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: "gh release create v1.0.0" } }), value.project);
   const wrongProcess = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: "npm publish" } }), value.project);
   assert.equal(exactProcess.allow, true);
@@ -402,15 +421,19 @@ test("real CLI maps one release batch before allowing its deployment-triggering 
   const tagPath = path.join(value.root, ".agent-team", "evidence", "tag-integration.json");
   await writeFile(tagPath, JSON.stringify({
     status: "passed", revision: value.revision, taskIds: ["AT-001"],
+    sourceRevisions: { "AT-001": value.revision },
     remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/tags/v1.0.0", targetAbsent: true },
     authorization: { source: "explicit-tag-authorization", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
-    recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false,
+    targetAuthorization: { status: "authorized", source: "explicit-tag-authorization", target: "refs/tags/v1.0.0", revision: value.revision,
+      taskIds: ["AT-001"], ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 },
+    recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"], artifactId: "git:known-good", action: "rollback" },
+    preview: { required: false }, remoteMainDeploys: false,
   }));
   const tagRequest = await requestFile(value, "tag-integration", envelope("owner-session", beforeTag.state.stateVersion, {
     operationId: "tag-integration", gate: "integration", taskIds: ["AT-001"], expectedFingerprint: beforeTag.tracker.fingerprint,
     expectedRevision: value.revision, evidencePath: tagPath,
   }));
-  assert.equal((await invoke("gate-evidence", "--project", value.feature, "--request", tagRequest)).status, "applied");
+  assert.equal((await record(tagRequest)).status, "applied");
   const tagCommand = `git -C ${value.feature} push origin HEAD:refs/tags/v1.0.0`;
   assert.equal((await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: tagCommand } }), value.project)).allow, true);
   for (const command of [

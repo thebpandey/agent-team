@@ -11,11 +11,13 @@ import { policyFixture, hookEvent } from "./hook-test-helpers.mjs";
 
 const temporary = [];
 test.afterEach(async () => Promise.all(temporary.splice(0).map((p) => rm(p, { recursive: true, force: true }))));
-async function fixture(tracker) {
+async function fixture(tracker, { qualifiedOwnership = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-tracker-"));
   temporary.push(root, `${root}-feature`, `${root}-remote`);
-  const result = await policyFixture(root);
-  await writeFile(path.join(root, ".agent-team/setup.json"), JSON.stringify({ skill: "agent-team", projectId: "project-1", tracker }));
+  const result = await policyFixture(root, { qualifiedOwnership });
+  const setupPath = path.join(root, ".agent-team/setup.json");
+  const setup = JSON.parse(await readFile(setupPath, "utf8"));
+  await writeFile(setupPath, JSON.stringify({ ...setup, tracker }));
   return result;
 }
 function effectiveRun(ownerHost = "codex") {
@@ -23,6 +25,26 @@ function effectiveRun(ownerHost = "codex") {
     teamLimit: 1, autoDeploy: true, batchSize: 1, source: "explicit_run",
     settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
     paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
+}
+function qualifyRelease(value, canonical) {
+  const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
+  canonical.tasks[0] = { ...canonical.tasks[0], status: "completed", parentId: null, isTopLevelDelivery: true };
+  canonical.state.run = { ...effectiveRun(), pendingDeliveryIds: ["AT-001"], terminalClassification: "finite_exhausted" };
+  canonical.state.integration = { ...canonical.state.integration, ...actor };
+  canonical.state.release = { ...canonical.state.release, ...actor, trackerFingerprint: canonical.tracker.fingerprint,
+    authorization: { ...canonical.state.release.authorization, ...actor }, recordedEvidence: { path: ".agent-team/release.json",
+      fingerprint: "e".repeat(64), revision: value.revision, taskIds: ["AT-001"], selectedTaskIds: ["AT-001"], operationId: "release",
+      observedAt: "2026-09-06T12:00:00.000Z" } };
+  const authority = { status: "authorized", source: "fixture", target: "test-registry", revision: value.revision, taskIds: ["AT-001"], ...actor };
+  canonical.deliveryEvidence = { "AT-001": { taskId: "AT-001", sourceRevision: value.revision, revision: value.revision,
+    integratedRevision: value.revision, completion: { taskId: "AT-001", status: "passed", sourceRevision: value.revision },
+    integration: { taskId: "AT-001", status: "passed", sourceRevision: value.revision, boundaryRevision: value.revision, ...actor },
+    review: { taskId: "AT-001", status: "passed", revision: value.revision }, checks: [{ name: "unit", status: "passed" }],
+    preview: { taskId: "AT-001", status: "not_required", required: false, revision: value.revision, ...actor },
+    target: { taskId: "AT-001", status: "authorized", target: "test-registry", revision: value.revision, authority, ...actor },
+    recovery: { taskId: "AT-001", status: "ready", artifact: "release-tag", action: "rollback", revision: value.revision, ...actor } } };
+  canonical.registry = { ...canonical.registry, projectOwnerHost: "codex", integrationOwnerHost: "codex", ownershipEpoch: 1 };
+  return canonical;
 }
 const beads = async () => ({ stdout: JSON.stringify([{ id: "AT-001", title: "Complete fixture work", assignee: "TEAM-001", status: "in_progress", dependency_count: 0, updated_at: "2026-09-08T10:00:00Z" }]) });
 
@@ -65,7 +87,7 @@ test("explicit selected Beads executable is canonical across linked worktrees; i
 for (const tracker of [{ kind: "markdown", path: "TASKS.md" }, { kind: "markdown", path: ".agent-team/TASKS.md" }, { kind: "beads" }]) {
   test(`selected ${JSON.stringify(tracker)} shares authority and completion gates across worktrees (adapter fixture)`, async () => {
     // Catches hardcoded Markdown selection, lost Beads owner mapping, and worktree-local authority.
-    const value = await fixture(tracker);
+    const value = await fixture(tracker, { qualifiedOwnership: true });
     if (tracker.path === "TASKS.md") await writeFile(path.join(value.root, "TASKS.md"), await readFile(path.join(value.root, ".agent-team/TASKS.md")));
     const main = await resolveProject(value.root);
     const linked = await resolveProject(value.feature);
@@ -82,6 +104,7 @@ for (const tracker of [{ kind: "markdown", path: "TASKS.md" }, { kind: "markdown
     });
     const event = hookEvent(value, { operation: { kind: "completion", taskId: "AT-001" } });
     assert.equal((await evaluatePolicy(event, linked, { canonical })).allow, true);
+    qualifyRelease(value, canonical);
     for (const command of ["npm publish", "git push origin HEAD:feature"]) {
       const release = hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command } });
       assert.equal((await evaluatePolicy(release, linked, { canonical, now: new Date("2026-09-06T12:00:00Z") })).allow, true);

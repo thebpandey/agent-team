@@ -110,6 +110,28 @@ test("owner generation and task receipts fence consequential operations", async 
   assert.equal(result.allow, false);
 });
 
+test("release fails closed without qualified current registry generation", async () => {
+  const value = await fixture();
+  const canonical = modernReleaseCanonical(value, await loadCanonicalState(value.project));
+  delete canonical.registry.projectOwnerHost;
+  delete canonical.registry.ownershipEpoch;
+  const result = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "release", process: "npm" } }), value.project,
+    { canonical, now: new Date("2026-09-06T12:01:00Z") });
+  assert.equal(result.allow, false);
+});
+
+test("fully joined release rejects aggregate owner generation corruption", async () => {
+  const value = await fixture();
+  const exact = modernReleaseCanonical(value, await loadCanonicalState(value.project));
+  const event = hookEvent(value, { sessionId: "owner-session", operation: { kind: "release", process: "npm" } });
+  assert.equal((await evaluatePolicy(event, value.project, { canonical: exact, now: new Date("2026-09-06T12:01:00Z") })).allow, true);
+  for (const [field, replacement] of [["ownerHost", "claude-code"], ["ownershipEpoch", 2]]) {
+    const changed = structuredClone(exact);
+    changed.state.release[field] = replacement;
+    assert.equal((await evaluatePolicy(event, value.project, { canonical: changed, now: new Date("2026-09-06T12:01:00Z") })).allow, false, field);
+  }
+});
+
 test("canonical ownership allows assigned files and blocks unowned, shared, main, and symlink targets", async () => {
   // This test catches trust in caller role text or a path-prefix check before symlink resolution.
   const value = await fixture();
@@ -246,10 +268,11 @@ test("authorized integration and release operations pass without an approval pro
     sessionId: "owner-session",
     operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:feature` },
   }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+  const releaseCanonical = modernReleaseCanonical(value, await loadCanonicalState(value.project));
   const publish = await evaluatePolicy(hookEvent(value, {
     sessionId: "owner-session",
     operation: { kind: "shell", command: "npm publish" },
-  }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+  }), value.project, { canonical: releaseCanonical, now: new Date("2026-09-06T12:01:00.000Z") });
 
   assert.equal(push.allow, true);
   assert.equal(publish.allow, true);

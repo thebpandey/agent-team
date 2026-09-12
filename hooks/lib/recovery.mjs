@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { identityFor, loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs";
 import { readRunDecision } from "./run-state.mjs";
+import { releaseAuthorityReady } from "./policy.mjs";
 
 const run = promisify(execFile);
 
@@ -92,17 +93,27 @@ function operationPointers(state) {
   };
 }
 
-function currentRecovery(canonical, checkpoint) {
-  const decision = readRunDecision(canonical);
-  const run = decision.effectiveRun;
+function currentRecovery(canonical, checkpoint, now = new Date()) {
+  const rawRun = canonical.state?.run;
   const groups = { active: [], parked: [], paused: [], stopped: [], unknown: [] };
-  for (const taskId of run?.taskIds ?? []) {
+  const writerLiveness = {};
+  const taskById = new Map((canonical.tasks ?? []).map((task) => [task.id, task]));
+  for (const taskId of rawRun?.taskIds ?? []) {
     const runtime = canonical.state?.taskRuntime?.[taskId];
-    if (!runtime || typeof runtime !== "object") continue;
-    const compute = ["active", "parked", "paused", "stopped"].includes(runtime?.compute) ? runtime.compute : "unknown";
+    const qualified = ["codex", "claude-code"].includes(runtime?.writer?.host)
+      && typeof runtime?.writer?.sessionId === "string" && /^[\w.:-]{1,128}$/.test(runtime.writer.sessionId);
+    const task = taskById.get(taskId);
+    const assigned = !["", "none", "unassigned", "-"].includes(String(task?.owner ?? "").toLowerCase());
+    const taskActive = ["in_progress", "in-progress", "active", "working"].includes(String(task?.status ?? "").toLowerCase());
+    if ((!runtime || typeof runtime !== "object") && !assigned && !taskActive) continue;
+    const compute = qualified && ["active", "parked", "paused", "stopped"].includes(runtime?.compute) ? runtime.compute : "unknown";
+    writerLiveness[taskId] = { status: compute === "active" ? "active" : compute === "stopped" ? "stopped" : "unknown",
+      host: runtime?.writer?.host, sessionId: runtime?.writer?.sessionId };
     groups[compute].push({ taskId, host: runtime?.writer?.host ?? null, sessionId: runtime?.writer?.sessionId ?? null,
       resumeWhen: runtime?.resumeWhen ?? null });
   }
+  const decision = readRunDecision(canonical, { writerLiveness });
+  const run = decision.effectiveRun;
   const occupied = groups.active.length + groups.parked.length + groups.paused.length + groups.unknown.length;
   const reviewReservation = Number.isSafeInteger(canonical.state?.capacity?.reservedReview) ? canonical.state.capacity.reservedReview : 1;
   const teamLimit = run?.teamLimit ?? null;
@@ -111,7 +122,6 @@ function currentRecovery(canonical, checkpoint) {
     ...Object.entries(canonical.state?.pendingOperations ?? {}).map(([operationId, value]) => ({ operationId, ...value }))].slice(0, 20);
   const occupiedIds = new Set([...groups.active, ...groups.parked, ...groups.paused, ...groups.unknown].map(({ taskId }) => taskId));
   const eligibleTaskIds = (decision.classification?.eligibleTaskIds ?? []).filter((id) => !occupiedIds.has(id));
-  const taskById = new Map((canonical.tasks ?? []).map((task) => [task.id, task]));
   const complete = new Set(["verified", "integrated", "deployed", "closed", "done", "completed", "complete"]);
   const unreconciled = (run?.taskIds ?? []).filter((id) => complete.has(String(taskById.get(id)?.status).toLowerCase())
     && !run.pendingDeliveryIds.includes(id) && !run.deployedTaskIds.includes(id));
@@ -131,9 +141,7 @@ function currentRecovery(canonical, checkpoint) {
   else if (pendingOperations.length) nextAction = { kind: "reconcile_pending_operation", taskIds: [...new Set(pendingOperations.map(({ taskId }) => taskId).filter(Boolean))] };
   else if (decision.selectedBatchTaskIds.length && !run.autoDeploy) {
     const release = canonical.state?.release;
-    const manual = release?.runMode === "manual" && release.autoDeploy === false && release.authorized === true && release.hold !== true
-      && Array.isArray(release.taskIds) && release.taskIds.length === decision.selectedBatchTaskIds.length
-      && release.taskIds.every((id) => decision.selectedBatchTaskIds.includes(id));
+    const manual = release?.runMode === "manual" && releaseAuthorityReady(canonical, { now, process: release.process });
     nextAction = { kind: manual ? "manual_release_available" : "resolve_target_decision", taskIds: [...decision.selectedBatchTaskIds] };
   } else if (decision.selectedBatchTaskIds.length) nextAction = { kind: ["finite_exhausted", "continuous_scope_exhausted", "blocked_tail"].includes(decision.classification.kind)
       && decision.selectedBatchTaskIds.length < run.batchSize ? "prepare_terminal_underfill_release" : "prepare_release",
@@ -247,7 +255,7 @@ export async function inspectRecovery(project, {
     names = await bounded(() => readdir(project.paths.checkpoints));
   } catch (error) {
     if (error.code === "ENOENT") names = [];
-    else return finish({ status: "unavailable", reason: "checkpoint_unreadable", ...currentRecovery(canonical) });
+    else return finish({ status: "unavailable", reason: "checkpoint_unreadable", ...currentRecovery(canonical, undefined, now) });
   }
 
   const records = [];
@@ -268,7 +276,7 @@ export async function inspectRecovery(project, {
   }
   records.sort((left, right) => right.timestamp - left.timestamp);
   const latest = records[0];
-  if (!latest) return finish({ status: "unavailable", reason: names.length ? "checkpoint_invalid" : "checkpoint_missing", ...currentRecovery(canonical) });
+  if (!latest) return finish({ status: "unavailable", reason: names.length ? "checkpoint_invalid" : "checkpoint_missing", ...currentRecovery(canonical, undefined, now) });
   const sourceEvidence = await checkpointSources(project, latest, budget);
   let task;
   let currentPending = [];
@@ -306,6 +314,6 @@ export async function inspectRecovery(project, {
     uncertainty: latest.uncertainty ?? [],
     scope: latest.scope,
     restoreIndex: { tracker: project.paths.tasks, checkpoint: latest.path, sources: latest.sourcePointers ?? [] },
-    ...currentRecovery(canonical, checkpoint),
+    ...currentRecovery(canonical, checkpoint, now),
   }, latest.worktree ? path.resolve(project.root, latest.worktree) : project.worktreeRoot);
 }

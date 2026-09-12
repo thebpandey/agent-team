@@ -135,26 +135,42 @@ function targetsFor(project, canonical, runDecision) {
   const state = canonical.state ?? {};
   const result = {};
   const integration = state.integration;
+  const currentOwner = { ownerHost: canonical.registry?.projectOwnerHost, ownerSessionId: canonical.registry?.projectOwner,
+    ownershipEpoch: canonical.registry?.ownershipEpoch };
+  const sameOwner = (value) => value?.ownerHost === currentOwner.ownerHost && value?.ownerSessionId === currentOwner.ownerSessionId
+    && value?.ownershipEpoch === currentOwner.ownershipEpoch && ["codex", "claude-code"].includes(currentOwner.ownerHost)
+    && Number.isSafeInteger(currentOwner.ownershipEpoch) && currentOwner.ownershipEpoch > 0;
   for (const evidence of Object.values(canonical.deliveryEvidence ?? {})) {
     const observed = evidence?.target?.target;
     if (typeof observed !== "string" || !observed) continue;
     const key = observed === "refs/heads/main" && integration?.remoteName === "origin" ? "origin/main" : observed;
     const ids = result[key]?.taskIds ?? [];
-    result[key] = { kind: "integration", status: evidence.target.status === "authorized" ? "ready" : "held",
-      reason: evidence.target.status === "authorized" ? null : "target_authority_required", taskIds: [...new Set([...ids, evidence.taskId])].filter(Boolean) };
+    const authority = evidence.target.authority;
+    const ready = evidence.target.status === "authorized" && sameOwner(evidence.target) && sameOwner(authority)
+      && authority?.status === "authorized" && authority.target === observed && authority.taskIds?.includes(evidence.taskId);
+    result[key] = { kind: "integration", status: ready ? "ready" : "unavailable",
+      reason: ready ? null : "target_authority_unavailable", taskIds: ready ? [...new Set([...ids, evidence.taskId])].filter(Boolean) : ids };
   }
   if (typeof integration?.remoteName === "string" && typeof integration?.remoteRef === "string") {
     const branch = integration.remoteRef.replace(/^refs\/heads\//, "");
-    result[`${integration.remoteName}/${branch}`] = { kind: "integration", status: integration.hold === true ? "held" : "ready",
-      reason: integration.hold === true ? "integration_hold" : null, taskIds: [...(integration.taskIds ?? runDecision.effectiveRun?.taskIds ?? [])] };
+    const key = `${integration.remoteName}/${branch}`;
+    const observed = result[key];
+    result[key] = integration.hold === true ? { kind: "integration", status: "held", reason: "integration_hold", taskIds: observed?.taskIds ?? [] }
+      : observed ?? { kind: "integration", status: "unavailable", reason: "target_authority_unavailable", taskIds: [] };
   }
   if (typeof state.release?.target === "string" && state.release.target) {
-    result[state.release.target] = { kind: "release", status: state.release.hold === true ? "held" : "ready",
-      reason: state.release.hold === true ? "release_hold" : null, taskIds: [...(state.release.taskIds ?? runDecision.effectiveRun?.taskIds ?? [])] };
+    const qualified = sameOwner(state.release) && state.release.authorized === true && typeof state.release.process === "string";
+    result[state.release.target] = { kind: "release", status: state.release.hold === true ? "held" : qualified ? "ready" : "unavailable",
+      reason: state.release.hold === true ? "release_hold" : qualified ? null : "target_authority_unavailable", taskIds: [...(state.release.taskIds ?? [])] };
   } else if (runDecision.status === "available" && runDecision.effectiveRun.autoDeploy) {
     result.deployment = { kind: "deployment", status: "enabled_but_held", reason: "target_required", taskIds: [...runDecision.effectiveRun.taskIds] };
   }
-  if (project?.setup?.tracker?.kind === "beads") result.database = { kind: "database", status: "local_only", reason: null, taskIds: [] };
+  const database = state.database;
+  if (project?.setup?.tracker?.kind === "beads" && database?.selected === true) {
+    const localOnly = database.healthy === true && database.environment === "local" && !database.remote && database.hold !== true;
+    result.database = { kind: "database", status: database.hold === true || database.environment === "production" ? "held" : localOnly ? "local_only" : "unavailable",
+      reason: database.hold === true ? "database_hold" : localOnly ? null : "database_authority_unavailable", taskIds: [...(database.taskIds ?? [])] };
+  }
   return result;
 }
 
@@ -188,7 +204,7 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     capacity: capacityFor(options.capacity ?? state.capacity),
   };
   return deepFreeze({
-    stateVersion: freshness.status === "current" ? version(state.stateVersion ?? 0) : null,
+    stateVersion: freshness.status === "current" ? version(state.stateVersion) : null,
     project: { id: canonical.registry?.projectId || project?.projectId || "unknown", root: project?.root || null,
       ownerSessionId: canonical.registry?.projectOwner ?? null, ownerHost: canonical.registry?.projectOwnerHost ?? null,
       ownershipEpoch: version(canonical.registry?.ownershipEpoch) },
@@ -196,7 +212,7 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     mode: options.mode === "live" ? "live" : "snapshot",
     freshness,
     versions: {
-      operational: freshness.status === 'current' ? version(state.stateVersion ?? 0) : null,
+      operational: freshness.status === 'current' ? version(state.stateVersion) : null,
       setup: project?.setup && freshness.status === 'current' ? version(project.setup.version ?? 0) : null,
     },
     progress: progressFor(tasks, freshness),

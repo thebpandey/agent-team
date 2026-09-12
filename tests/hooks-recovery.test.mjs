@@ -26,7 +26,7 @@ function recoveryCanonical(overrides = {}) {
     teamLimit: 2, autoDeploy: true, batchSize: 2, source: "explicit_run",
     settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
     paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
-  return { tracker: { status: "current", fingerprint: "f".repeat(64) }, registry: { projectId: "project-1", projectOwner: "owner-session", projectOwnerHost: "codex", ownershipEpoch: 1, teams: [] },
+  return { tracker: { status: "current", fingerprint: "f".repeat(64) }, registry: { projectId: "project-1", projectOwner: "owner-session", projectOwnerHost: "codex", integrationOwner: "owner-session", ownershipEpoch: 1, teams: [] },
     state: { run, ownership: { epoch: 1 }, integration: { ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1 },
       release: { ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1 }, taskRuntime: {} }, tasks, deliveryEvidence: {}, git: { headRevision: "a".repeat(40) }, ...overrides };
 }
@@ -46,6 +46,62 @@ test("recovery projects workers slots blockers decisions and pending tail withou
   assert.equal(result.pendingOperations[0].operationId, "uncertain");
   assert.equal(result.nextAction.kind, "reconcile_writer_liveness");
   assert.deepEqual(await readFile(value.project.paths.state), before);
+});
+
+test("assigned scoped work without qualified stopped runtime is unknown occupied capacity", async () => {
+  const value = await fixture();
+  const canonical = recoveryCanonical();
+  canonical.tasks[0].owner = "TEAM-001";
+  canonical.tasks[0].status = "in_progress";
+  const result = await inspectRecovery(value.project, { canonical });
+  assert.deepEqual(result.workers.unknown.map(({ taskId }) => taskId), ["AT-001"]);
+  assert.equal(result.slots.unknownOccupancy, 1);
+  assert.equal(result.slots.safelyFree, 0);
+  assert.equal(result.run.classification, "blocked_tail");
+  assert.equal(result.nextAction.kind, "reconcile_writer_liveness");
+});
+
+function manualReleaseCanonical() {
+  const canonical = recoveryCanonical();
+  const revision = "a".repeat(40);
+  const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
+  canonical.tasks[0].status = "completed";
+  Object.assign(canonical.state.run, { autoDeploy: false, batchSize: 2, pendingDeliveryIds: ["AT-001"], terminalClassification: "finite_exhausted" });
+  const authority = { status: "authorized", source: "fixture", target: "origin/main", revision, taskIds: ["AT-001"], ...actor };
+  canonical.state.integration = { taskIds: ["AT-001"], ...actor };
+  canonical.state.release = { ...actor, authorized: true, target: "origin/main", process: "gh-release", runMode: "manual", autoDeploy: false,
+    expectedRevision: revision, trackerFingerprint: canonical.tracker.fingerprint, evidenceAt: "2026-09-06T12:00:00.000Z", taskIds: ["AT-001"],
+    batchId: "batch-1", batch: { id: "batch-1", taskIds: ["AT-001"] }, hold: false, projectPaused: false, remoteMainDeploys: false,
+    recordedEvidence: { taskIds: ["AT-001"], selectedTaskIds: ["AT-001"] },
+    authorization: { source: "fixture", target: "origin/main", process: "gh-release", scope: "batch-1", grantedAt: "2026-09-06", observedAt: "2026-09-06T12:00:00.000Z", revision, taskIds: ["AT-001"], ...actor },
+    run: { id: "batch-run", mode: "manual", taskIds: ["AT-001"], paused: false },
+    artifact: { id: "artifact", revision, taskIds: ["AT-001"], sha256: "b".repeat(64) },
+    integration: { status: "passed", revision, taskIds: ["AT-001"], remoteMainDeploys: false },
+    verification: { status: "passed", revision, taskIds: ["AT-001"] }, preview: { required: false, status: "not_required", revision },
+    delta: { status: "clean", revision, taskIds: ["AT-001"] }, recovery: { status: "verified", artifactId: "known", action: "restore" } };
+  canonical.deliveryEvidence["AT-001"] = { taskId: "AT-001", sourceRevision: revision, revision, integratedRevision: revision,
+    completion: { taskId: "AT-001", status: "passed", sourceRevision: revision },
+    integration: { taskId: "AT-001", status: "passed", sourceRevision: revision, boundaryRevision: revision, ...actor },
+    review: { taskId: "AT-001", status: "passed", revision }, checks: [{ name: "unit", status: "passed" }],
+    preview: { taskId: "AT-001", status: "not_required", required: false, revision, ...actor },
+    target: { taskId: "AT-001", status: "authorized", target: "origin/main", revision, authority, ...actor },
+    recovery: { taskId: "AT-001", status: "ready", artifact: "known", action: "restore", revision, ...actor } };
+  return canonical;
+}
+
+test("manual release availability requires every exact policy gate", async () => {
+  const value = await fixture();
+  const exact = manualReleaseCanonical();
+  assert.equal((await inspectRecovery(value.project, { canonical: exact, now: new Date("2026-09-06T12:01:00Z") })).nextAction.kind, "manual_release_available");
+  for (const mutate of [
+    (value) => { value.state.release.preview.status = "pending"; },
+    (value) => { value.state.release.authorization.taskIds = ["AT-002"]; },
+    (value) => { value.state.release.evidenceAt = "2026-09-06T11:00:00.000Z"; },
+    (value) => { value.state.release.process = "npm"; },
+  ]) {
+    const changed = structuredClone(exact); mutate(changed);
+    assert.equal((await inspectRecovery(value.project, { canonical: changed, now: new Date("2026-09-06T12:01:00Z") })).nextAction.kind, "resolve_target_decision");
+  }
 });
 
 test("recovery no-false-stop table chooses one deterministic next action", async () => {

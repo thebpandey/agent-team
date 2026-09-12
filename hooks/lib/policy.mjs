@@ -176,10 +176,10 @@ async function integrationGate(event, project, canonical, operation, now, budget
   if (gate.updatesRemoteMain && gate.remoteMainDeploys) {
     const release = canonical.state.release ?? {};
     const authorization = release.authorization ?? {};
-    if (canonical.registry.projectOwnerHost && !exactFrozenRelease(canonical)) {
+    if (!release.autoDeploy) return deny("Updating remote main is a deployment trigger, but automatic deployment is off.");
+    if (!releaseAuthorityReady(canonical, { now, process: release.process })) {
       return deny("The deployment-triggering integration does not match the exact frozen selected task IDs.");
     }
-    if (!release.autoDeploy) return deny("Updating remote main is a deployment trigger, but automatic deployment is off.");
     if (release.authorized !== true || release.runMode !== "auto_deploy" || release.ownerSessionId !== canonical.registry.integrationOwner
       || release.expectedRevision !== gate.expectedRevision || release.trackerFingerprint !== canonical.tracker.fingerprint
       || !fresh(release.evidenceAt, now) || release.remoteMainDeploys !== true || release.hold || release.projectPaused || canonical.state.run?.paused
@@ -281,9 +281,39 @@ function releaseArtifact(record, revision, taskIds) {
     && (record.checksumEntry === undefined || boundedString(record.checksumEntry, 4096));
 }
 
+/** Pure aggregate check shared by policy and read-only recovery; performs no Git/provider probes. */
+export function releaseAuthorityReady(canonical, { now = new Date(), process } = {}) {
+  const gate = canonical.state?.release ?? {};
+  const registry = canonical.registry ?? {};
+  const authorization = gate.authorization ?? {};
+  return [registry.projectOwnerHost, gate.ownerHost].every((host) => ["codex", "claude-code"].includes(host))
+    && Number.isSafeInteger(registry.ownershipEpoch) && registry.ownershipEpoch > 0
+    && gate.ownerHost === registry.projectOwnerHost && gate.ownerSessionId === registry.projectOwner
+    && gate.ownerSessionId === registry.integrationOwner && gate.ownershipEpoch === registry.ownershipEpoch
+    && gate.authorized === true && boundedString(gate.target, 4096) && boundedString(gate.process, 256)
+    && (process === undefined || process === gate.process) && gate.trackerFingerprint === canonical.tracker?.fingerprint
+    && typeof authorization.source === "string" && authorization.source.trim() && authorization.source.length <= 256
+    && authorization.scope === gate.batchId && authorization.ownerSessionId === gate.ownerSessionId
+    && authorization.target === gate.target && authorization.process === gate.process && authorization.grantedAt
+    && authorization.revision === gate.expectedRevision && sameIds(authorization.taskIds, gate.taskIds)
+    && fresh(authorization.observedAt, now) && fresh(gate.evidenceAt, now)
+    && gate.batch?.id === gate.batchId && sameIds(gate.batch?.taskIds, gate.taskIds)
+    && ((gate.runMode === "auto_deploy" && gate.autoDeploy === true) || (gate.runMode === "manual" && gate.autoDeploy === false))
+    && releaseRun(gate.run, gate.runMode, gate.taskIds) && gate.projectPaused !== true && canonical.state?.run?.paused !== true && gate.hold !== true
+    && releaseArtifact(gate.artifact, gate.expectedRevision, gate.taskIds)
+    && releaseRecord(gate.integration, gate.expectedRevision, gate.taskIds)
+    && typeof gate.remoteMainDeploys === "boolean" && gate.remoteMainDeploys === gate.integration.remoteMainDeploys
+    && releaseRecord(gate.verification, gate.expectedRevision, gate.taskIds)
+    && (gate.preview?.required ? gate.preview.status === "passed" && gate.preview.revision === gate.expectedRevision
+      : ["not_required", "passed"].includes(gate.preview?.status))
+    && gate.delta?.status === "clean" && gate.delta.revision === gate.expectedRevision && sameIds(gate.delta.taskIds, gate.taskIds)
+    && gate.recovery?.status === "verified" && Boolean(gate.recovery.artifactId) && Boolean(gate.recovery.action)
+    && exactFrozenRelease(canonical);
+}
+
 async function releaseGate(event, project, canonical, operation, now, budget) {
   const gate = canonical.state.release ?? {};
-  if (canonical.registry.projectOwnerHost && !exactFrozenRelease(canonical)) return deny("Release evidence does not match the exact frozen selected task IDs and current owner generation.");
+  if (!releaseAuthorityReady(canonical, { now, process: operation.process })) return deny("Release evidence does not match the exact frozen selected task IDs, ordinary gates, and current owner generation.");
   if (!currentOwner(canonical, event, gate) || event.sessionId !== canonical.registry.integrationOwner) return deny("The registered release owner must run this operation.");
   if (!gate.authorized) return deny("Release authorization is missing.");
   if (!gate.target) return deny("The release target is unknown.");

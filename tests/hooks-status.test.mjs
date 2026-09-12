@@ -70,7 +70,10 @@ function effectiveCanonical(overrides = {}) {
     state: { stateVersion: 4, ownership: { epoch: 3 }, run,
       integration: { ownerSessionId: "owner", ownerHost: "codex", ownershipEpoch: 3, remoteName: "origin", remoteRef: "refs/heads/main", remoteMainDeploys: false },
       release: { ownerSessionId: "owner", ownerHost: "codex", ownershipEpoch: 3, target: "vercel", process: "vercel", hold: true } },
-    tasks: [task], deliveryEvidence: { "AT-001": { target: { target: "refs/heads/main", taskIds: ["AT-001"] } } }, git: { headRevision: "a".repeat(40) },
+    tasks: [task], deliveryEvidence: { "AT-001": { taskId: "AT-001", target: { taskId: "AT-001", status: "authorized", target: "refs/heads/main",
+      ownerSessionId: "owner", ownerHost: "codex", ownershipEpoch: 3,
+      authority: { status: "authorized", target: "refs/heads/main", taskIds: ["AT-001"], ownerSessionId: "owner", ownerHost: "codex", ownershipEpoch: 3 } } } },
+    git: { headRevision: "a".repeat(40) },
     ...overrides,
   };
 }
@@ -104,6 +107,7 @@ test("status separates loaded runtime source candidate handoff and readiness", (
 test("status reports local-only and target-required without globalizing holds", () => {
   const source = effectiveCanonical();
   source.state.run.autoDeploy = true;
+  source.state.database = { selected: true, healthy: true, environment: "local", hold: false, remote: null };
   delete source.state.release.target;
   const model = createStatusModel({ ...project, setup: { tracker: { kind: "beads", executable: "/bin/bd" } } }, source);
   assert.deepEqual(model.targets.deployment, { kind: "deployment", status: "enabled_but_held", reason: "target_required", taskIds: ["AT-001"] });
@@ -111,6 +115,31 @@ test("status reports local-only and target-required without globalizing holds", 
   assert.equal(model.targets["origin/main"].status, "ready");
   assert.equal(model.targets.vercel, undefined);
   assert.equal(model.targets.dns, undefined);
+});
+
+test("status target readiness requires exact observed authority and database disposition", () => {
+  const remoteOnly = effectiveCanonical();
+  remoteOnly.deliveryEvidence = {};
+  const remote = createStatusModel(project, remoteOnly);
+  assert.notEqual(remote.targets["origin/main"].status, "ready");
+  assert.deepEqual(remote.targets["origin/main"].taskIds, []);
+
+  const production = effectiveCanonical();
+  production.state.database = { selected: true, healthy: true, environment: "production", hold: true, remote: null };
+  const held = createStatusModel({ ...project, setup: { tracker: { kind: "beads", executable: "/bin/bd" } } }, production);
+  assert.equal(held.targets.database.status, "held");
+
+  const local = effectiveCanonical();
+  local.state.database = { selected: true, healthy: true, environment: "local", hold: false, remote: null };
+  assert.equal(createStatusModel({ ...project, setup: { tracker: { kind: "beads", executable: "/bin/bd" } } }, local).targets.database.status, "local_only");
+});
+
+test("status never invents an unobserved operational version", () => {
+  const source = effectiveCanonical();
+  delete source.state.stateVersion;
+  delete source.state.run.operationalVersion;
+  assert.equal(createStatusModel(project, source).stateVersion, null);
+  assert.equal(createStatusModel(project, source).versions.operational, null);
 });
 
 test("status last-good fallback never presents stale authority as current", async () => {
