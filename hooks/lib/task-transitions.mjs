@@ -409,6 +409,7 @@ export async function transitionTask(project, request, options = {}) {
 /** Bind recorded verification artifacts to present Git/tracker facts; never grant a gate. */
 export async function recordGateEvidence(project, request, options = {}) {
   const { budget } = options;
+  const actorHost = options.nativeIdentity?.host === "claude" ? "claude-code" : options.nativeIdentity?.host;
   const bounded = (action) => budget ? budget.run(action) : action();
   return mutateOperationalState(project, request, async (state, canonicalState) => {
     if (!["completion", "integration", "release"].includes(request.gate)) return conflict("unsupported_gate");
@@ -552,7 +553,8 @@ export async function recordGateEvidence(project, request, options = {}) {
         target: evidence.target,
         process: evidence.process,
         authorization: { source: authorization.source, target: evidence.target, process: evidence.process, scope: evidence.batchId,
-          ownerSessionId, grantedAt: authorization.grantedAt, revision, taskIds, observedAt },
+          ownerSessionId, ...(canonicalState.registry.projectOwnerHost ? { ownerHost: actorHost, ownershipEpoch: canonicalState.registry.ownershipEpoch } : {}),
+          grantedAt: authorization.grantedAt, revision, taskIds, observedAt },
         run: { id: runRecord.id, mode: evidence.runMode, taskIds, paused: false },
         runMode: evidence.runMode,
         batchId: evidence.batchId,

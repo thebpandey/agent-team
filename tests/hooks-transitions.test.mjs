@@ -612,9 +612,10 @@ if (process.argv[2] === "writer") {
     };
     await writeFile(evidencePath, JSON.stringify(evidence));
 
-    const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "release-evidence", expectedVersion: 0,
-      expectedFingerprint: value.canonical.tracker.fingerprint, gate: "release", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath },
-    { nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: value.root, ownershipEpoch: 1 } });
+    const request = { actorSessionId: "owner-session", operationId: "release-evidence", expectedVersion: 0,
+      expectedFingerprint: value.canonical.tracker.fingerprint, gate: "release", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath };
+    const options = { nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: value.root, ownershipEpoch: 1 } };
+    const result = await recordGateEvidence(value.project, request, options);
     const release = (await loadCanonicalState(value.project)).state.release;
 
     assert.equal(result.status, "applied");
@@ -645,6 +646,27 @@ if (process.argv[2] === "writer") {
     assert.equal(release.trackerFingerprint, value.canonical.tracker.fingerprint);
     assert.equal(release.recordedEvidence.revision, value.revision);
     assert.deepEqual(release.recordedEvidence.selectedTaskIds, ["AT-001"]);
+    assert.equal(Object.hasOwn(release.recordedEvidence, "ownerHost"), false);
+    assert.equal(Object.hasOwn(release.recordedEvidence, "ownershipEpoch"), false);
+    const appliedBytes = await readFile(value.project.paths.state);
+    assert.equal((await recordGateEvidence(value.project, request, options)).status, "duplicate");
+    assert.deepEqual(await readFile(value.project.paths.state), appliedBytes);
+    assert.deepEqual(await recordGateEvidence(value.project, { ...request, taskIds: ["AT-002"] }, options),
+      { status: "conflict", reason: "operation_identity_reused" });
+    assert.deepEqual(await readFile(value.project.paths.state), appliedBytes);
+    assert.deepEqual(await recordGateEvidence(value.project, { ...request, operationId: "stale-release-generation", expectedVersion: result.version },
+      { nativeIdentity: { ...options.nativeIdentity, ownershipEpoch: 2 } }), { status: "conflict", reason: "project_owner_required" });
+    assert.deepEqual(await readFile(value.project.paths.state), appliedBytes);
+    const mismatched = JSON.parse(appliedBytes.toString());
+    mismatched.release.ownershipEpoch = 2;
+    await writeFile(value.project.paths.state, JSON.stringify(mismatched));
+    const mismatchedBytes = await readFile(value.project.paths.state);
+    assert.deepEqual(await recordGateEvidence(value.project, { ...request, operationId: "mismatched-release-generation", expectedVersion: result.version }, options),
+      { status: "unavailable", reason: "state_unavailable" });
+    assert.deepEqual(await readFile(value.project.paths.state), mismatchedBytes);
+    await writeFile(value.project.paths.state, appliedBytes);
+    assert.equal(release.authorization.ownerHost, "codex");
+    assert.equal(release.authorization.ownershipEpoch, 1);
     const policy = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", cwd: value.root,
       operation: { kind: "shell", command: "gh release create v1.0.0" } }), value.project, { now: new Date() });
     assert.equal(policy.allow, true, JSON.stringify(policy));
@@ -658,6 +680,40 @@ if (process.argv[2] === "writer") {
       changed.release[field] = release[field];
       await writeFile(value.project.paths.state, JSON.stringify(changed));
     }
+  });
+
+  test("legacy release authorization remains session-only", async () => {
+    const { recordGateEvidence } = await api();
+    const value = await fixture();
+    const seeded = structuredClone((await loadCanonicalState(value.project)).state);
+    seeded.release = { ownerSessionId: "owner-session", authorized: false, autoDeploy: false, hold: true };
+    const integrationEvidencePath = path.join(value.root, ".agent-team/integration.json");
+    Object.assign(seeded.integration, { taskIds: ["AT-001"], remoteRef: "refs/heads/main", remoteMainDeploys: true,
+      recordedEvidence: { path: integrationEvidencePath, fingerprint: "c".repeat(64), revision: value.revision, taskIds: ["AT-001"] } });
+    await writeFile(value.project.paths.state, JSON.stringify(seeded));
+    const evidencePath = path.join(value.root, ".agent-team/release-legacy.json");
+    await writeFile(evidencePath, JSON.stringify({
+      status: "passed", revision: value.revision, taskIds: ["AT-001"], selectedTaskIds: ["AT-001"], ownerSessionId: "owner-session", authorized: true,
+      expectedRevision: value.revision, target: "github:example/project:v1.0.0", process: "gh-release",
+      authorization: { source: "explicit user authorization", target: "github:example/project:v1.0.0", process: "gh-release",
+        scope: "batch-1", ownerSessionId: "owner-session", grantedAt: "2026-09-10" },
+      run: { id: "release-1", mode: "auto_deploy", taskIds: ["AT-001"], paused: false }, runMode: "auto_deploy", autoDeploy: true,
+      batchId: "batch-1", batch: { id: "batch-1", taskIds: ["AT-001"] },
+      artifact: { id: "artifact-1", revision: value.revision, taskIds: ["AT-001"], sha256: "a".repeat(64) },
+      integration: { status: "passed", revision: value.revision, taskIds: ["AT-001"], recordedTaskIds: ["AT-001"],
+        evidencePath: integrationEvidencePath, remoteName: "origin", baseRef: "refs/heads/main", baseRevision: value.revision,
+        targetRef: "refs/heads/main", targetRevision: value.revision, remoteMainDeploys: true },
+      verification: { status: "passed", revision: value.revision, taskIds: ["AT-001"] },
+      preview: { required: false, status: "not_required", revision: value.revision },
+      delta: { status: "clean", revision: value.revision, taskIds: ["AT-001"] },
+      recovery: { status: "verified", artifactId: "git:known-good", action: "restore the known-good revision" },
+      projectPaused: false, hold: false,
+    }));
+    const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "legacy-release-evidence", expectedVersion: 0,
+      expectedFingerprint: value.canonical.tracker.fingerprint, gate: "release", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath });
+    assert.equal(result.status, "applied");
+    const authorization = (await loadCanonicalState(value.project)).state.release.authorization;
+    assert.deepEqual(Object.keys(authorization).sort(), ["grantedAt", "observedAt", "ownerSessionId", "process", "revision", "scope", "source", "target", "taskIds"].sort());
   });
 
   test("release gate evidence rejects incomplete, mismatched, paused, held, and fabricated authority without changing state", async (context) => {
