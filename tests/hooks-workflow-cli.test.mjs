@@ -13,6 +13,8 @@ import { resolveProject } from "../hooks/lib/project.mjs";
 import { captureWriterIdentity, recordGateEvidence } from "../hooks/lib/task-transitions.mjs";
 import { evaluatePolicy } from "../hooks/lib/policy.mjs";
 import { hookEvent, policyFixture } from "./hook-test-helpers.mjs";
+import { runWorkflowCommand } from "../hooks/lib/workflow-cli.mjs";
+import { effectiveRunFingerprint } from "../hooks/lib/run-state.mjs";
 
 const run = promisify(execFile);
 const cli = path.resolve(import.meta.dirname, "../hooks/agent-team-cli.mjs");
@@ -101,6 +103,44 @@ test("real CLI executes through a linked skill directory", async () => {
   await symlink(path.dirname(cli), linkedSkill, "dir");
   const { stdout } = await run(process.execPath, [path.join(linkedSkill, "agent-team-cli.mjs"), "status", "--project", value.root], { encoding: "utf8", timeout: 5000 });
   assert.equal(JSON.parse(stdout).project.id, "project-1");
+});
+
+test("run command routing is exact native-qualified and shell mutation safe", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-workflow-run-"));
+  temporary.push(root, `${root}-feature`, `${root}-remote`);
+  await policyFixture(root, { qualifiedOwnership: true });
+  const project = await resolveProject(root);
+  const canonical = await loadCanonicalState(project);
+  const settingSources = Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"]));
+  const body = { operationId: "workflow-run-start", expectedTrackerFingerprint: canonical.tracker.fingerprint, reason: "Start workflow fixture run.",
+    run: { id: "workflow-run", mode: "finite", taskIds: ["AT-001"], teamLimit: 1, autoDeploy: false, batchSize: 1, source: "explicit_run", settingSources } };
+  const request = await requestFile({ requests: path.join(root, ".agent-team") }, "workflow-run-start", envelope("owner-session", canonical.state.stateVersion ?? 0, body));
+  const before = await readFile(project.paths.state);
+  assert.equal((await invoke("run-start", "--project", root, "--request", request)).reason, "project_owner_required");
+  assert.deepEqual(await readFile(project.paths.state), before);
+  const applied = await runWorkflowCommand("run-start", { project: root, request }, { nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1 } });
+  assert.equal(applied.status, "applied");
+  const reconcileBody = { operationId: "workflow-run-reconcile", expectedTrackerFingerprint: canonical.tracker.fingerprint,
+    expectedRunFingerprint: effectiveRunFingerprint(applied.result.run), authoritativeSource: "explicit_run", reason: "Confirm workflow fixture run.",
+    affectedTaskIds: ["AT-001"], run: body.run };
+  const reconcileRequest = await requestFile({ requests: path.join(root, ".agent-team") }, "workflow-run-reconcile",
+    envelope("owner-session", applied.version, reconcileBody));
+  assert.equal((await runWorkflowCommand("run-reconcile", { project: root, request: reconcileRequest }, { nativeIdentity: {
+    host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1,
+  } })).status, "applied");
+  await assert.rejects(runWorkflowCommand("run-begin", { project: root, request }), /Unknown workflow command/);
+});
+
+test("run decision is shell-readable and byte identical", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-workflow-decision-"));
+  temporary.push(root, `${root}-feature`, `${root}-remote`);
+  await policyFixture(root, { qualifiedOwnership: true });
+  const project = await resolveProject(root);
+  const before = await Promise.all([project.paths.state, project.paths.setup, project.paths.teams, project.paths.ownerHistory, project.paths.tasks].map((file) => readFile(file)));
+  const decision = await invoke("run-decision", "--project", root);
+  assert.equal(decision.status, "unavailable");
+  const after = await Promise.all([project.paths.state, project.paths.setup, project.paths.teams, project.paths.ownerHistory, project.paths.tasks].map((file) => readFile(file)));
+  assert.deepEqual(after, before);
 });
 
 test("real CLI recovery probes the selected linked worktree instead of canonical main", async () => {

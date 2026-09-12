@@ -2,11 +2,15 @@ import { constants } from "node:fs";
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { withDirectoryLock } from "./lock.mjs";
 import { readTracker } from "./tracker.mjs";
 import { assertNoOwnerRecoveryJournal, repairOwnerRecovery, validateOwnerHistory, validateQualifiedOwnership } from "./owner-recovery.mjs";
 
 const criticalMappingKinds = new Set(["file_change", "integration", "release", "database_destructive", "completion"]);
+const exec = promisify(execFile);
+const revisionPattern = /^[a-f0-9]{40}$/;
 
 async function text(file, { missing = "" } = {}) {
   let handle;
@@ -57,7 +61,8 @@ function cells(line) {
 
 /** Read identities and task status from their canonical records; state.json only carries gate evidence. */
 export async function loadCanonicalState(project, options = {}) {
-  await repairOwnerRecovery(project, options);
+  if (options.readOnly) await assertNoOwnerRecoveryJournal(project);
+  else await repairOwnerRecovery(project, options);
   const [teamsText, taskResult, stateText, setupText, ownerHistoryText] = await Promise.all([
     text(project.paths.teams),
     options.includeTasks === false ? null : loadCanonicalTracker(project, options),
@@ -67,7 +72,7 @@ export async function loadCanonicalState(project, options = {}) {
   ]);
   try { await assertNoOwnerRecoveryJournal(project); }
   catch (error) {
-    if (error.message !== "owner_recovery_in_progress" || options.ownerRecoveryRetry === false) throw error;
+    if (options.readOnly || error.message !== "owner_recovery_in_progress" || options.ownerRecoveryRetry === false) throw error;
     await repairOwnerRecovery(project, options);
     return loadCanonicalState(project, { ...options, ownerRecoveryRetry: false });
   }
@@ -96,7 +101,7 @@ export async function loadCanonicalState(project, options = {}) {
     || state.integration?.ownershipEpoch !== undefined || state.release?.ownerHost !== undefined || state.release?.ownershipEpoch !== undefined) {
     throw new Error("owner_history_missing");
   }
-  return {
+  const canonical = {
     state,
     setup,
     ownerHistory,
@@ -112,6 +117,10 @@ export async function loadCanonicalState(project, options = {}) {
     tasks: taskResult?.tasks ?? [],
     tracker: taskResult?.tracker ?? { ...project.tracker, status: "not_read", fingerprint: null },
   };
+  const headRevision = await loadHeadRevision(project, options.budget);
+  canonical.git = { headRevision };
+  canonical.deliveryEvidence = await loadDeliveryEvidence(project, state, canonical, options.budget);
+  return canonical;
 }
 
 export async function loadCanonicalTracker(project, options = {}) {
@@ -124,7 +133,91 @@ export async function loadCanonicalTracker(project, options = {}) {
       return { tracker: { ...result.tracker, status: "unavailable", reason: "invalid_response", fingerprint: null }, tasks: [] };
     }
   }
-  return { tracker: result.tracker, tasks };
+  if (result.tracker.status !== "current") return { tracker: result.tracker, tasks };
+  const ids = new Set(tasks.map(({ id }) => id));
+  const normalized = tasks.map((task) => {
+    const parentValue = ["parentId", "parent", "parent id", "parent_id"].find((key) => task[key] !== undefined);
+    const typeValue = ["taskType", "type", "issue type", "issue_type"].find((key) => task[key] !== undefined);
+    const rawParent = parentValue ? task[parentValue] : "";
+    const rawType = typeValue ? task[typeValue] : "unknown";
+    if (typeof rawParent !== "string" || typeof rawType !== "string") throw new Error("invalid_tracker_hierarchy");
+    const parentId = rawParent.trim() || null;
+    const lowered = rawType.trim().toLowerCase();
+    const taskType = ["epic", "task"].includes(lowered) ? lowered : "unknown";
+    const hierarchyUnknown = parentId !== null && !ids.has(parentId);
+    return { ...task, parentId, taskType, isEpic: taskType === "epic", isSubtask: parentId !== null,
+      isTopLevelDelivery: taskType !== "epic" && parentId === null, ...(hierarchyUnknown ? { hierarchyUnknown: true } : {}) };
+  });
+  return { tracker: result.tracker, tasks: normalized };
+}
+
+async function loadHeadRevision(project, budget) {
+  try {
+    const result = await exec("git", ["-C", project.root, "rev-parse", "HEAD"], {
+      encoding: "utf8", timeout: budget?.timeout(1500) ?? 1500, maxBuffer: 16384, ...(budget ? { signal: budget.signal } : {}),
+    });
+    const revision = result.stdout.trim();
+    return revisionPattern.test(revision) ? revision : null;
+  } catch { return null; }
+}
+
+function ownerTriple(value) {
+  return value && ["codex", "claude-code"].includes(value.ownerHost) && typeof value.ownerSessionId === "string"
+    && Number.isSafeInteger(value.ownershipEpoch) && value.ownershipEpoch > 0
+    ? `${value.ownerHost}\0${value.ownerSessionId}\0${value.ownershipEpoch}` : null;
+}
+
+async function loadDeliveryEvidence(project, state, canonical, budget) {
+  const categories = ["completion", "integration", "review", "checks", "preview", "target", "recovery"];
+  const receipts = state.deliveryReceipts;
+  if (!revisionPattern.test(canonical.git?.headRevision ?? "") || !receipts || typeof receipts !== "object" || Array.isArray(receipts)) return {};
+  const ids = new Set(categories.flatMap((category) => Object.keys(receipts[category] ?? {})));
+  const ancestry = new Map();
+  const isAncestor = async (ancestor, descendant) => {
+    const key = `${ancestor}\0${descendant}`;
+    if (ancestry.has(key)) return ancestry.get(key);
+    let accepted = false;
+    try {
+      await exec("git", ["-C", project.root, "merge-base", "--is-ancestor", ancestor, descendant], {
+        timeout: budget?.timeout(1500) ?? 1500, maxBuffer: 16384, ...(budget ? { signal: budget.signal } : {}),
+      });
+      accepted = true;
+    } catch (error) {
+      if (error.code !== 1) accepted = false;
+    }
+    ancestry.set(key, accepted);
+    return accepted;
+  };
+  const integrationOwner = ownerTriple(state.integration);
+  const releaseOwner = ownerTriple(state.release);
+  const nestedReleaseOwner = ownerTriple(state.release?.authorization);
+  const output = {};
+  for (const taskId of ids) {
+    const part = Object.fromEntries(categories.map((category) => [category, receipts[category]?.[taskId]]));
+    if (Object.values(part).some((value) => !value || typeof value !== "object" || value.taskId !== taskId)) continue;
+    const sourceRevision = part.completion.sourceRevision;
+    const boundaryRevision = part.integration.boundaryRevision;
+    if (!revisionPattern.test(sourceRevision) || !revisionPattern.test(boundaryRevision)
+      || part.completion.status !== "passed" || part.integration.status !== "passed"
+      || part.review.status !== "passed" || part.review.revision !== sourceRevision
+      || part.checks.revision !== sourceRevision || !Array.isArray(part.checks.results) || !part.checks.results.length
+      || part.checks.results.some((check) => !check || check.status !== "passed")
+      || part.integration.sourceRevision !== sourceRevision || ownerTriple(part.integration) !== integrationOwner
+      || !["passed", "not_required"].includes(part.preview.status) || part.preview.revision !== boundaryRevision
+      || typeof part.preview.required !== "boolean" || (part.preview.required && part.preview.status !== "passed")
+      || (!part.preview.required && part.preview.status !== "not_required") || ownerTriple(part.preview) !== integrationOwner
+      || !releaseOwner || nestedReleaseOwner !== releaseOwner
+      || part.target.status !== "authorized" || part.target.revision !== boundaryRevision || ownerTriple(part.target) !== releaseOwner
+      || part.recovery.status !== "ready" || part.recovery.revision !== boundaryRevision || ownerTriple(part.recovery) !== releaseOwner
+      || typeof part.target.target !== "string" || !part.target.target || Buffer.byteLength(part.target.target) > 4096
+      || typeof part.recovery.artifact !== "string" || !part.recovery.artifact || Buffer.byteLength(part.recovery.artifact) > 4096
+      || typeof part.recovery.action !== "string" || !part.recovery.action || Buffer.byteLength(part.recovery.action) > 4096
+      || !await isAncestor(sourceRevision, boundaryRevision) || !await isAncestor(boundaryRevision, canonical.git.headRevision)) continue;
+    output[taskId] = { taskId, sourceRevision, revision: boundaryRevision, integratedRevision: boundaryRevision,
+      completion: structuredClone(part.completion), integration: structuredClone(part.integration), review: structuredClone(part.review),
+      checks: structuredClone(part.checks.results), preview: structuredClone(part.preview), target: structuredClone(part.target), recovery: structuredClone(part.recovery) };
+  }
+  return output;
 }
 
 function mapping(value, label) {

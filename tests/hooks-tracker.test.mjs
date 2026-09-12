@@ -264,3 +264,26 @@ test("Beads normalization preserves explicit priority, dependency IDs and parent
   assert.equal(canonical.tasks[1].parent, undefined);
   assert.equal(canonical.tasks[1].dependencyEvidence, "unavailable");
 });
+
+test("Beads hierarchy and issue type survive canonical normalization", async () => {
+  const value = await fixture({ kind: "beads" });
+  const canonical = await loadCanonicalState(await resolveProject(value.root), { runBeads: async () => ({ stdout: JSON.stringify([
+    { id: "EPIC-1", title: "Epic", status: "open", issue_type: "epic", dependency_count: 0 },
+    { id: "TASK-1", title: "Child", status: "open", issue_type: "task", parent: "EPIC-1", dependency_count: 0 },
+  ]) }) });
+  assert.deepEqual(canonical.tasks.map(({ parentId, taskType, isEpic, isSubtask, isTopLevelDelivery }) => ({ parentId, taskType, isEpic, isSubtask, isTopLevelDelivery })), [
+    { parentId: null, taskType: "epic", isEpic: true, isSubtask: false, isTopLevelDelivery: false },
+    { parentId: "EPIC-1", taskType: "task", isEpic: false, isSubtask: true, isTopLevelDelivery: false },
+  ]);
+});
+
+test("invalid Beads hierarchy metadata fails closed", async () => {
+  const value = await fixture({ kind: "beads" });
+  for (const row of [{ parent: 42 }, { issue_type: { kind: "epic" } }]) {
+    const canonical = await loadCanonicalState(await resolveProject(value.root), { runBeads: async () => ({ stdout: JSON.stringify([
+      { id: "TASK-1", title: "Task", status: "open", dependency_count: 0, ...row },
+    ]) }) });
+    assert.equal(canonical.tracker.status, "unavailable");
+    assert.equal(canonical.tracker.reason, "invalid_response");
+  }
+});

@@ -81,6 +81,7 @@
     "hooks/lib/project.mjs",
     "hooks/lib/readiness.mjs",
     "hooks/lib/recovery.mjs",
+    "hooks/lib/run-state.mjs",
     "hooks/lib/settings.mjs",
     "hooks/lib/setup-cli.mjs",
     "hooks/lib/status.mjs",

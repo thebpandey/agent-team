@@ -783,4 +783,26 @@ if (process.argv[2] === "writer") {
       assert.equal(writes, 1);
     });
   }
+
+  test("run mutations reuse qualified operational serialization and preserve unrelated state", async () => {
+    const { startRun } = await import("../hooks/lib/run-state.mjs");
+    const value = await fixture({ qualifiedOwnership: true });
+    const untouched = structuredClone(value.canonical.state.database);
+    const settingSources = Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"]));
+    const request = { operationId: "transition-run-start", expectedTrackerFingerprint: value.canonical.tracker.fingerprint, reason: "Start qualified fixture run.",
+      run: { id: "transition-run", mode: "finite", taskIds: ["AT-001"], teamLimit: 1, autoDeploy: false, batchSize: 1, source: "explicit_run", settingSources } };
+    const options = { actorSessionId: "owner-session", expectedVersion: value.canonical.state.stateVersion ?? 0,
+      nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: value.root, ownershipEpoch: 1 } };
+    const applied = await startRun(value.project, request, options);
+    assert.equal(applied.status, "applied");
+    assert.deepEqual((await loadCanonicalState(value.project)).state.database, untouched);
+    assert.equal((await startRun(value.project, request, options)).status, "duplicate");
+  });
+
+  test("future task-keyed delivery receipts remain inert until exact joined", async () => {
+    const value = await fixture({ qualifiedOwnership: true });
+    value.canonical.state.deliveryReceipts = { completion: { "AT-001": { taskId: "AT-001", status: "passed", sourceRevision: value.revision } } };
+    await writeFile(value.project.paths.state, JSON.stringify(value.canonical.state, null, 2));
+    assert.deepEqual((await loadCanonicalState(value.project)).deliveryEvidence, {});
+  });
 }

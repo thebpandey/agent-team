@@ -60,13 +60,16 @@ export async function readTracker(project, { runBeads = run, budget, environment
       const rows = JSON.parse(source);
       if (!Array.isArray(rows) || rows.some((row) => !row || typeof row.id !== "string" || !row.id
         || typeof row.status !== "string" || !row.status || typeof row.title !== "string"
-        || (row.assignee !== undefined && typeof row.assignee !== "string"))
+        || (row.assignee !== undefined && typeof row.assignee !== "string")
+        || (row.parent !== undefined && typeof row.parent !== "string")
+        || (row.issue_type !== undefined && typeof row.issue_type !== "string"))
         || new Set(rows.map(({ id }) => id)).size !== rows.length) throw Object.assign(new Error("Invalid Beads rows"), { code: "INVALID_RESPONSE" });
       tasks = rows.map((row) => ({ id: row.id, owner: row.assignee ?? "", status: row.status,
         "requirement / acceptance": row.acceptance_criteria ?? row.description ?? row.title,
         "revision / evidence": row.notes ?? "", "next action": "", updatedAt: row.updated_at,
         ...(Number.isInteger(row.priority) ? { priority: row.priority } : {}),
-        ...(typeof row.parent === "string" && row.parent ? { parent: row.parent } : {}),
+        ...(typeof row.parent === "string" && row.parent ? { parent: row.parent, parentId: row.parent } : {}),
+        ...(typeof row.issue_type === "string" ? { taskType: row.issue_type } : {}),
         dependencies: Array.isArray(row.dependencies) ? row.dependencies
           .filter((dep) => dep?.type === "blocks" && typeof dep.depends_on_id === "string")
           .map((dep) => dep.depends_on_id) : [],
