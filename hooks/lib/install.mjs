@@ -413,6 +413,17 @@ async function copyPackage(sealedRoot, target, files) {
   }
 }
 
+async function populateReservedPackage(sealedRoot, reservation, files) {
+  const root = process.platform === "linux" ? `/proc/self/fd/${reservation.fd}` : `/dev/fd/${reservation.fd}`;
+  for (const file of files) {
+    const source = path.join(sealedRoot, file);
+    const destination = path.join(root, file);
+    await mkdir(path.dirname(destination), { recursive: true });
+    const opened = await stableRegularBytes(source);
+    await durableWriteExclusive(destination, opened.bytes, opened.mode);
+  }
+}
+
 function stamp(now) {
   return now.toISOString().replace(/[-:.]/g, "");
 }
@@ -689,6 +700,7 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
   const backups = [];
   const conflicts = [];
   const unavailableRuntimes = new Set();
+  const invocationTargets = new Map();
   let changed = false;
 
   return durableTransaction(stateRoot, "install", async (addUndo, transactionId) => {
@@ -759,10 +771,30 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
         if (movedIdentity.dev !== targetIdentity.dev || movedIdentity.ino !== targetIdentity.ino
           || !(await guardMatches(backup, targetGuard))) throw new Error("target_changed_during_swap");
         backups.push({ kind: "skill", target, backup, purpose: previous ? "update_snapshot" : "preinstall_restore", transactionId });
+        await mkdir(target, { mode: 0o700 });
+        const reservation = await open(target, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try {
+          const reservedIdentity = await reservation.stat();
+          const namedIdentity = await lstat(target);
+          if (namedIdentity.dev !== reservedIdentity.dev || namedIdentity.ino !== reservedIdentity.ino) throw new Error("target_reservation_changed");
+          await testHooks.afterTargetPrecheck?.({ runtime });
+          await addUndo({ kind: "remove_path", path: target, recursive: true,
+            guard: { kind: "package", files: manifest.files, digest, fileMap: artifact.packageFileMap } });
+          await populateReservedPackage(sealedRoot, reservation, manifest.files);
+          let publishedIdentity;
+          try { publishedIdentity = await lstat(target); } catch (error) { if (error.code !== "ENOENT") throw error; }
+          if (!publishedIdentity || publishedIdentity.dev !== reservedIdentity.dev || publishedIdentity.ino !== reservedIdentity.ino) {
+            throw new Error("target_changed_during_publication");
+          }
+          invocationTargets.set(runtime, { target, dev: reservedIdentity.dev, ino: reservedIdentity.ino });
+        } finally { await reservation.close(); }
+      } else {
+        await addUndo({ kind: "remove_path", path: target, recursive: true,
+          guard: { kind: "package", files: manifest.files, digest, fileMap: artifact.packageFileMap } });
+        await copyPackage(sealedRoot, target, manifest.files);
+        const identity = await lstat(target);
+        invocationTargets.set(runtime, { target, dev: identity.dev, ino: identity.ino });
       }
-      await addUndo({ kind: "remove_path", path: target, recursive: true,
-        guard: { kind: "package", files: manifest.files, digest, fileMap: artifact.packageFileMap } });
-      await copyPackage(sealedRoot, target, manifest.files);
       targets.push({ runtime, path: target, mode: "copied", digest, files: manifest.files });
       changed = true;
       swapIndex += 1;
@@ -887,9 +919,16 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
         continue;
       }
       if (unavailableRuntimes.has(target.runtime)) continue;
-      let files = await exactFileMap(target.path, manifest.files);
-      files = await testHooks.afterInstalledFileMap?.({ runtime: target.runtime, target: target.path, files: structuredClone(files) }) ?? files;
-      if (!same(files, artifact.packageFileMap)) throw new Error("installed_file_map_mismatch");
+      await testHooks.afterInstalledFileMap?.({ runtime: target.runtime });
+      const files = await exactFileMap(target.path, manifest.files);
+      if (!same(files, artifact.packageFileMap)) {
+        const owned = invocationTargets.get(target.runtime);
+        if (owned) {
+          const current = await lstat(owned.target);
+          if (current.dev === owned.dev && current.ino === owned.ino) await rm(owned.target, { force: true, recursive: true });
+        }
+        throw new Error("installed_file_map_mismatch");
+      }
       installedFileMaps[target.runtime] = { target: target.path, digest: fileMapDigest(files), files };
     }
     const receipt = {
@@ -898,7 +937,9 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       version: manifest.version,
       installedAt: now.toISOString(),
       artifact: {
+        name: artifact.metadata.name,
         archiveName: artifact.archiveName,
+        archiveUrl: `${artifact.metadata.repository}/releases/download/${artifact.metadata.releaseTag}/${artifact.archiveName}`,
         releaseTag: artifact.metadata.releaseTag,
         releaseUrl: artifact.metadata.releaseUrl,
         updateUrl: artifact.metadata.updateUrl,
@@ -907,6 +948,7 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
         sourceRevision: artifact.metadata.sourceRevision,
         archiveSha256: artifact.archiveSha256,
         checksumFileName: artifact.checksumFileName,
+        checksumUrl: `${artifact.metadata.repository}/releases/download/${artifact.metadata.releaseTag}/${artifact.checksumFileName}`,
         checksumFileSha256: artifact.checksumFileSha256,
         packageContentDigest: artifact.packageContentDigest,
         packageFileMap: artifact.packageFileMap,

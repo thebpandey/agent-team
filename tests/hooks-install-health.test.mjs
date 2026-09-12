@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -177,6 +177,36 @@ test("owned update never replaces a target changed immediately before its final 
   assert.deepEqual(await readFile(receiptPath), priorReceipt);
 });
 
+test("owned update never touches an operator replacement after its final target precheck", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-final-update-race-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-final-update-source-"));
+  temporary.push(home, changedSource);
+  await copyTrackedSource(sourceRoot, changedSource);
+  const target = path.join(home, ".agents", "skills", "agent-team");
+  const displacedReservation = `${target}-installer-reservation`;
+  const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  const priorReceipt = await readFile(receiptPath);
+  await writeFile(path.join(changedSource, "README.md"), "changed final-boundary bytes\n");
+  const artifact = await archiveFixture(changedSource);
+  let operatorIdentity;
+
+  await assert.rejects(__installTest.installPackage({ ...artifact, home, host: "codex", scope: "user" }, {
+    afterTargetPrecheck: async () => {
+      await rename(target, displacedReservation);
+      await mkdir(target);
+      await writeFile(path.join(target, "OPERATOR.md"), "final-boundary operator replacement\n");
+      const current = await lstat(target);
+      operatorIdentity = { dev: current.dev, ino: current.ino };
+    },
+  }), /target_changed_during_publication/);
+
+  const after = await lstat(target);
+  assert.deepEqual({ dev: after.dev, ino: after.ino }, operatorIdentity);
+  assert.equal(await readFile(path.join(target, "OPERATOR.md"), "utf8"), "final-boundary operator replacement\n");
+  assert.deepEqual(await readFile(receiptPath), priorReceipt);
+});
+
 test("pre-receipt failure restores packages roles configs and prior receipt", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-pre-receipt-"));
   temporary.push(home);
@@ -209,6 +239,21 @@ test("schema 4 health rejects forged version target and installed-map receipt ch
     ["version", (receipt) => { receipt.version = "0.0.0"; }],
     ["target", (receipt, target) => { receipt.installedFileMaps.codex.target = `${target}-forged`; }],
     ["map", (receipt) => { receipt.installedFileMaps.codex.files = {}; }],
+    ["joint identity", (receipt, target) => {
+      const artifact = receipt.artifact;
+      artifact.name = "agent-team-shadow";
+      artifact.repository = "https://example.test/agent-team-shadow";
+      artifact.releaseUrl = `${artifact.repository}/releases/tag/${artifact.releaseTag}`;
+      artifact.updateUrl = `${artifact.repository}/releases/latest`;
+      artifact.archiveName = `agent-team-shadow-${artifact.version}.zip`;
+      artifact.archiveUrl = `${artifact.repository}/releases/download/${artifact.releaseTag}/${artifact.archiveName}`;
+      artifact.checksumFileName = "SHADOWSUMS";
+      artifact.checksumUrl = `${artifact.repository}/releases/download/${artifact.releaseTag}/${artifact.checksumFileName}`;
+      const targetReceipt = receipt.targets.find((entry) => entry.path === target);
+      targetReceipt.digest = "c".repeat(64);
+      targetReceipt.mode = "shadow";
+      targetReceipt.files.reverse();
+    }],
   ];
   for (const [name, forge] of cases) await context.test(name, async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), `agent-team-artifact-chain-${name}-`));
@@ -224,21 +269,35 @@ test("schema 4 health rejects forged version target and installed-map receipt ch
   });
 });
 
-test("post-install file-map failures and mismatches roll back every selected runtime", async (context) => {
-  for (const [name, observe] of [
-    ["failure", async () => { throw new Error("injected_installed_file_map_failure"); }],
-    ["mismatch", async () => ({})],
-  ]) await context.test(name, async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), `agent-team-post-map-${name}-`));
-    temporary.push(home);
-    const artifact = await archiveFixture();
-    await assert.rejects(__installTest.installPackage({ ...artifact, home, host: "both", scope: "user" }, {
-      afterInstalledFileMap: observe,
-    }), /installed_file_map|injected_installed/);
-    await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
-    await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
-    await assert.rejects(readFile(path.join(home, ".agent-team-hooks", "install.json")), { code: "ENOENT" });
+test("post-install file-map hook receives only a label and cannot replace authoritative output", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-post-map-label-"));
+  temporary.push(home);
+  const artifact = await archiveFixture();
+  const calls = [];
+  const result = await __installTest.installPackage({ ...artifact, home, host: "codex", scope: "user" }, {
+    afterInstalledFileMap: async (label) => {
+      calls.push(label);
+      return {};
+    },
   });
+  assert.equal(result.status, "installed");
+  assert.deepEqual(calls, [{ runtime: "codex" }]);
+  assert.equal((await getHealth({ home })).runtimes.codex.artifact.status, "current");
+});
+
+test("post-install callback mutation is caught by the final map read and rolls back every runtime", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-post-map-mutation-"));
+  temporary.push(home);
+  const artifact = await archiveFixture();
+  const codexTarget = path.join(home, ".agents", "skills", "agent-team");
+  await assert.rejects(__installTest.installPackage({ ...artifact, home, host: "both", scope: "user" }, {
+    afterInstalledFileMap: async ({ runtime }) => {
+      if (runtime === "codex") await writeFile(path.join(codexTarget, "SKILL.md"), "callback mutation\n");
+    },
+  }), /installed_file_map_mismatch/);
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".agent-team-hooks", "install.json")), { code: "ENOENT" });
 });
 
 test("artifact installer denies semantic downgrade without changing the current receipt", async () => {

@@ -12,6 +12,8 @@ const supportedEvents = {
   codex: new Set(["SessionStart", "PreToolUse", "PostToolUse", "PreCompact", "PostCompact", "Interrupt", "Stop", "SessionEnd", "UserPromptSubmit"]),
   claude: new Set(["SessionStart", "PreToolUse", "PostToolUse", "PostToolBatch", "PreCompact", "PostCompact", "TaskCompleted", "UserPromptExpansion", "UserPromptSubmit", "Stop", "SessionEnd"]),
 };
+const RELEASE_REPOSITORY = "https://github.com/thebpandey/agent-team";
+const ARTIFACT_KEYS = ["archiveContentDigest", "archiveFileMap", "archiveName", "archiveSha256", "archiveUrl", "checksumFileName", "checksumFileSha256", "checksumUrl", "name", "packageContentDigest", "packageFileMap", "releaseTag", "releaseUrl", "repository", "sourceRevision", "updateUrl", "version"].sort();
 
 async function present(file) {
   try {
@@ -47,25 +49,32 @@ function eventHealth(runtime, config, records) {
   }));
 }
 
-async function observedFileMap(root, relative = "", output = {}) {
-  for (const entry of (await readdir(path.join(root, relative), { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))) {
-    const name = path.posix.join(relative, entry.name);
-    if (entry.isDirectory()) await observedFileMap(root, name, output);
-    else if (entry.isFile() && !entry.isSymbolicLink()) {
-      const file = path.join(root, name);
-      let handle;
-      try {
-        handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-        const before = await handle.stat({ bigint: true });
-        const bytes = await handle.readFile();
-        const after = await handle.stat({ bigint: true });
-        if (!before.isFile() || !after.isFile() || bytes.length !== Number(after.size)
-          || ["dev", "ino", "size", "mtimeNs", "ctimeNs"].some((key) => before[key] !== after[key])) throw new Error("installed file changed");
-        output[name] = { sha256: createHash("sha256").update(bytes).digest("hex"), mode: Number(after.mode & 0o777n), size: bytes.length };
-      } finally { await handle?.close(); }
-    } else output[name] = null;
+async function observedPackage(root) {
+  const files = {}, contents = [];
+  async function walk(relative = "") {
+    for (const entry of (await readdir(path.join(root, relative), { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))) {
+      const name = path.posix.join(relative, entry.name);
+      if (entry.isDirectory()) await walk(name);
+      else if (entry.isFile() && !entry.isSymbolicLink()) {
+        const file = path.join(root, name);
+        let handle;
+        try {
+          handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          const before = await handle.stat({ bigint: true });
+          const bytes = await handle.readFile();
+          const after = await handle.stat({ bigint: true });
+          if (!before.isFile() || !after.isFile() || bytes.length !== Number(after.size)
+            || ["dev", "ino", "size", "mtimeNs", "ctimeNs"].some((key) => before[key] !== after[key])) throw new Error("installed file changed");
+          files[name] = { sha256: createHash("sha256").update(bytes).digest("hex"), mode: Number(after.mode & 0o777n), size: bytes.length };
+          contents.push([name, bytes]);
+        } finally { await handle?.close(); }
+      } else throw new Error("installed file is not regular");
+    }
   }
-  return output;
+  await walk();
+  const digest = createHash("sha256");
+  for (const [name, bytes] of contents.sort(([left], [right]) => Buffer.from(left).compare(Buffer.from(right)))) digest.update(name).update(bytes);
+  return { files, digest: digest.digest("hex") };
 }
 
 async function artifactHealth(root, runtime, installed, receipt) {
@@ -77,8 +86,21 @@ async function artifactHealth(root, runtime, installed, receipt) {
   if (targetReceipts.length !== 1) return { status: "missing_receipt", ...empty };
   if (receipt.schemaVersion !== 4 || !receipt.artifact) return { status: "unverified_legacy", ...empty };
   try {
-    if (receipt.version !== receipt.artifact.version
-      || !/^v\d+\.\d+\.\d+$/.test(receipt.artifact.releaseTag)
+    const artifact = receipt.artifact;
+    const releaseTag = `v${artifact.version}`;
+    const archiveName = `agent-team-${artifact.version}.zip`;
+    const releaseAssetRoot = `${RELEASE_REPOSITORY}/releases/download/${releaseTag}`;
+    if (Object.keys(artifact).sort().join("\0") !== ARTIFACT_KEYS.join("\0")
+      || receipt.version !== artifact.version
+      || artifact.name !== "agent-team"
+      || artifact.repository !== RELEASE_REPOSITORY
+      || artifact.releaseTag !== releaseTag
+      || artifact.archiveName !== archiveName
+      || artifact.releaseUrl !== `${RELEASE_REPOSITORY}/releases/tag/${releaseTag}`
+      || artifact.updateUrl !== `${RELEASE_REPOSITORY}/releases/latest`
+      || artifact.archiveUrl !== `${releaseAssetRoot}/${archiveName}`
+      || artifact.checksumFileName !== "SHA256SUMS"
+      || artifact.checksumUrl !== `${releaseAssetRoot}/SHA256SUMS`
       || !/^[0-9a-f]{40}$/.test(receipt.artifact.sourceRevision)
       || !/^[0-9a-f]{64}$/.test(receipt.artifact.archiveSha256)
       || fileMapDigest(receipt.artifact.packageFileMap) !== receipt.artifact.packageContentDigest
@@ -96,6 +118,9 @@ async function artifactHealth(root, runtime, installed, receipt) {
     || record.target !== target
     || JSON.stringify(record.files) !== JSON.stringify(receipt.artifact.packageFileMap)
     || record.digest !== fileMapDigest(record.files)
+    || targetReceipt.mode !== "copied"
+    || !/^[0-9a-f]{64}$/.test(targetReceipt.digest)
+    || new Set(targetNames).size !== targetNames.length
     || JSON.stringify(targetNames) !== JSON.stringify(recordedNames)) {
     return { status: "drifted", releaseTag: receipt.artifact.releaseTag ?? null,
       sourceRevision: receipt.artifact.sourceRevision ?? null, archiveSha256: receipt.artifact.archiveSha256 ?? null,
@@ -103,9 +128,10 @@ async function artifactHealth(root, runtime, installed, receipt) {
   }
   let current = false;
   try {
-    const observed = await observedFileMap(target);
-    current = Object.values(observed).every(Boolean) && fileMapDigest(observed) === record.digest
-      && fileMapDigest(observed) === receipt.artifact.packageContentDigest;
+    const observed = await observedPackage(target);
+    current = fileMapDigest(observed.files) === record.digest
+      && fileMapDigest(observed.files) === receipt.artifact.packageContentDigest
+      && observed.digest === targetReceipt.digest;
   } catch { current = false; }
   return {
     status: current ? "current" : "drifted",
