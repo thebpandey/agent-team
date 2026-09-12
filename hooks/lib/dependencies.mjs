@@ -62,11 +62,11 @@ export function inspectDependencies({ setup = {}, host }) {
   const receipts = profile.receipts ?? [];
   const count = (items) => ({
     ready: items.filter(({ status }) => status === "ready").length,
-    failed: items.filter(({ status }) => ["failed", "cannot_use", "required_unavailable"].includes(status)).length,
+    failed: items.filter(({ status }) => ["failed", "cannot_use", "manual_action", "required_unavailable"].includes(status)).length,
   });
   const tools = receipts.filter(({ id }) => TOOL_IDS.has(id));
   const skills = receipts.filter(({ id }) => !TOOL_IDS.has(id));
-  const failed = receipts.filter(({ status }) => ["failed", "cannot_use", "required_unavailable"].includes(status));
+  const failed = receipts.filter(({ status }) => ["failed", "cannot_use", "manual_action", "required_unavailable"].includes(status));
   return {
     host,
     scope: profile.scope ?? "unknown",
@@ -110,14 +110,6 @@ export function buildPreparationPlan({ dependencyId, host, scope, paths, executa
     file: target, args: ["install-browser", "chromium"], cwd: paths.toolRoot,
     env: { PLAYWRIGHT_BROWSERS_PATH: path.join(paths.toolRoot, "playwright-browsers"), NO_UPDATE_NOTIFIER: "1" },
   } : undefined;
-  if (dependency.id === "impeccable") {
-    install.push({
-      file: target,
-      args: ["install", "-y", `--providers=${host === "codex" ? "codex" : "claude"}`, `--scope=${scope}`, "--no-hooks"],
-      cwd: paths.projectRoot,
-      env: { IMPECCABLE_HOME: path.join(paths.toolRoot, "impeccable-home") },
-    });
-  }
   const functionalSteps = {
     "browser-interaction": ["open isolated local fixture", "click fixture control", "verify changed page state", "close owned session"],
     "symbol-operation": ["activate isolated fixture project", "locate a known symbol through Serena"],
@@ -172,10 +164,13 @@ async function prepareOne(dependency, runner, budget) {
     }
   };
   const probe = await run({ dependency, phase: "probe" });
-  if (probe.status === "customized") {
+  const details = (result) => Object.fromEntries(["path", "paths", "components", "lifecycleOwnership"]
+    .filter((key) => result?.[key] !== undefined).map((key) => [key, structuredClone(result[key])]));
+  let ownership = details(probe);
+  if (["customized", "manual_action"].includes(probe.status)) {
     return {
-      id: dependency.id, version: probe.version ?? null, detected: true, installed: "preserved",
-      functional: "not_run", availableToWorker: "not_run", status: "cannot_use",
+      id: dependency.id, version: probe.version ?? null, detected: true, installed: "preserved", ...ownership,
+      functional: "not_run", availableToWorker: "not_run", status: probe.status === "manual_action" ? "manual_action" : "cannot_use",
       boundary: dependencyBoundary(dependency, probe, "Existing customization is not owned by Agent-Team."), observedAt,
     };
   }
@@ -187,7 +182,7 @@ async function prepareOne(dependency, runner, budget) {
       boundary: `The selected executable ${dependency.executable} reports ${probe.version ?? "an unknown version"}; expected ${dependency.version}. It was preserved and no shadow tracker was installed.`,
     };
   }
-  let installed = "reused";
+  let installed = probe.installed ?? "reused";
   let detected = probe.status === "passed";
   if (!compatible) {
     const installation = await run({ dependency, phase: "install" });
@@ -200,22 +195,34 @@ async function prepareOne(dependency, runner, budget) {
     }
     installed = "installed";
     const installedProbe = await run({ dependency, phase: "probe" });
+    ownership = details(installedProbe);
+    if (ownership.components) {
+      ownership.components = ownership.components.map((component) => ({ ...component, installed: "installed", lifecycleOwnership: "managed" }));
+      ownership.lifecycleOwnership = "managed";
+    }
     detected = installedProbe.status === "passed";
     if (!detected || (dependency.version !== null && installedProbe.version !== dependency.version)) {
       return {
-        id: dependency.id, version: installedProbe.version ?? null, detected, installed,
+        id: dependency.id, version: installedProbe.version ?? null, detected, installed, ...ownership,
         functional: "not_run", availableToWorker: "not_run", status: "failed", observedAt,
         boundary: `Installed ${dependency.id}, but expected ${dependency.version} and detected ${installedProbe.version ?? "no executable"}.`,
       };
     }
   }
-  if (["playwright-cli", "lean-ctx"].includes(dependency.id)) {
+  if (["playwright-cli", "lean-ctx", "impeccable"].includes(dependency.id)) {
     const companion = await run({ dependency, phase: "companion" });
+    const companionOwnership = details(companion);
+    if (companionOwnership.components) {
+      ownership.components = [...(ownership.components ?? []), ...companionOwnership.components];
+      ownership.paths = [...new Set([...(ownership.paths ?? []), ...(companionOwnership.paths ?? [])])];
+      ownership.path ??= companionOwnership.path;
+      ownership.lifecycleOwnership = ownership.components.every(({ lifecycleOwnership }) => lifecycleOwnership === "managed") ? "managed" : "unowned";
+    }
     if (companion.status !== "passed") {
       return {
-        id: dependency.id, version: dependency.version, detected, installed,
+        id: dependency.id, version: dependency.version, detected, installed, ...ownership,
         functional: "not_run", availableToWorker: "not_run",
-        status: companion.status === "customized" ? "cannot_use" : "failed", observedAt,
+        status: companion.status === "manual_action" ? "manual_action" : companion.status === "customized" ? "cannot_use" : "failed", observedAt,
         boundary: dependencyBoundary(dependency, companion, "The selected-scope companion prerequisites were not prepared."),
       };
     }
@@ -223,7 +230,7 @@ async function prepareOne(dependency, runner, budget) {
   const functional = await run({ dependency, phase: "functional", check: dependency.functionalCheck });
   if (functional.status !== "passed") {
     return {
-      id: dependency.id, version: dependency.version, detected, installed, functional: "failed",
+      id: dependency.id, version: dependency.version, detected, installed, ...ownership, functional: "failed",
       availableToWorker: "not_run", status: "failed",
       boundary: dependencyBoundary(dependency, functional, "Functional verification failed."), observedAt,
     };
@@ -231,13 +238,13 @@ async function prepareOne(dependency, runner, budget) {
   const worker = await run({ dependency, phase: "worker", check: "fresh-worker-discovery" });
   if (worker.status !== "passed") {
     return {
-      id: dependency.id, version: dependency.version, detected, installed, functional: "passed",
+      id: dependency.id, version: dependency.version, detected, installed, ...ownership, functional: "passed",
       availableToWorker: worker.status === "unverified" ? "unknown" : "failed", status: "failed",
       boundary: dependencyBoundary(dependency, worker, "A fresh worker could not discover the capability."), observedAt,
     };
   }
   return {
-    id: dependency.id, version: dependency.version, detected, installed, functional: "passed",
+    id: dependency.id, version: dependency.version, detected, installed, ...ownership, functional: "passed",
     availableToWorker: "passed", status: "ready", observedAt,
     evidence: { probe: evidence(probe) ?? null, functional: evidence(functional) ?? null, worker: evidence(worker) ?? null },
   };
@@ -264,8 +271,10 @@ export async function prepareDependencies({ setupPath, expectedVersion, writer, 
         }
       }
       const declinedSet = new Set(declined);
-      const defaults = (selections.defaults ?? DEPENDENCY_CATALOG.filter(({ disposition }) => disposition === "default").map(({ id }) => id))
-        .filter((id) => !declinedSet.has(id));
+      const planRequired = [...new Set(setup.plan?.requiredCapabilities ?? [])]
+        .filter((id) => CATALOG_BY_ID.has(id) && CATALOG_BY_ID.get(id).disposition !== "excluded");
+      const defaults = [...new Set([...(selections.defaults ?? DEPENDENCY_CATALOG.filter(({ disposition }) => disposition === "default").map(({ id }) => id)), ...planRequired])]
+        .filter((id) => !declinedSet.has(id) || planRequired.includes(id));
       const optionals = (selections.optionals ?? []).filter((id) => !declinedSet.has(id));
       const selection = resolveCatalogSelection({ tracker: setup.tracker, defaults, optionals });
       if (selection.selected.some(({ id }) => id === "beads-viewer") && (setup.tracker?.kind !== "beads"
@@ -282,12 +291,19 @@ export async function prepareDependencies({ setupPath, expectedVersion, writer, 
       const receipts = [];
       for (const dependency of dependencies) {
         budget?.check();
-        if (dependency.disposition === "mandatory" && declinedSet.has(dependency.id)) {
+        const unavailablePrerequisites = dependency.prerequisites.filter((id) => receipts.find((receipt) => receipt.id === id)?.status !== "ready");
+        if ((dependency.disposition === "mandatory" || planRequired.includes(dependency.id)) && declinedSet.has(dependency.id)) {
           receipts.push({
             id: dependency.id, version: dependency.version, detected: false, installed: "not_installed",
             functional: "not_run", availableToWorker: "failed", status: "required_unavailable",
             boundary: `Mandatory dependency ${dependency.id} was explicitly declined; readiness remains unavailable until it is approved and verified.`,
             observedAt: new Date().toISOString(),
+          });
+        } else if (unavailablePrerequisites.length) {
+          receipts.push({
+            id: dependency.id, version: dependency.version, detected: false, installed: "not_installed",
+            functional: "not_run", availableToWorker: "unknown", status: "required_unavailable",
+            boundary: `Declared prerequisite(s) unavailable: ${unavailablePrerequisites.join(", ")}.`, observedAt: new Date().toISOString(),
           });
         } else {
           const receipt = await prepareOne(dependency, execute, budget);
@@ -329,6 +345,37 @@ function binaryPath(dependency, toolRoot) {
   return path.join(toolRoot, "bin", process.platform === "win32" ? `${command}.cmd` : command);
 }
 
+function contained(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+async function astGrepExecutable(dependency, paths, budget) {
+  const canonical = path.join(paths.toolRoot, "bin", process.platform === "win32" ? "ast-grep.cmd" : "ast-grep");
+  const requested = dependency.executable ?? canonical;
+  if (requested === canonical) return canonical;
+  if (!path.isAbsolute(requested) || path.basename(requested, path.extname(requested)) !== "sg" || path.dirname(requested) !== path.dirname(canonical)) {
+    throw new Error(`Rejected ast-grep alias outside the selected managed package: ${requested}.`);
+  }
+  const packageRoot = path.join(paths.toolRoot, process.platform === "win32" ? "node_modules" : "lib/node_modules", "@ast-grep", "cli");
+  const [rootReal, aliasReal, canonicalReal] = await Promise.all([realpath(packageRoot), realpath(requested), realpath(canonical)]);
+  if (!contained(rootReal, aliasReal) || !contained(rootReal, canonicalReal)) throw new Error("Rejected ast-grep alias that escapes the verified package root.");
+  const metadata = JSON.parse(await companionBytes(path.join(rootReal, "package.json"), budget, 64 * 1024));
+  if (metadata.name !== "@ast-grep/cli" || metadata.version !== "0.45.3") throw new Error("Rejected ast-grep alias from a different package identity.");
+  const [aliasStat, canonicalStat] = await Promise.all([lstat(aliasReal), lstat(canonicalReal)]);
+  if (aliasStat.dev !== canonicalStat.dev || aliasStat.ino !== canonicalStat.ino) throw new Error("Rejected ast-grep alias that does not identify the canonical entrypoint.");
+  return canonical;
+}
+
+async function executableComponent(executable, budget) {
+  const resolved = await realpath(executable);
+  const bytes = await companionBytes(resolved, budget, 128 * 1024 * 1024);
+  const stat = await lstat(resolved);
+  return { id: "executable", path: executable, realpath: resolved, lifecycleOwnership: "unowned", installed: "reused_unowned",
+    compatibility: { status: "exact", entrypoint: null, requiredFiles: [], unrelatedRegularFilesPreserved: false,
+      identity: { dev: stat.dev, ino: stat.ino, mode: stat.mode, size: stat.size, sha256: createHash("sha256").update(bytes).digest("hex") } } };
+}
+
 async function command(file, args, options = {}) {
   const { budget, timeout = 120_000, ...executionOptions } = options;
   try {
@@ -363,36 +410,98 @@ function skillDestination(dependency, paths, selectedPath) {
   return path.join(paths.skillRoot, selectedPath === "." ? dependency.id : path.basename(selectedPath));
 }
 
+function skillCompatibilityForGuidance(dependency, host) {
+  const selectedPath = dependency.guidance?.selectedPath;
+  const value = dependency.guidance?.gitBlobs?.[host];
+  if (!selectedPath || !value) return undefined;
+  return { kind: "required-files", entrypoint: "SKILL.md", allowUnrelatedRegularFiles: true, selectedPaths: [{
+    selectedPath, requiredFiles: [{ path: "SKILL.md", digest: { algorithm: "git-blob-sha1", value } }],
+  }] };
+}
+
 async function inspectSkillDestinations(dependency, paths, { budget, bounded = false } = {}) {
-  let absent = false;
+  const present = [];
+  const absent = [];
   for (const selectedPath of dependency.install.paths) {
     budget?.check();
     const destination = skillDestination(dependency, paths, selectedPath);
-    if (!await exists(destination)) {
-      absent = true;
+    try { await lstat(destination); }
+    catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      absent.push({ selectedPath, destination });
       continue;
     }
+    present.push({ selectedPath, destination });
+  }
+  if (!present.length) return { status: "not_found" };
+  if (absent.length) {
+    return { status: "manual_action", evidence: `Preserved mixed partial skill destinations ${present.map(({ destination }) => destination).join(", ")}; missing ${absent.map(({ destination }) => destination).join(", ")}.` };
+  }
+  const components = [];
+  for (const { selectedPath, destination } of present) {
+    budget?.check();
+    const requirement = dependency.compatibility?.selectedPaths?.find((entry) => entry.selectedPath === selectedPath);
     const metadataPath = path.join(destination, ".agent-team-source.json");
+    let metadata;
+    let metadataPresent = false;
     try {
-      const metadata = JSON.parse(bounded ? await companionBytes(metadataPath, budget, 64 * 1024) : await readFile(metadataPath, "utf8"));
+      metadata = JSON.parse(bounded ? await companionBytes(metadataPath, budget, 64 * 1024) : await readFile(metadataPath, "utf8"));
+      metadataPresent = true;
       if (metadata.source !== dependency.install.source || metadata.revision !== dependency.version || metadata.selectedPath !== selectedPath) {
-        return { status: "customized", evidence: `Preserved existing skill path with different provenance: ${destination}` };
+        return { status: "manual_action", evidence: `Preserved existing skill path with different provenance: ${destination}` };
       }
     } catch (error) {
       if (error.code === "EVENT_DEADLINE") throw error;
       budget?.check();
-      return { status: "customized", evidence: `Preserved existing skill path without matching Agent-Team provenance: ${destination}. ${error.message}` };
+      if (error.code !== "ENOENT") return { status: "manual_action", evidence: `Preserved malformed skill provenance: ${destination}. ${error.message}` };
     }
+    if (!metadataPresent && !requirement) {
+      return { status: "manual_action", evidence: `Preserved existing skill path without a pinned compatibility declaration: ${destination}.` };
+    }
+    let allFiles;
+    try {
+      allFiles = await skillContents(destination, budget);
+    } catch (error) {
+      if (error.code === "EVENT_DEADLINE") throw error;
+      return { status: "manual_action", evidence: error.message };
+    }
+    const requiredFiles = [];
+    for (const required of requirement?.requiredFiles ?? []) {
+      const file = path.join(destination, required.path);
+      try {
+        const bytes = await companionBytes(file, budget);
+        const algorithm = required.digest.algorithm;
+        const actual = algorithm === "git-blob-sha1"
+          ? createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex")
+          : createHash("sha256").update(bytes).digest("hex");
+        if (actual !== required.digest.value) {
+          return { status: "manual_action", evidence: `Preserved incompatible required skill file: ${file}.` };
+        }
+        requiredFiles.push({ path: required.path, digest: structuredClone(required.digest), size: bytes.length });
+      } catch (error) {
+        if (error.code === "EVENT_DEADLINE") throw error;
+        return { status: "manual_action", evidence: `Preserved missing or invalid required skill file: ${file}. ${error.message}` };
+      }
+    }
+    const ownership = metadataPresent ? "managed" : "unowned";
+    components.push({
+      id: "skill", path: destination, realpath: await realpath(destination), lifecycleOwnership: ownership,
+      installed: metadataPresent ? "reused" : "reused_unowned",
+      compatibility: { status: requirement ? "exact" : "not_applicable", entrypoint: requirement ? dependency.compatibility.entrypoint : null,
+        requiredFiles, unrelatedRegularFilesPreserved: requirement ? Object.keys(allFiles).some((file) => !requiredFiles.some(({ path: requiredPath }) => requiredPath === file)) : false },
+    });
   }
-  return absent
-    ? { status: "not_found" }
-    : { status: "passed", version: dependency.version, evidence: "All selected managed skill paths matched." };
+  const lifecycleOwnership = components.every(({ lifecycleOwnership }) => lifecycleOwnership === "managed") ? "managed" : "unowned";
+  return { status: "passed", version: dependency.version, path: components[0].path, paths: components.map(({ path: selected }) => selected), components,
+    lifecycleOwnership, installed: lifecycleOwnership === "managed" ? "reused" : "reused_unowned",
+    evidence: lifecycleOwnership === "managed" ? "All selected managed skill paths matched." : "All selected unowned skill paths matched pinned compatibility." };
 }
 
 async function installGitSkills(dependency, paths) {
   if (!dependency.install.paths.length) return { status: "failed", evidence: "No selective skill paths are approved for this optional source." };
   const preflight = await inspectSkillDestinations(dependency, paths);
-  if (preflight.status === "customized") return preflight;
+  if (preflight.status === "passed") return preflight;
+  if (preflight.status !== "not_found") return preflight;
   const sourceRoot = path.join(paths.toolRoot, "sources", `${dependency.id}-${dependency.version.slice(0, 12)}`);
   await mkdir(path.dirname(sourceRoot), { recursive: true, mode: 0o700 });
   if (!await exists(path.join(sourceRoot, ".git"))) {
@@ -487,7 +596,7 @@ async function preparePlaywrightSkill(dependency, paths, budget) {
       if (!(await lstat(destination)).isDirectory()) return { status: "customized", evidence: `Preserved non-directory companion: ${destination}` };
     } catch (error) { if (error.code !== "ENOENT") throw error; }
     const preflight = await inspectSkillDestinations(companion, paths, { budget, bounded: true });
-    if (preflight.status === "customized") return preflight;
+    if (!["not_found", "passed"].includes(preflight.status)) return { ...preflight, status: "customized" };
     const packageRoot = path.join(paths.toolRoot, process.platform === "win32" ? "node_modules" : "lib/node_modules", "@playwright/cli");
     const source = path.join(packageRoot, "skills/playwright-cli");
     const relative = path.relative(await realpath(paths.toolRoot), await realpath(source));
@@ -699,19 +808,35 @@ async function installBeadsViewerRelease(dependency, paths, budget) {
 async function prepareLeanCtxSkill(dependency, paths, budget) {
   const destination = path.join(paths.skillRoot, "lean-ctx");
   const provenance = { source: dependency.install.skill.source, revision: dependency.version, gitBlob: dependency.install.skill.gitBlob };
+  const component = async (ownership, installed, bytes) => ({ id: "skill", path: destination, realpath: await realpath(destination),
+    lifecycleOwnership: ownership, installed, compatibility: { status: "exact", entrypoint: "SKILL.md",
+      requiredFiles: [{ path: "SKILL.md", digest: { algorithm: "git-blob-sha1", value: provenance.gitBlob }, size: bytes.length }],
+      unrelatedRegularFilesPreserved: Object.keys(await skillContents(destination, budget)).some((file) => file !== "SKILL.md") } });
   try {
     try {
-      const files = await skillContents(destination, budget);
-      const metadata = JSON.parse(await companionBytes(path.join(destination, ".agent-team-source.json"), budget, 64 * 1024));
+      await skillContents(destination, budget);
       const bytes = await companionBytes(path.join(destination, "SKILL.md"), budget, 64 * 1024);
       const blob = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
-      return Object.keys(files).length === 1 && files["SKILL.md"] && blob === provenance.gitBlob &&
-        Object.entries(provenance).every(([key, value]) => metadata[key] === value)
-        ? { status: "passed", evidence: "Reused complete pinned LeanCTX skill." }
-        : { status: "customized", evidence: `Preserved customized LeanCTX skill: ${destination}` };
+      if (blob !== provenance.gitBlob) return { status: "manual_action", evidence: `Preserved customized LeanCTX skill: ${destination}` };
+      let ownership = "unowned";
+      let installed = "reused_unowned";
+      try {
+        const metadata = JSON.parse(await companionBytes(path.join(destination, ".agent-team-source.json"), budget, 64 * 1024));
+        if (!Object.entries(provenance).every(([key, value]) => metadata[key] === value)) {
+          return { status: "manual_action", evidence: `Preserved mismatched LeanCTX skill provenance: ${destination}` };
+        }
+        ownership = "managed";
+        installed = "reused";
+      } catch (error) {
+        if (error.code === "EVENT_DEADLINE") throw error;
+        if (error.code !== "ENOENT") return { status: "manual_action", evidence: `Preserved malformed LeanCTX skill provenance: ${destination}` };
+      }
+      const record = await component(ownership, installed, bytes);
+      return { status: "passed", installed, lifecycleOwnership: ownership, path: destination, paths: [destination], components: [record],
+        evidence: ownership === "managed" ? "Reused complete pinned LeanCTX skill." : "Reused exact unowned LeanCTX skill in place." };
     } catch (error) {
       if (error.code === "EVENT_DEADLINE") throw error;
-      try { await lstat(destination); return { status: "customized", evidence: `Preserved existing LeanCTX skill: ${destination}` }; }
+      try { await lstat(destination); return { status: "manual_action", evidence: `Preserved existing LeanCTX skill: ${destination}. ${error.message}` }; }
       catch (missing) { if (missing.code !== "ENOENT") throw missing; }
     }
     const bytes = await releaseBytes(provenance.source, 64 * 1024, budget);
@@ -724,7 +849,9 @@ async function prepareLeanCtxSkill(dependency, paths, budget) {
     await writeFile(path.join(destination, "SKILL.md"), bytes, { mode: 0o600, flag: "wx", signal: budget?.signal });
     budget?.check();
     await writeFile(path.join(destination, ".agent-team-source.json"), `${JSON.stringify(provenance)}\n`, { mode: 0o600, flag: "wx", signal: budget?.signal });
-    return { status: "passed", evidence: "Prepared complete pinned LeanCTX host skill; Agent-Team narrowed profile governs its use." };
+    const record = await component("managed", "installed", bytes);
+    return { status: "passed", installed: "installed", lifecycleOwnership: "managed", path: destination, paths: [destination], components: [record],
+      evidence: "Prepared complete pinned LeanCTX host skill; Agent-Team narrowed profile governs its use." };
   } catch (error) {
     if (error.code === "EVENT_DEADLINE") throw error;
     return { status: "failed", evidence: error.message };
@@ -1131,7 +1258,17 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
   return async ({ dependency, phase, check, budget = eventBudget }) => {
     budget?.check();
     const execute = (file, args, options = {}) => command(file, args, { ...options, budget });
-    const executable = binaryPath(dependency, paths.toolRoot);
+    let executable;
+    try {
+      const canonicalGraphify = binaryPath({ ...dependency, executable: undefined }, paths.toolRoot);
+      if (dependency.id === "graphify" && dependency.executable && dependency.executable !== canonicalGraphify) {
+        return { status: "manual_action", evidence: `Graphify must use the selected canonical path ${canonicalGraphify}.` };
+      }
+      executable = dependency.id === "ast-grep" ? await astGrepExecutable(dependency, paths, budget) : binaryPath(dependency, paths.toolRoot);
+    } catch (error) {
+      if (error.code === "EVENT_DEADLINE") throw error;
+      return { status: "manual_action", evidence: error.message };
+    }
     if (phase === "probe") {
       if (dependency.id === "playwright-cli") {
         const companion = await inspectSkillDestinations(playwrightSkill(dependency), paths, { budget, bounded: true });
@@ -1143,7 +1280,13 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       }
       const result = await execute(executable, ["--version"], dependency.id === "playwright-cli"
         ? { env: { ...process.env, NO_UPDATE_NOTIFIER: "1" } } : {});
-      return result.status === "passed" ? { ...result, version: parsedVersion(`${result.stdout}\n${result.stderr}`, dependency.id) } : result;
+      if (result.status !== "passed") return result;
+      if (["graphify", "impeccable"].includes(dependency.id)) {
+        const component = await executableComponent(executable, budget);
+        return { ...result, version: parsedVersion(`${result.stdout}\n${result.stderr}`, dependency.id), installed: "reused_unowned",
+          lifecycleOwnership: "unowned", path: executable, paths: [executable], components: [component] };
+      }
+      return { ...result, version: parsedVersion(`${result.stdout}\n${result.stderr}`, dependency.id) };
     }
     if (phase === "install") {
       await mkdir(paths.toolRoot, { recursive: true, mode: 0o700 });
@@ -1167,6 +1310,28 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       return { status: "failed", evidence: `Pinned ${dependency.install?.kind ?? "unknown"} preparation requires its verified installer adapter.` };
     }
     if (phase === "companion" && dependency.id === "lean-ctx") return prepareLeanCtxSkill(dependency, paths, budget);
+    if (phase === "companion" && dependency.id === "impeccable") {
+      const guidance = {
+        ...dependency,
+        install: { kind: "git-skill", source: dependency.install.source, revision: dependency.version,
+          paths: [dependency.guidance.selectedPath] },
+        compatibility: skillCompatibilityForGuidance(dependency, host),
+      };
+      const existing = await inspectSkillDestinations(guidance, paths, { budget, bounded: true });
+      if (["passed", "manual_action", "customized"].includes(existing.status)) return existing;
+      const result = await execute(executable,
+        ["install", "-y", `--providers=${host === "codex" ? "codex" : "claude"}`, `--scope=${scope}`, "--no-hooks"],
+        { cwd: paths.projectRoot, env: { ...process.env, IMPECCABLE_HOME: path.join(paths.toolRoot, "impeccable-home") } });
+      if (result.status !== "passed") return result;
+      const installedGuidance = await inspectSkillDestinations(guidance, paths, { budget, bounded: true });
+      if (installedGuidance.status !== "passed") return installedGuidance;
+      return {
+        ...installedGuidance,
+        installed: "installed",
+        lifecycleOwnership: "managed",
+        components: installedGuidance.components.map((component) => ({ ...component, installed: "installed", lifecycleOwnership: "managed" })),
+      };
+    }
     if (phase === "companion" && dependency.id === "playwright-cli") {
       const companion = await preparePlaywrightSkill(dependency, paths, budget);
       if (companion.status !== "passed") return companion;

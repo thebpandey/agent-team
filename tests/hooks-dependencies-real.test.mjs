@@ -18,7 +18,9 @@ test("real isolated ast-grep package passes positive and negative structural fix
   const dependency = CATALOG_BY_ID.get("ast-grep");
   const runner = createDependencyRunner({ host: "codex", scope: "project", paths });
 
+  assert.equal(dependency.install.command, "ast-grep");
   assert.equal((await runner({ dependency, phase: "install" })).status, "passed");
+  await access(path.join(paths.toolRoot, "bin", "ast-grep"));
   const probe = await runner({ dependency, phase: "probe" });
   const functional = await runner({ dependency, phase: "functional", check: dependency.functionalCheck });
 
@@ -50,8 +52,16 @@ test("real pinned Superpowers source prepares only selected complete skills", { 
   const runner = createDependencyRunner({ host: "codex", scope: "project", paths });
 
   assert.equal((await runner({ dependency, phase: "install" })).status, "passed");
-  assert.equal((await runner({ dependency, phase: "probe" })).version, dependency.version);
+  for (const selectedPath of dependency.install.paths) {
+    await rm(path.join(paths.skillRoot, path.basename(selectedPath), ".agent-team-source.json"));
+  }
+  const before = await Promise.all(dependency.install.paths.map((selectedPath) => readFile(path.join(paths.skillRoot, path.basename(selectedPath), "SKILL.md"))));
+  const probe = await runner({ dependency, phase: "probe" });
+  assert.equal(probe.version, dependency.version);
+  assert.equal(probe.installed, "reused_unowned");
+  assert.equal(probe.lifecycleOwnership, "unowned");
   assert.equal((await runner({ dependency, phase: "functional", check: dependency.functionalCheck })).status, "passed");
+  assert.deepEqual(await Promise.all(dependency.install.paths.map((selectedPath) => readFile(path.join(paths.skillRoot, path.basename(selectedPath), "SKILL.md")))), before);
 });
 
 test("real selected LeanCTX executable passes its isolated narrow-read gate", { skip: !enabled || !process.env.AGENT_TEAM_REAL_LEAN_CTX }, async (t) => {
@@ -115,12 +125,21 @@ test("real Beads verification ignores contaminated tracker and Git routing", { s
 test("real isolated Impeccable package passes its documented detector exit contract", { skip: !enabled }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-real-impeccable-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const paths = { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot: path.join(root, "skills") };
+  const paths = { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot: path.join(root, ".agents", "skills") };
   const dependency = CATALOG_BY_ID.get("impeccable");
   const runner = createDependencyRunner({ host: "codex", scope: "project", paths });
 
   assert.equal((await runner({ dependency, phase: "install" })).status, "passed");
   assert.equal((await runner({ dependency, phase: "probe" })).version, dependency.version);
+  const installedGuidance = await runner({ dependency, phase: "companion" });
+  assert.equal(installedGuidance.status, "passed", installedGuidance.evidence);
+  assert.equal(installedGuidance.components[0].lifecycleOwnership, "managed");
+  const guidancePath = path.join(paths.skillRoot, "impeccable", "SKILL.md");
+  const before = await readFile(guidancePath);
+  const reusedGuidance = await runner({ dependency, phase: "companion" });
+  assert.equal(reusedGuidance.installed, "reused_unowned");
+  assert.equal(reusedGuidance.lifecycleOwnership, "unowned");
+  assert.deepEqual(await readFile(guidancePath), before);
   const functional = await runner({ dependency, phase: "functional", check: dependency.functionalCheck });
 
   assert.equal(functional.status, "passed", functional.evidence);
@@ -182,7 +201,12 @@ test("real pinned Ponytail and React sources prepare only their selected complet
       const runner = createDependencyRunner({ host: "codex", scope: "project", paths });
 
       assert.equal((await runner({ dependency, phase: "install" })).status, "passed");
-      assert.equal((await runner({ dependency, phase: "probe" })).version, dependency.version);
+      for (const selectedPath of dependency.install.paths) {
+        await rm(path.join(paths.skillRoot, path.basename(selectedPath), ".agent-team-source.json"));
+      }
+      const probe = await runner({ dependency, phase: "probe" });
+      assert.equal(probe.version, dependency.version);
+      assert.equal(probe.installed, "reused_unowned");
       assert.equal((await runner({ dependency, phase: "functional", check: dependency.functionalCheck })).status, "passed");
     });
   }

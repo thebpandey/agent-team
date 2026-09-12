@@ -68,6 +68,29 @@ test("LeanCTX checksum failure publishes no executable", async (t) => {
   await assert.rejects(readFile(path.join(paths.toolRoot, `lean-ctx-${dependency.version}`, "lean-ctx")), { code: "ENOENT" });
 });
 
+test("LeanCTX reuses an exact sidecar-free skill with unrelated files without fetching or claiming it", async (t) => {
+  const { paths, dependency, runner, urls, skill } = await fixture(t);
+  const destination = path.join(paths.skillRoot, "lean-ctx");
+  await mkdir(destination, { recursive: true });
+  await writeFile(path.join(destination, "SKILL.md"), skill);
+  await writeFile(path.join(destination, "NOTES.md"), "operator notes\n");
+  const before = createHash("sha256").update(Buffer.concat([skill, Buffer.from("operator notes\n")])).digest("hex");
+
+  const result = await runner({ dependency, phase: "companion" });
+
+  const after = createHash("sha256").update(Buffer.concat([
+    await readFile(path.join(destination, "SKILL.md")), await readFile(path.join(destination, "NOTES.md")),
+  ])).digest("hex");
+  assert.equal(result.status, "passed");
+  assert.equal(result.installed, "reused_unowned");
+  assert.equal(result.lifecycleOwnership, "unowned");
+  assert.equal(result.path, destination);
+  assert.equal(result.components[0].compatibility.unrelatedRegularFilesPreserved, true);
+  assert.equal(before, after);
+  assert.equal(urls.length, 0);
+  await assert.rejects(readFile(path.join(destination, ".agent-team-source.json")), { code: "ENOENT" });
+});
+
 test("LeanCTX preserves customized executable and skill paths", async (t) => {
   const { paths, dependency, runner, urls } = await fixture(t);
   const binary = path.join(paths.toolRoot, `lean-ctx-${dependency.version}`, "lean-ctx");
@@ -77,7 +100,7 @@ test("LeanCTX preserves customized executable and skill paths", async (t) => {
   await writeFile(binary, "custom executable");
   await writeFile(skill, "custom skill");
   assert.equal((await runner({ dependency, phase: "install" })).status, "customized");
-  assert.equal((await runner({ dependency, phase: "companion" })).status, "customized");
+  assert.equal((await runner({ dependency, phase: "companion" })).status, "manual_action");
   assert.equal(urls.length, 0);
   assert.equal(await readFile(binary, "utf8"), "custom executable");
   assert.equal(await readFile(skill, "utf8"), "custom skill");

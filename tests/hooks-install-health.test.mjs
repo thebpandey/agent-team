@@ -80,6 +80,27 @@ test("installer preserves an unreceipted custom skill directory and does not reg
   assert.equal(await readFile(path.join(target, "CUSTOM.md"), "utf8"), "unowned\n");
 });
 
+test("package install and uninstall never claim or alter reused unowned dependency paths", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-unowned-dependencies-"));
+  temporary.push(home);
+  const skill = path.join(home, ".agents", "skills", "lean-ctx", "SKILL.md");
+  const graphify = path.join(home, ".agent-team", "tools", "bin", "graphify");
+  await mkdir(path.dirname(skill), { recursive: true });
+  await mkdir(path.dirname(graphify), { recursive: true });
+  await writeFile(skill, "exact unowned skill\n");
+  await writeFile(graphify, "exact unowned executable\n", { mode: 0o755 });
+  const before = { skill: await readFile(skill), graphify: await readFile(graphify) };
+
+  await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  const receipt = await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8");
+  assert.ok(!receipt.includes(skill));
+  assert.ok(!receipt.includes(graphify));
+  await uninstallPackage({ home, host: "codex", scope: "user" });
+
+  assert.deepEqual(await readFile(skill), before.skill);
+  assert.deepEqual(await readFile(graphify), before.graphify);
+});
+
 test("installer uses but never claims an identical unreceipted skill directory", async () => {
   // Content equality is not ownership authority; uninstall must retain a package that predates its receipt.
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-identical-skill-"));
