@@ -206,6 +206,7 @@ test("the explicit full wizard covers run defaults and each role with Back and C
   ]);
   assert.ok(wizard.steps.filter(({ kind }) => kind === "role-effort").every(({ choices }) => choices.some(({ id }) => id === "high")));
   assert.ok(wizard.steps.every(({ choices }) => choices.some(({ id }) => id === "cancel")));
+  assert.ok(wizard.steps.every(({ choices }) => choices.some(({ id }) => id === "keep_existing")));
   assert.ok(wizard.steps.slice(1).every(({ choices }) => choices.some(({ id }) => id === "back")));
   assert.equal(wizard.steps.at(-1).kind, "review");
 });
@@ -222,7 +223,7 @@ test("full wizard effort choices refresh from each role's selected draft model",
   const effort = wizard.steps.find((step) => step.kind === "role-effort" && step.role === "developer");
 
   assert.equal(effort.model, "fast");
-  assert.deepEqual(effort.choices.filter(({ id }) => !["back", "cancel"].includes(id)).map(({ id }) => id), ["low"]);
+  assert.deepEqual(effort.choices.filter(({ id }) => !["keep_existing", "back", "cancel"].includes(id)).map(({ id }) => id), ["low"]);
   assert.ok(effort.choices.some(({ id }) => id === "back"));
   assert.ok(effort.choices.some(({ id }) => id === "cancel"));
 });
@@ -426,6 +427,29 @@ test("empty or unchanged reviewed settings draft does not write", async () => {
     await writeFile(setupPath, `${JSON.stringify(completeSettingsFixture(), null, 2)}\n`);
     const before = await readFile(setupPath);
     const result = await saveSettingsDraft(draftCall(setupPath, { operationId: `settings-${label}`, draft }));
+    assert.deepEqual(result, { status: "kept_existing", settingsOutcome: "kept_existing" });
+    assert.deepEqual(await readFile(setupPath), before);
+  }
+});
+
+test("reviewed settings draft equal to profile or native effective values does not write overrides", async () => {
+  const { saveSettingsDraft } = await import("../hooks/lib/settings.mjs");
+  for (const [label, setup, route] of [
+    ["profile", { ...completeSettingsFixture(), settings: {
+      profile: "quality", profiles: { quality: { roles: { developer: { model: "quality", effort: "high" } } } },
+      runDefaults: { parallel_teams: 2 }, hosts: { codex: { roles: {} }, "claude-code": { roles: {} } },
+    } }, { model: "quality", effort: "high" }],
+    ["native", { ...completeSettingsFixture(), settings: {
+      profile: "quality", runDefaults: { parallel_teams: 2 }, hosts: { codex: { roles: {} }, "claude-code": { roles: {} } },
+    } }, { model: "quality", effort: "medium" }],
+  ]) {
+    const directory = await mkdtemp(path.join(os.tmpdir(), `agent-team-settings-effective-${label}-`));
+    const setupPath = path.join(directory, "setup.json");
+    await writeFile(setupPath, `${JSON.stringify(setup, null, 2)}\n`);
+    const before = await readFile(setupPath);
+    const result = await saveSettingsDraft(draftCall(setupPath, {
+      operationId: `settings-effective-${label}`, draft: { roles: { developer: route } },
+    }));
     assert.deepEqual(result, { status: "kept_existing", settingsOutcome: "kept_existing" });
     assert.deepEqual(await readFile(setupPath), before);
   }

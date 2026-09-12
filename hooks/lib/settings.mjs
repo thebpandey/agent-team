@@ -97,6 +97,7 @@ export function buildRoleMenu({ overview, role, nativeChoices = {} }) {
 function navigationChoices(values, includeBack = true) {
   return [
     ...values,
+    { id: "keep_existing", label: "Keep Existing" },
     ...(includeBack ? [{ id: "back", label: "Back" }] : []),
     { id: "cancel", label: "Cancel" },
   ];
@@ -260,6 +261,8 @@ export async function saveSettingsDraft({ setupPath, host, expectedVersion, writ
     mutate: async (setup) => {
       let changed = false;
       const next = structuredClone(setup);
+      const effectiveRoles = new Map(inspectSettings({ setup, host, nativeChoices }).roles
+        .map((role) => [role.id, role.effective]));
       next.settings ??= {};
       for (const [setting, value] of Object.entries(reviewed.runDefaults ?? {})) {
         if (next.settings.runDefaults?.[setting] === value) continue;
@@ -269,7 +272,8 @@ export async function saveSettingsDraft({ setupPath, host, expectedVersion, writ
       }
       for (const [role, route] of Object.entries(reviewed.roles ?? {})) {
         const current = next.settings.hosts?.[host]?.roles?.[role];
-        if (current?.model === route.model && current?.effort === route.effort) continue;
+        const effective = effectiveRoles.get(role);
+        if (effective?.model === route.model && effective?.effort === route.effort) continue;
         next.settings.hosts ??= {};
         next.settings.hosts[host] ??= {};
         next.settings.hosts[host].roles ??= {};

@@ -6,7 +6,7 @@ import { identityFor, loadCanonicalState } from "./canonical-state.mjs";
 import { createDependencyRunner, inspectDependencies, prepareDependencies } from "./dependencies.mjs";
 import { ROLE_DEFINITIONS } from "./dependency-profiles.mjs";
 import { initializationRecordProblem } from "./initialization.mjs";
-import { validateNativeOwnerAuthority } from "./owner-recovery.mjs";
+import { validateNativeOwnerAuthority, validateQualifiedOwnership } from "./owner-recovery.mjs";
 import { resolveProject } from "./project.mjs";
 import { assessReadiness } from "./readiness.mjs";
 import { buildRoleMenu, buildSettingsWizard, inspectSettings, mutateSetup, saveSettingsDraft, updateSettings } from "./settings.mjs";
@@ -234,6 +234,8 @@ async function qualifySetupOwner(projectPath, host, nativeIdentity, budget) {
     return null;
   }
   if (initializationRecordProblem(project.setup, canonical, { projectRoot: project.root, validateTracker: false, allowLegacy: true })) return null;
+  if (!validateQualifiedOwnership(canonical.setup.ownership) || !Number.isSafeInteger(canonical.registry.ownershipEpoch)
+    || canonical.registry.ownershipEpoch < 1) return null;
   const nativeHost = nativeIdentity?.host === "claude" ? "claude-code" : nativeIdentity?.host;
   if (nativeIdentity?.observed !== true || nativeHost !== host || typeof nativeIdentity?.sessionId !== "string"
     || !nativeIdentity.sessionId || typeof nativeIdentity?.cwd !== "string") return null;
@@ -301,6 +303,10 @@ export async function orchestrateSetup(input, context = {}) {
   if (!qualified) return { status: "conflict", reason: "project_owner_required" };
   if (typeof context.interactSettings !== "function") throw new Error("A native settings interaction is required.");
   let dependencies = inspectDependencies({ setup: qualified.project.setup, host: input.host });
+  if (dependencies.scope !== "unknown" && dependencies.scope !== input.scope) dependencies = {
+    status: "unavailable", reason: "dependency_scope_mismatch", host: input.host,
+    scope: input.scope, recordedScope: dependencies.scope,
+  };
   if (input.dependencies.action === "prepare") {
     const paths = await preparationPaths(qualified.project, input.host, input.scope, input.dependencies.home);
     const runner = (context.createDependencyRunner ?? createDependencyRunner)({ host: input.host, scope: input.scope, paths,

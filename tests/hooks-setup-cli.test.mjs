@@ -111,7 +111,7 @@ test("menus use programmatic native facts and refresh the selected model's effor
   const request = await envelope(value, { draft: { roles: { developer: { model: "fast" } } } });
   const wizard = await runSetupCommand("settings-wizard", { ...value.options, request }, { nativeChoices });
   const efforts = wizard.steps.find(({ kind, role }) => kind === "role-effort" && role === "developer");
-  assert.deepEqual(efforts.choices.filter(({ id }) => !["back", "cancel"].includes(id)).map(({ id }) => id), ["low"]);
+  assert.deepEqual(efforts.choices.filter(({ id }) => !["keep_existing", "back", "cancel"].includes(id)).map(({ id }) => id), ["low"]);
 });
 
 test("dependency inspection reports scope mismatch without presenting another scope's ready counts", async (t) => {
@@ -541,6 +541,44 @@ test("native setup authority cannot come from flags requests or caller epochs", 
     nativeIdentity: value.nativeIdentity, interactSettings: async () => ({ kind: "keep_existing" }),
   }), /Unsupported setup input field/);
   assert.deepEqual(await orchestrateSetup(orchestrationInput(value), {}), { status: "conflict", reason: "project_owner_required" });
+});
+
+test("legacy unqualified ownership cannot authorize native setup across host cwd or missing epoch", async (t) => {
+  const { orchestrateSetup } = await import(modulePath);
+  const cases = [
+    ["same host and cwd without qualified epoch", (value) => ({ host: "codex", sessionId: "owner", observed: true, cwd: value.root })],
+    ["cross host", (value) => ({ host: "claude-code", sessionId: "owner", observed: true, cwd: value.root })],
+    ["wrong cwd", () => ({ host: "codex", sessionId: "owner", observed: true, cwd: os.tmpdir() })],
+  ];
+  for (const [label, identityValue] of cases) {
+    const value = await legacyBrainVaultFixture(t);
+    const before = await readFile(value.setupPath);
+    let interacted = false;
+    const result = await orchestrateSetup(orchestrationInput(value), {
+      nativeIdentity: identityValue(value), nativeChoices,
+      interactSettings: async () => { interacted = true; return { kind: "keep_existing" }; },
+    });
+    assert.deepEqual(result, { status: "conflict", reason: "project_owner_required" }, label);
+    assert.equal(interacted, false);
+    assert.deepEqual(await readFile(value.setupPath), before);
+  }
+});
+
+test("dependency inspection reports selected scope mismatch and still enters settings summary", async (t) => {
+  const { orchestrateSetup } = await import(modulePath);
+  const value = await fixture(t);
+  let interacted = false;
+  const result = await orchestrateSetup(orchestrationInput(value, { scope: "user" }), {
+    nativeIdentity: value.nativeIdentity, nativeChoices,
+    interactSettings: async () => { interacted = true; return { kind: "keep_existing" }; },
+  });
+  assert.equal(interacted, true);
+  assert.deepEqual(result.dependencies, {
+    status: "unavailable", reason: "dependency_scope_mismatch", host: "codex",
+    scope: "user", recordedScope: "project",
+  });
+  assert.equal(result.settingsOutcome, "kept_existing");
+  assert.ok(result.readiness);
 });
 
 test("setup summary is pure and projects only qualified identity", async () => {
