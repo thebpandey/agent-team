@@ -172,10 +172,17 @@ function exactObjectKeys(value, keys) {
     && Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
 }
 
-function targetAuthorityValid(value, { taskId, boundaryRevision, target, releaseOwner }) {
-  return exactObjectKeys(value, ["source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"])
+function exactTaskIds(value, expected) {
+  return Array.isArray(value) && value.length > 0 && new Set(value).size === value.length
+    && value.every((taskId) => typeof taskId === "string" && taskId.length > 0 && Buffer.byteLength(taskId) <= 128)
+    && JSON.stringify(value) === JSON.stringify(expected);
+}
+
+function targetAuthorityValid(value, { taskId, boundaryRevision, target, releaseOwner, integrationTaskIds }) {
+  return exactObjectKeys(value, ["status", "source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"])
+    && value.status === "authorized"
     && typeof value.source === "string" && value.source.trim() === value.source && value.source.length > 0 && Buffer.byteLength(value.source) <= 256
-    && value.target === target && value.revision === boundaryRevision && Array.isArray(value.taskIds) && value.taskIds.length === 1 && value.taskIds[0] === taskId
+    && value.target === target && value.revision === boundaryRevision && exactTaskIds(value.taskIds, integrationTaskIds) && value.taskIds.includes(taskId)
     && ownerTriple(value) === releaseOwner;
 }
 
@@ -220,7 +227,8 @@ async function loadDeliveryEvidence(project, state, canonical, budget) {
       || (!part.preview.required && part.preview.status !== "not_required") || ownerTriple(part.preview) !== integrationOwner
       || !releaseOwner || nestedReleaseOwner !== releaseOwner
       || part.target.status !== "authorized" || part.target.revision !== boundaryRevision || ownerTriple(part.target) !== releaseOwner
-      || !targetAuthorityValid(part.target.authority, { taskId, boundaryRevision, target: part.target.target, releaseOwner })
+      || !targetAuthorityValid(part.target.authority, { taskId, boundaryRevision, target: part.target.target, releaseOwner,
+        integrationTaskIds: state.integration?.taskIds })
       || part.recovery.status !== "ready" || part.recovery.revision !== boundaryRevision || ownerTriple(part.recovery) !== releaseOwner
       || typeof part.target.target !== "string" || !part.target.target || Buffer.byteLength(part.target.target) > 4096
       || typeof part.recovery.artifact !== "string" || !part.recovery.artifact || Buffer.byteLength(part.recovery.artifact) > 4096

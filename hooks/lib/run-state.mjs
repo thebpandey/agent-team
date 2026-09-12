@@ -205,10 +205,15 @@ const joinedEvidenceKeys = ["taskId", "sourceRevision", "revision", "integratedR
 const fullRevision = (value) => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const boundedAuthority = (value) => typeof value === "string" && value.trim() === value && value.length > 0 && Buffer.byteLength(value) <= 4096;
 
-function targetAuthorityReady(value, { id, boundary, target, releaseOwner }) {
-  return exactKeys(value, ["source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"])
+function exactTaskIds(value, expected) {
+  return Array.isArray(value) && value.length > 0 && unique(value) && value.every(validId) && stable(value) === stable(expected);
+}
+
+function targetAuthorityReady(value, { id, boundary, target, releaseOwner, integrationTaskIds }) {
+  return exactKeys(value, ["status", "source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"])
+    && value.status === "authorized"
     && typeof value.source === "string" && value.source.trim() === value.source && value.source.length > 0 && Buffer.byteLength(value.source) <= 256
-    && value.target === target && value.revision === boundary && Array.isArray(value.taskIds) && value.taskIds.length === 1 && value.taskIds[0] === id
+    && value.target === target && value.revision === boundary && exactTaskIds(value.taskIds, integrationTaskIds) && value.taskIds.includes(id)
     && sameOwner(value, releaseOwner);
 }
 
@@ -228,7 +233,8 @@ function evidenceReady(evidence, id, canonical) {
     && evidence.preview?.taskId === id && evidence.preview?.revision === boundary && typeof evidence.preview?.required === "boolean"
     && (evidence.preview.required ? evidence.preview.status === "passed" : evidence.preview.status === "not_required")
     && evidence.target?.taskId === id && evidence.target?.revision === boundary && boundedAuthority(evidence.target?.target)
-    && targetAuthorityReady(evidence.target?.authority, { id, boundary, target: evidence.target.target, releaseOwner })
+    && targetAuthorityReady(evidence.target?.authority, { id, boundary, target: evidence.target.target, releaseOwner,
+      integrationTaskIds: integrationOwner?.taskIds })
     && evidence.recovery?.taskId === id && evidence.recovery?.revision === boundary
     && boundedAuthority(evidence.recovery?.artifact) && boundedAuthority(evidence.recovery?.action)
     && evidence.target?.status === "authorized" && evidence.recovery?.status === "ready"
@@ -244,8 +250,11 @@ export function selectReleaseBatch(canonical, classification) {
   const seen = new Set();
   const ready = run.pendingDeliveryIds.filter((id) => !seen.has(id) && seen.add(id) && !run.deployedTaskIds.includes(id) && run.taskIds.includes(id)
     && completed.has(String(tasks.get(id)?.status).toLowerCase()) && topLevel(tasks.get(id)) && evidenceReady(canonical.deliveryEvidence?.[id], id, canonical));
-  if (ready.length >= run.batchSize) return ready.slice(0, run.batchSize);
-  return ready.length && ["finite_exhausted", "continuous_scope_exhausted", "blocked_tail"].includes(classification.kind) ? ready : [];
+  const selected = ready.length >= run.batchSize ? ready.slice(0, run.batchSize)
+    : ready.length && ["finite_exhausted", "continuous_scope_exhausted", "blocked_tail"].includes(classification.kind) ? ready : [];
+  if (!selected.length) return [];
+  const authority = stable(canonical.deliveryEvidence[selected[0]].target.authority);
+  return selected.every((id) => stable(canonical.deliveryEvidence[id].target.authority) === authority) ? selected : [];
 }
 
 export function readRunDecision(canonical, { writerLiveness = {} } = {}) {

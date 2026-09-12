@@ -22,7 +22,7 @@ const task = (id, status = "ready", extra = {}) => ({ id, owner: "none", status,
 const run = (extra = {}) => ({ id: "run-1", ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1, mode: "finite",
   taskIds: ["AT-001"], teamLimit: 2, autoDeploy: true, batchSize: 2, source: "explicit_run", settingSources: sources(), paused: false,
   operationalVersion: 1, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible", ...extra });
-const canonical = (runValue, tasks, extra = {}) => ({ state: { run: runValue, ownership: { epoch: 1 }, integration: { ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1 },
+const canonical = (runValue, tasks, extra = {}) => ({ state: { run: runValue, ownership: { epoch: 1 }, integration: { ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1, taskIds: [...runValue.taskIds] },
   release: { ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1,
     authorization: { ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1 } } }, registry: { projectOwner: "owner-session", projectOwnerHost: "codex", ownershipEpoch: 1 },
   tracker: { status: "current", fingerprint: "f".repeat(64) }, tasks, deliveryEvidence: {}, git: { headRevision: "a".repeat(40) }, ...extra });
@@ -149,9 +149,9 @@ test("ordinary reconciliation preserves historical run provenance", async () => 
   assert.deepEqual([result.result.run.ownerHost, result.result.run.ownerSessionId, result.result.run.ownershipEpoch], ["codex", "owner-session", 1]);
 });
 
-function joinedEvidence(id, revision = "a".repeat(40)) {
+function joinedEvidence(id, revision = "a".repeat(40), authorityTaskIds = [id]) {
   const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
-  const authority = { source: "explicit-release-authorization", target: "origin/main", revision, taskIds: [id], ...actor };
+  const authority = { status: "authorized", source: "explicit-release-authorization", target: "origin/main", revision, taskIds: [...authorityTaskIds], ...actor };
   return { taskId: id, sourceRevision: revision, revision, integratedRevision: revision,
     completion: { taskId: id, status: "passed", sourceRevision: revision },
     integration: { taskId: id, status: "passed", sourceRevision: revision, boundaryRevision: revision, ...actor },
@@ -165,9 +165,10 @@ test("delivery evidence joins exact passed lineage and current generation", asyn
   const value = await fixture();
   const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
   const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
-  const authority = { source: "explicit-release-authorization", target: "origin/main", revision, taskIds: ["AT-001"], ...actor };
+  const authorityTaskIds = ["AT-001", "AT-002"];
+  const authority = { status: "authorized", source: "explicit-release-authorization", target: "origin/main", revision, taskIds: authorityTaskIds, ...actor };
   const receipt = (status, extra = {}) => ({ taskId: "AT-001", status, ...extra });
-  const state = { ...value.current.state, release: { ...value.current.state.release,
+  const state = { ...value.current.state, integration: { ...value.current.state.integration, taskIds: authorityTaskIds }, release: { ...value.current.state.release,
     authorization: { ...value.current.state.release.authorization, ...actor } }, deliveryReceipts: {
     completion: { "AT-001": receipt("passed", { sourceRevision: revision }) }, review: { "AT-001": receipt("passed", { revision }) },
     checks: { "AT-001": receipt("passed", { revision, results: [{ name: "unit", status: "passed" }] }) },
@@ -184,8 +185,11 @@ test("delivery evidence joins exact passed lineage and current generation", asyn
   state.deliveryReceipts.integration["AT-001"].status = "passed";
   for (const alter of [
     (target) => { delete target.authority; },
+    (target) => { delete target.authority.status; },
+    (target) => { target.authority.status = "held"; },
     (target) => { target.authority.revision = "b".repeat(40); },
     (target) => { target.authority.taskIds = ["AT-OTHER"]; },
+    (target) => { target.authority.taskIds = ["AT-001"]; },
     (target) => { target.authority.target = "production"; },
     (target) => { target.authority.ownerHost = "claude-code"; },
     (target) => { target.authority.source = ""; },
@@ -196,15 +200,21 @@ test("delivery evidence joins exact passed lineage and current generation", asyn
     await writeFile(value.project.paths.state, JSON.stringify(changed, null, 2));
     assert.equal((await loadCanonicalState(value.project)).deliveryEvidence["AT-001"], undefined);
   }
+  const missingIntegrationSet = structuredClone(state);
+  delete missingIntegrationSet.integration.taskIds;
+  await writeFile(value.project.paths.state, JSON.stringify(missingIntegrationSet, null, 2));
+  assert.equal((await loadCanonicalState(value.project)).deliveryEvidence["AT-001"], undefined);
 });
 
 test("release batches are oldest first full or terminally underfilled", () => {
   const tasks = [task("AT-001", "done"), task("AT-002", "done")];
-  const evidence = { "AT-001": joinedEvidence("AT-001"), "AT-002": joinedEvidence("AT-002") };
+  const authorityTaskIds = ["AT-001", "AT-002"];
+  const evidence = { "AT-001": joinedEvidence("AT-001", "a".repeat(40), authorityTaskIds),
+    "AT-002": joinedEvidence("AT-002", "a".repeat(40), authorityTaskIds) };
   const full = run({ taskIds: ["AT-001", "AT-002"], pendingDeliveryIds: ["AT-002", "AT-001"], batchSize: 2 });
   assert.deepEqual(selectReleaseBatch(canonical(full, tasks, { deliveryEvidence: evidence }), { kind: "progress_possible", eligibleTaskIds: [], blockedTaskIds: [] }), ["AT-002", "AT-001"]);
   const one = run({ pendingDeliveryIds: ["AT-001"], batchSize: 2 });
-  const view = canonical(one, [task("AT-001", "done")], { deliveryEvidence: { "AT-001": evidence["AT-001"] } });
+  const view = canonical(one, [task("AT-001", "done")], { deliveryEvidence: { "AT-001": joinedEvidence("AT-001") } });
   assert.deepEqual(selectReleaseBatch(view, { kind: "finite_exhausted", eligibleTaskIds: [], blockedTaskIds: [] }), ["AT-001"]);
   assert.deepEqual(selectReleaseBatch(view, { kind: "progress_possible", eligibleTaskIds: ["AT-002"], blockedTaskIds: [] }), []);
   const stale = structuredClone(view);
@@ -217,6 +227,8 @@ test("release batches are oldest first full or terminally underfilled", () => {
     (evidence) => { evidence.preview.required = true; },
     (evidence) => { evidence.target.target = ""; },
     (evidence) => { delete evidence.target.authority; },
+    (evidence) => { delete evidence.target.authority.status; },
+    (evidence) => { evidence.target.authority.status = "held"; },
     (evidence) => { evidence.target.authority.revision = "b".repeat(40); },
     (evidence) => { evidence.target.authority.taskIds = ["AT-OTHER"]; },
     (evidence) => { evidence.target.authority.target = "production"; },
@@ -231,6 +243,15 @@ test("release batches are oldest first full or terminally underfilled", () => {
     alter(malformed.deliveryEvidence["AT-001"]);
     assert.deepEqual(selectReleaseBatch(malformed, { kind: "finite_exhausted", eligibleTaskIds: [], blockedTaskIds: [] }), []);
   }
+  const inconsistent = canonical(full, tasks, { deliveryEvidence: structuredClone(evidence) });
+  inconsistent.deliveryEvidence["AT-002"].target.authority.source = "second-explicit-release-authorization";
+  assert.deepEqual(selectReleaseBatch(inconsistent, { kind: "progress_possible", eligibleTaskIds: [], blockedTaskIds: [] }), []);
+  const partial = canonical(full, tasks, { deliveryEvidence: structuredClone(evidence) });
+  partial.deliveryEvidence["AT-002"].target.authority.taskIds = ["AT-002"];
+  assert.deepEqual(selectReleaseBatch(partial, { kind: "progress_possible", eligibleTaskIds: [], blockedTaskIds: [] }), []);
+  const alteredIntegrationSet = canonical(full, tasks, { deliveryEvidence: structuredClone(evidence) });
+  alteredIntegrationSet.state.integration.taskIds = ["AT-002", "AT-001"];
+  assert.deepEqual(selectReleaseBatch(alteredIntegrationSet, { kind: "progress_possible", eligibleTaskIds: [], blockedTaskIds: [] }), []);
 });
 
 test("run decision is a pure held projection of one canonical snapshot", () => {
