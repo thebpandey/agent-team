@@ -118,6 +118,11 @@ export async function loadCanonicalState(project, options = {}) {
     tracker: taskResult?.tracker ?? { ...project.tracker, status: "not_read", fingerprint: null },
     sources: { teams: teamsText },
   };
+  if (options.includeDeliveryEvidence === false) {
+    canonical.git = { headRevision: null };
+    canonical.deliveryEvidence = {};
+    return canonical;
+  }
   const headRevision = await loadHeadRevision(project, options.budget);
   canonical.git = { headRevision };
   canonical.deliveryEvidence = await loadDeliveryEvidence(project, state, canonical, options.budget);
@@ -222,7 +227,14 @@ function receiptShape(part, state, taskId) {
     && stableValue(entry.integrationEvidence) === stableValue(part.integration.evidence));
   if (historical && (!history || history.completionOperationId !== part.completion.completionOperationId
     || history.completionResultFingerprint !== part.completion.completionResultFingerprint
-    || history.integrationOperationId !== part.integration.integrationOperationId)) return false;
+    || history.integrationOperationId !== part.integration.integrationOperationId
+    || history.completionEvidence.operationId !== history.completionOperationId
+    || history.integrationEvidence.operationId !== history.integrationOperationId
+    || history.sourceRevision !== part.completion.sourceRevision
+    || history.boundaryRevision !== part.integration.boundaryRevision)) return false;
+  if (!historical && (part.completion.evidence.revision !== part.completion.sourceRevision
+    || part.integration.evidence.revision !== part.integration.boundaryRevision
+    || part.integration.evidence.operationId !== part.integration.integrationOperationId)) return false;
   const completionKeys = historical
     ? ["taskId", "status", "sourceRevision", "completionOperationId", "completionResultFingerprint", "evidence"]
     : ["taskId", "status", "sourceRevision", "evidence"];

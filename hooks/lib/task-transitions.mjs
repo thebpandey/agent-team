@@ -15,7 +15,7 @@ const digest = (value) => createHash("sha256").update(typeof value === "string" 
 const operationSignature = ({ expectedVersion, expectedFingerprint, ...operation }) => digest(operation);
 const run = promisify(execFile);
 const conflict = (reason) => ({ status: "conflict", reason });
-const finished = new Set(["verified", "integrated", "deployed", "closed", "done"]);
+const finished = new Set(["verified", "integrated", "deployed", "closed", "done", "complete", "completed", "cancelled", "canceled"]);
 const unclaimed = new Set(["", "none", "unassigned", "-"]);
 const split = (value) => Array.isArray(value) ? value : String(value ?? "").split(/\s*,\s*/).filter((id) => id && !["none", "-"].includes(id));
 const sameIds = (left, right) => Array.isArray(left) && Array.isArray(right) && left.length === right.length
@@ -42,28 +42,56 @@ const stable = (value) => JSON.stringify(value && typeof value === "object"
   ? Array.isArray(value) ? value.map((entry) => JSON.parse(stable(entry)))
     : Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(stable(value[key]))])) : value);
 const stateFingerprint = (value) => digest(stable(value));
-const admittedProblem = (state, taskIds) => state.run !== undefined
-  && (!Array.isArray(taskIds) || !taskIds.length || taskIds.some((id) => !state.run?.taskIds?.includes(id))) ? "outside_scope" : undefined;
+const runKeys = ["id", "ownerSessionId", "ownerHost", "ownershipEpoch", "mode", "taskIds", "teamLimit", "autoDeploy", "batchSize", "source",
+  "settingSources", "paused", "operationalVersion", "blockers", "pendingDeliveryIds", "deployedTaskIds", "terminalClassification"];
+const runSources = new Set(["explicit_run", "saved_default", "compatibility_migration"]);
+const terminalKinds = new Set(["unknown", "paused", "unreconciled_completion", "progress_possible", "finite_exhausted", "continuous_scope_exhausted", "blocked_tail"]);
+export function requireAdmittedTaskIds(state, taskIds) {
+  const run = state?.run;
+  const unique = (values) => Array.isArray(values) && new Set(values).size === values.length;
+  const structurallyValid = exactKeys(run, runKeys) && validId(run.id) && validId(run.ownerSessionId)
+    && ["codex", "claude-code"].includes(run.ownerHost) && Number.isSafeInteger(run.ownershipEpoch) && run.ownershipEpoch > 0
+    && ["finite", "continuous"].includes(run.mode) && unique(run.taskIds) && run.taskIds.length > 0 && run.taskIds.every(validId)
+    && Number.isSafeInteger(run.teamLimit) && run.teamLimit > 0 && run.teamLimit <= 64 && typeof run.autoDeploy === "boolean"
+    && Number.isSafeInteger(run.batchSize) && run.batchSize > 0 && run.batchSize <= 64 && runSources.has(run.source)
+    && exactKeys(run.settingSources, ["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"])
+    && Object.values(run.settingSources).every((source) => runSources.has(source)) && typeof run.paused === "boolean"
+    && Number.isSafeInteger(run.operationalVersion) && run.operationalVersion >= 0
+    && unique(run.blockers) && unique(run.pendingDeliveryIds) && unique(run.deployedTaskIds)
+    && new Set(run.blockers.map((blocker) => blocker?.taskId)).size === run.blockers.length
+    && run.blockers.every((blocker) => exactKeys(blocker, ["taskId", "reason"]) && run.taskIds.includes(blocker.taskId)
+      && typeof blocker.reason === "string" && blocker.reason.trim() === blocker.reason && blocker.reason.length > 0 && Buffer.byteLength(blocker.reason) <= 4096)
+    && [...run.pendingDeliveryIds, ...run.deployedTaskIds].every((id) => run.taskIds.includes(id))
+    && run.deployedTaskIds.every((id) => !run.pendingDeliveryIds.includes(id)) && terminalKinds.has(run.terminalClassification);
+  return structurallyValid && Array.isArray(taskIds) && taskIds.length > 0 && taskIds.every((id) => run.taskIds.includes(id))
+    ? undefined : "outside_scope";
+}
+const admittedProblem = requireAdmittedTaskIds;
 const relativePath = (value) => typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 4096
   && !path.isAbsolute(value) && path.normalize(value) === value && !value.split(/[\\/]/).includes("..") && !/[\r\n\0]/.test(value);
+
+async function readSealedHandle(handle, { maximum = 256 * 1024, expectedUid, writableMask = 0 } = {}) {
+  const before = await handle.stat();
+  if (!before.isFile() || before.size > maximum || expectedUid !== undefined && before.uid !== expectedUid
+    || (before.mode & writableMask) !== 0) throw new Error("unsafe_evidence_file");
+  const bytes = Buffer.alloc(before.size);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+    if (!bytesRead) break;
+    offset += bytesRead;
+  }
+  const after = await handle.stat();
+  if (offset !== bytes.length || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+    || before.mtimeMs !== after.mtimeMs) throw new Error("evidence_changed_during_read");
+  return { bytes, parsed: JSON.parse(bytes.toString("utf8")), sha256: createHash("sha256").update(bytes).digest("hex"), stat: after };
+}
 
 async function readSealed(file, { maximum = 256 * 1024, expectedUid } = {}) {
   let handle;
   try {
     handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    const before = await handle.stat();
-    if (!before.isFile() || before.size > maximum || expectedUid !== undefined && before.uid !== expectedUid) throw new Error("unsafe_evidence_file");
-    const bytes = Buffer.alloc(before.size);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
-      if (!bytesRead) break;
-      offset += bytesRead;
-    }
-    const after = await handle.stat();
-    if (offset !== bytes.length || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
-      || before.mtimeMs !== after.mtimeMs) throw new Error("evidence_changed_during_read");
-    return { bytes, parsed: JSON.parse(bytes.toString("utf8")), sha256: createHash("sha256").update(bytes).digest("hex"), stat: after };
+    return await readSealedHandle(handle, { maximum, expectedUid });
   } finally { await handle?.close(); }
 }
 
@@ -183,7 +211,7 @@ export async function mutateOperationalState(project, request, mutator, options 
       operationId: request.operationId, actorSessionId: request.actorSessionId, pid: process.pid,
     }, async () => {
       await assertNoOwnerRecoveryJournal(project);
-      const canonical = await loadCanonicalState(project, { includeTasks: false, budget });
+      const canonical = await loadCanonicalState(project, { includeTasks: false, includeDeliveryEvidence: false, budget });
       const owner = canonical.registry.projectOwner;
       const actorHost = options.nativeIdentity?.host === "claude" ? "claude-code" : options.nativeIdentity?.host;
       if (typeof owner !== "string" || !/^[\w.:-]{1,128}$/.test(owner) || ["none", "unknown", "unassigned", "-"].includes(owner.toLowerCase())
@@ -426,7 +454,7 @@ export async function recordGateEvidence(project, request, options = {}) {
         || !provenance(evidence.authorization, { ownerSessionId, revision, taskIds: request.taskIds })
         || !recovery(evidence.recovery, { revision, taskIds: request.taskIds }) || !preview(evidence.preview, revision)
         || typeof evidence.remoteMainDeploys !== "boolean") return conflict("integration_evidence_mismatch");
-      if (validId(state.run?.id)) {
+      if (validId(state.run?.id) && state.ownership) {
         const authority = evidence.targetAuthorization;
         const authorityKeys = ["status", "source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"];
         const expectedTaskIds = [...request.taskIds].sort();
@@ -543,7 +571,7 @@ export async function recordGateEvidence(project, request, options = {}) {
     const observedAt = new Date().toISOString();
     const recordedEvidence = { path: request.evidencePath, fingerprint: createHash("sha256").update(source).digest("hex"), revision,
       taskIds: [...request.taskIds], operationId: request.operationId, observedAt };
-    if (["completion", "integration"].includes(request.gate) && validId(state.run?.id)) {
+    if (["completion", "integration"].includes(request.gate) && validId(state.run?.id) && state.ownership) {
       bindTaskDeliveryReceipts(state, request.gate, request.taskIds, revision, evidence, recordedEvidence);
     }
     state[request.gate] = { ...state[request.gate], trackerFingerprint: canonical.tracker.fingerprint, recordedEvidence };
@@ -696,23 +724,41 @@ export async function registerEvidenceStore(project, request, options = {}) {
   }, options);
 }
 
-async function readRegisteredEvidence(store, relative, expectedSha256) {
+const withinPath = (root, target) => target === root || target.startsWith(`${root}${path.sep}`);
+
+async function readRegisteredEvidence(store, relative, expectedSha256, options = {}) {
   if (!relativePath(relative)) throw new Error("unsafe_evidence_path");
-  const rootMetadata = await inspectDirectoryNoFollow(store.realpath);
-  if (["uid", "gid", "dev", "ino"].some((field) => rootMetadata[field] !== store[field]) || (rootMetadata.mode & 0o7777) !== store.mode) throw new Error("evidence_store_changed");
-  let current = store.realpath;
-  const parts = relative.split(/[\\/]/);
-  for (const part of parts.slice(0, -1)) {
-    current = path.join(current, part);
-    const metadata = await lstat(current);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("unsafe_evidence_path");
+  const openPath = options.filesystem?.open ?? open;
+  const resolvePath = options.filesystem?.realpath ?? realpath;
+  const handles = [];
+  try {
+    const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+    let directory = await openPath(store.realpath, directoryFlags); handles.push(directory);
+    const rootMetadata = await directory.stat();
+    if (!rootMetadata.isDirectory() || ["uid", "gid", "dev", "ino"].some((field) => rootMetadata[field] !== store[field])
+      || (rootMetadata.mode & 0o7777) !== store.mode) throw new Error("evidence_store_changed");
+    const parts = relative.split(/[\\/]/);
+    for (const part of parts.slice(0, -1)) {
+      directory = await openPath(`/proc/self/fd/${directory.fd}/${part}`, directoryFlags); handles.push(directory);
+      const metadata = await directory.stat();
+      if (!metadata.isDirectory() || metadata.uid !== store.uid) throw new Error("unsafe_evidence_path");
+    }
+    const evidenceHandle = await openPath(`/proc/self/fd/${directory.fd}/${parts.at(-1)}`,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); handles.push(evidenceHandle);
+    const sealed = await readSealedHandle(evidenceHandle, { expectedUid: store.uid, writableMask: 0o022 });
+    const resolvedRoot = await resolvePath(`/proc/self/fd/${handles[0].fd}`);
+    const resolvedFile = await resolvePath(`/proc/self/fd/${evidenceHandle.fd}`);
+    if (resolvedRoot !== store.realpath || !withinPath(resolvedRoot, resolvedFile)) {
+      throw new Error("evidence_store_changed");
+    }
+    for (const handle of handles.slice(1, -1)) {
+      if (!withinPath(resolvedRoot, await resolvePath(`/proc/self/fd/${handle.fd}`))) throw new Error("evidence_store_changed");
+    }
+    if (sealed.sha256 !== expectedSha256) throw new Error("evidence_changed_during_read");
+    return sealed;
+  } finally {
+    await Promise.allSettled(handles.reverse().map((handle) => handle.close()));
   }
-  const file = path.join(store.realpath, relative);
-  const final = await lstat(file);
-  if (!final.isFile() || final.isSymbolicLink()) throw new Error("unsafe_evidence_file");
-  const sealed = await readSealed(file, { expectedUid: store.uid });
-  if (sealed.stat.dev !== final.dev || sealed.stat.ino !== final.ino || sealed.sha256 !== expectedSha256) throw new Error("evidence_changed_during_read");
-  return sealed;
 }
 
 function activeCompletionProjection(state) {
@@ -773,9 +819,10 @@ export async function reconcileCompletionHistory(project, request, options = {})
     if (!store) return conflict("unregistered_evidence_store");
     let completionSealed; let integrationSealed;
     try {
-      completionSealed = await readRegisteredEvidence(store, request.completionRelativePath, request.completionSha256);
+      completionSealed = await readRegisteredEvidence(store, request.completionRelativePath, request.completionSha256, options);
       integrationSealed = request.integrationRelativePath === request.completionRelativePath
-        ? completionSealed : await readRegisteredEvidence(store, request.integrationRelativePath, request.integrationSha256);
+        ? completionSealed : await readRegisteredEvidence(store, request.integrationRelativePath, request.integrationSha256, options);
+      if (integrationSealed.sha256 !== request.integrationSha256) throw new Error("evidence_changed_during_read");
     } catch { return conflict("historical_evidence_changed"); }
     const completionEvidence = completionSealed.parsed;
     const integrationEvidence = integrationSealed.parsed;
@@ -791,9 +838,14 @@ export async function reconcileCompletionHistory(project, request, options = {})
     if (!repository.clean || !await ancestor(repository.git, request.sourceRevision, request.boundaryRevision)
       || !await ancestor(repository.git, request.boundaryRevision, repository.revision)) return conflict("invalid_completion_lineage");
     if (!options.observePublicationTarget) return { status: "unavailable", reason: "publication_observation_unavailable" };
+    const separator = request.publicationTarget.indexOf(":");
+    const publicationRemote = request.publicationTarget.slice(0, separator);
+    const publicationRef = request.publicationTarget.slice(separator + 1);
+    if (!validId(publicationRemote) || !ref(publicationRef)) return conflict("invalid_publication_target");
     const publication = await options.observePublicationTarget({ project, target: request.publicationTarget });
     const remoteRevision = typeof publication === "string" ? publication : publication?.revision;
-    if (remoteRevision !== request.observedRemoteRevision || !await ancestor(repository.git, request.boundaryRevision, remoteRevision)) return conflict("publication_observation_changed");
+    if (publication?.target !== undefined && publication.target !== request.publicationTarget
+      || remoteRevision !== request.observedRemoteRevision || !await ancestor(repository.git, request.boundaryRevision, remoteRevision)) return conflict("publication_observation_changed");
     const actor = currentActor(state);
     const integrationActor = { ownerHost: state.integration?.ownerHost, ownerSessionId: state.integration?.ownerSessionId,
       ownershipEpoch: state.integration?.ownershipEpoch };
@@ -802,7 +854,7 @@ export async function reconcileCompletionHistory(project, request, options = {})
     const targetAuthority = integrationEvidence.targetAuthorization;
     if (!exactKeys(targetAuthority, ["status", "source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"])
       || targetAuthority.status !== "authorized" || targetAuthority.revision !== request.boundaryRevision
-      || targetAuthority.target !== "origin/main" || !boundedString(targetAuthority.source)
+      || targetAuthority.target !== publicationRef || !boundedString(targetAuthority.source)
       || !sameIds(targetAuthority.taskIds, integrationEvidence.taskIds) || !targetAuthority.taskIds.includes(request.taskId)
       || targetAuthority.ownerHost !== releaseActor.ownerHost || targetAuthority.ownerSessionId !== releaseActor.ownerSessionId
       || targetAuthority.ownershipEpoch !== releaseActor.ownershipEpoch || !exactKeys(integrationEvidence.preview, ["required"])

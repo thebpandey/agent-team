@@ -11,6 +11,10 @@ import { policyFixture } from "./hook-test-helpers.mjs";
 
 const temporary = [];
 test.afterEach(async () => Promise.all(temporary.splice(0).map((p) => rm(p, { recursive: true, force: true }))));
+const activeRun = (taskIds = ["AT-001"]) => ({ id: "cleanup-run", ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1,
+  mode: "finite", taskIds, teamLimit: 1, autoDeploy: false, batchSize: 1, source: "explicit_run",
+  settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+  paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" });
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-cleanup-"));
   temporary.push(root, `${root}-feature`, `${root}-remote`);
@@ -28,6 +32,7 @@ async function fixture() {
     writer, taskOwner: "TEAM-001", evidencePaths: [evidencePath], resourceOwner: "agent-team", previewRequired: false, retain: false } };
   value.state.taskRuntime = { "AT-001": { compute: "parked", writer, worktree: value.feature } };
   value.state.release.autoDeploy = false;
+  value.state.run = activeRun();
   await writeFile(project.paths.state, JSON.stringify(value.state));
   return { ...value, project, writer, evidencePath, request: { actorSessionId: "owner-session", operationId: "cleanup-one", expectedVersion: 0, taskId: "AT-001", expectedRevision: value.revision, worktree: value.feature, expectedWriter: writer } };
 }
@@ -67,7 +72,7 @@ test("cleanup reconciles removal after a lost state receipt without another dest
 test("outside-scope cleanup rejects before every probe and removal", async () => {
   const value = await fixture();
   const state = JSON.parse(await readFile(value.project.paths.state, "utf8"));
-  state.run = { taskIds: ["AT-OTHER"] };
+  state.run = activeRun(["AT-OTHER"]);
   await writeFile(value.project.paths.state, JSON.stringify(state));
   let gitProbes = 0;
   const before = await readFile(value.project.paths.state);
@@ -78,10 +83,26 @@ test("outside-scope cleanup rejects before every probe and removal", async () =>
   await access(value.feature);
 });
 
+test("cleanup rejects a missing or malformed admitted run before probes", async () => {
+  for (const run of [undefined, { taskIds: ["AT-001"], paused: false }]) {
+    const value = await fixture();
+    const state = JSON.parse(await readFile(value.project.paths.state, "utf8"));
+    if (run === undefined) delete state.run; else state.run = run;
+    await writeFile(value.project.paths.state, JSON.stringify(state));
+    let gitProbes = 0;
+    const before = await readFile(value.project.paths.state);
+    const result = await cleanup(value.project, value.request, { runGit: async () => { gitProbes += 1; throw new Error("must not probe"); } });
+    assert.deepEqual(result, { status: "conflict", reason: "outside_scope" });
+    assert.equal(gitProbes, 0);
+    assert.deepEqual(await readFile(value.project.paths.state), before);
+    await access(value.feature);
+  }
+});
+
 test("in-scope cleanup still uses one locked tracker snapshot", async () => {
   const value = await fixture();
   const state = JSON.parse(await readFile(value.project.paths.state, "utf8"));
-  state.run = { taskIds: ["AT-001"] };
+  state.run = activeRun();
   await writeFile(value.project.paths.state, JSON.stringify(state));
   assert.equal((await cleanup(value.project, value.request)).status, "applied");
   await assert.rejects(access(value.feature), { code: "ENOENT" });

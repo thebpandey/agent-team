@@ -211,6 +211,15 @@ test("delivery evidence joins exact passed lineage and current generation", asyn
   await writeFile(value.project.paths.state, JSON.stringify(state, null, 2));
   const loaded = await loadCanonicalState(value.project);
   assert.equal(loaded.deliveryEvidence["AT-001"].integratedRevision, revision);
+  for (const [singleton, categories] of [["completion", ["completion", "review", "checks"]], ["integration", ["integration", "preview", "target", "recovery"]]]) {
+    const changed = structuredClone(state);
+    const wrongRevision = singleton === "completion" ? "b".repeat(40) : "c".repeat(40);
+    changed[singleton].recordedEvidence.revision = wrongRevision;
+    for (const category of categories) changed.deliveryReceipts[category]["AT-001"].evidence.revision = wrongRevision;
+    await writeFile(value.project.paths.state, JSON.stringify(changed, null, 2));
+    assert.equal((await loadCanonicalState(value.project)).deliveryEvidence["AT-001"], undefined, `${singleton} pointer revision`);
+  }
+  await writeFile(value.project.paths.state, JSON.stringify(state, null, 2));
   state.deliveryReceipts.integration["AT-001"].status = "failed";
   await writeFile(value.project.paths.state, JSON.stringify(state, null, 2));
   assert.equal((await loadCanonicalState(value.project)).deliveryEvidence["AT-001"], undefined);

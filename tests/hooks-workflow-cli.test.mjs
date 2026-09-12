@@ -34,6 +34,16 @@ async function fixture() {
   return { ...value, requests, project: await resolveProject(value.feature) };
 }
 
+async function admitRun(project, taskIds = ["AT-001"]) {
+  const canonical = await loadCanonicalState(project);
+  canonical.state.run = { id: "workflow-run", ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1, mode: "finite", taskIds,
+    teamLimit: 1, autoDeploy: false, batchSize: 1, source: "explicit_run",
+    settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+    paused: false, operationalVersion: canonical.state.stateVersion ?? 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
+  await writeFile(project.paths.state, JSON.stringify(canonical.state, null, 2));
+  return loadCanonicalState(project);
+}
+
 async function requestFile(value, name, envelope) {
   const file = path.join(value.requests, `${name}.json`);
   await writeFile(file, `${JSON.stringify(envelope, null, 2)}\n`);
@@ -206,7 +216,7 @@ test("real CLI recovery probes the selected linked worktree instead of canonical
 
 test("real CLI forwards versioned transition, gate-evidence, and cleanup requests to canonical APIs", async () => {
   const value = await fixture();
-  const canonical = await loadCanonicalState(value.project);
+  const canonical = await admitRun(value.project);
   const transition = await requestFile(value, "pause", envelope("owner-session", 0, {
     operationId: "cli-pause",
     taskId: "AT-001",
@@ -251,7 +261,7 @@ test("real CLI forwards versioned transition, gate-evidence, and cleanup request
 
 test("real CLI persists integration evidence that policy can consume", async () => {
   const value = await fixture();
-  const canonical = await loadCanonicalState(value.project);
+  const canonical = await admitRun(value.project);
   const evidencePath = path.join(value.root, ".agent-team", "evidence", "cli-integration.json");
   await mkdir(path.dirname(evidencePath), { recursive: true });
   await writeFile(evidencePath, JSON.stringify({
@@ -274,7 +284,7 @@ test("real CLI persists integration evidence that policy can consume", async () 
 
 test("real CLI maps a fresh initialized integration record and a raw autoDeploy flag cannot bypass the main deployment gate", async () => {
   const value = await fixture();
-  const state = structuredClone((await loadCanonicalState(value.project)).state);
+  const state = structuredClone((await admitRun(value.project)).state);
   state.integration = { ownerSessionId: "owner-session", authorized: false, baseRef: "main", paused: false, hold: false };
   state.release.autoDeploy = false;
   await writeFile(value.project.paths.state, JSON.stringify(state));
@@ -304,7 +314,7 @@ test("real CLI maps a fresh initialized integration record and a raw autoDeploy 
 test("real CLI maps one release batch before allowing its deployment-triggering main push", async () => {
   // This test catches a successful release evidence receipt that leaves the main deployment trigger disabled.
   const value = await fixture();
-  const seeded = structuredClone((await loadCanonicalState(value.project)).state);
+  const seeded = structuredClone((await admitRun(value.project)).state);
   seeded.integration = { ownerSessionId: "owner-session", authorized: false, baseRef: "main", paused: false, hold: false };
   seeded.release = { ownerSessionId: "owner-session", authorized: false, autoDeploy: false, hold: true };
   await writeFile(value.project.paths.state, JSON.stringify(seeded));
@@ -430,16 +440,29 @@ test("integration evidence keeps an actual initialized project structurally read
   assert.equal((await initializeProject(root, request, { actorSessionId: "owner-session",
     nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1 } })).status, "applied");
   const project = await resolveProject(root);
-  const canonical = await loadCanonicalState(project);
+  const canonical = await admitRun(project);
   const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  const completionPath = path.join(root, ".agent-team", "completion.json");
+  await writeFile(completionPath, JSON.stringify({ status: "passed", revision, taskIds: ["AT-001"], requirementsReconciled: true,
+    review: { status: "passed", revision, taskId: "AT-001" }, checks: [{ name: "unit", status: "passed", revision, taskId: "AT-001" }] }));
+  const completion = await recordGateEvidence(project, { actorSessionId: "owner-session", operationId: "fresh-completion", expectedVersion: canonical.state.stateVersion,
+    expectedFingerprint: canonical.tracker.fingerprint, gate: "completion", taskIds: ["AT-001"], expectedRevision: revision, evidencePath: completionPath },
+  { nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1 } });
+  assert.equal(completion.status, "applied", JSON.stringify(completion));
+  const afterCompletion = await loadCanonicalState(project);
   const evidencePath = path.join(root, ".agent-team", "integration.json");
   await writeFile(evidencePath, JSON.stringify({ status: "passed", revision, taskIds: ["AT-001"],
+    sourceRevisions: { "AT-001": revision },
     remote: { name: "origin", baseRef: "refs/heads/main", revision, targetRef: "refs/heads/main", targetRevision: revision },
     authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision, taskIds: ["AT-001"] },
-    recovery: { status: "reconciled", revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false }));
-  assert.equal((await recordGateEvidence(project, { actorSessionId: "owner-session", operationId: "fresh-integration", expectedVersion: canonical.state.stateVersion,
-    expectedFingerprint: canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: revision, evidencePath },
-  { nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1 } })).status, "applied");
+    targetAuthorization: { status: "authorized", source: "accepted-packet", target: "refs/heads/main", revision, taskIds: ["AT-001"],
+      ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 },
+    recovery: { status: "reconciled", revision, taskIds: ["AT-001"], artifactId: "git:known-good", action: "rollback" },
+    preview: { required: false }, remoteMainDeploys: false }));
+  const recorded = await recordGateEvidence(project, { actorSessionId: "owner-session", operationId: "fresh-integration", expectedVersion: afterCompletion.state.stateVersion,
+    expectedFingerprint: afterCompletion.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: revision, evidencePath },
+  { nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1 } });
+  assert.equal(recorded.status, "applied", JSON.stringify(recorded));
   const mapped = await loadCanonicalState(project);
   assert.equal(initializationRecordProblem(project.setup, mapped, { projectRoot: root, validateTracker: true }), undefined);
 });

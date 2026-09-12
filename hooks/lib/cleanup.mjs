@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { access, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { loadCanonicalTracker } from "./canonical-state.mjs";
-import { inspectWriterIdentity, mutateOperationalState } from "./task-transitions.mjs";
+import { inspectWriterIdentity, mutateOperationalState, requireAdmittedTaskIds } from "./task-transitions.mjs";
 
 const run = promisify(execFile);
 const retained = (reason) => ({ status: "conflict", reason });
@@ -19,7 +19,7 @@ export async function cleanupDevelopmentWorktree(project, request, options = {})
       maxBuffer: 1024 * 1024, ...(budget ? { signal: budget.signal } : {}) });
   };
   return mutateOperationalState(project, request, async (state, canonical, { persistIntent }) => {
-    if (state.run !== undefined && (!Array.isArray(state.run?.taskIds) || !state.run.taskIds.includes(request.taskId))) return retained("outside_scope");
+    if (requireAdmittedTaskIds(state, [request.taskId])) return retained("outside_scope");
     const gate = state.cleanup?.[request.taskId];
     const target = path.resolve(request.worktree ?? project.root);
     if (!gate || gate.worktree !== target || gate.revision !== request.expectedRevision) return retained("retain_identity_mismatch");
@@ -54,7 +54,8 @@ export async function cleanupDevelopmentWorktree(project, request, options = {})
     if (await bounded(() => realpath(target)) !== target) return retained("retain_symlink_worktree");
     const registered = (await git(project.root, ["worktree", "list", "--porcelain"])).stdout.includes(`worktree ${target}\n`);
     if (!registered) return retained("retain_unregistered_worktree");
-    if (!tracker.tasks.some((task) => task.id === request.taskId && ["verified", "integrated", "deployed", "closed", "done"].includes(task.status))) return retained("retain_unverified_task");
+    if (!tracker.tasks.some((task) => task.id === request.taskId
+      && ["verified", "integrated", "deployed", "closed", "done", "complete", "completed", "cancelled", "canceled"].includes(task.status))) return retained("retain_unverified_task");
     if (gate.verification?.status !== "passed" || gate.verification.revision !== gate.revision || !gate.integrationRef) return retained("retain_unverified_revision");
     if ((await git(target, ["rev-parse", "HEAD"])).stdout.trim() !== gate.revision) return retained("retain_changed_revision");
     try { await git(project.root, ["merge-base", "--is-ancestor", gate.revision, gate.integrationRef]); }

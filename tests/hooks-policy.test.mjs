@@ -577,6 +577,10 @@ test("Codex permits a verified flip only after valid HEAD completion gate eviden
     changedContent: "| AT-001 | Complete fixture work | TEAM-001 | none | verified | rev | Done. |",
   }] };
   const state = structuredClone(value.state);
+  state.run = { id: "policy-run", ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1, mode: "finite", taskIds: ["AT-001"],
+    teamLimit: 1, autoDeploy: false, batchSize: 1, source: "explicit_run",
+    settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
+    paused: false, operationalVersion: state.stateVersion ?? 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
   state.completion = { requirementsReconciled: false, checks: [] };
   await saveState(value, state);
   const beforeEvidence = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation }), project);
