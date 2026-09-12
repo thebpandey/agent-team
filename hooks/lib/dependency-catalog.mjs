@@ -119,7 +119,10 @@ export const DEPENDENCY_CATALOG = Object.freeze([
     id: "impeccable", name: "Impeccable", disposition: "default", version: "4.1.0", prerequisites: [],
     install: npm("impeccable", "4.1.0", "impeccable"),
     guidance: {
-      selectedPath: "skills/impeccable",
+      repository: "https://github.com/pbakaus/impeccable.git",
+      source: "https://github.com/pbakaus/impeccable/tree/2c33196c51ac52e47691384e61d89f1218d8d21d",
+      revision: "2c33196c51ac52e47691384e61d89f1218d8d21d",
+      selectedPaths: { codex: ".agents/skills/impeccable", "claude-code": ".agent/skills/impeccable" },
       gitBlobs: {
         codex: "ac845e87f80eb9cba9389b1c0a907c54d1c4d3dd",
         "claude-code": "e2d1ee0347f92fda0f36533cb251773325f3413a",

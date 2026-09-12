@@ -384,7 +384,7 @@ async function noLinkedParents(root, target) {
 }
 
 async function stableExecutableIdentity({ executable, requested = executable, canonical = executable, paths, budget,
-  allowExecutableLink = false, packageRoot, packageName, packageVersion }) {
+  allowExecutableLink = false, packageRoot, packageName, packageVersion, packageKind = "npm", packageEntrypoint }) {
   await noLinkedParents(paths.toolRoot, executable);
   const lexical = await lstat(executable);
   if ((!allowExecutableLink && lexical.isSymbolicLink()) || (!lexical.isFile() && !lexical.isSymbolicLink())) {
@@ -396,8 +396,38 @@ async function stableExecutableIdentity({ executable, requested = executable, ca
   if (packageRoot) {
     packageReal = await realpath(packageRoot);
     if (!contained(rootReal, packageReal) || !contained(packageReal, resolved)) throw new Error("Executable escapes the verified package root.");
-    const metadata = JSON.parse((await companionBytes(path.join(packageReal, "package.json"), budget, 64 * 1024)).toString("utf8"));
-    if (metadata.name !== packageName || metadata.version !== packageVersion) throw new Error("Executable package identity does not match the pinned package.");
+    if (packageEntrypoint && resolved !== await realpath(path.join(packageReal, packageEntrypoint))) {
+      throw new Error("Executable does not resolve to the pinned package entrypoint.");
+    }
+    if (packageKind === "uv") {
+      const metadataPath = path.join(packageReal, `lib/python3.12/site-packages/${packageName.replaceAll("-", "_")}-${packageVersion}.dist-info/METADATA`);
+      await noLinkedParents(packageReal, metadataPath);
+      const handle = await open(metadataPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      let metadata;
+      try {
+        const before = await handle.stat();
+        if (!before.isFile() || before.size > 1024 * 1024) throw new Error(`Package metadata byte/type limit exceeded: ${metadataPath}.`);
+        const chunks = [];
+        for await (const chunk of handle.createReadStream({ autoClose: false, start: 0, end: 1024 * 1024, signal: budget?.signal })) {
+          budget?.check();
+          chunks.push(chunk);
+        }
+        const bytes = Buffer.concat(chunks);
+        const after = await handle.stat();
+        const current = await lstat(metadataPath);
+        if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || bytes.length !== before.size
+          || !current.isFile() || current.dev !== before.dev || current.ino !== before.ino) {
+          throw new Error("Executable package metadata changed while it was inspected.");
+        }
+        metadata = bytes.toString("utf8");
+      } finally { await handle.close(); }
+      if (!metadata.split(/\r?\n/).includes(`Name: ${packageName}`) || !metadata.split(/\r?\n/).includes(`Version: ${packageVersion}`)) {
+        throw new Error("Executable package identity does not match the pinned package.");
+      }
+    } else {
+      const metadata = JSON.parse((await companionBytes(path.join(packageReal, "package.json"), budget, 64 * 1024)).toString("utf8"));
+      if (metadata.name !== packageName || metadata.version !== packageVersion) throw new Error("Executable package identity does not match the pinned package.");
+    }
   }
   const handle = await open(resolved, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let stat;
@@ -422,6 +452,25 @@ async function stableExecutableIdentity({ executable, requested = executable, ca
   }
   return { requested, canonical, realpath: resolved, ...(packageReal ? { packageRoot: packageReal, packageName, packageVersion } : {}),
     dev: stat.dev, ino: stat.ino, mode: stat.mode, size: stat.size, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+async function packageManagerExecutableIdentity(dependency, executable, paths, budget) {
+  const packageName = dependency.install.package;
+  const isUv = dependency.install.kind === "uv-tool";
+  const packageRoot = isUv
+    ? path.join(paths.toolRoot, "uv-tools", packageName)
+    : path.join(paths.toolRoot, process.platform === "win32" ? "node_modules" : "lib/node_modules", packageName);
+  return stableExecutableIdentity({ executable, requested: executable, canonical: executable, paths, budget,
+    allowExecutableLink: true, packageRoot, packageName, packageVersion: dependency.version, packageKind: isUv ? "uv" : "npm",
+    packageEntrypoint: isUv ? path.join("bin", dependency.install.command ?? dependency.id) : path.join("cli", "bin", "cli.js") });
+}
+
+async function selectedExecutableIdentity(dependency, executable, paths, budget) {
+  const lexical = await lstat(executable);
+  if (!lexical.isSymbolicLink()) {
+    return stableExecutableIdentity({ executable, requested: executable, canonical: executable, paths, budget });
+  }
+  return packageManagerExecutableIdentity(dependency, executable, paths, budget);
 }
 
 async function astGrepExecutable(dependency, paths, budget) {
@@ -500,7 +549,7 @@ function skillDestination(dependency, paths, selectedPath) {
 }
 
 function skillCompatibilityForGuidance(dependency, host) {
-  const selectedPath = dependency.guidance?.selectedPath;
+  const selectedPath = dependency.guidance?.selectedPaths?.[host];
   const value = dependency.guidance?.gitBlobs?.[host];
   if (!selectedPath || !value) return undefined;
   return { kind: "required-files", entrypoint: "SKILL.md", allowUnrelatedRegularFiles: true, selectedPaths: [{
@@ -555,7 +604,9 @@ async function inspectSkillDestinations(dependency, paths, { budget, bounded = f
     const requirement = dependency.compatibility?.selectedPaths?.find((entry) => entry.selectedPath === selectedPath);
     let allFiles;
     try {
-      allFiles = await skillContents(destination, budget);
+      allFiles = await skillContents(destination, budget, "", dependency.id === "impeccable"
+        ? { entries: 0, bytes: 0, maxEntries: 256 }
+        : undefined);
       const entrypoints = Object.keys(allFiles).filter((file) => path.posix.basename(file) === (dependency.compatibility?.entrypoint ?? "SKILL.md"));
       if (entrypoints.length !== 1 || entrypoints[0] !== (dependency.compatibility?.entrypoint ?? "SKILL.md")) {
         await preserve(selectedPath, destination,
@@ -635,7 +686,9 @@ async function validateGitSkillStage(dependency, selectedPath, root, budget) {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  const files = await skillContents(root, budget);
+  const files = await skillContents(root, budget, "", dependency.id === "impeccable"
+    ? { entries: 0, bytes: 0, maxEntries: 256 }
+    : undefined);
   if (Object.keys(files).some((file) => path.posix.basename(file) === ".agent-team-source.json")) {
     throw new Error("Pinned skill source contains nested reserved provenance.");
   }
@@ -662,7 +715,9 @@ async function unchangedGitSkillPublication(destination, expected) {
   try {
     const stat = await lstat(destination);
     if (!stat.isDirectory() || stat.dev !== expected.identity.dev || stat.ino !== expected.identity.ino) return false;
-    const files = await skillContents(destination);
+    const files = await skillContents(destination, undefined, "", expected.maxEntries
+      ? { entries: 0, bytes: 0, maxEntries: expected.maxEntries }
+      : undefined);
     const expectedFiles = Object.fromEntries(Object.entries(expected.files).sort(([left], [right]) => left.localeCompare(right)));
     if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) return false;
     let metadata = null;
@@ -708,7 +763,8 @@ async function installGitSkills(dependency, paths, budget) {
       const files = await validateGitSkillStage(dependency, selectedPath, stage, budget);
       const metadata = Buffer.from(`${JSON.stringify({ source: dependency.install.source, revision: dependency.version, selectedPath }, null, 2)}\n`);
       await writeFile(path.join(stage, ".agent-team-source.json"), metadata, { mode: 0o600, flag: "wx" });
-      staged.push({ selectedPath, stage, destination: skillDestination(dependency, paths, selectedPath), expected: { files, metadata } });
+      staged.push({ selectedPath, stage, destination: skillDestination(dependency, paths, selectedPath),
+        expected: { files, metadata, ...(dependency.id === "impeccable" ? { maxEntries: 256 } : {}) } });
     }
   } catch (error) {
     await rm(stageRoot, { recursive: true, force: true });
@@ -807,7 +863,7 @@ async function skillContents(root, budget, prefix = "", bounds = { entries: 0, b
   const files = {};
   for await (const entry of await opendir(root)) {
     budget?.check();
-    if (++bounds.entries > 128) throw new Error("Companion filesystem entry limit exceeded.");
+    if (++bounds.entries > (bounds.maxEntries ?? 128)) throw new Error("Companion filesystem entry limit exceeded.");
     const name = entry.name;
     if (!prefix && name === ".agent-team-source.json") continue;
     const file = path.join(root, name);
@@ -815,10 +871,10 @@ async function skillContents(root, budget, prefix = "", bounds = { entries: 0, b
     const stat = await lstat(file);
     if (stat.isDirectory()) Object.assign(files, await skillContents(file, budget, relative, bounds, depth + 1));
     else if (stat.isFile()) {
-      if (bounds.bytes + stat.size > 8 * 1024 * 1024) throw new Error("Companion total byte limit exceeded.");
-      const bytes = await companionBytes(file, budget);
+      if (bounds.bytes + stat.size > (bounds.maxBytes ?? 8 * 1024 * 1024)) throw new Error("Companion total byte limit exceeded.");
+      const bytes = await companionBytes(file, budget, bounds.maxFileBytes);
       bounds.bytes += bytes.length;
-      if (bounds.bytes > 8 * 1024 * 1024) throw new Error("Companion total byte limit exceeded.");
+      if (bounds.bytes > (bounds.maxBytes ?? 8 * 1024 * 1024)) throw new Error("Companion total byte limit exceeded.");
       files[relative] = createHash("sha256").update(bytes).digest("hex");
     }
     else throw new Error(`Preserved non-regular skill path: ${file}`);
@@ -1256,7 +1312,7 @@ async function impeccableFunctional(executable, paths) {
   await writeFile(clean, "body { color: #111; background: #fff; }\n", { mode: 0o600 });
   await writeFile(finding, ".control { transition: all 300ms cubic-bezier(.68,-.55,.27,1.55); }\n", { mode: 0o600 });
   const args = ["detect", "--no-config", "--no-advisory"];
-  const options = { cwd: root, env: { ...process.env, IMPECCABLE_HOME: path.join(paths.toolRoot, "impeccable-home") } };
+  const options = { cwd: root, env: { ...process.env, PWD: root, IMPECCABLE_HOME: path.join(paths.toolRoot, "impeccable-home") } };
   try {
     const cleanResult = await command(executable, [...args, clean], options);
     const findingResult = await command(executable, [...args, finding], options);
@@ -1519,8 +1575,10 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
         return manualExecutableResult(canonicalGraphify, null, `Graphify must use the selected canonical path ${canonicalGraphify}.`);
       }
       if (phase !== "install" && dependency.id === "ast-grep") ({ executable, identity } = await astGrepExecutable(dependency, paths, budget));
-      if (phase !== "install" && dependency.id === "graphify") identity = await stableExecutableIdentity({ executable, requested: executable,
-        canonical: canonicalGraphify, paths, budget });
+      if (phase !== "install" && (dependency.id === "graphify"
+        || dependency.id === "impeccable" && (phase === "probe" || boundIdentities.has(dependency)))) {
+        identity = await selectedExecutableIdentity(dependency, executable, paths, budget);
+      }
     } catch (error) {
       if (error.code === "EVENT_DEADLINE") throw error;
       if (error.code === "ENOENT" && phase === "probe") identity = null;
@@ -1581,21 +1639,15 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
     }
     if (phase === "companion" && dependency.id === "lean-ctx") return prepareLeanCtxSkill(dependency, paths, budget);
     if (phase === "companion" && dependency.id === "impeccable") {
+      const selectedPath = dependency.guidance?.selectedPaths?.[host];
       const guidance = {
         ...dependency,
-        install: { kind: "git-skill", source: dependency.install.source, revision: dependency.version,
-          paths: [dependency.guidance.selectedPath] },
+        version: dependency.guidance.revision,
+        install: { kind: "git-skill", repository: dependency.guidance.repository, source: dependency.guidance.source,
+          revision: dependency.guidance.revision, paths: [selectedPath] },
         compatibility: skillCompatibilityForGuidance(dependency, host),
       };
-      const existing = await inspectSkillDestinations(guidance, paths, { budget, bounded: true });
-      if (["passed", "manual_action", "customized"].includes(existing.status)) return existing;
-      const result = await execute(executable,
-        ["install", "-y", `--providers=${host === "codex" ? "codex" : "claude"}`, `--scope=${scope}`, "--no-hooks"],
-        { cwd: paths.projectRoot, env: { ...process.env, IMPECCABLE_HOME: path.join(paths.toolRoot, "impeccable-home") } });
-      if (result.status !== "passed") return result;
-      const installedGuidance = await inspectSkillDestinations(guidance, paths, { budget, bounded: true });
-      if (installedGuidance.status !== "passed") return installedGuidance;
-      return installedGuidance;
+      return installGitSkills(guidance, paths, budget);
     }
     if (phase === "companion" && dependency.id === "playwright-cli") {
       const companion = await preparePlaywrightSkill(dependency, paths, budget);

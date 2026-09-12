@@ -123,26 +123,32 @@ test("real Beads verification ignores contaminated tracker and Git routing", { s
 });
 
 test("real isolated Impeccable package passes its documented detector exit contract", { skip: !enabled }, async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-real-impeccable-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const paths = { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot: path.join(root, ".agents", "skills") };
   const dependency = CATALOG_BY_ID.get("impeccable");
-  const runner = createDependencyRunner({ host: "codex", scope: "project", paths });
-
-  assert.equal((await runner({ dependency, phase: "install" })).status, "passed");
-  assert.equal((await runner({ dependency, phase: "probe" })).version, dependency.version);
-  const installedGuidance = await runner({ dependency, phase: "companion" });
-  assert.equal(installedGuidance.status, "passed", installedGuidance.evidence);
-  assert.equal(installedGuidance.components[0].lifecycleOwnership, "unowned", "broad upstream creation cannot mint Agent-Team ownership");
-  const guidancePath = path.join(paths.skillRoot, "impeccable", "SKILL.md");
-  const before = await readFile(guidancePath);
-  const reusedGuidance = await runner({ dependency, phase: "companion" });
-  assert.equal(reusedGuidance.installed, "reused_unowned");
-  assert.equal(reusedGuidance.lifecycleOwnership, "unowned");
-  assert.deepEqual(await readFile(guidancePath), before);
-  const functional = await runner({ dependency, phase: "functional", check: dependency.functionalCheck });
-
-  assert.equal(functional.status, "passed", functional.evidence);
+  assert.equal(dependency.guidance.revision, "2c33196c51ac52e47691384e61d89f1218d8d21d");
+  for (const [host, sourcePath] of [["codex", ".agents/skills/impeccable"], ["claude-code", ".agent/skills/impeccable"]]) {
+    await t.test(host, async (t) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), `agent-team-real-impeccable-${host}-`));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const paths = { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot: path.join(root, ".agents", "skills") };
+      const runner = createDependencyRunner({ host, scope: "project", paths });
+      assert.equal((await runner({ dependency, phase: "install" })).status, "passed");
+      const probe = await runner({ dependency, phase: "probe" });
+      assert.equal(probe.status, "passed", probe.evidence);
+      assert.equal(probe.version, dependency.version);
+      const installedGuidance = await runner({ dependency, phase: "companion" });
+      assert.equal(installedGuidance.status, "passed", installedGuidance.evidence);
+      assert.equal(installedGuidance.components[0].lifecycleOwnership, "managed");
+      const guidancePath = path.join(paths.skillRoot, "impeccable", "SKILL.md");
+      const before = await readFile(guidancePath);
+      const provenance = JSON.parse(await readFile(path.join(path.dirname(guidancePath), ".agent-team-source.json"), "utf8"));
+      assert.deepEqual(provenance, { source: dependency.guidance.source, revision: dependency.guidance.revision, selectedPath: sourcePath });
+      const reusedGuidance = await runner({ dependency, phase: "companion" });
+      assert.equal(reusedGuidance.installed, "reused");
+      assert.deepEqual(await readFile(guidancePath), before);
+      const functional = await runner({ dependency, phase: "functional", check: dependency.functionalCheck });
+      assert.equal(functional.status, "passed", functional.evidence);
+    });
+  }
 });
 
 test("real isolated Serena package performs an MCP symbol lookup", { skip: !enabled || process.env.AGENT_TEAM_REAL_SERENA !== "1" }, async (t) => {
@@ -173,7 +179,9 @@ test("real isolated Graphify package builds and traverses an offline code graph"
   assert.equal((await runner({ dependency: uv, phase: "install" })).status, "passed");
   const installed = await runner({ dependency: graphify, phase: "install" });
   assert.equal(installed.status, "passed", installed.evidence);
-  assert.equal((await runner({ dependency: graphify, phase: "probe" })).version, graphify.version);
+  const probe = await runner({ dependency: graphify, phase: "probe" });
+  assert.equal(probe.status, "passed", probe.evidence);
+  assert.equal(probe.version, graphify.version);
   const functional = await runner({ dependency: graphify, phase: "functional", check: graphify.functionalCheck });
 
   assert.equal(functional.status, "passed", functional.evidence);

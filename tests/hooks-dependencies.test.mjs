@@ -168,7 +168,8 @@ test("Impeccable guidance is inspected separately and exact existing bytes are r
   await writeFile(executable, `#!${process.execPath}\nprocess.stdout.write("impeccable 4.1.0\\n");\n`, { mode: 0o755 });
   const dependency = {
     id: "impeccable", version: "4.1.0", install: { kind: "npm", source: "fixture" },
-    guidance: { selectedPath: "skills/impeccable", gitBlobs: {
+    guidance: { repository: "fixture", source: "fixture", revision: "guidance-revision",
+      selectedPaths: { codex: "skills/impeccable" }, gitBlobs: {
       codex: createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest("hex"),
     } },
   };
@@ -209,6 +210,32 @@ test("Impeccable guidance is inspected separately and exact existing bytes are r
     { id: "executable", lifecycleOwnership: "managed" }, { id: "guidance", lifecycleOwnership: "unowned" },
   ]);
   assert.equal(receipt.lifecycleOwnership, "unowned", "a managed CLI must not confer lifecycle authority on unowned guidance");
+});
+
+test("only Impeccable receives the closed 256-entry guidance allowance", async (t) => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const bytes = Buffer.from("---\nname: bounded\n---\n");
+  for (const id of ["impeccable", "ordinary"]) await t.test(id, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), `agent-team-${id}-bounds-`));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const destination = path.join(root, "skills", id);
+    await mkdir(destination, { recursive: true });
+    await writeFile(path.join(destination, "SKILL.md"), bytes);
+    for (let index = 0; index < 128; index += 1) await writeFile(path.join(destination, `file-${index}.txt`), "x");
+    const selectedPath = `skills/${id}`;
+    const dependency = { id, version: "pinned", install: { kind: "git-skill", source: "fixture", revision: "pinned", paths: [selectedPath] },
+      compatibility: { kind: "required-files", entrypoint: "SKILL.md", allowUnrelatedRegularFiles: true, selectedPaths: [{ selectedPath,
+        requiredFiles: [{ path: "SKILL.md", digest: { algorithm: "sha256", value: createHash("sha256").update(bytes).digest("hex") } }] }] } };
+    const runner = createDependencyRunner({ host: "codex", scope: "project",
+      paths: { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot: path.join(root, "skills") } });
+    assert.equal((await runner({ dependency, phase: "probe" })).status, id === "impeccable" ? "passed" : "manual_action");
+    if (id === "impeccable") {
+      for (let index = 128; index < 255; index += 1) await writeFile(path.join(destination, `file-${index}.txt`), "x");
+      assert.equal((await runner({ dependency, phase: "probe" })).status, "passed");
+      await writeFile(path.join(destination, "file-255.txt"), "x");
+      assert.equal((await runner({ dependency, phase: "probe" })).status, "manual_action");
+    }
+  });
 });
 
 test("multi-path manual classification retains every selected conservative component", async () => {
@@ -311,6 +338,63 @@ test("an exact canonical Graphify executable is reused unowned without invoking 
   const linkedRunner = createDependencyRunner({ host: "codex", scope: "project",
     paths: { projectRoot: root, toolRoot: linkedRoot, skillRoot: path.join(root, "skills") } });
   assert.equal((await linkedRunner({ dependency: { ...dependency }, phase: "probe" })).status, "manual_action");
+});
+
+test("canonical contained npm and uv shims retain one bound identity across phases", async (t) => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const { CATALOG_BY_ID } = await import("../hooks/lib/dependency-catalog.mjs");
+  for (const fixture of [
+    { id: "impeccable", packageRoot: ["lib", "node_modules", "impeccable"], target: ["cli", "bin", "cli.js"],
+      metadata: ["package.json", JSON.stringify({ name: "impeccable", version: "4.1.0" })], output: "impeccable 4.1.0\n" },
+    { id: "graphify", packageRoot: ["uv-tools", "graphifyy"], target: ["bin", "graphify"],
+      metadata: ["lib/python3.12/site-packages/graphifyy-0.9.57.dist-info/METADATA", "Name: graphifyy\nVersion: 0.9.57\n"], output: "graphify 0.9.57\n" },
+  ]) await t.test(fixture.id, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), `agent-team-${fixture.id}-shim-`));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const toolRoot = path.join(root, "tools");
+    const packageRoot = path.join(toolRoot, ...fixture.packageRoot);
+    const target = path.join(packageRoot, ...fixture.target);
+    const executable = path.join(toolRoot, "bin", fixture.id);
+    await mkdir(path.dirname(target), { recursive: true });
+    await mkdir(path.dirname(path.join(packageRoot, fixture.metadata[0])), { recursive: true });
+    await mkdir(path.dirname(executable), { recursive: true });
+    await writeFile(target, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(fixture.output)});\n`, { mode: 0o755 });
+    await writeFile(path.join(packageRoot, fixture.metadata[0]), fixture.metadata[1]);
+    await symlink(path.relative(path.dirname(executable), target), executable);
+    const dependency = { ...CATALOG_BY_ID.get(fixture.id) };
+    const identities = [];
+    const runner = createDependencyRunner({ host: "codex", scope: "project",
+      paths: { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") },
+      functionalAdapters: { [fixture.id]: async ({ executableIdentity }) => { identities.push(executableIdentity); return { status: "passed" }; } },
+      workerDiscovery: async ({ executableIdentity }) => { identities.push(executableIdentity); return { status: "passed" }; } });
+    const probe = await runner({ dependency, phase: "probe" });
+    assert.equal(probe.status, "passed", probe.evidence);
+    assert.equal(probe.version, dependency.version);
+    assert.equal((await runner({ dependency, phase: "functional", check: dependency.functionalCheck })).status, "passed");
+    assert.equal((await runner({ dependency, phase: "worker" })).status, "passed");
+    assert.ok(identities[0]);
+    assert.deepEqual(identities[1], identities[0]);
+    await writeFile(target, `#!${process.execPath}\nconsole.log('replacement');\n`, { mode: 0o755 });
+    assert.equal((await runner({ dependency, phase: "functional", check: dependency.functionalCheck })).status, "manual_action");
+
+    const outside = path.join(root, "outside", fixture.id);
+    await mkdir(path.dirname(outside), { recursive: true });
+    await writeFile(outside, `#!${process.execPath}\nconsole.log('escaped');\n`, { mode: 0o755 });
+    await rm(executable);
+    await symlink(path.relative(path.dirname(executable), outside), executable);
+    assert.equal((await createDependencyRunner({ host: "codex", scope: "project",
+      paths: { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") } })
+      ({ dependency: { ...dependency }, phase: "probe" })).status, "manual_action");
+
+    const unrelated = path.join(toolRoot, "unrelated", fixture.id);
+    await mkdir(path.dirname(unrelated), { recursive: true });
+    await writeFile(unrelated, `#!${process.execPath}\nconsole.log('unrelated');\n`, { mode: 0o755 });
+    await rm(executable);
+    await symlink(path.relative(path.dirname(executable), unrelated), executable);
+    assert.equal((await createDependencyRunner({ host: "codex", scope: "project",
+      paths: { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") } })
+      ({ dependency: { ...dependency }, phase: "probe" })).status, "manual_action");
+  });
 });
 
 test("missing Graphify and ast-grep reach their fresh installers before identity binding", async (t) => {
@@ -1174,13 +1258,19 @@ test("default Impeccable gate verifies all three documented detector exits", asy
   const { CATALOG_BY_ID } = await import("../hooks/lib/dependency-catalog.mjs");
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-impeccable-"));
   const executable = path.join(directory, "impeccable-fixture.mjs");
+  const observation = path.join(directory, "environment.json");
   await writeFile(executable, `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.AGENT_TEAM_IMPECCABLE_ENV, JSON.stringify({ PWD: process.env.PWD }));
 const target = process.argv.at(-1);
 if (target.includes("finding")) process.exit(2);
 if (target.includes("missing")) process.exit(1);
 process.stdout.write("clean\\n");
 `);
   await chmod(executable, 0o755);
+  const previousObservation = process.env.AGENT_TEAM_IMPECCABLE_ENV;
+  process.env.AGENT_TEAM_IMPECCABLE_ENV = observation;
+  try {
   const runner = createDependencyRunner({
     host: "codex",
     scope: "project",
@@ -1191,6 +1281,12 @@ process.stdout.write("clean\\n");
 
   assert.equal(result.status, "passed");
   assert.match(result.evidence, /0.*2.*1/);
+  assert.ok(JSON.parse(await readFile(observation, "utf8")).PWD
+    .startsWith(path.join(directory, "tools", "verification", "impeccable-")));
+  } finally {
+    if (previousObservation === undefined) delete process.env.AGENT_TEAM_IMPECCABLE_ENV;
+    else process.env.AGENT_TEAM_IMPECCABLE_ENV = previousObservation;
+  }
 });
 
 test("selected Beads gate initializes, writes concurrently, and exports an isolated tracker", async () => {
