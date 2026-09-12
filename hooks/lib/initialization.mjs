@@ -22,6 +22,8 @@ const stable = (value) => JSON.stringify(value && typeof value === "object"
   ? Array.isArray(value) ? value.map((entry) => JSON.parse(stable(entry))) : Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(stable(value[key]))])) : value);
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
 const validId = (value) => typeof value === "string" && /^[\w.:-]{1,128}$/.test(value) && !["none", "unknown", "unassigned", "-"].includes(value.toLowerCase());
+const validRequiredCapabilities = (value) => value === undefined || Array.isArray(value) && value.length <= 100
+  && new Set(value).size === value.length && value.every(validId);
 const strings = (value) => Array.isArray(value) && value.length > 0 && value.length <= 100 && value.every((item) => typeof item === "string" && item.trim() && item.length <= 4096);
 const optionalStrings = (value) => value === undefined || Array.isArray(value) && value.length <= 100
   && value.every((item) => typeof item === "string" && item.trim() && item.length <= 4096);
@@ -86,7 +88,8 @@ function validateRequest(request, actorSessionId) {
     : !exactKeys(request.tracker, ["kind"], ["root", "executable"])) return "invalid_request";
   if (request.tracker.kind === "beads" && request.tracker.root !== undefined && request.tracker.root !== ".") return "invalid_tracker_selection";
   const plan = request.plan;
-  if (!exactKeys(plan, ["scope", "acceptance", "verification", "branch", "authority"], ["tasks"])
+  if (!exactKeys(plan, ["scope", "acceptance", "verification", "branch", "authority"], ["tasks", "requiredCapabilities"])
+    || !validRequiredCapabilities(plan?.requiredCapabilities)
     || !exactKeys(plan?.authority, ["ownedPaths"], ["externalActions"]) || !optionalStrings(plan?.authority?.externalActions)) return "invalid_request";
   if (!plan || typeof plan.scope !== "string" || !plan.scope.trim() || plan.scope.length > 4096 || !strings(plan.acceptance)
     || !strings(plan.verification) || typeof plan.branch !== "string" || !plan.branch || plan.branch.length > 256
@@ -172,7 +175,8 @@ function validLegacyInitializationReceipt(setup, receipt, ids, owner) {
     && stable(receipt.trackerSelection) === stable(legacyTrackerSelection(setup.tracker))
     && plan && typeof plan.scope === "string" && plan.scope.trim() && plan.scope.length <= 4096
     && strings(plan.acceptance) && strings(plan.verification) && typeof plan.branch === "string" && plan.branch && plan.branch.length <= 256
-    && plan.authority && strings(plan.authority.ownedPaths) && plan.authority.ownedPaths.every(relative);
+    && plan.authority && strings(plan.authority.ownedPaths) && plan.authority.ownedPaths.every(relative)
+    && validRequiredCapabilities(plan.requiredCapabilities);
 }
 
 export async function nativeIdentityProblem(projectPath, actorSessionId, nativeIdentity) {
@@ -328,7 +332,8 @@ export async function initializeProject(projectPath, request, options = {}) {
         if (setup && stable(resolveTracker(root, setup.tracker)) !== stable(tracker)) return decision("conflict", "existing_tracker_conflict");
         const priorBranch = setup?.plan?.branch ?? setup?.branch;
         if (priorBranch && priorBranch !== request.plan.branch) return decision("conflict", "existing_branch_conflict");
-        if (setup?.plan && ["scope", "acceptance", "verification", "authority"].some((field) => setup.plan[field] !== undefined && stable(setup.plan[field]) !== stable(request.plan[field]))) return decision("conflict", "existing_plan_conflict");
+        if (setup?.plan && !setup.initialization && ["scope", "acceptance", "verification", "authority", "requiredCapabilities"].some((field) =>
+          (field === "requiredCapabilities" || setup.plan[field] !== undefined) && stable(setup.plan[field]) !== stable(request.plan[field]))) return decision("conflict", "existing_plan_conflict");
         await git(root, ["check-ref-format", "--branch", request.plan.branch]);
         try { await git(root, ["show-ref", "--verify", `refs/heads/${request.plan.branch}`]); }
         catch { if (await git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]) !== request.plan.branch) return decision("conflict", "integration_branch_unavailable"); }

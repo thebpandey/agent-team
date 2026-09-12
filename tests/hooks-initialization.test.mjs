@@ -58,6 +58,16 @@ if (process.argv[2] === "initialize-worker") {
     });
   }
 
+  async function canonicalBytes(project) {
+    return Object.fromEntries(await Promise.all([
+      project.paths.setup,
+      project.paths.state,
+      project.paths.teams,
+      project.paths.ownerHistory,
+      project.paths.tasks,
+    ].map(async (file) => [file, await readFile(file)])));
+  }
+
   test("standalone initialization publishes canonical records from the canonical checkout and never grants verified gates", async () => {
     const value = await fixture();
     const result = await initialize(value.root, value.request);
@@ -526,5 +536,148 @@ if (process.argv[2] === "initialize-worker") {
     assert.equal(result.status, "conflict");
     assert.equal(await readFile(tracker, "utf8"), "User changed this record after interruption.\n");
     assert.equal((await resolveProject(value.root)).active, false);
+  });
+
+  test("required capability declarations are closed persisted and replay-bound", async (t) => {
+    const value = await fixture();
+    value.request.plan.requiredCapabilities = ["graphify", "serena"];
+    const applied = await initialize(value.root, value.request);
+    assert.equal(applied.status, "applied");
+    assert.deepEqual(applied.setup.plan.requiredCapabilities, ["graphify", "serena"]);
+    assert.deepEqual(applied.setup.initialization.initialTaskIds, ["AT-001"]);
+    assert.equal(applied.setup.initialization.trackerFingerprint, applied.tracker.fingerprint);
+    const project = await resolveProject(value.root);
+    const canonical = await loadCanonicalState(project);
+    const { initializationRecordProblem } = await import(modulePath);
+    assert.equal(initializationRecordProblem(project.setup, canonical, { projectRoot: project.root }), undefined);
+
+    const before = await canonicalBytes(project);
+    assert.equal((await initialize(value.root, value.request)).status, "duplicate");
+    assert.deepEqual(await canonicalBytes(await resolveProject(value.root)), before);
+    for (const requiredCapabilities of [["serena", "graphify"], ["graphify"], ["graphify", "other-capability"]]) {
+      const changed = await initialize(value.root, { ...value.request, plan: { ...value.request.plan, requiredCapabilities } });
+      assert.deepEqual({ status: changed.status, reason: changed.reason },
+        { status: "conflict", reason: "initialization_identity_conflict" });
+      assert.deepEqual(await canonicalBytes(await resolveProject(value.root)), before);
+    }
+
+    for (const [name, declaration] of [["empty", []], ["safe non-catalog", ["custom.tool:v1"]]]) await t.test(name, async () => {
+      const candidate = await fixture();
+      candidate.request.plan.requiredCapabilities = declaration;
+      const result = await initialize(candidate.root, candidate.request);
+      assert.equal(result.status, "applied");
+      assert.deepEqual(result.setup.plan.requiredCapabilities, declaration);
+    });
+    await t.test("omitted", async () => {
+      const candidate = await fixture();
+      const result = await initialize(candidate.root, candidate.request);
+      assert.equal(result.status, "applied");
+      assert.equal(Object.hasOwn(result.setup.plan, "requiredCapabilities"), false);
+    });
+  });
+
+  test("invalid required capability declarations fail before initialization mutation", async (t) => {
+    const invalid = [
+      "graphify",
+      null,
+      {},
+      Array.from({ length: 101 }, (_, index) => `cap-${index}`),
+      ["graphify", "graphify"],
+      ["unsafe/id"],
+      ["none"],
+      ["UNKNOWN"],
+      ["unassigned"],
+      ["-"],
+      [""],
+      ["a".repeat(129)],
+    ];
+    for (const [index, declaration] of invalid.entries()) await t.test(`case ${index + 1}`, async () => {
+      const value = await fixture();
+      value.request.plan.requiredCapabilities = declaration;
+      const result = await initialize(value.root, value.request);
+      assert.deepEqual({ status: result.status, reason: result.reason }, { status: "conflict", reason: "invalid_request" });
+      await assert.rejects(access(path.join(value.root, ".agent-team")), { code: "ENOENT" });
+      await assert.rejects(access(path.join(value.root, ".agent-team/TASKS.md")), { code: "ENOENT" });
+    });
+    await t.test("unknown plan sibling", async () => {
+      const value = await fixture();
+      value.request.plan.requiredCapabilities = ["graphify"];
+      value.request.plan.unknownCapabilityPolicy = true;
+      const result = await initialize(value.root, value.request);
+      assert.deepEqual({ status: result.status, reason: result.reason }, { status: "conflict", reason: "invalid_request" });
+      await assert.rejects(access(path.join(value.root, ".agent-team")), { code: "ENOENT" });
+      await assert.rejects(access(path.join(value.root, ".agent-team/TASKS.md")), { code: "ENOENT" });
+    });
+  });
+
+  test("legacy required capability declarations remain readable without fabricated provenance", async (t) => {
+    for (const [name, declaration, expectedProblem] of [
+      ["valid", ["graphify"], undefined],
+      ["malformed", "graphify", "invalid_initialization_receipt"],
+    ]) await t.test(name, async () => {
+      const value = await fixture();
+      const initialized = await initialize(value.root, value.request);
+      assert.equal(initialized.status, "applied");
+      const project = await resolveProject(value.root);
+      const setup = JSON.parse(await readFile(project.paths.setup, "utf8"));
+      delete setup.initialization.initialTaskIds;
+      delete setup.initialization.trackerFingerprint;
+      setup.plan.requiredCapabilities = declaration;
+      await writeFile(project.paths.setup, JSON.stringify(setup));
+      const legacy = await resolveProject(value.root);
+      const before = await canonicalBytes(legacy);
+      const canonical = await loadCanonicalState(legacy);
+      const { initializationRecordProblem } = await import(modulePath);
+      assert.equal(initializationRecordProblem(legacy.setup, canonical, { projectRoot: legacy.root, allowLegacy: true }), expectedProblem);
+      const { runSetupCommand } = await import("../hooks/lib/setup-cli.mjs");
+      const readiness = await runSetupCommand("readiness", { project: value.root, host: "codex", scope: "project" });
+      assert.equal(readiness.projectInitialization.required, expectedProblem !== undefined);
+      if (expectedProblem === undefined) {
+        assert.ok(readiness.requiredCapabilities.includes("graphify"));
+        assert.ok(readiness.missing.some(({ id }) => id === "capability:graphify"));
+      }
+      assert.deepEqual(await canonicalBytes(await resolveProject(value.root)), before);
+      const persisted = JSON.parse(before[project.paths.setup]);
+      assert.equal(Object.hasOwn(persisted.initialization, "initialTaskIds"), false);
+      assert.equal(Object.hasOwn(persisted.initialization, "trackerFingerprint"), false);
+      assert.deepEqual(persisted.plan.requiredCapabilities, declaration);
+    });
+  });
+
+  test("recorded required capability declarations cannot change during incomplete adoption", async (t) => {
+    for (const [name, initial, mutate] of [
+      ["added", undefined, (plan) => { plan.requiredCapabilities = ["graphify"]; }],
+      ["removed", ["graphify", "serena"], (plan) => { delete plan.requiredCapabilities; }],
+      ["changed", ["graphify", "serena"], (plan) => { plan.requiredCapabilities = ["other-capability"]; }],
+      ["reordered", ["graphify", "serena"], (plan) => { plan.requiredCapabilities = ["serena", "graphify"]; }],
+    ]) await t.test(name, async () => {
+      const value = await fixture();
+      if (initial !== undefined) value.request.plan.requiredCapabilities = initial;
+      assert.equal((await initialize(value.root, value.request)).status, "applied");
+      const project = await resolveProject(value.root);
+      const setup = JSON.parse(await readFile(project.paths.setup, "utf8"));
+      delete setup.initialization;
+      await writeFile(project.paths.setup, JSON.stringify(setup));
+      const incomplete = await resolveProject(value.root);
+      const before = await canonicalBytes(incomplete);
+      const plan = structuredClone(value.request.plan);
+      mutate(plan);
+      const result = await initialize(value.root, { ...value.request, source: "existing", plan }, { expectedVersion: setup.version });
+      assert.deepEqual({ status: result.status, reason: result.reason }, { status: "conflict", reason: "existing_plan_conflict" });
+      assert.deepEqual(await canonicalBytes(await resolveProject(value.root)), before);
+    });
+
+    await t.test("exact declaration remains adoptable", async () => {
+      const value = await fixture();
+      value.request.plan.requiredCapabilities = ["graphify", "serena"];
+      assert.equal((await initialize(value.root, value.request)).status, "applied");
+      const project = await resolveProject(value.root);
+      const setup = JSON.parse(await readFile(project.paths.setup, "utf8"));
+      delete setup.initialization;
+      await writeFile(project.paths.setup, JSON.stringify(setup));
+      const result = await initialize(value.root, { ...value.request, source: "existing" }, { expectedVersion: setup.version });
+      assert.equal(result.status, "applied");
+      assert.deepEqual(result.setup.plan.requiredCapabilities, ["graphify", "serena"]);
+    });
   });
 }

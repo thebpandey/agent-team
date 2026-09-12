@@ -161,3 +161,26 @@ test("initialization CLI rejects a nonzero version for absent setup without publ
   await writeFile(file, JSON.stringify(value));
   assert.equal((await runCommand("project-initialize", { project: root, request: file }, { nativeIdentity })).status, "applied");
 });
+
+test("initialized Project Kickoff capabilities flow unchanged into readiness", async () => {
+  const root = await fixture();
+  const value = planRequest();
+  value.request.plan.requiredCapabilities = ["graphify"];
+  const file = await request(root, "project-kickoff-initialization", value);
+  const shell = await invoke("project-initialize", root, "--request", file);
+  assert.deepEqual({ status: shell.status, ready: shell.ready, reason: shell.reason },
+    { status: "validated", ready: false, reason: "native_identity_required" });
+  await assert.rejects(access(path.join(root, ".agent-team")), { code: "ENOENT" });
+  await assert.rejects(access(path.join(root, "TASKS.md")), { code: "ENOENT" });
+
+  const nativeIdentity = { host: "codex", sessionId: value.actorSessionId, observed: true, cwd: root };
+  const initialized = await runCommand("project-initialize", { project: root, request: file }, { nativeIdentity });
+  assert.equal(initialized.status, "applied");
+  assert.deepEqual(initialized.setup.plan.requiredCapabilities, ["graphify"]);
+  const setupPath = path.join(root, ".agent-team/setup.json");
+  const before = await readFile(setupPath);
+  const readiness = await invoke("readiness", root, "--host", "codex", "--scope", "project");
+  assert.deepEqual(readiness.requiredCapabilities, ["serena", "playwright-cli", "graphify"]);
+  assert.ok(readiness.missing.some(({ id }) => id === "capability:graphify"));
+  assert.deepEqual(await readFile(setupPath), before);
+});
