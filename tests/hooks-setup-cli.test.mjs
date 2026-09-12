@@ -29,18 +29,18 @@ async function fixture(t, overrides = {}, { trackerKind = "markdown", projectId 
     { id: "T-2", title: "Repair parser", status: "blocked", dependencies: ["T-1"] },
   ];
   const initialized = await initializeProject(root, {
-    projectId, ownerSessionId: "owner", operationId: "initialize-fixture", source: trackerExecutable ? "existing" : "standalone",
+    projectId, operationId: "initialize-fixture", source: trackerExecutable ? "existing" : "standalone",
     tracker: trackerExecutable ? { kind: "beads", executable: trackerExecutable } : { kind: "markdown", path: ".agent-team/TASKS.md" },
     plan: {
       scope: "Repair parser", acceptance: ["Regression passes"], branch: "develop", verification: ["node --test"],
       authority: { ownedPaths: ["src/**"] },
       tasks,
     },
-  }, trackerExecutable ? { runBeads: async () => ({ stdout: JSON.stringify([
+  }, { actorSessionId: "owner", nativeIdentity: { host: "codex", sessionId: "owner", observed: true, cwd: root }, ...(trackerExecutable ? { runBeads: async () => ({ stdout: JSON.stringify([
     { id: "T-1", title: tasks[0].title, status: "closed", assignee: "", dependency_count: 0 },
     { id: "T-2", title: tasks[1].title, status: "open", assignee: "", dependency_count: 1,
       dependencies: [{ type: "blocks", depends_on_id: "T-1" }] },
-  ]) }) } : {});
+  ]) }) } : {}) });
   assert.equal(initialized.status, "applied", initialized.reason);
   const setupPath = path.join(root, ".agent-team", "setup.json");
   const initializedSetup = JSON.parse(await readFile(setupPath, "utf8"));

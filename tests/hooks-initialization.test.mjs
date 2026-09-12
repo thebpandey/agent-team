@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, link, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -11,10 +12,10 @@ import { loadCanonicalState } from "../hooks/lib/canonical-state.mjs";
 const modulePath = new URL("../hooks/lib/initialization.mjs", import.meta.url);
 if (process.argv[2] === "initialize-worker") {
   const { initializeProject } = await import(modulePath);
-  process.stdout.write(JSON.stringify(await initializeProject(process.argv[3], JSON.parse(process.argv[4]))));
+  process.stdout.write(JSON.stringify(await initializeProject(process.argv[3], JSON.parse(process.argv[4]), JSON.parse(process.argv[5]))));
 } else if (process.argv[2] === "crash-worker") {
   const { initializeProject } = await import(modulePath);
-  await initializeProject(process.argv[3], JSON.parse(process.argv[4]), { filesystem: { link: async (from, to) => {
+  await initializeProject(process.argv[3], JSON.parse(process.argv[4]), { ...JSON.parse(process.argv[5]), filesystem: { link: async (from, to) => {
     if (to.endsWith("state.json")) { process.stdout.write("held"); await new Promise(() => { setInterval(() => {}, 1000); }); }
     return link(from, to);
   } } });
@@ -32,7 +33,7 @@ if (process.argv[2] === "initialize-worker") {
     execFileSync("git", ["commit", "-qm", "fixture"], { cwd: root });
     const feature = `${root}-feature`;
     execFileSync("git", ["worktree", "add", "-q", "-b", "feature", feature], { cwd: root });
-    const request = { projectId: "project-init", ownerSessionId: "owner-session", operationId: "initialize-1", source: "standalone",
+    const request = { projectId: "project-init", operationId: "initialize-1", source: "standalone",
       tracker: { kind: "markdown", path: ".agent-team/TASKS.md" }, plan: { scope: "Implement the approved feature.", acceptance: ["Tests cover the feature."],
         branch: "main", verification: ["node --test tests/*.test.mjs"], authority: { ownedPaths: ["src/**", "tests/**"], externalActions: [] },
         tasks: [{ id: "AT-001", title: "Implement feature", status: "ready", dependencies: [], acceptance: ["Tests cover the feature."] }] } };
@@ -41,11 +42,14 @@ if (process.argv[2] === "initialize-worker") {
   async function initialize(...args) {
     const module = await import(modulePath).catch(() => ({}));
     assert.equal(typeof module.initializeProject, "function", "canonical initialization implementation is required");
-    return module.initializeProject(...args);
+    const [projectPath, request, options = {}] = args;
+    return module.initializeProject(projectPath, request, { actorSessionId: "owner-session",
+      nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: projectPath }, ...options });
   }
-  function worker(root, request) {
+  function worker(root, request, actorSessionId = "owner-session") {
     return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "initialize-worker", root, JSON.stringify(request)], { stdio: ["ignore", "pipe", "pipe"] });
+      const options = { actorSessionId, nativeIdentity: { host: "codex", sessionId: actorSessionId, observed: true, cwd: root } };
+      const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "initialize-worker", root, JSON.stringify(request), JSON.stringify(options)], { stdio: ["ignore", "pipe", "pipe"] });
       let stdout = ""; let stderr = "";
       child.stdout.on("data", (chunk) => { stdout += chunk; });
       child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -54,9 +58,9 @@ if (process.argv[2] === "initialize-worker") {
     });
   }
 
-  test("standalone initialization publishes canonical records from linked worktree and never grants verified gates", async () => {
+  test("standalone initialization publishes canonical records from the canonical checkout and never grants verified gates", async () => {
     const value = await fixture();
-    const result = await initialize(value.feature, value.request);
+    const result = await initialize(value.root, value.request);
     assert.equal(result.status, "applied");
     assert.equal(result.ready, true);
     const main = await resolveProject(value.root);
@@ -108,6 +112,52 @@ if (process.argv[2] === "initialize-worker") {
     assert.equal(initializationRecordProblem(project.setup, canonical, { projectRoot: project.root }), undefined);
   });
 
+  test("initialization stores immutable task tracker and consumed handoff provenance", async () => {
+    const value = await fixture();
+    const generationBaseline = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+    const handoffBytes = Buffer.from('{"schemaVersion":1,"kind":"project-kickoff-agent-team-handoff"}\n');
+    await writeFile(path.join(value.root, "AGENT_TEAM_HANDOFF.json"), handoffBytes);
+    execFileSync("git", ["add", "AGENT_TEAM_HANDOFF.json"], { cwd: value.root });
+    execFileSync("git", ["commit", "-qm", "fixture handoff"], { cwd: value.root });
+    const observedRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+    value.request.handoff = { schemaVersion: 1, path: "AGENT_TEAM_HANDOFF.json",
+      sha256: createHash("sha256").update(handoffBytes).digest("hex"),
+      generatedBy: { name: "project-kickoff", version: "0.4.1" }, testedAgainst: { name: "agent-team", version: "7.2.0" },
+      generationBaseline, observedRevision };
+    const result = await initialize(value.root, value.request);
+    assert.equal(result.status, "applied");
+    const setup = JSON.parse(await readFile(path.join(value.root, ".agent-team/setup.json"), "utf8"));
+    assert.deepEqual(setup.initialization.initialTaskIds, ["AT-001"]);
+    assert.equal(setup.initialization.trackerFingerprint, result.tracker.fingerprint);
+    assert.deepEqual(setup.initialization.handoff, { ...value.request.handoff,
+      consumptionOperationId: value.request.operationId, consumedAt: setup.initialization.handoff.consumedAt });
+    assert.match(setup.initialization.handoff.consumedAt, /^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test("handoff validation rejects incompatible hash ancestry and changed branch tip without writes", async (t) => {
+    for (const problem of ["compatibility", "hash", "ancestry", "tip"]) await t.test(problem, async () => {
+      const value = await fixture();
+      const baseline = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+      const bytes = Buffer.from('{"schemaVersion":1,"kind":"project-kickoff-agent-team-handoff"}\n');
+      await writeFile(path.join(value.root, "AGENT_TEAM_HANDOFF.json"), bytes);
+      execFileSync("git", ["add", "AGENT_TEAM_HANDOFF.json"], { cwd: value.root });
+      execFileSync("git", ["commit", "-qm", "handoff"], { cwd: value.root });
+      const observed = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+      const handoff = { schemaVersion: 1, path: "AGENT_TEAM_HANDOFF.json", sha256: createHash("sha256").update(bytes).digest("hex"),
+        generatedBy: { name: "project-kickoff", version: "0.4.1" }, testedAgainst: { name: "agent-team", version: "7.2.0" },
+        generationBaseline: baseline, observedRevision: observed };
+      if (problem === "compatibility") handoff.testedAgainst.version = "9.9.9";
+      if (problem === "hash") handoff.sha256 = "a".repeat(64);
+      if (problem === "ancestry") handoff.generationBaseline = "0".repeat(40);
+      if (problem === "tip") handoff.observedRevision = baseline;
+      const result = await initialize(value.root, { ...value.request, handoff });
+      assert.equal(result.status, "conflict");
+      assert.equal(result.reason, { compatibility: "unsupported_handoff_contract", hash: "handoff_digest_changed",
+        ancestry: "invalid_handoff_ancestry", tip: "handoff_observed_revision_changed" }[problem]);
+      await assert.rejects(access(path.join(value.root, ".agent-team")), { code: "ENOENT" });
+    });
+  });
+
   test("standalone initialization rejects 501 tasks without publishing setup", async () => {
     const value = await fixture();
     value.request.plan.tasks = Array.from({ length: 501 }, (_, index) => ({
@@ -139,9 +189,10 @@ if (process.argv[2] === "initialize-worker") {
     await initialize(value.root, value.request);
     const setup = path.join(value.root, ".agent-team/setup.json");
     const before = await readFile(setup, "utf8");
-    assert.equal((await initialize(value.feature, value.request)).status, "duplicate");
+    assert.equal((await initialize(value.root, value.request)).status, "duplicate");
     assert.equal((await initialize(value.root, { ...value.request, plan: { ...value.request.plan, scope: "Different scope." } })).status, "conflict");
-    assert.equal((await initialize(value.root, { ...value.request, ownerSessionId: "other-owner", operationId: "other-init" })).status, "conflict");
+    assert.equal((await initialize(value.root, { ...value.request, operationId: "other-init" }, { actorSessionId: "other-owner",
+      nativeIdentity: { host: "codex", sessionId: "other-owner", observed: true, cwd: value.root } })).status, "conflict");
     assert.equal(await readFile(setup, "utf8"), before);
   });
 
@@ -149,7 +200,7 @@ if (process.argv[2] === "initialize-worker") {
     const value = await fixture();
     const module = await import(modulePath).catch(() => ({}));
     assert.equal(typeof module.initializeProject, "function");
-    const results = await Promise.all([worker(value.root, value.request), worker(value.feature, { ...value.request, ownerSessionId: "other-owner", operationId: "other-init" })]);
+    const results = await Promise.all([worker(value.root, value.request), worker(value.root, { ...value.request, operationId: "other-init" }, "other-owner")]);
     assert.deepEqual(results.map(({ status }) => status).sort(), ["applied", "conflict"]);
     assert.ok(["owner-session", "other-owner"].includes((await loadCanonicalState(await resolveProject(value.root))).registry.projectOwner));
   });
@@ -161,7 +212,7 @@ if (process.argv[2] === "initialize-worker") {
     await mkdir(path.join(value.root, ".agent-team"));
     await writeFile(path.join(value.root, ".agent-team/user-notes.md"), "Keep these notes.\n");
     const request = { ...value.request, source: "existing", tracker: { kind: "markdown", path: "TASKS.md" }, plan: { ...value.request.plan, tasks: [{ id: "WK-77" }] } };
-    const result = await initialize(value.feature, request);
+    const result = await initialize(value.root, request);
     assert.equal(result.status, "applied");
     assert.deepEqual(result.taskIds, ["WK-77"]);
     assert.equal(await readFile(path.join(value.root, "TASKS.md"), "utf8"), source);
@@ -179,7 +230,7 @@ if (process.argv[2] === "initialize-worker") {
     assert.equal(result.ready, false);
     assert.equal((await resolveProject(value.root)).active, false);
     assert.equal((await initialize(value.root, { ...value.request, operationId: "different-operation" })).status, "conflict");
-    const recovered = await initialize(value.feature, value.request);
+    const recovered = await initialize(value.root, value.request);
     assert.equal(recovered.status, "applied");
     assert.equal(recovered.ready, true);
     assert.equal((await loadCanonicalState(await resolveProject(value.root))).tasks.length, 1);
@@ -202,7 +253,7 @@ if (process.argv[2] === "initialize-worker") {
     await mkdir(path.join(value.root, ".agent-team"), { recursive: true });
     await writeFile(path.join(value.root, ".agent-team/setup.json"), JSON.stringify({ skill: "agent-team", projectId: "project-init" }));
     const before = await readFile(path.join(value.root, ".agent-team/setup.json"), "utf8");
-    const result = await initialize(value.root, { ...value.request, source: "existing", expectedVersion: 0 });
+    const result = await initialize(value.root, { ...value.request, source: "existing" }, { expectedVersion: 0 });
     assert.equal(result.status, "conflict");
     assert.equal(result.reason, "existing_owner_unavailable");
     assert.equal(await readFile(path.join(value.root, ".agent-team/setup.json"), "utf8"), before);
@@ -220,10 +271,10 @@ if (process.argv[2] === "initialize-worker") {
     state.unrelated = { preserve: "exact" };
     await writeFile(project.paths.state, JSON.stringify(state));
     const originalState = await readFile(project.paths.state, "utf8");
-    const request = { ...value.request, source: "existing", expectedVersion: setup.version, plan: { ...value.request.plan, scope: "Unrelated replacement scope." } };
-    assert.equal((await initialize(value.feature, request)).reason, "existing_plan_conflict");
+    const request = { ...value.request, source: "existing", plan: { ...value.request.plan, scope: "Unrelated replacement scope." } };
+    assert.equal((await initialize(value.root, request, { expectedVersion: setup.version })).reason, "existing_plan_conflict");
     request.plan = value.request.plan;
-    assert.equal((await initialize(value.feature, request)).status, "applied");
+    assert.equal((await initialize(value.root, request, { expectedVersion: setup.version })).status, "applied");
     assert.deepEqual(JSON.parse(await readFile(project.paths.setup, "utf8")).unrelated, { preserve: true });
     assert.equal(await readFile(project.paths.state, "utf8"), originalState);
   });
@@ -382,12 +433,13 @@ if (process.argv[2] === "initialize-worker") {
 
   test("actual killed initializer is resumable only after verifying its stopped lock writer", async () => {
     const value = await fixture();
-    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "crash-worker", value.root, JSON.stringify(value.request)], { stdio: ["ignore", "pipe", "pipe"] });
+    const options = { actorSessionId: "owner-session", nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: value.root } };
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "crash-worker", value.root, JSON.stringify(value.request), JSON.stringify(options)], { stdio: ["ignore", "pipe", "pipe"] });
     try {
       await new Promise((resolve, reject) => { child.stdout.once("data", resolve); child.once("error", reject); });
       const ended = new Promise((resolve) => child.once("exit", resolve)); child.kill("SIGKILL"); await ended;
       assert.equal((await resolveProject(value.root)).active, false);
-      const recovered = await initialize(value.feature, value.request);
+      const recovered = await initialize(value.root, value.request);
       assert.equal(recovered.status, "applied");
       assert.equal(recovered.ready, true);
     } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
@@ -398,7 +450,7 @@ if (process.argv[2] === "initialize-worker") {
     await mkdir(path.join(value.root, ".beads"));
     const request = { ...value.request, source: "existing", tracker: { kind: "beads", executable: "/selected/bin/bd" }, plan: { ...value.request.plan, tasks: [{ id: "native-X7" }] } };
     let reads = 0;
-    const result = await initialize(value.feature, request, { runBeads: async (binary, args, options) => {
+    const result = await initialize(value.root, request, { runBeads: async (binary, args, options) => {
       assert.equal(binary, "/selected/bin/bd");
       assert.equal(args[0], "list");
       assert.equal(options.env.BEADS_DIR, path.join(value.root, ".beads"));

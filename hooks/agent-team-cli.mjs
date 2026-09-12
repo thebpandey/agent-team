@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { auditEffectiveness } from "./lib/telemetry.mjs";
 import { buildArtifacts, checkArtifacts } from "./lib/artifacts.mjs";
 import { getHealth } from "./lib/health.mjs";
-import { initializeProject } from "./lib/initialization.mjs";
+import { initializeProject, validateInitializationEnvelope } from "./lib/initialization.mjs";
 import { installPackage, rollbackPackage, uninstallPackage } from "./lib/install.mjs";
 import { checkInstalledPackage, checkPackage } from "./lib/package-validator.mjs";
 import { runSetupCommand, setupCommandFlags } from "./lib/setup-cli.mjs";
@@ -91,8 +91,10 @@ export async function runCommand(command, options, context = {}) {
   if (command === "project-initialize") {
     if (typeof options.project !== "string" || !options.project.trim()) throw new Error("--project is required.");
     const envelope = await readRequestEnvelope(options.request);
-    const result = await initializeProject(path.resolve(options.project), {
-      ...envelope.request, ownerSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion,
+    const invalid = validateInitializationEnvelope(envelope);
+    if (invalid) return { status: "conflict", ready: false, reason: invalid, canonicalReady: false };
+    const result = await initializeProject(path.resolve(options.project), envelope.request, {
+      actorSessionId: envelope.actorSessionId, nativeIdentity: context.nativeIdentity, expectedVersion: envelope.expectedVersion,
     });
     return { ...result, canonicalReady: result.ready, ready: false,
       ...(["applied", "duplicate"].includes(result.status) ? { nextAction: "Prepare selected dependencies and run readiness for the actual host and capability scope. Native trust and discovery remain separate." } : {}) };

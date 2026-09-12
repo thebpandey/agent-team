@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { link, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { createEventBudget } from "./budget.mjs";
@@ -13,16 +14,20 @@ import { resolveTracker, trackerFingerprint as fingerprintTracker } from "./trac
 const run = promisify(execFile);
 const MAX_INITIALIZATION_REQUEST_BYTES = 256 * 1024;
 const MAX_PLAN_TASKS = 500;
+const MAX_HANDOFF_BYTES = 250 * 1024;
+const SUPPORTED_HANDOFFS = new Set(["0.3.1/7.0.2", "0.4.0/7.0.2", "0.4.1/7.1.0", "0.4.1/7.2.0"]);
 const hash = (source) => createHash("sha256").update(source).digest("hex");
 const stable = (value) => JSON.stringify(value && typeof value === "object"
   ? Array.isArray(value) ? value.map((entry) => JSON.parse(stable(entry))) : Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(stable(value[key]))])) : value);
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
 const validId = (value) => typeof value === "string" && /^[\w.:-]{1,128}$/.test(value) && !["none", "unknown", "unassigned", "-"].includes(value.toLowerCase());
 const strings = (value) => Array.isArray(value) && value.length > 0 && value.length <= 100 && value.every((item) => typeof item === "string" && item.trim() && item.length <= 4096);
+const optionalStrings = (value) => value === undefined || Array.isArray(value) && value.length <= 100
+  && value.every((item) => typeof item === "string" && item.trim() && item.length <= 4096);
 const decision = (status, reason, extra = {}) => ({ status, ready: false, reason, ...extra });
 const relative = (value) => typeof value === "string" && value && value.length <= 256 && !path.isAbsolute(value) && !value.split(/[\\/]/).includes("..") && !/[\r\n\0|]/.test(value);
 const trackerSelection = (tracker) => tracker?.kind === "beads"
-  ? { kind: "beads", executable: tracker.executable ?? "bd" }
+  ? { kind: "beads", root: tracker.root ?? ".", executable: tracker.executable ?? "bd" }
   : { kind: tracker?.kind, path: tracker?.path };
 function completeState(state, { taskIds, integrationOwner, branch }) {
   const booleanFields = (record, fields) => record && fields.every((field) => typeof record[field] === "boolean");
@@ -50,18 +55,111 @@ function registryIdentity(source) {
   return { projectId: field("Project"), projectOwner: field("Project owner"), integrationOwner: field("Integration owner") };
 }
 
-function validateRequest(request) {
+const exactKeys = (value, required, optional = []) => value && typeof value === "object" && !Array.isArray(value)
+  && Object.keys(value).every((key) => required.includes(key) || optional.includes(key))
+  && required.every((key) => Object.hasOwn(value, key));
+
+export function validateInitializationEnvelope(envelope) {
+  if (!exactKeys(envelope, ["schemaVersion", "actorSessionId", "expectedVersion", "request"])
+    || envelope.schemaVersion !== 1 || !validId(envelope.actorSessionId)
+    || !Number.isSafeInteger(envelope.expectedVersion) || envelope.expectedVersion < 0) return "invalid_request";
+  return validateRequest(envelope.request, envelope.actorSessionId);
+}
+
+function validateRequest(request, actorSessionId) {
   if (!request || Buffer.byteLength(JSON.stringify(request)) > MAX_INITIALIZATION_REQUEST_BYTES) return "invalid_request";
-  if (![request.projectId, request.ownerSessionId, request.operationId].every(validId)) return "explicit_setup_identity_required";
+  if (!exactKeys(request, ["projectId", "operationId", "source", "tracker", "plan"], ["handoff"])) return "invalid_request";
+  if (![request.projectId, request.operationId, actorSessionId].every(validId)) return "explicit_setup_identity_required";
   if (!["standalone", "existing"].includes(request.source)) return "explicit_source_required";
   if (!request.tracker || !["markdown", "beads"].includes(request.tracker.kind)) return "explicit_tracker_required";
+  if (request.tracker.kind === "markdown" ? !exactKeys(request.tracker, ["kind", "path"])
+    : !exactKeys(request.tracker, ["kind"], ["root", "executable"])) return "invalid_request";
   const plan = request.plan;
+  if (!exactKeys(plan, ["scope", "acceptance", "verification", "branch", "authority"], ["tasks"])
+    || !exactKeys(plan?.authority, ["ownedPaths"], ["externalActions"]) || !optionalStrings(plan?.authority?.externalActions)) return "invalid_request";
   if (!plan || typeof plan.scope !== "string" || !plan.scope.trim() || plan.scope.length > 4096 || !strings(plan.acceptance)
     || !strings(plan.verification) || typeof plan.branch !== "string" || !plan.branch || plan.branch.length > 256
     || !plan.authority || !strings(plan.authority.ownedPaths) || !plan.authority.ownedPaths.every(relative)) return "required_plan_facts_missing";
   if (request.source === "standalone" && (!Array.isArray(plan.tasks) || !plan.tasks.length)) return "actionable_tasks_missing";
   if (plan.tasks !== undefined && (!Array.isArray(plan.tasks) || plan.tasks.length > MAX_PLAN_TASKS || new Set(plan.tasks.map((task) => task?.id)).size !== plan.tasks.length
-    || plan.tasks.some((task) => !validId(task?.id)))) return "invalid_task_identity";
+    || plan.tasks.some((task) => !exactKeys(task, ["id"], ["title", "status", "dependencies", "acceptance"]) || !validId(task?.id)
+      || task.title !== undefined && (typeof task.title !== "string" || !task.title.trim() || /[\r\n|]/.test(task.title))
+      || task.status !== undefined && !["ready", "blocked", "todo"].includes(task.status)
+      || !optionalStrings(task.dependencies) || !optionalStrings(task.acceptance)))) return "invalid_task_identity";
+  const handoff = request.handoff;
+  if (handoff !== undefined && (!exactKeys(handoff, ["schemaVersion", "path", "sha256", "generatedBy", "testedAgainst", "generationBaseline", "observedRevision"])
+    || handoff.schemaVersion !== 1 || !relative(handoff.path) || !/^[a-f0-9]{64}$/.test(handoff.sha256)
+    || !/^[a-f0-9]{40}$/.test(handoff.generationBaseline) || !/^[a-f0-9]{40}$/.test(handoff.observedRevision)
+    || !exactKeys(handoff.generatedBy, ["name", "version"]) || !exactKeys(handoff.testedAgainst, ["name", "version"])
+    || handoff.generatedBy.name !== "project-kickoff" || handoff.testedAgainst.name !== "agent-team"
+    || typeof handoff.generatedBy.version !== "string" || typeof handoff.testedAgainst.version !== "string")) return "invalid_handoff_provenance";
+  return undefined;
+}
+
+async function gitProjectIdentity(location) {
+  const cwd = await realpath(location);
+  const git = async (...args) => (await run("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 1000, maxBuffer: 16384 })).stdout.trim();
+  const top = await realpath(await git("rev-parse", "--show-toplevel"));
+  const commonRaw = await git("rev-parse", "--git-common-dir");
+  const common = await realpath(path.isAbsolute(commonRaw) ? commonRaw : path.resolve(cwd, commonRaw));
+  const canonicalTop = path.basename(common) === ".git" ? path.dirname(common) : top;
+  return { top, common, canonicalTop };
+}
+
+async function validateHandoff(projectRoot, branch, handoff) {
+  if (handoff === undefined) return undefined;
+  if (!SUPPORTED_HANDOFFS.has(`${handoff.generatedBy.version}/${handoff.testedAgainst.version}`)) return "unsupported_handoff_contract";
+  const handoffPath = path.resolve(projectRoot, handoff.path);
+  if (handoffPath === projectRoot || !handoffPath.startsWith(`${projectRoot}${path.sep}`)) return "invalid_handoff_provenance";
+  let handle;
+  let bytes;
+  try {
+    if (await realpath(handoffPath) !== handoffPath) return "invalid_handoff_provenance";
+    handle = await open(handoffPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    if (await realpath(`/proc/self/fd/${handle.fd}`) !== handoffPath) return "invalid_handoff_provenance";
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > MAX_HANDOFF_BYTES) return "invalid_handoff_provenance";
+    bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (!bytesRead) break;
+      offset += bytesRead;
+    }
+    if (offset !== bytes.length) return "invalid_handoff_provenance";
+  } catch { return "invalid_handoff_provenance"; }
+  finally { await handle?.close(); }
+  if (hash(bytes) !== handoff.sha256) return "handoff_digest_changed";
+  try {
+    await run("git", ["-C", projectRoot, "merge-base", "--is-ancestor", handoff.generationBaseline, handoff.observedRevision], { timeout: 1000, maxBuffer: 16384 });
+  } catch { return "invalid_handoff_ancestry"; }
+  let tip;
+  try { tip = (await run("git", ["-C", projectRoot, "rev-parse", `refs/heads/${branch}^{commit}`], { encoding: "utf8", timeout: 1000, maxBuffer: 16384 })).stdout.trim(); }
+  catch { return "handoff_observed_revision_changed"; }
+  return tip === handoff.observedRevision ? undefined : "handoff_observed_revision_changed";
+}
+
+function validReceiptHandoff(handoff, operationId) {
+  if (handoff === undefined) return true;
+  const requestHandoff = Object.fromEntries(Object.entries(handoff).filter(([key]) => !["consumptionOperationId", "consumedAt"].includes(key)));
+  return exactKeys(handoff, ["schemaVersion", "path", "sha256", "generatedBy", "testedAgainst", "generationBaseline", "observedRevision", "consumptionOperationId", "consumedAt"])
+    && handoff.consumptionOperationId === operationId && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(handoff.consumedAt)
+    && validateRequest({ projectId: "receipt", operationId, source: "standalone", tracker: { kind: "markdown", path: "TASKS.md" },
+      plan: { scope: "receipt", acceptance: ["receipt"], verification: ["receipt"], branch: "main", authority: { ownedPaths: ["src"] },
+        tasks: [{ id: "receipt" }] }, handoff: requestHandoff }, "receipt") === undefined
+    && SUPPORTED_HANDOFFS.has(`${handoff.generatedBy.version}/${handoff.testedAgainst.version}`);
+}
+
+export async function nativeIdentityProblem(projectPath, actorSessionId, nativeIdentity) {
+  if (nativeIdentity?.observed !== true) return "native_identity_required";
+  if (!new Set(["codex", "claude-code"]).has(nativeIdentity.host)) return "native_host_unsupported";
+  if (!validId(actorSessionId) || !validId(nativeIdentity.sessionId) || nativeIdentity.sessionId !== actorSessionId) return "native_identity_mismatch";
+  if (typeof nativeIdentity.cwd !== "string" || !nativeIdentity.cwd) return "native_project_cwd_mismatch";
+  try {
+    const expected = await gitProjectIdentity(projectPath);
+    const observed = await gitProjectIdentity(nativeIdentity.cwd);
+    if (expected.top !== expected.canonicalTop || observed.top !== expected.top || observed.common !== expected.common) return "native_project_cwd_mismatch";
+  } catch { return "native_project_cwd_mismatch"; }
   return undefined;
 }
 
@@ -69,12 +167,15 @@ function validateRequest(request) {
 export function initializationRecordProblem(setup, canonical, { projectRoot, validateTracker = false } = {}) {
   const receipt = setup?.initialization;
   const ids = setup?.plan?.taskIds;
+  const { taskIds: _taskIds, ...receiptPlan } = setup?.plan ?? {};
   const owner = canonical?.registry?.projectOwner;
   if (setup?.schemaVersion !== 1 || setup.skill !== "agent-team" || !Number.isSafeInteger(setup.version) || setup.version < 1
     || receipt?.status !== "complete" || !validId(receipt.operationId) || !/^[a-f0-9]{64}$/.test(receipt.signature ?? "")
     || !["standalone", "existing"].includes(receipt.source) || !Array.isArray(ids) || new Set(ids).size !== ids.length
-    || validateRequest({ projectId: setup.projectId, ownerSessionId: owner, operationId: receipt.operationId,
-      source: receipt.source, tracker: setup.tracker, plan: { ...setup.plan, tasks: ids?.map((id) => ({ id })) } })) return "invalid_initialization_receipt";
+    || stable(receipt.initialTaskIds) !== stable(ids) || !/^[a-f0-9]{64}$/.test(receipt.trackerFingerprint ?? "")
+    || !validReceiptHandoff(receipt.handoff, receipt.operationId)
+    || validateRequest({ projectId: setup.projectId, operationId: receipt.operationId,
+      source: receipt.source, tracker: setup.tracker, plan: { ...receiptPlan, tasks: ids?.map((id) => ({ id })) } }, owner)) return "invalid_initialization_receipt";
   if (canonical.registry.projectId !== setup.projectId) return "existing_owner_conflict";
   if (typeof projectRoot !== "string" || !path.isAbsolute(projectRoot)) return "invalid_tracker_selection";
   const selected = resolveTracker(projectRoot, setup.tracker);
@@ -85,7 +186,7 @@ export function initializationRecordProblem(setup, canonical, { projectRoot, val
   if (validateTracker) {
     if (canonical.tracker?.status !== "current") return "tracker_unavailable";
     const actual = canonical.tasks.map(({ id }) => id);
-    if (ids.length !== actual.length || ids.some((id) => !actual.includes(id))) return "existing_task_identity_conflict";
+    if (ids.some((id) => !actual.includes(id))) return "existing_task_identity_conflict";
   }
   return undefined;
 }
@@ -100,8 +201,17 @@ function taskTable(tasks) {
 
 /** Explicit setup only: canonical owner, approved plan, no implicit hook/prompt authorization. */
 export async function initializeProject(projectPath, request, options = {}) {
-  const invalid = validateRequest(request);
+  const actorSessionId = options.actorSessionId;
+  const expectedVersion = options.expectedVersion;
+  const invalid = validateRequest(request, actorSessionId);
   if (invalid) return decision("conflict", invalid);
+  const identityProblem = await nativeIdentityProblem(projectPath, actorSessionId, options.nativeIdentity);
+  if (identityProblem) return decision("validated", identityProblem);
+  let preflightRoot;
+  try { preflightRoot = (await gitProjectIdentity(projectPath)).canonicalTop; }
+  catch { return decision("validated", "native_project_cwd_mismatch"); }
+  const handoffProblem = await validateHandoff(preflightRoot, request.plan.branch, request.handoff);
+  if (handoffProblem) return decision("conflict", handoffProblem);
   const budget = options.budget ?? createEventBudget(5000);
   const bounded = (action) => budget.run(action);
   const io = { link, rename, ...options.filesystem };
@@ -159,7 +269,7 @@ export async function initializeProject(projectPath, request, options = {}) {
         await rm(recoverPath, { recursive: true });
         }
       }, { budget });
-      return withDirectoryLock(lockPath, { kind: "project_initialization", projectId: request.projectId, ownerSessionId: request.ownerSessionId, operationId: request.operationId, pid: process.pid, writer }, async () => {
+      return withDirectoryLock(lockPath, { kind: "project_initialization", projectId: request.projectId, ownerSessionId: actorSessionId, operationId: request.operationId, pid: process.pid, writer }, async () => {
         return withDirectoryLock(path.join(locks, "state.lock"), { kind: "project_initialization", operationId: request.operationId, pid: process.pid, writer }, async () => {
         const current = await resolveProject(projectPath, { budget });
         if (current.root !== root || current.commonDirectory !== found.commonDirectory) return decision("conflict", "project_identity_changed");
@@ -168,15 +278,14 @@ export async function initializeProject(projectPath, request, options = {}) {
         const paths = { stateRoot, setup: path.join(stateRoot, "setup.json"), teams: path.join(stateRoot, "TEAMS.md"), state: path.join(stateRoot, "state.json"),
           tasks: tracker.path, locks, operationMappings: path.join(stateRoot, "operation-mappings.json") };
         const project = { ...current, active: true, projectId: request.projectId, setup: { tracker: request.tracker }, tracker, paths };
-        const { expectedVersion, ...semanticRequest } = request;
-        const signature = hash(stable(semanticRequest));
+        const signature = hash(stable(request));
         const setupSource = await read(paths.setup);
         const setup = setupSource ? JSON.parse(setupSource) : undefined;
         const teamsSource = await read(paths.teams);
         const identity = registryIdentity(teamsSource);
         const { projectOwner: recordedOwner, projectId: recordedProject } = identity;
         if ((setup || teamsSource !== undefined) && (!validId(recordedOwner) || recordedProject !== request.projectId)) return decision("conflict", "existing_owner_unavailable");
-        if (recordedOwner && recordedOwner !== request.ownerSessionId) return decision("conflict", "existing_owner_conflict");
+        if (recordedOwner && recordedOwner !== actorSessionId) return decision("conflict", "existing_owner_conflict");
         if (setup && (setup.skill !== "agent-team" || setup.projectId !== request.projectId)) return decision("conflict", "existing_project_conflict");
         if (setup && stable(resolveTracker(root, setup.tracker)) !== stable(tracker)) return decision("conflict", "existing_tracker_conflict");
         const priorBranch = setup?.plan?.branch ?? setup?.branch;
@@ -193,11 +302,11 @@ export async function initializeProject(projectPath, request, options = {}) {
           if (problem) return decision("unavailable", problem);
           if (canonical.tracker.status !== "current") return decision("unavailable", "tracker_unavailable", { tracker: canonical.tracker });
           const observedIdentity = registryIdentity(await read(paths.teams));
-          if (observedIdentity.projectOwner !== request.ownerSessionId || observedIdentity.projectId !== request.projectId) return decision("conflict", "existing_owner_conflict");
+          if (observedIdentity.projectOwner !== actorSessionId || observedIdentity.projectId !== request.projectId) return decision("conflict", "existing_owner_conflict");
           const taskIds = canonical.tasks.map(({ id }) => id);
           const eligible = taskEligibility(canonical, { scopeTaskIds: canonical.state.run.taskIds }).eligible;
           return { status, ready: eligible.length > 0, ...(eligible.length ? {} : { reason: "no_eligible_task" }), projectRoot: root,
-            taskIds, tracker: canonical.tracker, version: committed.version, eligibleTaskIds: eligible.map(({ id }) => id) };
+            taskIds, tracker: canonical.tracker, setup: committed, version: committed.version, eligibleTaskIds: eligible.map(({ id }) => id) };
         };
         if (setup?.initialization) {
           if (setup.initialization.operationId !== request.operationId || setup.initialization.signature !== signature) return decision("conflict", "initialization_identity_conflict");
@@ -207,7 +316,7 @@ export async function initializeProject(projectPath, request, options = {}) {
         const journalPath = path.join(stateRoot, ".setup-initialization.json");
         const journalSource = await read(journalPath);
         let journal = journalSource ? JSON.parse(journalSource) : undefined;
-        if (journal && (journal.signature !== signature || journal.operationId !== request.operationId || journal.ownerSessionId !== request.ownerSessionId)) return decision("conflict", "initialization_in_progress");
+        if (journal && (journal.signature !== signature || journal.operationId !== request.operationId || journal.ownerSessionId !== actorSessionId)) return decision("conflict", "initialization_in_progress");
         if (journal && journal.setupFingerprint !== (setupSource === undefined ? null : hash(setupSource))) return decision("conflict", "setup_changed_during_initialization");
         if (!journal && request.source === "standalone") {
           for (const candidate of [path.join(root, "TASKS.md"), path.join(stateRoot, "TASKS.md"), path.join(root, ".beads")]) {
@@ -224,6 +333,7 @@ export async function initializeProject(projectPath, request, options = {}) {
         if (request.source === "standalone") {
           created.set(paths.tasks, taskTable(request.plan.tasks));
           tasks = request.plan.tasks;
+          trackerFingerprint = fingerprintTracker(tracker, created.get(paths.tasks));
         } else {
           if (tracker.kind === "markdown") {
             const source = await read(paths.tasks);
@@ -239,16 +349,16 @@ export async function initializeProject(projectPath, request, options = {}) {
         }
         if (journal && journal.trackerFingerprint !== trackerFingerprint) return decision("conflict", "tracker_changed_during_initialization");
         const taskIds = tasks.map(({ id }) => id);
-        const teams = `# Agent-Team teams\nProject: ${request.projectId}\nProject owner: ${request.ownerSessionId}\nIntegration owner: ${request.ownerSessionId}\n\n| Team ID | Name | Session | Worktree | Branch | Owned paths | Tasks | Status |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n`;
+        const teams = `# Agent-Team teams\nProject: ${request.projectId}\nProject owner: ${actorSessionId}\nIntegration owner: ${actorSessionId}\n\n| Team ID | Name | Session | Worktree | Branch | Owned paths | Tasks | Status |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n`;
         const initialState = { schemaVersion: 1, stateVersion: 0, run: { mode: "finite", taskIds, paused: false },
-          integration: { ownerSessionId: request.ownerSessionId, authorized: false, baseRef: request.plan.branch, paused: false, hold: false },
-          release: { ownerSessionId: request.ownerSessionId, authorized: false, autoDeploy: false, hold: true },
+          integration: { ownerSessionId: actorSessionId, authorized: false, baseRef: request.plan.branch, paused: false, hold: false },
+          release: { ownerSessionId: actorSessionId, authorized: false, autoDeploy: false, hold: true },
           completion: { requirementsReconciled: false, checks: [] }, operationMappings: { providers: {}, shell: [] } };
         for (const [file, source] of [[paths.teams, teams], [paths.state, json(initialState)]]) {
           if (journal?.createPaths.includes(file) || preserved.get(file) === undefined) created.set(file, source);
         }
         const state = JSON.parse(created.get(paths.state) ?? preserved.get(paths.state));
-        const integrationOwner = created.has(paths.teams) ? request.ownerSessionId : identity.integrationOwner;
+        const integrationOwner = created.has(paths.teams) ? actorSessionId : identity.integrationOwner;
         if (!completeState(state, { taskIds, integrationOwner, branch: request.plan.branch })) return decision("unavailable", "required_state_facts_missing");
         const mappings = validateOperationMappings(state.operationMappings);
         if (journal?.createPaths.includes(paths.operationMappings) || preserved.get(paths.operationMappings) === undefined) created.set(paths.operationMappings,
@@ -257,8 +367,15 @@ export async function initializeProject(projectPath, request, options = {}) {
         for (const file of [...new Set([...created.keys(), paths.teams, paths.state, paths.operationMappings, ...(tracker.kind === "markdown" ? [paths.tasks] : [])])]) {
           records[file] = hash(created.get(file) ?? preserved.get(file));
         }
+        if (request.source === "existing") {
+          const latest = await loadCanonicalTracker(project, { ...options, budget });
+          if (latest.tracker.status !== "current") return decision("unavailable", "tracker_unavailable", { tracker: latest.tracker });
+          if (latest.tracker.fingerprint !== trackerFingerprint) return decision("conflict", "tracker_changed_during_initialization");
+        }
+        const lockedHandoffProblem = await validateHandoff(root, request.plan.branch, request.handoff);
+        if (lockedHandoffProblem) return decision("conflict", lockedHandoffProblem);
         if (!journal) {
-          journal = { schemaVersion: 1, kind: "project_initialization", projectId: request.projectId, ownerSessionId: request.ownerSessionId,
+          journal = { schemaVersion: 1, kind: "project_initialization", projectId: request.projectId, ownerSessionId: actorSessionId,
             operationId: request.operationId, signature, setupFingerprint: setupSource === undefined ? null : hash(setupSource), trackerFingerprint, createPaths: [...created.keys()], records };
           await publish(journalPath, json(journal));
         } else if (stable(journal.records) !== stable(records)) return decision("conflict", "initialization_records_changed");
@@ -267,16 +384,13 @@ export async function initializeProject(projectPath, request, options = {}) {
           if (existing !== undefined && hash(existing) !== hash(source)) return decision("conflict", "initialization_record_conflict");
           if (existing === undefined) await publish(file, source);
         }
-        if (request.source === "existing") {
-          const latest = await loadCanonicalTracker(project, { ...options, budget });
-          if (latest.tracker.status !== "current") return decision("unavailable", "tracker_unavailable", { tracker: latest.tracker });
-          if (latest.tracker.fingerprint !== trackerFingerprint) return decision("conflict", "tracker_changed_during_initialization");
-        }
         for (const [file, fingerprint] of Object.entries(journal.records)) if (hash(await read(file) ?? "") !== fingerprint) return decision("conflict", "initialization_records_changed");
         if ((await read(paths.setup)) !== setupSource) return decision("conflict", "setup_changed_during_initialization");
         const { tasks: _tasks, ...plan } = request.plan;
         const completed = { ...setup, schemaVersion: 1, version: (setup?.version ?? 0) + 1, skill: "agent-team", projectId: request.projectId,
-          tracker: request.tracker, plan: { ...setup?.plan, ...plan, taskIds }, initialization: { status: "complete", operationId: request.operationId, signature, source: request.source, trackerSelection: trackerSelection(request.tracker) } };
+          tracker: request.tracker, plan: { ...setup?.plan, ...plan, taskIds }, initialization: { status: "complete", operationId: request.operationId,
+            signature, source: request.source, trackerSelection: trackerSelection(request.tracker), initialTaskIds: taskIds, trackerFingerprint,
+            ...(request.handoff ? { handoff: { ...request.handoff, consumptionOperationId: request.operationId, consumedAt: new Date().toISOString() } } : {}) } };
         await publish(paths.setup, json(completed), setupSource !== undefined);
         budget.check();
         await rm(journalPath, { force: true });

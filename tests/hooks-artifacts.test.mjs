@@ -4,6 +4,7 @@ import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:f
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { buildArtifacts, checkArtifacts, readZip, writeZip } from "../hooks/lib/artifacts.mjs";
@@ -103,11 +104,20 @@ test("source and extracted universal CLIs complete every host and scope lifecycl
         assert.equal(configured.sentinel, path.basename(configs[scope][runtime]));
         assert.ok(Object.values(configured.hooks).flat().some((group) => group.hooks.some(({ command = "" }) => command.includes("agent-team-hook.mjs"))));
         const installedCli = path.join(target, "hooks", "agent-team-cli.mjs");
-        const initialized = JSON.parse((await run(process.execPath, [installedCli, "project-initialize", "--project", projectRoot, "--request", initialization])).stdout);
+        const setupPath = path.join(projectRoot, ".agent-team", "setup.json");
+        const beforeShell = await readFile(setupPath).catch((error) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+        const shell = JSON.parse((await run(process.execPath, [installedCli, "project-initialize", "--project", projectRoot, "--request", initialization])).stdout);
+        assert.deepEqual({ status: shell.status, ready: shell.ready, reason: shell.reason },
+          { status: "validated", ready: false, reason: "native_identity_required" });
+        assert.deepEqual(await readFile(setupPath).catch((error) => error.code === "ENOENT" ? undefined : Promise.reject(error)), beforeShell);
+        const { runCommand: runInstalledCommand } = await import(`${pathToFileURL(installedCli).href}?consumer=${Math.random()}`);
+        const selectedHost = runtime === "claude" ? "claude-code" : "codex";
+        const initialized = await runInstalledCommand("project-initialize", { project: projectRoot, request: initialization }, {
+          nativeIdentity: { host: selectedHost, sessionId: "zip-owner", observed: true, cwd: projectRoot },
+        });
         assert.ok(["applied", "duplicate"].includes(initialized.status), JSON.stringify(initialized));
         assert.equal(initialized.canonicalReady, true);
         assert.equal(initialized.ready, false);
-        const selectedHost = runtime === "claude" ? "claude-code" : "codex";
         const overview = JSON.parse((await run(process.execPath, [installedCli, "settings", "--project", projectRoot, "--host", selectedHost, "--scope", "project"])).stdout);
         assert.ok(overview.roles.length > 0);
         const readiness = JSON.parse((await run(process.execPath, [installedCli, "readiness", "--project", projectRoot, "--host", selectedHost, "--scope", scope])).stdout);

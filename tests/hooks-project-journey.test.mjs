@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { runCommand } from "../hooks/agent-team-cli.mjs";
 
 const run = promisify(execFile);
 const cli = path.resolve(import.meta.dirname, "../hooks/agent-team-cli.mjs");
@@ -47,11 +48,15 @@ function planRequest() {
 test("actual project CLI connects initialization, settings, claims, checkpoints and an opted-in snapshot", async () => {
   const root = await fixture();
   const initialization = await request(root, "initialization", planRequest());
-  const created = await invoke("project-initialize", root, "--request", initialization);
+  const shell = await invoke("project-initialize", root, "--request", initialization);
+  assert.deepEqual({ status: shell.status, ready: shell.ready, reason: shell.reason },
+    { status: "validated", ready: false, reason: "native_identity_required" });
+  const nativeIdentity = { host: "codex", sessionId: "project-owner", observed: true, cwd: root };
+  const created = await runCommand("project-initialize", { project: root, request: initialization }, { nativeIdentity });
   assert.equal(created.status, "applied");
   assert.equal(created.canonicalReady, true);
   assert.equal(created.ready, false, "canonical initialization is not native/capability readiness");
-  assert.equal((await invoke("project-initialize", root, "--request", initialization)).status, "duplicate");
+  assert.equal((await runCommand("project-initialize", { project: root, request: initialization }, { nativeIdentity })).status, "duplicate");
 
   const selectors = ["--host", "codex", "--scope", "project"];
   const settings = await invoke("settings", root, ...selectors);
@@ -96,11 +101,47 @@ test("initialization CLI cannot replace the envelope actor with a body owner cla
   const value = planRequest();
   value.request.ownerSessionId = "forged-owner";
   const file = await request(root, "initialization", value);
-  const result = await invoke("project-initialize", root, "--request", file);
-  assert.equal(result.status, "applied");
-  const teams = await readFile(path.join(root, ".agent-team/TEAMS.md"), "utf8");
-  assert.match(teams, /Project owner: project-owner/);
-  assert.doesNotMatch(teams, /forged-owner/);
+  const nativeIdentity = { host: "codex", sessionId: value.actorSessionId, observed: true, cwd: root };
+  const result = await runCommand("project-initialize", { project: root, request: file }, { nativeIdentity });
+  assert.equal(result.status, "conflict");
+  assert.equal(result.reason, "invalid_request");
+  await assert.rejects(access(path.join(root, ".agent-team")), { code: "ENOENT" });
+});
+
+test("native identity validation and shell validation are mutation-free", async () => {
+  const cases = [
+    ["shell validation", undefined, "native_identity_required"],
+    ["unobserved native identity", { host: "codex", sessionId: "project-owner", observed: false }, "native_identity_required"],
+    ["unsupported native host", { host: "other", sessionId: "project-owner", observed: true }, "native_host_unsupported"],
+    ["mismatched native identity", { host: "codex", sessionId: "different-owner", observed: true }, "native_identity_mismatch"],
+  ];
+  for (const [name, identity, reason] of cases) {
+    const root = await fixture();
+    const file = await request(root, `initialization-${name.replaceAll(" ", "-")}`, planRequest());
+    const result = await runCommand("project-initialize", { project: root, request: file }, identity ? { nativeIdentity: { ...identity, cwd: root } } : {});
+    assert.deepEqual({ status: result.status, ready: result.ready, reason: result.reason }, { status: "validated", ready: false, reason }, name);
+    await assert.rejects(access(path.join(root, ".agent-team")), { code: "ENOENT" });
+    await assert.rejects(access(path.join(root, "TASKS.md")), { code: "ENOENT" });
+  }
+});
+
+test("native identity rejects nested repository and linked worktree cwd before mutation", async () => {
+  const root = await fixture();
+  const linked = `${root}-linked`;
+  temporary.push(linked);
+  execFileSync("git", ["worktree", "add", "-q", "-b", "linked", linked], { cwd: root });
+  const nested = path.join(root, "nested");
+  execFileSync("git", ["init", "-q", "-b", "main", nested]);
+  const envelope = planRequest();
+  for (const [project, cwd] of [[root, nested], [root, linked], [linked, linked]]) {
+    const file = await request(root, `identity-${Math.random().toString(16).slice(2)}`, envelope);
+    const result = await runCommand("project-initialize", { project, request: file }, {
+      nativeIdentity: { host: "codex", sessionId: envelope.actorSessionId, observed: true, cwd },
+    });
+    assert.equal(result.reason, "native_project_cwd_mismatch");
+  }
+  await assert.rejects(access(path.join(root, ".agent-team")), { code: "ENOENT" });
+  await assert.rejects(access(path.join(root, "TASKS.md")), { code: "ENOENT" });
 });
 
 test("initialization CLI rejects a nonzero version for absent setup without publishing records", async () => {
@@ -108,7 +149,8 @@ test("initialization CLI rejects a nonzero version for absent setup without publ
   const value = planRequest();
   value.expectedVersion = 7;
   const file = await request(root, "stale-initialization", value);
-  const result = await invoke("project-initialize", root, "--request", file);
+  const nativeIdentity = { host: "codex", sessionId: value.actorSessionId, observed: true, cwd: root };
+  const result = await runCommand("project-initialize", { project: root, request: file }, { nativeIdentity });
   assert.equal(result.status, "conflict");
   assert.equal(result.reason, "stale_setup_version");
   for (const name of ["TASKS.md", ".agent-team/setup.json", ".agent-team/state.json", ".agent-team/TEAMS.md", ".agent-team/.setup-initialization.json"]) {
@@ -116,5 +158,5 @@ test("initialization CLI rejects a nonzero version for absent setup without publ
   }
   value.expectedVersion = 0;
   await writeFile(file, JSON.stringify(value));
-  assert.equal((await invoke("project-initialize", root, "--request", file)).status, "applied");
+  assert.equal((await runCommand("project-initialize", { project: root, request: file }, { nativeIdentity })).status, "applied");
 });

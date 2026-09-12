@@ -354,10 +354,11 @@ test("integration evidence keeps an actual initialized project structurally read
   execFileSync("git", ["init", "-q", "--bare", remote]);
   execFileSync("git", ["remote", "add", "origin", remote], { cwd: root });
   execFileSync("git", ["push", "-q", "-u", "origin", "main"], { cwd: root });
-  const request = { projectId: "fresh-project", ownerSessionId: "owner-session", operationId: "initialize-fresh", source: "standalone",
+  const request = { projectId: "fresh-project", operationId: "initialize-fresh", source: "standalone",
     tracker: { kind: "markdown", path: ".agent-team/TASKS.md" }, plan: { scope: "Gate test", acceptance: ["Gate passes"], branch: "main", verification: ["node --test"],
       authority: { ownedPaths: ["tests/**"] }, tasks: [{ id: "AT-001", title: "Gate", status: "ready", dependencies: [] }] } };
-  assert.equal((await initializeProject(root, request)).status, "applied");
+  assert.equal((await initializeProject(root, request, { actorSessionId: "owner-session",
+    nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root } })).status, "applied");
   const project = await resolveProject(root);
   const canonical = await loadCanonicalState(project);
   const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
