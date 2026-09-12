@@ -102,7 +102,7 @@ Confirm discovery with `$agent-team help` or `/agent-team help`. Installation, r
 Download `agent-team-7.2.0.zip` and its matching one-entry `SHA256SUMS` from the [Agent-Team v7.2.0 candidate release](https://github.com/thebpandey/agent-team/releases/tag/v7.2.0), or find updates through [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify the exact downloaded pair, then run the CLI from the extracted archive:
 
 ```bash
-sha256sum -c /absolute/download/SHA256SUMS
+(cd /absolute/download && sha256sum -c SHA256SUMS)
 node /absolute/extracted/agent-team/hooks/agent-team-cli.mjs install \
   --archive /absolute/download/agent-team-7.2.0.zip \
   --checksums /absolute/download/SHA256SUMS \
