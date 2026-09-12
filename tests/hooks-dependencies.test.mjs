@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -375,12 +375,21 @@ test("canonical contained npm and uv shims retain one bound identity across phas
     assert.equal((await runner({ dependency, phase: "worker" })).status, "passed");
     assert.ok(identities[0]);
     assert.deepEqual(identities[1], identities[0]);
+    if (fixture.id === "impeccable") {
+      const sameSizeReplacement = executableBytes.replace("stdout", "stderr");
+      assert.equal(Buffer.byteLength(sameSizeReplacement), Buffer.byteLength(executableBytes));
+      await writeFile(target, sameSizeReplacement, { mode: 0o755 });
+      await writeFile(target, executableBytes, { mode: 0o755 });
+      await utimes(target, new Date(1_000), new Date(1_000));
+      assert.equal((await runner({ dependency, phase: "functional", check: dependency.functionalCheck })).status, "manual_action");
+    }
     await writeFile(target, `#!${process.execPath}\nconsole.log('replacement');\n`, { mode: 0o755 });
     assert.equal((await runner({ dependency, phase: "functional", check: dependency.functionalCheck })).status, "manual_action");
 
     if (fixture.id === "graphify") {
       const metadataPath = path.join(packageRoot, fixture.metadata[0]);
       for (const malformed of [
+        "Summary: body-only identity must not count\n\nName: graphifyy\nVersion: 0.9.57\n",
         "Name: graphifyy\nName: graphifyy\nVersion: 0.9.57\n",
         "Name: graphifyy\nVersion: 0.9.57\nVersion: 9.9.9\n",
       ]) {
@@ -390,6 +399,11 @@ test("canonical contained npm and uv shims retain one bound identity across phas
           paths: { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") } })
           ({ dependency: { ...dependency }, phase: "probe" })).status, "manual_action");
       }
+      await writeFile(metadataPath, `${fixture.metadata[1]}\nName: ignored-body\nVersion: 9.9.9\n`);
+      await writeFile(target, executableBytes, { mode: 0o755 });
+      assert.equal((await createDependencyRunner({ host: "codex", scope: "project",
+        paths: { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") } })
+        ({ dependency: { ...dependency }, phase: "probe" })).status, "passed");
       await writeFile(metadataPath, fixture.metadata[1]);
     }
 

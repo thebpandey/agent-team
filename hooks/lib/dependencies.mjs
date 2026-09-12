@@ -416,23 +416,25 @@ async function stableExecutableIdentity({ executable, requested = executable, ca
       const handle = await open(metadataPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       let metadata;
       try {
-        const before = await handle.stat();
-        if (!before.isFile() || before.size > 1024 * 1024) throw new Error(`Package metadata byte/type limit exceeded: ${metadataPath}.`);
+        const before = await handle.stat({ bigint: true });
+        if (!before.isFile() || before.size > 1024n * 1024n) throw new Error(`Package metadata byte/type limit exceeded: ${metadataPath}.`);
         const chunks = [];
         for await (const chunk of handle.createReadStream({ autoClose: false, start: 0, end: 1024 * 1024, signal: budget?.signal })) {
           budget?.check();
           chunks.push(chunk);
         }
         const bytes = Buffer.concat(chunks);
-        const after = await handle.stat();
-        const current = await lstat(metadataPath);
-        if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || bytes.length !== before.size
-          || !current.isFile() || current.dev !== before.dev || current.ino !== before.ino) {
+        const after = await handle.stat({ bigint: true });
+        const current = await lstat(metadataPath, { bigint: true });
+        if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+          || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs || BigInt(bytes.length) !== before.size
+          || !current.isFile() || current.dev !== before.dev || current.ino !== before.ino
+          || current.ctimeNs !== before.ctimeNs || current.mtimeNs !== before.mtimeNs) {
           throw new Error("Executable package metadata changed while it was inspected.");
         }
         metadata = bytes.toString("utf8");
       } finally { await handle.close(); }
-      const lines = metadata.split(/\r?\n/);
+      const lines = metadata.split(/\r?\n\r?\n/, 1)[0].split(/\r?\n/);
       const names = lines.filter((line) => line.startsWith("Name: "));
       const versions = lines.filter((line) => line.startsWith("Version: "));
       if (names.length !== 1 || versions.length !== 1
@@ -448,25 +450,28 @@ async function stableExecutableIdentity({ executable, requested = executable, ca
   let stat;
   let bytes;
   try {
-    stat = await handle.stat();
-    if (!stat.isFile() || stat.size > 128 * 1024 * 1024) throw new Error(`Executable byte/type limit exceeded: ${executable}.`);
+    stat = await handle.stat({ bigint: true });
+    if (!stat.isFile() || stat.size > 128n * 1024n * 1024n) throw new Error(`Executable byte/type limit exceeded: ${executable}.`);
     const chunks = [];
     for await (const chunk of handle.createReadStream({ autoClose: false, start: 0, end: 128 * 1024 * 1024, signal: budget?.signal })) {
       budget?.check();
       chunks.push(chunk);
     }
     bytes = Buffer.concat(chunks);
-    const after = await handle.stat();
-    if (after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size || bytes.length !== stat.size) {
+    const after = await handle.stat({ bigint: true });
+    if (after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size
+      || after.ctimeNs !== stat.ctimeNs || after.mtimeNs !== stat.mtimeNs || BigInt(bytes.length) !== stat.size) {
       throw new Error(`Executable identity changed while it was read: ${executable}.`);
     }
   } finally { await handle.close(); }
-  const [targetStat, resolvedAgain] = await Promise.all([lstat(resolved), realpath(executable)]);
-  if (resolvedAgain !== resolved || targetStat.dev !== stat.dev || targetStat.ino !== stat.ino || !targetStat.isFile()) {
+  const [targetStat, resolvedAgain] = await Promise.all([lstat(resolved, { bigint: true }), realpath(executable)]);
+  if (resolvedAgain !== resolved || targetStat.dev !== stat.dev || targetStat.ino !== stat.ino || !targetStat.isFile()
+    || targetStat.ctimeNs !== stat.ctimeNs || targetStat.mtimeNs !== stat.mtimeNs) {
     throw new Error(`Executable identity changed while it was inspected: ${executable}.`);
   }
   return { requested, canonical, realpath: resolved, ...(packageReal ? { packageRoot: packageReal, packageName, packageVersion } : {}),
-    dev: stat.dev, ino: stat.ino, mode: stat.mode, size: stat.size, sha256: createHash("sha256").update(bytes).digest("hex") };
+    dev: Number(stat.dev), ino: Number(stat.ino), mode: Number(stat.mode), size: Number(stat.size),
+    ctimeNs: stat.ctimeNs.toString(), mtimeNs: stat.mtimeNs.toString(), sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
 async function packageManagerExecutableIdentity(dependency, executable, paths, budget) {
@@ -525,7 +530,7 @@ async function manualExecutableResult(executable, identity, evidence) {
 }
 
 function sameExecutableIdentity(left, right) {
-  return left && right && ["requested", "canonical", "realpath", "packageRoot", "packageName", "packageVersion", "dev", "ino", "mode", "size", "sha256"]
+  return left && right && ["requested", "canonical", "realpath", "packageRoot", "packageName", "packageVersion", "dev", "ino", "mode", "size", "ctimeNs", "mtimeNs", "sha256"]
     .every((key) => left[key] === right[key]);
 }
 
@@ -1054,6 +1059,7 @@ async function installLeanCtxRelease(dependency, paths, budget) {
     budget?.check();
     await mkdir(directory, { mode: 0o700 }); // Exclusive: preserve a directory created during download.
     await link(source, destination); // Atomic and never follows or replaces a destination link.
+    await unlink(source); // Stabilize link-count ctime before binding the published executable identity.
     const identity = await stableExecutableIdentity({ executable: destination, requested: destination, canonical: destination, paths, budget });
     return { status: "passed", version: dependency.version, path: destination, paths: [destination], lifecycleOwnership: "managed",
       components: [executableComponent(destination, identity, "managed", "installed")],
