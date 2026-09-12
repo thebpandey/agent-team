@@ -703,9 +703,9 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       const { target } = runtimePaths({ home, ...selected }, runtime);
       const targetPresent = await present(target);
       const previous = targetRecord(previousReceipt, runtime, target);
-      const previousDigest = targetPresent && previous
-        ? await managedPackageDigest(target, previous.files ?? manifest.files)
-        : undefined;
+      const targetIdentity = targetPresent ? await lstat(target) : null;
+      const targetGuard = targetPresent ? await resourceGuard(target, previous?.files ?? manifest.files) : { kind: "absent" };
+      const previousDigest = targetPresent && previous ? targetGuard.digest : undefined;
       if (previous?.preexisting) {
         if (previousDigest !== previous.digest) conflicts.push({ kind: "skill", runtime, target, reason: "preexisting_target_changed" });
         else if (await managedPackageDigest(target, manifest.files) !== digest) conflicts.push({ kind: "skill", runtime, target, reason: "preexisting_target" });
@@ -720,6 +720,7 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       if (targetPresent && previous?.mode === "copied" && previousDigest !== previous.digest) {
         conflicts.push({ kind: "skill", runtime, target, reason: "managed_target_changed" });
         targets.push(previous);
+        unavailableRuntimes.add(runtime);
         continue;
       }
       const currentDigest = targetPresent ? await managedPackageDigest(target, manifest.files) : undefined;
@@ -736,12 +737,27 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       }
       await testHooks.beforeTargetSwap?.({ runtime, index: swapIndex });
       await assertFileMap(sealedRoot, artifact.archiveFileMap);
+      let currentIdentity;
+      try { currentIdentity = await lstat(target); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      if (!targetIdentity && currentIdentity) {
+        const error = new Error("target_appeared_before_swap");
+        error.code = "EEXIST";
+        throw error;
+      }
+      if (!(await guardMatches(target, targetGuard))
+        || Boolean(currentIdentity) !== Boolean(targetIdentity)
+        || (targetIdentity && (currentIdentity.dev !== targetIdentity.dev || currentIdentity.ino !== targetIdentity.ino))) {
+        throw new Error("target_changed_before_swap");
+      }
       await mkdir(path.dirname(target), { recursive: true });
       if (targetPresent) {
         const backup = path.join(backupRoot, "skills", runtime === "codex" ? "agents-agent-team" : "claude-agent-team");
         await mkdir(path.dirname(backup), { recursive: true });
-        await addUndo({ kind: "move", from: backup, to: target, fromGuard: await resourceGuard(target, previous?.files ?? manifest.files) });
+        await addUndo({ kind: "move", from: backup, to: target, fromGuard: targetGuard });
         await rename(target, backup);
+        const movedIdentity = await lstat(backup);
+        if (movedIdentity.dev !== targetIdentity.dev || movedIdentity.ino !== targetIdentity.ino
+          || !(await guardMatches(backup, targetGuard))) throw new Error("target_changed_during_swap");
         backups.push({ kind: "skill", target, backup, purpose: previous ? "update_snapshot" : "preinstall_restore", transactionId });
       }
       await addUndo({ kind: "remove_path", path: target, recursive: true,
@@ -865,12 +881,17 @@ async function installLocked({ sealedRoot, home, now, selected, artifact, testHo
       .map((entry) => [`${entry.kind}:${entry.runtime}:${entry.target}:${entry.reason}`, entry])).values()];
     const installedFileMaps = {};
     for (const target of targets.filter(({ runtime }) => ["codex", "claude"].includes(runtime))) {
-      try {
-        const files = await exactFileMap(target.path, manifest.files);
-        if (same(files, artifact.packageFileMap)) installedFileMaps[target.runtime] = { target: target.path, digest: fileMapDigest(files), files };
-      } catch {}
+      if (!selected.runtimes.includes(target.runtime)) {
+        const retained = previousReceipt?.installedFileMaps?.[target.runtime];
+        if (retained) installedFileMaps[target.runtime] = retained;
+        continue;
+      }
+      if (unavailableRuntimes.has(target.runtime)) continue;
+      let files = await exactFileMap(target.path, manifest.files);
+      files = await testHooks.afterInstalledFileMap?.({ runtime: target.runtime, target: target.path, files: structuredClone(files) }) ?? files;
+      if (!same(files, artifact.packageFileMap)) throw new Error("installed_file_map_mismatch");
+      installedFileMaps[target.runtime] = { target: target.path, digest: fileMapDigest(files), files };
     }
-    for (const [runtime, value] of Object.entries(previousReceipt?.installedFileMaps ?? {})) if (!installedFileMaps[runtime] && targets.some((target) => target.runtime === runtime)) installedFileMaps[runtime] = value;
     const receipt = {
       schemaVersion: 4,
       transactionId,

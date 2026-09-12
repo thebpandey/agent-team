@@ -72,11 +72,13 @@ async function artifactHealth(root, runtime, installed, receipt) {
   const empty = { releaseTag: null, sourceRevision: null, archiveSha256: null, installedFileMapDigest: null };
   if (!installed) return { status: "not_installed", ...empty };
   const target = path.join(root, runtime === "codex" ? ".agents" : ".claude", "skills", "agent-team");
-  const targetReceipt = receipt?.targets?.find((entry) => entry.runtime === runtime && entry.path === target);
-  if (!targetReceipt) return { status: "missing_receipt", ...empty };
+  const targetReceipts = receipt?.targets?.filter((entry) => entry.runtime === runtime && entry.path === target) ?? [];
+  const targetReceipt = targetReceipts[0];
+  if (targetReceipts.length !== 1) return { status: "missing_receipt", ...empty };
   if (receipt.schemaVersion !== 4 || !receipt.artifact) return { status: "unverified_legacy", ...empty };
   try {
-    if (!/^v\d+\.\d+\.\d+$/.test(receipt.artifact.releaseTag)
+    if (receipt.version !== receipt.artifact.version
+      || !/^v\d+\.\d+\.\d+$/.test(receipt.artifact.releaseTag)
       || !/^[0-9a-f]{40}$/.test(receipt.artifact.sourceRevision)
       || !/^[0-9a-f]{64}$/.test(receipt.artifact.archiveSha256)
       || fileMapDigest(receipt.artifact.packageFileMap) !== receipt.artifact.packageContentDigest
@@ -84,10 +86,21 @@ async function artifactHealth(root, runtime, installed, receipt) {
   } catch {
     return { status: "drifted", ...empty };
   }
-  const record = receipt.installedFileMaps[runtime];
+  const record = receipt.installedFileMaps?.[runtime];
   if (!record) return { status: "drifted", releaseTag: receipt.artifact.releaseTag ?? null,
     sourceRevision: receipt.artifact.sourceRevision ?? null, archiveSha256: receipt.artifact.archiveSha256 ?? null,
     installedFileMapDigest: null };
+  const recordedNames = Object.keys(record.files ?? {}).sort();
+  const targetNames = Array.isArray(targetReceipt.files) ? [...targetReceipt.files].sort() : [];
+  if (Object.keys(record).sort().join("\0") !== ["digest", "files", "target"].sort().join("\0")
+    || record.target !== target
+    || JSON.stringify(record.files) !== JSON.stringify(receipt.artifact.packageFileMap)
+    || record.digest !== fileMapDigest(record.files)
+    || JSON.stringify(targetNames) !== JSON.stringify(recordedNames)) {
+    return { status: "drifted", releaseTag: receipt.artifact.releaseTag ?? null,
+      sourceRevision: receipt.artifact.sourceRevision ?? null, archiveSha256: receipt.artifact.archiveSha256 ?? null,
+      installedFileMapDigest: null };
+  }
   let current = false;
   try {
     const observed = await observedFileMap(target);
