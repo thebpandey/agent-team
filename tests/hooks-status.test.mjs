@@ -107,9 +107,9 @@ test("status separates loaded runtime source candidate handoff and readiness", (
 test("status reports local-only and target-required without globalizing holds", () => {
   const source = effectiveCanonical();
   source.state.run.autoDeploy = true;
-  source.state.database = { selected: true, healthy: true, environment: "local", hold: false, remote: null };
+  source.tracker = { kind: "beads", id: "beads:/project/.beads", path: "/project/.beads", status: "current", fingerprint: "f".repeat(64) };
   delete source.state.release.target;
-  const model = createStatusModel({ ...project, setup: { tracker: { kind: "beads", executable: "/bin/bd" } } }, source);
+  const model = createStatusModel({ ...project, setup: { tracker: { kind: "beads", executable: "/bin/bd" } }, tracker: { kind: "beads", path: "/project/.beads" } }, source);
   assert.deepEqual(model.targets.deployment, { kind: "deployment", status: "enabled_but_held", reason: "target_required", taskIds: ["AT-001"] });
   assert.equal(model.targets.database.status, "local_only");
   assert.equal(model.targets["origin/main"].status, "ready");
@@ -125,13 +125,74 @@ test("status target readiness requires exact observed authority and database dis
   assert.deepEqual(remote.targets["origin/main"].taskIds, []);
 
   const production = effectiveCanonical();
-  production.state.database = { selected: true, healthy: true, environment: "production", hold: true, remote: null };
-  const held = createStatusModel({ ...project, setup: { tracker: { kind: "beads", executable: "/bin/bd" } } }, production);
-  assert.equal(held.targets.database.status, "held");
+  production.state.database = { authorized: false, environment: "production", productionApproved: false,
+    inventoryAt: "2026-09-08T12:00:00.000Z", recovery: { verifiedAt: "2026-09-08T12:00:00.000Z", kind: "backup" },
+    dryRun: { capability: "supported", verifiedAt: "2026-09-08T12:00:00.000Z" } };
+  const held = createStatusModel(project, production);
+  assert.equal(held.targets["database:production"].status, "held");
 
   const local = effectiveCanonical();
-  local.state.database = { selected: true, healthy: true, environment: "local", hold: false, remote: null };
-  assert.equal(createStatusModel({ ...project, setup: { tracker: { kind: "beads", executable: "/bin/bd" } } }, local).targets.database.status, "local_only");
+  local.tracker = { kind: "beads", id: "beads:/project/.beads", path: "/project/.beads", status: "current", fingerprint: "f".repeat(64) };
+  assert.equal(createStatusModel({ ...project, setup: { tracker: { kind: "beads", executable: "/bin/bd" } },
+    tracker: { kind: "beads", path: "/project/.beads" } }, local).targets.database.status, "local_only");
+});
+
+test("status keeps task publication authority independent from an incomplete aggregate release target", () => {
+  const incomplete = effectiveCanonical();
+  incomplete.state.release = { ...incomplete.state.release, authorized: true, hold: false };
+  assert.notEqual(createStatusModel(project, incomplete).targets.vercel.status, "ready");
+
+  const collision = effectiveCanonical();
+  collision.state.release = { ...collision.state.release, target: "origin/main", process: "vercel", hold: true };
+  const targets = createStatusModel(project, collision).targets;
+  assert.equal(targets["origin/main"].status, "ready");
+  assert.deepEqual(targets["release:origin/main:vercel"], {
+    kind: "release", process: "vercel", status: "held", reason: "release_hold", taskIds: [],
+  });
+});
+
+test("status derives the local Beads store from selected tracker facts and keeps application database authority separate", () => {
+  const source = effectiveCanonical({ tracker: { kind: "beads", id: "beads:/project/.beads", path: "/project/.beads", status: "current", fingerprint: "f".repeat(64) } });
+  const selected = { ...project, setup: { tracker: { kind: "beads", executable: "/bin/bd" } }, tracker: { kind: "beads", path: "/project/.beads" } };
+  assert.deepEqual(createStatusModel(selected, source).targets.database, {
+    kind: "tracker_database", status: "local_only", reason: null, taskIds: [],
+  });
+
+  source.state.database = { ownerSessionId: "owner", ownerHost: "codex", ownershipEpoch: 3, authorized: false,
+    environment: "production", productionApproved: false, inventoryAt: "2026-09-08T12:00:00.000Z",
+    recovery: { verifiedAt: "2026-09-08T12:00:00.000Z", kind: "backup" },
+    dryRun: { capability: "supported", verifiedAt: "2026-09-08T12:00:00.000Z" } };
+  const targets = createStatusModel(selected, source).targets;
+  assert.equal(targets.database.status, "local_only");
+  assert.deepEqual(targets["database:production"], {
+    kind: "database", environment: "production", authorized: false, productionApproved: false, status: "held",
+    reason: "database_authority_required", taskIds: [], inventoryAt: "2026-09-08T12:00:00.000Z",
+    recovery: { verifiedAt: "2026-09-08T12:00:00.000Z", kind: "backup" },
+    dryRun: { capability: "supported", verifiedAt: "2026-09-08T12:00:00.000Z" },
+  });
+});
+
+test("status exposes the same qualified run occupancy and decision facts as recovery", () => {
+  const source = effectiveCanonical();
+  source.tasks = [
+    { id: "AT-001", title: "Owned", owner: "TEAM-001", status: "in_progress", parentId: null, taskType: "task", isTopLevelDelivery: true, dependencies: [] },
+    { id: "AT-002", title: "Ready", owner: "", status: "ready", parentId: null, taskType: "task", isTopLevelDelivery: true, dependencies: [] },
+  ];
+  source.state.run = { ...source.state.run, taskIds: ["AT-001", "AT-002"], teamLimit: 2, batchSize: 2 };
+  source.state.taskRuntime = { "AT-001": { compute: "active", writer: { host: "local", sessionId: "worker" } } };
+  source.state.pendingDecisions = [{ id: "target", taskIds: ["AT-002"] }];
+  source.state.pendingOperations = { uncertain: { taskId: "AT-001", status: "unknown" } };
+  const model = createStatusModel(project, source);
+  assert.deepEqual(model.workers.unknown.map(({ taskId }) => taskId), ["AT-001"]);
+  assert.deepEqual(model.slots, { teamLimit: 2, occupied: 1, reviewReservation: 1, safelyFree: 0, unknownOccupancy: 1 });
+  assert.deepEqual(model.run.eligibleTaskIds, ["AT-002"]);
+  assert.deepEqual(model.run.blockedTaskIds, ["AT-001"]);
+  assert.equal(model.run.deploymentHeld, true);
+  assert.deepEqual(model.run.holdReasons, ["auto_deploy_disabled"]);
+  assert.deepEqual(model.pendingDecisions, [{ id: "target", taskIds: ["AT-002"] }]);
+  assert.deepEqual(model.uncertainOperations, [{ operationId: "uncertain", taskId: "AT-001", status: "unknown" }]);
+  assert.deepEqual(model.tail, { classification: "progress_possible", selectedTaskIds: [] });
+  assert.deepEqual(model.nextAction, { kind: "dispatch_or_refill", taskIds: ["AT-002"] });
 });
 
 test("status never invents an unobserved operational version", () => {

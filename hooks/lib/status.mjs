@@ -1,7 +1,8 @@
 import { loadCanonicalState } from "./canonical-state.mjs";
 import { resolveProject } from "./project.mjs";
 import { createEventBudget } from "./budget.mjs";
-import { readRunDecision } from "./run-state.mjs";
+import { releaseAuthorityReady } from "./policy.mjs";
+import { projectRunState } from "./recovery.mjs";
 
 const STATUS_READ_TIMEOUT_MS = 5000;
 const completed = new Set(["completed", "complete", "done", "closed"]);
@@ -131,7 +132,7 @@ function cleanupFor(state, taskId) {
   };
 }
 
-function targetsFor(project, canonical, runDecision) {
+function targetsFor(project, canonical, runDecision, now) {
   const state = canonical.state ?? {};
   const result = {};
   const integration = state.integration;
@@ -159,23 +160,38 @@ function targetsFor(project, canonical, runDecision) {
       : observed ?? { kind: "integration", status: "unavailable", reason: "target_authority_unavailable", taskIds: [] };
   }
   if (typeof state.release?.target === "string" && state.release.target) {
-    const qualified = sameOwner(state.release) && state.release.authorized === true && typeof state.release.process === "string";
-    result[state.release.target] = { kind: "release", status: state.release.hold === true ? "held" : qualified ? "ready" : "unavailable",
-      reason: state.release.hold === true ? "release_hold" : qualified ? null : "target_authority_unavailable", taskIds: [...(state.release.taskIds ?? [])] };
+    const process = typeof state.release.process === "string" && state.release.process ? state.release.process : "unknown";
+    const ready = releaseAuthorityReady(canonical, { now, process: state.release.process });
+    const entry = { kind: "release", process, status: state.release.hold === true ? "held" : ready ? "ready" : "unknown",
+      reason: state.release.hold === true ? "release_hold" : ready ? null : "release_authority_unavailable", taskIds: [...(state.release.taskIds ?? [])] };
+    const key = result[state.release.target] ? `release:${state.release.target}:${process}` : state.release.target;
+    result[key] = entry;
   } else if (runDecision.status === "available" && runDecision.effectiveRun.autoDeploy) {
     result.deployment = { kind: "deployment", status: "enabled_but_held", reason: "target_required", taskIds: [...runDecision.effectiveRun.taskIds] };
   }
   const database = state.database;
-  if (project?.setup?.tracker?.kind === "beads" && database?.selected === true) {
-    const localOnly = database.healthy === true && database.environment === "local" && !database.remote && database.hold !== true;
-    result.database = { kind: "database", status: database.hold === true || database.environment === "production" ? "held" : localOnly ? "local_only" : "unavailable",
-      reason: database.hold === true ? "database_hold" : localOnly ? null : "database_authority_unavailable", taskIds: [...(database.taskIds ?? [])] };
+  const configuredDoltRemote = project?.setup?.tracker?.doltRemote ?? canonical.tracker?.doltRemote;
+  if (project?.tracker?.kind === "beads" && canonical.tracker?.kind === "beads" && canonical.tracker.status === "current" && !configuredDoltRemote) {
+    result.database = { kind: "tracker_database", status: "local_only", reason: null, taskIds: [] };
+  }
+  if (database && typeof database === "object") {
+    const environment = typeof database.environment === "string" && database.environment ? database.environment : "unknown";
+    const authorized = database.authorized === true;
+    const productionApproved = database.productionApproved === true;
+    const held = database.hold === true || !authorized || environment === "production" && !productionApproved;
+    result[`database:${environment}`] = { kind: "database", environment, authorized, productionApproved,
+      status: held ? "held" : "unknown", reason: database.hold === true ? "database_hold" : !authorized ? "database_authority_required"
+        : environment === "production" && !productionApproved ? "production_approval_required" : "database_readiness_unverified",
+      taskIds: [...(database.taskIds ?? [])], ...(database.inventoryAt !== undefined ? { inventoryAt: database.inventoryAt } : {}),
+      ...(database.recovery !== undefined ? { recovery: structuredClone(database.recovery) } : {}),
+      ...(database.dryRun !== undefined ? { dryRun: structuredClone(database.dryRun) } : {}) };
   }
   return result;
 }
 
 /** Build one immutable, read-only status view from canonical task and team records. */
 export function createStatusModel(project, canonical = {}, options = {}) {
+  const now = options.now ?? new Date();
   const freshness = freshnessFor(canonical.tracker);
   const state = canonical.state && typeof canonical.state === "object" ? canonical.state : {};
   const version = (candidate) => Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : null;
@@ -192,7 +208,11 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     updatedAt: value(team, "last update", "updated at", "updated") || null,
   }));
   const unavailable = freshness.status === "unavailable" || freshness.status === "unknown";
-  const runDecision = readRunDecision(canonical, { writerLiveness: options.writerLiveness });
+  const operational = projectRunState(canonical, undefined, now);
+  const runDecision = { status: operational.run.status, effectiveRun: operational.run, effectiveRunFingerprint: operational.run.fingerprint,
+    classification: { kind: operational.tail.classification, eligibleTaskIds: operational.run.eligibleTaskIds, blockedTaskIds: operational.run.blockedTaskIds },
+    selectedBatchTaskIds: operational.run.selectedBatchTaskIds ?? [], deploymentHeld: operational.run.deploymentHeld,
+    holdReasons: operational.run.holdReasons ?? [], runProvenance: operational.run.provenance };
   const execution = (task) => task.runtime?.compute && task.runtime.compute !== "unknown"
     ? task.runtime.compute
     : ["active", "in_progress", "working"].includes(task.status) ? "active" : ["parked", "paused"].includes(task.status) ? task.status : "unknown";
@@ -226,6 +246,8 @@ export function createStatusModel(project, canonical = {}, options = {}) {
       fingerprint: runDecision.effectiveRunFingerprint,
       taskIds: runDecision.status === "available" ? [...runDecision.effectiveRun.taskIds] : [],
       selectedBatchTaskIds: [...runDecision.selectedBatchTaskIds],
+      eligibleTaskIds: [...(runDecision.classification.eligibleTaskIds ?? [])],
+      blockedTaskIds: [...(runDecision.classification.blockedTaskIds ?? [])],
       terminalClassification: runDecision.status === "available" ? runDecision.classification.kind : "unknown",
       deploymentHeld: runDecision.deploymentHeld,
       holdReasons: [...runDecision.holdReasons],
@@ -242,7 +264,13 @@ export function createStatusModel(project, canonical = {}, options = {}) {
       integration: state.integration?.status ? { status: state.integration.status } : { status: "unknown" },
       release: state.release?.status ? { status: state.release.status } : { status: "unknown" },
     },
-    targets: targetsFor(project, canonical, runDecision),
+    targets: targetsFor(project, canonical, runDecision, now),
+    workers: operational.workers,
+    slots: operational.slots,
+    pendingDecisions: operational.pendingDecisions,
+    uncertainOperations: operational.pendingOperations,
+    tail: operational.tail,
+    nextAction: operational.nextAction,
     provenance: {
       generatedBy: project?.setup?.initialization?.handoff?.generatedBy ?? { status: "unknown" },
       testedAgainst: project?.setup?.initialization?.handoff?.testedAgainst ?? { status: "unknown" },

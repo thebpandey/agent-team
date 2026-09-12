@@ -93,7 +93,7 @@ function operationPointers(state) {
   };
 }
 
-function currentRecovery(canonical, checkpoint, now = new Date()) {
+export function projectRunState(canonical, checkpoint, now = new Date()) {
   const rawRun = canonical.state?.run;
   const groups = { active: [], parked: [], paused: [], stopped: [], unknown: [] };
   const writerLiveness = {};
@@ -114,6 +114,10 @@ function currentRecovery(canonical, checkpoint, now = new Date()) {
   }
   const decision = readRunDecision(canonical, { writerLiveness });
   const run = decision.effectiveRun;
+  const runTaskIds = Array.isArray(run?.taskIds) ? run.taskIds : [];
+  const pendingDeliveryIds = Array.isArray(run?.pendingDeliveryIds) ? run.pendingDeliveryIds : [];
+  const deployedTaskIds = Array.isArray(run?.deployedTaskIds) ? run.deployedTaskIds : [];
+  const runBlockers = Array.isArray(run?.blockers) ? run.blockers : [];
   const occupied = groups.active.length + groups.parked.length + groups.paused.length + groups.unknown.length;
   const reviewReservation = Number.isSafeInteger(canonical.state?.capacity?.reservedReview) ? canonical.state.capacity.reservedReview : 1;
   const teamLimit = run?.teamLimit ?? null;
@@ -123,9 +127,9 @@ function currentRecovery(canonical, checkpoint, now = new Date()) {
   const occupiedIds = new Set([...groups.active, ...groups.parked, ...groups.paused, ...groups.unknown].map(({ taskId }) => taskId));
   const eligibleTaskIds = (decision.classification?.eligibleTaskIds ?? []).filter((id) => !occupiedIds.has(id));
   const complete = new Set(["verified", "integrated", "deployed", "closed", "done", "completed", "complete"]);
-  const unreconciled = (run?.taskIds ?? []).filter((id) => complete.has(String(taskById.get(id)?.status).toLowerCase())
-    && !run.pendingDeliveryIds.includes(id) && !run.deployedTaskIds.includes(id));
-  const cleanupTaskIds = (run?.deployedTaskIds ?? []).filter((id) => {
+  const unreconciled = runTaskIds.filter((id) => complete.has(String(taskById.get(id)?.status).toLowerCase())
+    && !pendingDeliveryIds.includes(id) && !deployedTaskIds.includes(id));
+  const cleanupTaskIds = deployedTaskIds.filter((id) => {
     const cleanup = canonical.state?.cleanup?.[id];
     return !cleanup || cleanup.removed !== true && cleanup.retain !== true;
   });
@@ -146,19 +150,23 @@ function currentRecovery(canonical, checkpoint, now = new Date()) {
   } else if (decision.selectedBatchTaskIds.length) nextAction = { kind: ["finite_exhausted", "continuous_scope_exhausted", "blocked_tail"].includes(decision.classification.kind)
       && decision.selectedBatchTaskIds.length < run.batchSize ? "prepare_terminal_underfill_release" : "prepare_release",
     taskIds: [...decision.selectedBatchTaskIds] };
-  else if (run.pendingDeliveryIds.length) nextAction = { kind: "resolve_target_decision", taskIds: [...run.pendingDeliveryIds] };
+  else if (pendingDeliveryIds.length) nextAction = { kind: "resolve_target_decision", taskIds: [...pendingDeliveryIds] };
   else if (cleanupTaskIds.length) nextAction = { kind: "cleanup", taskIds: cleanupTaskIds };
   else if (pendingDecisions.length) nextAction = { kind: "resolve_target_decision", taskIds: [...new Set(pendingDecisions.flatMap(({ taskIds, taskId }) => taskIds ?? [taskId]).filter(Boolean))] };
-  else if (run.blockers.length) nextAction = { kind: "resolve_blocker", taskIds: run.blockers.map(({ taskId }) => taskId) };
-  else if (run.taskIds.every((id) => complete.has(String(taskById.get(id)?.status).toLowerCase()))
-    && run.taskIds.every((id) => run.deployedTaskIds.includes(id)) && !occupied) nextAction = { kind: "complete", taskIds: [...run.taskIds] };
+  else if (runBlockers.length) nextAction = { kind: "resolve_blocker", taskIds: runBlockers.map(({ taskId }) => taskId) };
+  else if (runTaskIds.length && runTaskIds.every((id) => complete.has(String(taskById.get(id)?.status).toLowerCase()))
+    && runTaskIds.every((id) => deployedTaskIds.includes(id)) && !occupied) nextAction = { kind: "complete", taskIds: [...runTaskIds] };
   else nextAction = { kind: "continue_or_supervise", taskIds: [] };
   return {
-    run: run ? { ...structuredClone(run), fingerprint: decision.effectiveRunFingerprint, classification: decision.classification.kind,
-      selectedBatchTaskIds: [...decision.selectedBatchTaskIds], provenance: decision.runProvenance } : { status: "unavailable", taskIds: [] },
+    run: run ? { ...structuredClone(run), status: decision.status, fingerprint: decision.effectiveRunFingerprint, classification: decision.classification.kind,
+      eligibleTaskIds: [...(decision.classification.eligibleTaskIds ?? [])], blockedTaskIds: [...(decision.classification.blockedTaskIds ?? [])],
+      selectedBatchTaskIds: [...decision.selectedBatchTaskIds], deploymentHeld: decision.deploymentHeld,
+      holdReasons: [...decision.holdReasons], provenance: decision.runProvenance }
+      : { status: "unavailable", taskIds: [], eligibleTaskIds: [], blockedTaskIds: [], fingerprint: null, classification: "unknown",
+        selectedBatchTaskIds: [], provenance: null, deploymentHeld: true, holdReasons: ["effective_run_unavailable"] },
     workers: groups,
     slots: { teamLimit, occupied, reviewReservation, safelyFree, unknownOccupancy: groups.unknown.length },
-    blockers: structuredClone(run?.blockers ?? []), pendingDecisions, pendingOperations,
+    blockers: structuredClone(runBlockers), pendingDecisions, pendingOperations,
     tail: { classification: decision.classification.kind, selectedTaskIds: [...decision.selectedBatchTaskIds] },
     nextDispatch: { taskIds: [...eligibleTaskIds] }, nextAction,
     checkpoint: checkpoint ?? { status: "unavailable", reason: "checkpoint_missing" },
@@ -255,7 +263,7 @@ export async function inspectRecovery(project, {
     names = await bounded(() => readdir(project.paths.checkpoints));
   } catch (error) {
     if (error.code === "ENOENT") names = [];
-    else return finish({ status: "unavailable", reason: "checkpoint_unreadable", ...currentRecovery(canonical, undefined, now) });
+    else return finish({ status: "unavailable", reason: "checkpoint_unreadable", ...projectRunState(canonical, undefined, now) });
   }
 
   const records = [];
@@ -276,7 +284,7 @@ export async function inspectRecovery(project, {
   }
   records.sort((left, right) => right.timestamp - left.timestamp);
   const latest = records[0];
-  if (!latest) return finish({ status: "unavailable", reason: names.length ? "checkpoint_invalid" : "checkpoint_missing", ...currentRecovery(canonical, undefined, now) });
+  if (!latest) return finish({ status: "unavailable", reason: names.length ? "checkpoint_invalid" : "checkpoint_missing", ...projectRunState(canonical, undefined, now) });
   const sourceEvidence = await checkpointSources(project, latest, budget);
   let task;
   let currentPending = [];
@@ -314,6 +322,6 @@ export async function inspectRecovery(project, {
     uncertainty: latest.uncertainty ?? [],
     scope: latest.scope,
     restoreIndex: { tracker: project.paths.tasks, checkpoint: latest.path, sources: latest.sourcePointers ?? [] },
-    ...currentRecovery(canonical, checkpoint, now),
+    ...projectRunState(canonical, checkpoint, now),
   }, latest.worktree ? path.resolve(project.root, latest.worktree) : project.worktreeRoot);
 }
