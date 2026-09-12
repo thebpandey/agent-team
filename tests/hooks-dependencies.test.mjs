@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -122,10 +123,30 @@ test("sidecar-free exact skills are reused unowned and incompatible paths are pr
   assert.equal(exact.components[0].compatibility.status, "exact");
   assert.equal(await readFile(path.join(destination, "NOTES.md"), "utf8"), "preserve\n");
 
+  await mkdir(path.join(destination, "nested"));
+  await writeFile(path.join(destination, "nested", "SKILL.md"), bytes);
+  const ambiguous = await runner({ dependency, phase: "probe" });
+  assert.equal(ambiguous.status, "manual_action");
+  assert.match(ambiguous.evidence, /entrypoint/i);
+  await rm(path.join(destination, "nested"), { recursive: true });
+
+  const provenance = path.join(destination, "operator-provenance.json");
+  await writeFile(provenance, JSON.stringify({ source: dependency.install.source, revision: dependency.version,
+    selectedPath: dependency.install.paths[0] }));
+  await symlink("operator-provenance.json", path.join(destination, ".agent-team-source.json"));
+  const linkedSidecar = await runner({ dependency, phase: "probe" });
+  assert.equal(linkedSidecar.status, "manual_action");
+  assert.equal(linkedSidecar.lifecycleOwnership, "unowned");
+  await rm(path.join(destination, ".agent-team-source.json"));
+  await rm(provenance);
+
   await writeFile(path.join(destination, "SKILL.md"), "edited\n");
   const changed = await runner({ dependency, phase: "probe" });
   assert.equal(changed.status, "manual_action");
   assert.match(changed.evidence, /SKILL\.md/);
+  assert.equal(changed.path, destination);
+  assert.equal(changed.lifecycleOwnership, "unowned");
+  assert.equal(changed.components[0].compatibility.status, "incompatible");
   await rm(path.join(destination, "SKILL.md"));
   await symlink("NOTES.md", path.join(destination, "SKILL.md"));
   assert.equal((await runner({ dependency, phase: "probe" })).status, "manual_action");
@@ -241,6 +262,24 @@ test("an exact canonical Graphify executable is reused unowned without invoking 
   assert.equal(receipt.lifecycleOwnership, "unowned");
   assert.equal(receipt.path, executable);
   assert.deepEqual(graphCalls.filter((call) => call.startsWith("functional:") || call.startsWith("worker:")), [`functional:${executable}`, `worker:${executable}`]);
+
+  const dependency = { ...(await import("../hooks/lib/dependency-catalog.mjs")).CATALOG_BY_ID.get("graphify") };
+  const direct = createDependencyRunner({ host: "codex", scope: "project",
+    paths: { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") },
+    functionalAdapters: { graphify: async () => ({ status: "passed" }) } });
+  assert.equal((await direct({ dependency, phase: "probe" })).status, "passed");
+  await rm(executable);
+  await writeFile(executable, `#!${process.execPath}\nconsole.log('replacement');\n`, { mode: 0o755 });
+  assert.equal((await direct({ dependency, phase: "functional", check: dependency.functionalCheck })).status, "manual_action");
+
+  const actualRoot = path.join(root, "linked-tools-target");
+  const linkedRoot = path.join(root, "linked-tools");
+  await mkdir(path.join(actualRoot, "bin"), { recursive: true });
+  await writeFile(path.join(actualRoot, "bin", "graphify"), `#!${process.execPath}\nconsole.log('graphify 0.9.57');\n`, { mode: 0o755 });
+  await symlink(actualRoot, linkedRoot);
+  const linkedRunner = createDependencyRunner({ host: "codex", scope: "project",
+    paths: { projectRoot: root, toolRoot: linkedRoot, skillRoot: path.join(root, "skills") } });
+  assert.equal((await linkedRunner({ dependency: { ...dependency }, phase: "probe" })).status, "manual_action");
 });
 
 test("ast-grep uses its canonical absolute entrypoint and accepts only a verified same-package sg alias", async () => {
@@ -265,10 +304,19 @@ test("ast-grep uses its canonical absolute entrypoint and accepts only a verifie
   const runner = createDependencyRunner({ host: "codex", scope: "project", paths,
     functionalAdapters: { "ast-grep": async ({ executable }) => { seen.push(executable); return { status: "passed" }; } },
     workerDiscovery: async ({ executable }) => { seen.push(executable); return { status: "passed" }; } });
+  await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "other", version: "0.45.3" }));
+  assert.equal((await runner({ dependency: { ...base }, phase: "probe" })).status, "manual_action", "canonical requests verify package identity too");
+  await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "@ast-grep/cli", version: "0.45.3" }));
+  const selected = { ...base, executable: alias };
+  const probe = await runner({ dependency: selected, phase: "probe" });
+  assert.equal(probe.version, "0.45.3");
+  assert.equal(probe.components[0].compatibility.identity.requested, alias);
+  await writeFile(target, `#!${process.execPath}\nconsole.log('replacement 0.45.3');\n`, { mode: 0o755 });
+  assert.equal((await runner({ dependency: selected, phase: "functional", check: base.functionalCheck })).status, "manual_action");
+  await writeFile(target, `#!${process.execPath}\nconsole.log('ast-grep 0.45.3');\n`, { mode: 0o755 });
   assert.equal((await runner({ dependency: { ...base, executable: alias }, phase: "probe" })).version, "0.45.3");
-  assert.equal((await runner({ dependency: { ...base, executable: alias }, phase: "functional", check: base.functionalCheck })).status, "passed");
   assert.equal((await runner({ dependency: { ...base, executable: alias }, phase: "worker" })).status, "passed");
-  assert.deepEqual(seen, [canonical, canonical]);
+  assert.deepEqual(seen, [canonical]);
   assert.equal((await runner({ dependency: { ...base, executable: "/usr/bin/sg" }, phase: "probe" })).status, "manual_action");
 });
 
@@ -800,6 +848,49 @@ test("selective skill installation preflights every destination before copying",
   assert.equal(result.status, "manual_action");
   assert.match(result.evidence, /second/);
   await assert.rejects(readFile(path.join(skillRoot, "first", "SKILL.md")), { code: "ENOENT" });
+});
+
+test("skill installation reclassifies destinations that appear after the absent preflight", async (t) => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-skill-race-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, "source");
+  const skillRoot = path.join(root, "skills");
+  const toolRoot = path.join(root, "tools");
+  const destination = path.join(skillRoot, "fixture");
+  const bytes = Buffer.from("# exact\n");
+  await mkdir(path.join(source, "skills", "fixture"), { recursive: true });
+  await writeFile(path.join(source, "skills", "fixture", "SKILL.md"), bytes);
+  execFileSync("git", ["init", "--quiet"], { cwd: source });
+  execFileSync("git", ["add", "."], { cwd: source });
+  execFileSync("git", ["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "fixture"], { cwd: source });
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: source, encoding: "utf8" }).trim();
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  const wrapperRoot = path.join(root, "wrapper");
+  await mkdir(wrapperRoot);
+  await writeFile(path.join(wrapperRoot, "git"), `#!${process.execPath}\nconst {spawnSync}=require('node:child_process');const fs=require('node:fs');const r=spawnSync(${JSON.stringify(realGit)},process.argv.slice(2),{stdio:'inherit'});if(process.argv.includes('checkout')){fs.mkdirSync(process.env.RACE_DEST,{recursive:true});fs.writeFileSync(process.env.RACE_DEST+'/SKILL.md',process.env.RACE_BYTES)}process.exit(r.status??1);\n`, { mode: 0o755 });
+  const dependency = { id: "fixture", version: revision, install: { kind: "git-skill", repository: source, source, revision,
+    paths: ["skills/fixture"] }, compatibility: { kind: "required-files", entrypoint: "SKILL.md", allowUnrelatedRegularFiles: true,
+      selectedPaths: [{ selectedPath: "skills/fixture", requiredFiles: [{ path: "SKILL.md", digest: { algorithm: "sha256",
+        value: createHash("sha256").update(bytes).digest("hex") } }] }] } };
+  const prior = { path: process.env.PATH, dest: process.env.RACE_DEST, bytes: process.env.RACE_BYTES };
+  t.after(() => { process.env.PATH = prior.path; for (const [key, value] of [["RACE_DEST", prior.dest], ["RACE_BYTES", prior.bytes]]) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  } });
+  process.env.PATH = `${wrapperRoot}${path.delimiter}${prior.path}`;
+  process.env.RACE_DEST = destination;
+  process.env.RACE_BYTES = bytes.toString();
+  const runner = createDependencyRunner({ host: "codex", scope: "project", paths: { projectRoot: root, toolRoot, skillRoot } });
+  const exact = await runner({ dependency, phase: "install" });
+  assert.equal(exact.installed, "reused_unowned");
+  assert.equal(exact.lifecycleOwnership, "unowned");
+  assert.equal(await readFile(path.join(destination, "SKILL.md"), "utf8"), bytes.toString());
+  await rm(destination, { recursive: true });
+  process.env.RACE_BYTES = "operator edit\n";
+  const incompatible = await runner({ dependency, phase: "install" });
+  assert.equal(incompatible.status, "manual_action");
+  assert.equal(incompatible.lifecycleOwnership, "unowned");
+  assert.equal(await readFile(path.join(destination, "SKILL.md"), "utf8"), "operator edit\n");
 });
 
 test("default LeanCTX gate overrides inherited directory pins for its narrow read", async (t) => {

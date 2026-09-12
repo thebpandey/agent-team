@@ -68,6 +68,25 @@ test("LeanCTX checksum failure publishes no executable", async (t) => {
   await assert.rejects(readFile(path.join(paths.toolRoot, `lean-ctx-${dependency.version}`, "lean-ctx")), { code: "ENOENT" });
 });
 
+test("LeanCTX production receipt keeps native executable and skill ownership separate", async (t) => {
+  const { prepareDependencies } = await import("../hooks/lib/dependencies.mjs");
+  const { root, paths, dependency, runner } = await fixture(t);
+  const setupPath = path.join(root, "setup.json");
+  await writeFile(setupPath, `${JSON.stringify({ skill: "agent-team", projectId: "p", version: 1,
+    tracker: { kind: "markdown", path: "TASKS.md" } })}\n`);
+  const result = await prepareDependencies({ setupPath, expectedVersion: 1, operationId: "lean-components",
+    writer: { id: "owner", role: "project_orchestrator" }, loadRegistry: async () => ({ projectOwner: "owner" }),
+    host: "codex", scope: "project", selections: { defaults: ["lean-ctx"] }, paths,
+    runner: async (request) => request.dependency.id !== "lean-ctx"
+      ? { status: "passed", version: request.dependency.version }
+      : ["functional", "worker"].includes(request.phase) ? { status: "passed" } : runner({ ...request, dependency }) });
+  const receipt = result.receipts.find(({ id }) => id === "lean-ctx");
+  assert.deepEqual(receipt.components.map(({ id }) => id), ["executable", "skill"]);
+  assert.equal(receipt.components[0].lifecycleOwnership, "managed");
+  assert.equal(receipt.components[1].lifecycleOwnership, "managed");
+  assert.equal(receipt.lifecycleOwnership, "managed");
+});
+
 test("LeanCTX reuses an exact sidecar-free skill with unrelated files without fetching or claiming it", async (t) => {
   const { paths, dependency, runner, urls, skill } = await fixture(t);
   const destination = path.join(paths.skillRoot, "lean-ctx");
@@ -100,7 +119,11 @@ test("LeanCTX preserves customized executable and skill paths", async (t) => {
   await writeFile(binary, "custom executable");
   await writeFile(skill, "custom skill");
   assert.equal((await runner({ dependency, phase: "install" })).status, "customized");
-  assert.equal((await runner({ dependency, phase: "companion" })).status, "manual_action");
+  const companion = await runner({ dependency, phase: "companion" });
+  assert.equal(companion.status, "manual_action");
+  assert.equal(companion.lifecycleOwnership, "unowned");
+  assert.equal(companion.path, path.dirname(skill));
+  assert.equal(companion.components[0].compatibility.status, "incompatible");
   assert.equal(urls.length, 0);
   assert.equal(await readFile(binary, "utf8"), "custom executable");
   assert.equal(await readFile(skill, "utf8"), "custom skill");

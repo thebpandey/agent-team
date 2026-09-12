@@ -133,7 +133,7 @@ test("real isolated Impeccable package passes its documented detector exit contr
   assert.equal((await runner({ dependency, phase: "probe" })).version, dependency.version);
   const installedGuidance = await runner({ dependency, phase: "companion" });
   assert.equal(installedGuidance.status, "passed", installedGuidance.evidence);
-  assert.equal(installedGuidance.components[0].lifecycleOwnership, "managed");
+  assert.equal(installedGuidance.components[0].lifecycleOwnership, "unowned", "broad upstream creation cannot mint Agent-Team ownership");
   const guidancePath = path.join(paths.skillRoot, "impeccable", "SKILL.md");
   const before = await readFile(guidancePath);
   const reusedGuidance = await runner({ dependency, phase: "companion" });
