@@ -27,6 +27,7 @@ The absence of a Beads Dolt remote and `auto_deploy` without a configured releas
 - Agent-Team 7.2.0 publishes first. Its optional Project Kickoff documentation uses a stable `releases/latest` link rather than a future tag.
 - Project Kickoff 0.4.1 then qualifies new handoffs against the released Agent-Team 7.2.0 and publishes second.
 - Both Codex and Claude Code user installations are updated only from the verified release artifacts, with receipts and checksums. Updating a source checkout never claims that a host installation changed.
+- An installation receipt binds the installed package to its exact release tag and URL, source revision, downloaded archive SHA-256, installed file digests, host and scope, transaction and recovery identity, and installation time. Agent-Team consumes the archive's `.agent-team-source.json`; Project Kickoff provides an equivalent transactional artifact installer instead of relying on an unmanaged directory copy.
 
 ## Design decisions
 
@@ -61,6 +62,8 @@ The native command context supplies a normalized identity:
 
 The setup summary echoes the host and derived owner before mutation. Regex checks continue to reject placeholders, but they are not described as authentication.
 
+Native project identity also includes the host session's actual working directory. Agent-Team hooks resolve the project from the native event `cwd`; a shell tool's subprocess `workdir` and a CLI `--project` argument do not change that session location. Migration acceptance therefore runs in fresh native sessions rooted in BrainVault: Codex launches with `-C /home/server/dev/brainvault-system`, and Claude Code launches after changing to that directory. Linked-worktree and nested-repository sessions keep their own identity and cannot borrow the canonical checkout's authority. The installed `runCommand` native context carries the observed session and worker facts; request JSON cannot assert them.
+
 ### 3. Initialization snapshots and live run scope are separate
 
 The initialization task snapshot is immutable provenance for the adopted plan. Once initialization completes, readiness does not require the forever-changing live tracker to remain byte-identical to that snapshot.
@@ -76,6 +79,17 @@ Current work is controlled by `state.run.taskIds`. Add an owner-only, versioned 
 Completion, integration, release, and cleanup evidence must name only tasks in the current admitted run scope. Rejection occurs before evidence is receipted or state is mutated. Owner authorization is not equivalent to scope admission.
 
 BrainVault migration uses supported transitions: quarantine the invalid out-of-scope `brainvault-system-6zf` completion receipt, extend the run scope if the task is intended to remain part of the run, then rebind its already-reviewed completion evidence. No hand editing, deletion, or re-initialization is permitted.
+
+These transitions use four named CLI commands with `--project` and a bounded regular `--request` JSON file of at most 256 KiB:
+
+| Command | Request body | Atomic result |
+| --- | --- | --- |
+| `completion-quarantine` | `taskId`, `reason`, and exact current evidence identity | Retain the original receipt and evidence pointers in quarantine history and remove them from active completion consideration. |
+| `run-scope-extend` | nonempty `taskIds`, `reason`, and current tracker fingerprint | Add only existing canonical tracker IDs to live run scope without changing initialization provenance. |
+| `completion-rebind` | `taskId`, quarantined receipt identity, exact evidence revision and fingerprints | Revalidate the already-reviewed evidence against current admitted scope and bind it once. |
+| `run-reconcile` | complete proposed effective run values, authoritative source, reason, and affected task IDs | Replace contradictory or incomplete active run values without silently widening scope or enabling deployment. |
+
+Each command uses the common mutation envelope: `schemaVersion`, expected canonical state version, unique operation ID, and request body. Authority comes from the matching observed native project-owner identity, not an actor string supplied by the file. Unknown fields, FIFOs, oversized input, stale versions or fingerprints, replay with a different signature, paused state, owner mismatch, missing tracker rows, scope removal, and substituted evidence fail before mutation. Exact replay returns the original receipt. A crash between transitions resumes from the last atomic version; it never loses the quarantined record or half-binds completion.
 
 ### 4. Handoffs record a generation baseline, not their own containing commit
 
@@ -192,6 +206,16 @@ Status output uses four distinct labels:
 
 Beads with no Dolt remote reports `local_only`, not failure. `auto_deploy` without a target reports `enabled_but_held: target_required`, never release-ready.
 
+Deployment authority is target-scoped. BrainVault's existing reversible code-publication target is `origin/main`; its recorded identity and authority are preserved independently from Vercel, database migration, DNS, credentials, and production-check targets. A missing or held Vercel/database target cannot erase the `origin/main` record or block unrelated eligible work. Conversely, authority to push `origin/main` never authorizes a production deployment or irreversible migration.
+
+### 11. Release artifacts install transactionally
+
+Publishing and installing are separate verified operations. Both packages install from a freshly downloaded release archive whose checksum matches the published `SHA256SUMS`; a moving source checkout, matching version text, or locally built candidate is not installation evidence.
+
+The installer stages and validates the complete package, snapshots an existing owned target, atomically updates only the selected `codex`, `claude-code`, or explicit `both` host and `user` or project scope, and rolls back a partial multi-host failure. Customized, unowned, and ambiguous resources are preserved and reported rather than overwritten. Reinstall of the same artifact is idempotent; downgrade requires explicit compatible authority. Optional Project Kickoff project hooks remain inactive unless separately approved.
+
+Agent-Team extends its managed receipt with the artifact provenance fields defined under release identities and verifies `.agent-team-source.json` before copying. Project Kickoff adds the same narrow receipt-producing update and rollback contract for its complete package. A temporary extraction path may disappear after installation without losing release provenance. Rollback and uninstall use installed file digests and ownership records and never touch unrelated configuration or reused-unowned dependency skills.
+
 ## Alternatives rejected
 
 ### Trust any existing path
@@ -225,6 +249,7 @@ The host already owns turn lifecycle and worker controls. A second scheduler can
 - `--emit-request` binds the observed current tip while retaining the stored generation baseline.
 - A consumed handoff remains historical after a legitimate run-scope extension.
 - Real Agent-Team 7.2.0 initialization consumes the new 0.4.1 handoff.
+- The pre-design `a296ce8` / `43b6b85ede01bbc63b0a85bad25a5e017b228b3f7789fae060e8c8ebc5b73aab` candidate is explicitly invalidated. The final 0.4.1 archive is rebuilt twice from the new exact revision after compatibility changes, has identical checksums, and receives fresh revision-bound release evidence.
 
 ### Agent-Team setup and state
 
@@ -235,6 +260,8 @@ The host already owns turn lifecycle and worker controls. A second scheduler can
 - Completion for a tracker task outside `state.run.taskIds` fails without evidence/state changes.
 - Scope extension admits only current tracker tasks and preserves immutable initialization provenance.
 - BrainVault migrates from the invalid `6zf` receipt without hand editing.
+- The BrainVault setup-v11/state-v18 fixture passes `completion-quarantine` → `run-scope-extend` → `completion-rebind` → `run-reconcile`, including exact replay and crash recovery; wrong native identity, stale version/fingerprint, paused state, missing tracker row, disguised removal, and substituted evidence leave every canonical byte unchanged.
+- Fresh native BrainVault sessions establish project identity; a subprocess `workdir`, CLI `--project`, linked worktree, or nested repository alone cannot satisfy native-CWD acceptance on either host.
 
 ### Dependencies
 
@@ -252,15 +279,17 @@ Pressure scenarios verify that a user status question during active work receive
 
 Batch/run scenarios verify that a finite exhausted run automatically submits one eligible delivery against a larger configured batch size; a non-exhausted run with one completed delivery keeps working; a continuous scoped run flushes only at scoped exhaustion; all-blocked exhaustion permits the final smaller batch only when its release gates pass; contradictory setup/active settings hold deployment but preserve independent work; effective run settings remain fixed after setup defaults change; top-level delivery IDs are counted once; and unlinked test-count prose cannot satisfy release evidence.
 
+Artifact-install scenarios cover tampered/missing metadata and checksums, deletion of the temporary extraction, exact reinstall, incompatible downgrade, customized-target conflicts, partial `both`-host failure and rollback, installed-file drift, and uninstall. Receipts for both packages retain exact release/source/archive identity. A two-target BrainVault scenario proves a Vercel or database hold does not erase or block an authorized `origin/main` code publication, and that the code-push authority cannot cross into production.
+
 Skill-instruction changes follow writing-skills RED/GREEN pressure testing. Runtime changes follow code TDD, complete suite verification, independent review, exact artifact checks, and fresh host installation/readiness verification.
 
 ## Migration and release
 
 1. Implement and independently verify Agent-Team 7.2.0 in isolated worktrees.
-2. Publish Agent-Team 7.2.0 first and verify tag, workflow, release assets, checksums, Pages, and both host installations.
-3. Implement and qualify Project Kickoff 0.4.1 against the released Agent-Team 7.2.0.
+2. Publish Agent-Team 7.2.0 first and verify tag, workflow, release assets, checksums, Pages, and transactional receipt-backed installations on both hosts.
+3. Invalidate the existing Project Kickoff `a296ce8` candidate and its `43b6...` archive, implement the compatibility correction, prove a real released Agent-Team 7.2.0 consumes the new handoff, and build a fresh deterministic 0.4.1 candidate with new exact-revision evidence.
 4. Publish Project Kickoff 0.4.1 and verify both host installations and historical compatibility behavior.
-5. From a native session rooted in BrainVault, migrate the invalid completion receipt through supported state transitions, qualify reused skills, rerun Graphify and ast-grep workers, and verify settings-cancel behavior.
-6. Preserve Beads local-only state and the deployment-target hold unless the user separately configures a Dolt remote or release destination.
+5. From fresh native Codex and Claude Code sessions rooted in BrainVault, migrate the invalid completion receipt through the four named supported state transitions, qualify reused skills, rerun Graphify and ast-grep workers, and verify settings-cancel behavior.
+6. Preserve Beads local-only state. Preserve the existing `origin/main` code-publication target separately; hold only unconfigured or unauthorized Vercel, database, DNS, credential, and production-check targets until the user supplies their required decisions.
 
 No force-push, tag replacement, duplicate ambiguous release operation, direct runtime-state edit, copied dependency skill, or historical provenance rewrite is allowed.
