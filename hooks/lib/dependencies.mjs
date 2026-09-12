@@ -394,10 +394,21 @@ async function stableExecutableIdentity({ executable, requested = executable, ca
   if (!contained(rootReal, resolved)) throw new Error(`Executable realpath escapes selected tool root: ${executable}.`);
   let packageReal = null;
   if (packageRoot) {
+    await noLinkedParents(paths.toolRoot, packageRoot);
+    const packageLexical = await lstat(packageRoot);
+    if (!packageLexical.isDirectory() || packageLexical.isSymbolicLink()) {
+      throw new Error("Executable package root is not a stable selected directory.");
+    }
     packageReal = await realpath(packageRoot);
     if (!contained(rootReal, packageReal) || !contained(packageReal, resolved)) throw new Error("Executable escapes the verified package root.");
-    if (packageEntrypoint && resolved !== await realpath(path.join(packageReal, packageEntrypoint))) {
-      throw new Error("Executable does not resolve to the pinned package entrypoint.");
+    if (packageEntrypoint) {
+      const expectedEntrypoint = path.join(packageRoot, packageEntrypoint);
+      await noLinkedParents(packageRoot, expectedEntrypoint);
+      const entrypointLexical = await lstat(expectedEntrypoint);
+      if (!entrypointLexical.isFile() || entrypointLexical.isSymbolicLink()
+        || resolved !== await realpath(expectedEntrypoint)) {
+        throw new Error("Executable does not resolve to the pinned regular package entrypoint.");
+      }
     }
     if (packageKind === "uv") {
       const metadataPath = path.join(packageReal, `lib/python3.12/site-packages/${packageName.replaceAll("-", "_")}-${packageVersion}.dist-info/METADATA`);
@@ -421,7 +432,11 @@ async function stableExecutableIdentity({ executable, requested = executable, ca
         }
         metadata = bytes.toString("utf8");
       } finally { await handle.close(); }
-      if (!metadata.split(/\r?\n/).includes(`Name: ${packageName}`) || !metadata.split(/\r?\n/).includes(`Version: ${packageVersion}`)) {
+      const lines = metadata.split(/\r?\n/);
+      const names = lines.filter((line) => line.startsWith("Name: "));
+      const versions = lines.filter((line) => line.startsWith("Version: "));
+      if (names.length !== 1 || versions.length !== 1
+        || names[0] !== `Name: ${packageName}` || versions[0] !== `Version: ${packageVersion}`) {
         throw new Error("Executable package identity does not match the pinned package.");
       }
     } else {

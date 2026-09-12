@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -354,11 +354,12 @@ test("canonical contained npm and uv shims retain one bound identity across phas
     const toolRoot = path.join(root, "tools");
     const packageRoot = path.join(toolRoot, ...fixture.packageRoot);
     const target = path.join(packageRoot, ...fixture.target);
+    const executableBytes = `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(fixture.output)});\n`;
     const executable = path.join(toolRoot, "bin", fixture.id);
     await mkdir(path.dirname(target), { recursive: true });
     await mkdir(path.dirname(path.join(packageRoot, fixture.metadata[0])), { recursive: true });
     await mkdir(path.dirname(executable), { recursive: true });
-    await writeFile(target, `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(fixture.output)});\n`, { mode: 0o755 });
+    await writeFile(target, executableBytes, { mode: 0o755 });
     await writeFile(path.join(packageRoot, fixture.metadata[0]), fixture.metadata[1]);
     await symlink(path.relative(path.dirname(executable), target), executable);
     const dependency = { ...CATALOG_BY_ID.get(fixture.id) };
@@ -376,6 +377,41 @@ test("canonical contained npm and uv shims retain one bound identity across phas
     assert.deepEqual(identities[1], identities[0]);
     await writeFile(target, `#!${process.execPath}\nconsole.log('replacement');\n`, { mode: 0o755 });
     assert.equal((await runner({ dependency, phase: "functional", check: dependency.functionalCheck })).status, "manual_action");
+
+    if (fixture.id === "graphify") {
+      const metadataPath = path.join(packageRoot, fixture.metadata[0]);
+      for (const malformed of [
+        "Name: graphifyy\nName: graphifyy\nVersion: 0.9.57\n",
+        "Name: graphifyy\nVersion: 0.9.57\nVersion: 9.9.9\n",
+      ]) {
+        await writeFile(metadataPath, malformed);
+        await writeFile(target, executableBytes, { mode: 0o755 });
+        assert.equal((await createDependencyRunner({ host: "codex", scope: "project",
+          paths: { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") } })
+          ({ dependency: { ...dependency }, phase: "probe" })).status, "manual_action");
+      }
+      await writeFile(metadataPath, fixture.metadata[1]);
+    }
+
+    const linkedEntrypoint = `${target}.real`;
+    await rename(target, linkedEntrypoint);
+    await writeFile(linkedEntrypoint, executableBytes, { mode: 0o755 });
+    await symlink(path.basename(linkedEntrypoint), target);
+    assert.equal((await createDependencyRunner({ host: "codex", scope: "project",
+      paths: { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") } })
+      ({ dependency: { ...dependency }, phase: "probe" })).status, "manual_action");
+    await rm(target);
+    await rename(linkedEntrypoint, target);
+
+    const actualPackageRoot = path.join(toolRoot, "package-store", fixture.id);
+    await mkdir(path.dirname(actualPackageRoot), { recursive: true });
+    await rename(packageRoot, actualPackageRoot);
+    await symlink(path.relative(path.dirname(packageRoot), actualPackageRoot), packageRoot);
+    assert.equal((await createDependencyRunner({ host: "codex", scope: "project",
+      paths: { projectRoot: root, toolRoot, skillRoot: path.join(root, "skills") } })
+      ({ dependency: { ...dependency }, phase: "probe" })).status, "manual_action");
+    await rm(packageRoot);
+    await rename(actualPackageRoot, packageRoot);
 
     const outside = path.join(root, "outside", fixture.id);
     await mkdir(path.dirname(outside), { recursive: true });
