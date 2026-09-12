@@ -205,6 +205,13 @@ const joinedEvidenceKeys = ["taskId", "sourceRevision", "revision", "integratedR
 const fullRevision = (value) => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const boundedAuthority = (value) => typeof value === "string" && value.trim() === value && value.length > 0 && Buffer.byteLength(value) <= 4096;
 
+function targetAuthorityReady(value, { id, boundary, target, releaseOwner }) {
+  return exactKeys(value, ["source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"])
+    && typeof value.source === "string" && value.source.trim() === value.source && value.source.length > 0 && Buffer.byteLength(value.source) <= 256
+    && value.target === target && value.revision === boundary && Array.isArray(value.taskIds) && value.taskIds.length === 1 && value.taskIds[0] === id
+    && sameOwner(value, releaseOwner);
+}
+
 function evidenceReady(evidence, id, canonical) {
   const integrationOwner = canonical.state?.integration;
   const releaseOwner = canonical.state?.release;
@@ -221,6 +228,7 @@ function evidenceReady(evidence, id, canonical) {
     && evidence.preview?.taskId === id && evidence.preview?.revision === boundary && typeof evidence.preview?.required === "boolean"
     && (evidence.preview.required ? evidence.preview.status === "passed" : evidence.preview.status === "not_required")
     && evidence.target?.taskId === id && evidence.target?.revision === boundary && boundedAuthority(evidence.target?.target)
+    && targetAuthorityReady(evidence.target?.authority, { id, boundary, target: evidence.target.target, releaseOwner })
     && evidence.recovery?.taskId === id && evidence.recovery?.revision === boundary
     && boundedAuthority(evidence.recovery?.artifact) && boundedAuthority(evidence.recovery?.action)
     && evidence.target?.status === "authorized" && evidence.recovery?.status === "ready"

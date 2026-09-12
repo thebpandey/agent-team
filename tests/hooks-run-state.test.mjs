@@ -151,12 +151,13 @@ test("ordinary reconciliation preserves historical run provenance", async () => 
 
 function joinedEvidence(id, revision = "a".repeat(40)) {
   const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
+  const authority = { source: "explicit-release-authorization", target: "origin/main", revision, taskIds: [id], ...actor };
   return { taskId: id, sourceRevision: revision, revision, integratedRevision: revision,
     completion: { taskId: id, status: "passed", sourceRevision: revision },
     integration: { taskId: id, status: "passed", sourceRevision: revision, boundaryRevision: revision, ...actor },
     review: { taskId: id, status: "passed", revision }, checks: [{ name: "unit", status: "passed" }],
     preview: { taskId: id, status: "not_required", required: false, revision, ...actor },
-    target: { taskId: id, status: "authorized", target: "origin/main", revision, ...actor },
+    target: { taskId: id, status: "authorized", target: "origin/main", revision, authority, ...actor },
     recovery: { taskId: id, status: "ready", artifact: "release-tag", action: "rollback", revision, ...actor } };
 }
 
@@ -164,13 +165,14 @@ test("delivery evidence joins exact passed lineage and current generation", asyn
   const value = await fixture();
   const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
   const actor = { ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 };
+  const authority = { source: "explicit-release-authorization", target: "origin/main", revision, taskIds: ["AT-001"], ...actor };
   const receipt = (status, extra = {}) => ({ taskId: "AT-001", status, ...extra });
   const state = { ...value.current.state, release: { ...value.current.state.release,
     authorization: { ...value.current.state.release.authorization, ...actor } }, deliveryReceipts: {
     completion: { "AT-001": receipt("passed", { sourceRevision: revision }) }, review: { "AT-001": receipt("passed", { revision }) },
     checks: { "AT-001": receipt("passed", { revision, results: [{ name: "unit", status: "passed" }] }) },
     integration: { "AT-001": receipt("passed", { sourceRevision: revision, boundaryRevision: revision, ...actor }) },
-    preview: { "AT-001": receipt("not_required", { revision, required: false, ...actor }) }, target: { "AT-001": receipt("authorized", { revision, target: "origin/main", ...actor }) },
+    preview: { "AT-001": receipt("not_required", { revision, required: false, ...actor }) }, target: { "AT-001": receipt("authorized", { revision, target: "origin/main", authority, ...actor }) },
     recovery: { "AT-001": receipt("ready", { revision, artifact: "tag", action: "rollback", ...actor }) },
   } };
   await writeFile(value.project.paths.state, JSON.stringify(state, null, 2));
@@ -179,6 +181,21 @@ test("delivery evidence joins exact passed lineage and current generation", asyn
   state.deliveryReceipts.integration["AT-001"].status = "failed";
   await writeFile(value.project.paths.state, JSON.stringify(state, null, 2));
   assert.equal((await loadCanonicalState(value.project)).deliveryEvidence["AT-001"], undefined);
+  state.deliveryReceipts.integration["AT-001"].status = "passed";
+  for (const alter of [
+    (target) => { delete target.authority; },
+    (target) => { target.authority.revision = "b".repeat(40); },
+    (target) => { target.authority.taskIds = ["AT-OTHER"]; },
+    (target) => { target.authority.target = "production"; },
+    (target) => { target.authority.ownerHost = "claude-code"; },
+    (target) => { target.authority.source = ""; },
+    (target) => { target.authority.extra = true; },
+  ]) {
+    const changed = structuredClone(state);
+    alter(changed.deliveryReceipts.target["AT-001"]);
+    await writeFile(value.project.paths.state, JSON.stringify(changed, null, 2));
+    assert.equal((await loadCanonicalState(value.project)).deliveryEvidence["AT-001"], undefined);
+  }
 });
 
 test("release batches are oldest first full or terminally underfilled", () => {
@@ -199,6 +216,13 @@ test("release batches are oldest first full or terminally underfilled", () => {
     (evidence) => { evidence.integration.boundaryRevision = "b".repeat(40); },
     (evidence) => { evidence.preview.required = true; },
     (evidence) => { evidence.target.target = ""; },
+    (evidence) => { delete evidence.target.authority; },
+    (evidence) => { evidence.target.authority.revision = "b".repeat(40); },
+    (evidence) => { evidence.target.authority.taskIds = ["AT-OTHER"]; },
+    (evidence) => { evidence.target.authority.target = "production"; },
+    (evidence) => { evidence.target.authority.ownerSessionId = "former-owner"; },
+    (evidence) => { evidence.target.authority.source = ""; },
+    (evidence) => { evidence.target.authority.extra = true; },
     (evidence) => { delete evidence.recovery.artifact; },
     (evidence) => { evidence.recovery.action = ""; },
   ];
