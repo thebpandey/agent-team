@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { access, chmod, cp, link, lstat, mkdir, mkdtemp, open, opendir, readFile, realpath, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, cp, link, lstat, mkdir, mkdtemp, open, opendir, readFile, realpath, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { CATALOG_BY_ID, DEPENDENCY_CATALOG } from "./dependency-catalog.mjs";
@@ -627,6 +627,47 @@ async function inspectSkillDestinations(dependency, paths, { budget, bounded = f
     evidence: lifecycleOwnership === "managed" ? "All selected managed skill paths matched." : "All selected unowned skill paths matched pinned compatibility." };
 }
 
+async function validateGitSkillStage(dependency, selectedPath, root, budget) {
+  const reserved = path.join(root, ".agent-team-source.json");
+  try {
+    await lstat(reserved);
+    throw new Error(`Pinned skill source contains reserved provenance: ${reserved}`);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const files = await skillContents(root, budget);
+  if (Object.keys(files).some((file) => path.posix.basename(file) === ".agent-team-source.json")) {
+    throw new Error("Pinned skill source contains nested reserved provenance.");
+  }
+  const entrypoint = dependency.compatibility?.entrypoint ?? "SKILL.md";
+  const entrypoints = Object.keys(files).filter((file) => path.posix.basename(file) === entrypoint);
+  if (entrypoints.length !== 1 || entrypoints[0] !== entrypoint) {
+    throw new Error(`Pinned skill source has ambiguous entrypoint(s): ${entrypoints.join(", ") || "none"}.`);
+  }
+  const requirement = dependency.compatibility?.selectedPaths?.find((entry) => entry.selectedPath === selectedPath);
+  for (const required of requirement?.requiredFiles ?? []) {
+    const bytes = await companionBytes(path.join(root, required.path), budget);
+    if (!["git-blob-sha1", "sha256"].includes(required.digest.algorithm)) {
+      throw new Error(`Pinned skill source declares unsupported digest: ${required.digest.algorithm}.`);
+    }
+    const actual = required.digest.algorithm === "git-blob-sha1"
+      ? createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex")
+      : createHash("sha256").update(bytes).digest("hex");
+    if (actual !== required.digest.value) throw new Error(`Pinned skill source has incompatible required file: ${required.path}.`);
+  }
+  return files;
+}
+
+async function unchangedGitSkillPublication(destination, expected) {
+  try {
+    const stat = await lstat(destination);
+    if (!stat.isDirectory() || stat.dev !== expected.identity.dev || stat.ino !== expected.identity.ino) return false;
+    const files = await skillContents(destination);
+    const metadata = await companionBytes(path.join(destination, ".agent-team-source.json"), undefined, 64 * 1024);
+    return JSON.stringify(files) === JSON.stringify(expected.files) && metadata.equals(expected.metadata);
+  } catch { return false; }
+}
+
 async function installGitSkills(dependency, paths, budget) {
   if (!dependency.install.paths.length) return { status: "failed", evidence: "No selective skill paths are approved for this optional source." };
   const preflight = await inspectSkillDestinations(dependency, paths, { budget, bounded: true });
@@ -644,59 +685,63 @@ async function installGitSkills(dependency, paths, budget) {
   if (checkedOut.status !== "passed") return checkedOut;
   const afterFetch = await inspectSkillDestinations(dependency, paths, { budget, bounded: true });
   if (afterFetch.status !== "not_found") return afterFetch;
-  try {
-    for (const selectedPath of dependency.install.paths) {
-      if (selectedPath === ".") {
-        for (const includedPath of dependency.install.includePaths ?? []) await lstat(path.join(sourceRoot, includedPath));
-      } else {
-        await skillContents(path.join(sourceRoot, selectedPath), budget);
-      }
-    }
-  } catch (error) {
-    if (error.code === "EVENT_DEADLINE") throw error;
-    return { status: "failed", evidence: `Pinned skill source prevalidation failed before publication: ${error.message}` };
-  }
   await mkdir(paths.skillRoot, { recursive: true, mode: 0o700 });
-  const created = [];
-  for (const selectedPath of dependency.install.paths) {
-    const destination = skillDestination(dependency, paths, selectedPath);
-    try {
-      await mkdir(destination, { mode: 0o700 });
-      created.push(destination);
-    } catch (error) {
-      for (const owned of created.reverse()) await rmdir(owned).catch(() => {});
-      if (error.code === "EEXIST") return inspectSkillDestinations(dependency, paths, { budget, bounded: true });
-      throw error;
-    }
-  }
+  const stageRoot = path.join(paths.skillRoot, `.agent-team-stage-${randomUUID()}`);
+  const staged = [];
   try {
     for (const selectedPath of dependency.install.paths) {
-      const destination = skillDestination(dependency, paths, selectedPath);
+      const stage = path.join(stageRoot, path.basename(selectedPath === "." ? dependency.id : selectedPath));
+      await mkdir(stage, { recursive: true, mode: 0o700 });
       if (selectedPath === ".") {
         for (const includedPath of dependency.install.includePaths ?? []) {
-          await cp(path.join(sourceRoot, includedPath), path.join(destination, includedPath), { recursive: true, errorOnExist: true, force: false });
+          await cp(path.join(sourceRoot, includedPath), path.join(stage, includedPath), { recursive: true, errorOnExist: true, force: false });
         }
       } else {
         for await (const entry of await opendir(path.join(sourceRoot, selectedPath))) {
-          await cp(path.join(sourceRoot, selectedPath, entry.name), path.join(destination, entry.name), { recursive: true, errorOnExist: true, force: false });
+          await cp(path.join(sourceRoot, selectedPath, entry.name), path.join(stage, entry.name), { recursive: true, errorOnExist: true, force: false });
         }
       }
-      await writeFile(path.join(destination, ".agent-team-source.json"), `${JSON.stringify({
-        source: dependency.install.source,
-        revision: dependency.version,
-        selectedPath,
-      }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+      const files = await validateGitSkillStage(dependency, selectedPath, stage, budget);
+      const metadata = Buffer.from(`${JSON.stringify({ source: dependency.install.source, revision: dependency.version, selectedPath }, null, 2)}\n`);
+      await writeFile(path.join(stage, ".agent-team-source.json"), metadata, { mode: 0o600, flag: "wx" });
+      const stat = await lstat(stage);
+      staged.push({ selectedPath, stage, destination: skillDestination(dependency, paths, selectedPath),
+        expected: { files, metadata, identity: { dev: stat.dev, ino: stat.ino } } });
     }
   } catch (error) {
+    await rm(stageRoot, { recursive: true, force: true });
     if (error.code === "EVENT_DEADLINE") throw error;
-    const partial = await inspectSkillDestinations(dependency, paths, { budget, bounded: true });
-    return partial.status === "not_found" ? { status: "failed", evidence: error.message }
-      : { ...partial, status: "manual_action", installed: "preserved", lifecycleOwnership: "unowned",
-        evidence: `Preserved partial invocation-owned destinations after publication failed: ${error.message} ${partial.evidence ?? ""}`.trim() };
+    return { status: "failed", evidence: `Pinned skill source prevalidation failed before publication: ${error.message}` };
   }
+  let beforePublish;
+  try { beforePublish = await inspectSkillDestinations(dependency, paths, { budget, bounded: true }); }
+  catch (error) {
+    await rm(stageRoot, { recursive: true, force: true });
+    throw error;
+  }
+  if (beforePublish.status !== "not_found") {
+    await rm(stageRoot, { recursive: true, force: true });
+    return beforePublish;
+  }
+  const published = [];
+  try {
+    for (const item of staged) {
+      await rename(item.stage, item.destination);
+      published.push(item);
+    }
+  } catch (error) {
+    for (const item of published.reverse()) {
+      if (await unchangedGitSkillPublication(item.destination, item.expected)) await rm(item.destination, { recursive: true, force: true });
+    }
+    await rm(stageRoot, { recursive: true, force: true });
+    if (["EEXIST", "ENOTEMPTY"].includes(error.code)) return inspectSkillDestinations(dependency, paths, { budget, bounded: true });
+    if (error.code === "EVENT_DEADLINE") throw error;
+    return { status: "failed", evidence: `Pinned skill publication failed: ${error.message}` };
+  }
+  await rm(stageRoot, { recursive: true, force: true });
   const installed = await inspectSkillDestinations(dependency, paths, { budget, bounded: true });
   if (installed.status !== "passed") return installed;
-  const createdSet = new Set(created);
+  const createdSet = new Set(published.map(({ destination }) => destination));
   const components = installed.components.map((component) => createdSet.has(component.path)
     ? { ...component, installed: "installed", lifecycleOwnership: "managed" } : component);
   return { ...installed, installed: components.every(({ installed: disposition }) => disposition === "installed") ? "installed" : installed.installed,

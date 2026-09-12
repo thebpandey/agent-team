@@ -1041,6 +1041,18 @@ test("fresh local git skills publish completely as installed and prevalidate eve
   await assert.rejects(readFile(path.join(incompleteRoot, "first", "SKILL.md")), { code: "ENOENT" });
   await assert.rejects(readFile(path.join(incompleteRoot, "missing", "SKILL.md")), { code: "ENOENT" });
 
+  await t.test("rejects a corrupt required-file digest before publication", async () => {
+    const corruptRoot = path.join(root, "corrupt-skills");
+    const corruptDependency = { ...dependency, id: "corrupt", compatibility: { ...dependency.compatibility,
+      selectedPaths: [{ ...dependency.compatibility.selectedPaths[0], requiredFiles: [{ path: "SKILL.md",
+        digest: { algorithm: "sha256", value: createHash("sha256").update("corrupt\n").digest("hex") } }] }] } };
+    const corruptRunner = createDependencyRunner({ host: "codex", scope: "project",
+      paths: { projectRoot: root, toolRoot: path.join(root, "corrupt-tools"), skillRoot: corruptRoot } });
+    const corrupt = await corruptRunner({ dependency: corruptDependency, phase: "install" });
+    assert.equal(corrupt.status, "failed");
+    await assert.rejects(readFile(path.join(corruptRoot, "first", "SKILL.md")), { code: "ENOENT" });
+  });
+
   await writeFile(path.join(source, selected, ".agent-team-source.json"), `${JSON.stringify({
     source, revision: "fixture-version", selectedPath: selected,
   }, null, 2)}\n`);
@@ -1052,11 +1064,11 @@ test("fresh local git skills publish completely as installed and prevalidate eve
   const partialRoot = path.join(root, "partial-skills");
   const partialRunner = createDependencyRunner({ host: "codex", scope: "project",
     paths: { projectRoot: root, toolRoot: path.join(root, "partial-tools"), skillRoot: partialRoot } });
-  const partial = await partialRunner({ dependency: partialDependency, phase: "install" });
-  assert.equal(partial.status, "manual_action");
-  assert.equal(partial.installed, "preserved");
-  assert.equal(partial.lifecycleOwnership, "unowned");
-  assert.equal(await readFile(path.join(partialRoot, "first", "SKILL.md"), "utf8"), "# first\n");
+  await t.test("rejects reserved provenance before publication", async () => {
+    const partial = await partialRunner({ dependency: partialDependency, phase: "install" });
+    assert.equal(partial.status, "failed");
+    await assert.rejects(readFile(path.join(partialRoot, "first", "SKILL.md")), { code: "ENOENT" });
+  });
 });
 
 test("default LeanCTX gate overrides inherited directory pins for its narrow read", async (t) => {
