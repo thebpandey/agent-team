@@ -57,6 +57,7 @@ test("actual project CLI connects initialization, settings, claims, checkpoints 
   assert.equal(created.canonicalReady, true);
   assert.equal(created.ready, false, "canonical initialization is not native/capability readiness");
   assert.equal((await runCommand("project-initialize", { project: root, request: initialization }, { nativeIdentity })).status, "duplicate");
+  const ownerIdentity = { ...nativeIdentity, ownershipEpoch: 1 };
 
   const selectors = ["--host", "codex", "--scope", "project"];
   const settings = await invoke("settings", root, ...selectors);
@@ -70,10 +71,10 @@ test("actual project CLI connects initialization, settings, claims, checkpoints 
 
   const update = await request(root, "settings-update", { schemaVersion: 1, expectedVersion: 1, operationId: "run-defaults",
     writer: { id: "project-owner", role: "project_orchestrator" }, request: { change: { kind: "run", values: { continuous: true } } } });
-  assert.equal((await invoke("settings-update", root, ...selectors, "--request", update)).status, "applied");
+  assert.equal((await runCommand("settings-update", { project: root, host: "codex", scope: "project", request: update }, { nativeIdentity: ownerIdentity })).status, "applied");
   const configure = await request(root, "dashboard-configure", { schemaVersion: 1, expectedVersion: 2, operationId: "snapshot-opt-in",
     writer: { id: "project-owner", role: "project_orchestrator" }, request: { dashboard: { snapshot: true, graph: { enabled: false, termsAcknowledged: false } } } });
-  assert.equal((await invoke("dashboard-configure", root, ...selectors, "--request", configure)).status, "applied");
+  assert.equal((await runCommand("dashboard-configure", { project: root, host: "codex", scope: "project", request: configure }, { nativeIdentity: ownerIdentity })).status, "applied");
   await assert.rejects(access(path.join(root, ".agent-team/dashboard/index.html")), { code: "ENOENT" });
 
   const status = await invoke("status", root);
@@ -81,7 +82,7 @@ test("actual project CLI connects initialization, settings, claims, checkpoints 
   const claim = await request(root, "claim", { schemaVersion: 1, actorSessionId: "project-owner", expectedVersion: status.versions.operational,
     request: { operationId: "claim-WORK-1", taskId: "WORK-1", expectedFingerprint: status.freshness.fingerprint,
       expectedOwner: status.tasks[0].canonicalOwner, action: "claim", owner: "project-owner" } });
-  const claimed = await runCommand("task-transition", { project: root, request: claim }, { nativeIdentity });
+  const claimed = await runCommand("task-transition", { project: root, request: claim }, { nativeIdentity: ownerIdentity });
   assert.equal(claimed.status, "applied");
   assert.equal(claimed.dashboard.status, "published");
   const current = await invoke("status", root);
@@ -90,7 +91,7 @@ test("actual project CLI connects initialization, settings, claims, checkpoints 
   const checkpoint = await request(root, "checkpoint", { schemaVersion: 1, actorSessionId: "project-owner", expectedVersion: 0,
     request: { eventId: "journey-checkpoint", sessionId: "project-owner", taskIds: ["WORK-1"], worktree: root,
       revision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), nextAction: "Run the required verification." } });
-  assert.equal((await runCommand("checkpoint", { project: root, request: checkpoint }, { nativeIdentity })).status, "applied");
+  assert.equal((await runCommand("checkpoint", { project: root, request: checkpoint }, { nativeIdentity: ownerIdentity })).status, "applied");
   assert.match(await readFile(path.join(root, ".agent-team/dashboard/index.html"), "utf8"), /WORK-1/);
   assert.equal((await invoke("recovery", root, "--session", "project-owner")).nextAction, "Run the required verification.");
   assert.equal((await invoke("readiness", root, "--host", "codex", "--scope", "user")).readyForDispatch, false);

@@ -8,7 +8,7 @@ import { loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs"
 import { withDirectoryLock } from "./lock.mjs";
 import { inspectCheckpointEvidence } from "./recovery.mjs";
 import { beadsEnvironment } from "./tracker.mjs";
-import { assertNoOwnerRecoveryJournal, repairOwnerRecovery } from "./owner-recovery.mjs";
+import { assertNoOwnerRecoveryJournal, repairOwnerRecovery, validateNativeOwnerAuthority } from "./owner-recovery.mjs";
 
 const digest = (value) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
 const operationSignature = ({ expectedVersion, expectedFingerprint, ...operation }) => digest(operation);
@@ -114,6 +114,9 @@ export async function mutateOperationalState(project, request, mutator, options 
   if (!project.active) return { status: "unavailable", reason: "inactive" };
   if (!/^[\w.:-]{1,128}$/.test(request.operationId ?? "")) return conflict("operation_identity_required");
   try {
+    if (!await validateNativeOwnerAuthority(project, options.nativeIdentity, project.setup?.ownership, request.actorSessionId)) {
+      return conflict("project_owner_required");
+    }
     await repairOwnerRecovery(project, { budget });
     const execute = () => withDirectoryLock(path.join(project.paths.locks, "state.lock"), {
       operationId: request.operationId, actorSessionId: request.actorSessionId, pid: process.pid,
@@ -124,7 +127,9 @@ export async function mutateOperationalState(project, request, mutator, options 
       const actorHost = options.nativeIdentity?.host === "claude" ? "claude-code" : options.nativeIdentity?.host;
       if (typeof owner !== "string" || !/^[\w.:-]{1,128}$/.test(owner) || ["none", "unknown", "unassigned", "-"].includes(owner.toLowerCase())
         || typeof request.actorSessionId !== "string" || !/^[\w.:-]{1,128}$/.test(request.actorSessionId)
-        || request.actorSessionId !== owner || canonical.registry.projectOwnerHost && actorHost !== canonical.registry.projectOwnerHost
+        || request.actorSessionId !== owner || canonical.registry.projectOwnerHost && (actorHost !== canonical.registry.projectOwnerHost
+          || options.nativeIdentity?.observed !== true || options.nativeIdentity?.sessionId !== owner
+          || options.nativeIdentity?.ownershipEpoch !== canonical.registry.ownershipEpoch)
         || !canonical.registry.projectId || canonical.registry.projectId !== project.projectId) return conflict("project_owner_required");
       const signature = operationSignature(request);
       const previous = canonical.state.operationReceipts?.[request.operationId];
@@ -370,6 +375,8 @@ export async function recordGateEvidence(project, request, options = {}) {
     }
     if (request.gate === "release") {
       const ownerSessionId = state.release?.ownerSessionId;
+      const ownerHost = state.release?.ownerHost;
+      const ownershipEpoch = state.release?.ownershipEpoch;
       const authorization = evidence.authorization;
       const runRecord = evidence.run;
       const batch = evidence.batch;
@@ -408,6 +415,8 @@ export async function recordGateEvidence(project, request, options = {}) {
       const deltaBindingValid = releaseRecord(delta, "clean")
         && (delta.remoteBaseRevision === undefined || /^[0-9a-f]{40,64}$/i.test(delta.remoteBaseRevision));
       if (ownerSessionId !== canonicalState.registry.integrationOwner || ownerSessionId !== request.actorSessionId
+        || canonicalState.registry.projectOwnerHost && (ownerHost !== canonicalState.registry.projectOwnerHost
+          || ownershipEpoch !== canonicalState.registry.ownershipEpoch)
         || evidence.ownerSessionId !== ownerSessionId || evidence.authorized !== true || evidence.expectedRevision !== revision
         || !boundedString(evidence.target, 1024) || !boundedString(evidence.process, 128)
         || !authorization || typeof authorization !== "object" || !boundedString(authorization.source)
@@ -430,6 +439,7 @@ export async function recordGateEvidence(project, request, options = {}) {
       const copy = (record, keys) => Object.fromEntries(keys.filter((key) => record[key] !== undefined).map((key) => [key, structuredClone(record[key])]));
       state.release = {
         ownerSessionId,
+        ...(canonicalState.registry.projectOwnerHost ? { ownerHost, ownershipEpoch } : {}),
         authorized: true,
         expectedRevision: revision,
         evidenceAt: observedAt,

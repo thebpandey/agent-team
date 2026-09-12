@@ -2,6 +2,7 @@ import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { withDirectoryLock } from "./lock.mjs";
+import { assertNoOwnerRecoveryJournal, validateNativeOwnerAuthority } from "./owner-recovery.mjs";
 import { identityFor, loadCanonicalState } from "./canonical-state.mjs";
 
 const fields = [
@@ -66,15 +67,21 @@ export async function writeCheckpoint(project, input, { now = new Date(), timeou
   const bounded = (action) => budget ? budget.run(action) : action();
   if (actorSessionId !== undefined) {
     if (!Number.isInteger(expectedVersion) || !input.eventId) return { status: "conflict", reason: "checkpoint_version_and_operation_required" };
+    if (!await validateNativeOwnerAuthority(project, nativeIdentity, project.setup?.ownership, actorSessionId)) {
+      return { status: "conflict", reason: "checkpoint_owner_required" };
+    }
     const canonical = await loadCanonicalState(project, { includeTasks: false, budget });
-    if (identityFor(canonical.registry, nativeIdentity?.host, actorSessionId).role === "unknown") return { status: "conflict", reason: "checkpoint_owner_required" };
+    if (identityFor(canonical.registry, nativeIdentity?.host, actorSessionId).role === "unknown"
+      || canonical.registry.projectOwnerHost && (nativeIdentity?.observed !== true || nativeIdentity?.sessionId !== actorSessionId
+        || nativeIdentity?.ownershipEpoch !== canonical.registry.ownershipEpoch)) return { status: "conflict", reason: "checkpoint_owner_required" };
   }
-  budget?.check();
-  await bounded(() => mkdir(project.paths.checkpoints, { recursive: true, mode: 0o700 }));
   const file = path.join(project.paths.checkpoints, `${safeId(input.sessionId)}.json`);
   const lock = path.join(project.paths.locks, `checkpoint-${safeId(input.sessionId)}.lock`);
 
-  return withDirectoryLock(lock, {
+  const write = async () => {
+    budget?.check();
+    await bounded(() => mkdir(project.paths.checkpoints, { recursive: true, mode: 0o700 }));
+    return withDirectoryLock(lock, {
     pid: process.pid,
     sessionId: input.sessionId,
     acquiredAt: now.toISOString(),
@@ -135,5 +142,15 @@ export async function writeCheckpoint(project, input, { now = new Date(), timeou
       await rm(temporary, { force: true });
     }
     return { status: "applied", created: true, path: file, checkpoint, version: checkpoint.version };
+    }, { timeoutMs, budget });
+  };
+  if (actorSessionId === undefined) return write();
+  return withDirectoryLock(project.paths.ownerRecoveryLock, { kind: "checkpoint_owner_fence", actorSessionId, pid: process.pid }, async () => {
+    await assertNoOwnerRecoveryJournal(project);
+    const canonical = await loadCanonicalState(project, { includeTasks: false, budget });
+    if (!await validateNativeOwnerAuthority(project, nativeIdentity, canonical.state.ownership, actorSessionId)) {
+      return { status: "conflict", reason: "checkpoint_owner_required" };
+    }
+    return write();
   }, { timeoutMs, budget });
 }

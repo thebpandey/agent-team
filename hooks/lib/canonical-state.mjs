@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { withDirectoryLock } from "./lock.mjs";
 import { readTracker } from "./tracker.mjs";
-import { assertNoOwnerRecoveryJournal, repairOwnerRecovery } from "./owner-recovery.mjs";
+import { assertNoOwnerRecoveryJournal, repairOwnerRecovery, validateOwnerHistory, validateQualifiedOwnership } from "./owner-recovery.mjs";
 
 const criticalMappingKinds = new Set(["file_change", "integration", "release", "database_destructive", "completion"]);
 
@@ -78,15 +78,21 @@ export async function loadCanonicalState(project, options = {}) {
   if (ownerHistoryText) {
     ownerHistory = JSON.parse(ownerHistoryText);
     const epoch = state.ownership?.epoch;
-    if (ownerHistory.schemaVersion !== 1 || !Number.isSafeInteger(ownerHistory.version) || ownerHistory.version < 1
-      || !Array.isArray(ownerHistory.entries) || !Number.isSafeInteger(epoch) || epoch < 1
+    if (!validateQualifiedOwnership(state.ownership) || !validateQualifiedOwnership(setup.ownership)
+      || !validateOwnerHistory(ownerHistory, state.ownership) || !Number.isSafeInteger(epoch) || epoch < 1
       || setup.ownership?.epoch !== epoch || ownerHistory.ownership?.epoch !== epoch
       || JSON.stringify(setup.ownership?.current) !== JSON.stringify(state.ownership?.current)
       || state.ownership?.current?.sessionId !== label(teamsText, "Project owner")
-      || state.ownership?.current?.host !== label(teamsText, "Project owner host")) {
+      || state.ownership?.current?.host !== label(teamsText, "Project owner host")
+      || state.integration?.ownerSessionId !== label(teamsText, "Integration owner")
+      || state.integration?.ownerHost !== label(teamsText, "Integration owner host")
+      || state.integration?.ownershipEpoch !== epoch || state.release?.ownerSessionId !== label(teamsText, "Integration owner")
+      || state.release?.ownerHost !== label(teamsText, "Integration owner host") || state.release?.ownershipEpoch !== epoch) {
       throw new Error("owner_generation_mismatch");
     }
-  } else if (state.ownership !== undefined || setup.ownership !== undefined) {
+  } else if (state.ownership !== undefined || setup.ownership !== undefined || label(teamsText, "Project owner host") !== undefined
+    || label(teamsText, "Integration owner host") !== undefined || state.integration?.ownerHost !== undefined
+    || state.integration?.ownershipEpoch !== undefined || state.release?.ownerHost !== undefined || state.release?.ownershipEpoch !== undefined) {
     throw new Error("owner_history_missing");
   }
   return {

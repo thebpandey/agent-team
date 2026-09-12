@@ -9,7 +9,8 @@ import { resolveProject } from "../hooks/lib/project.mjs";
 import { loadCanonicalState } from "../hooks/lib/canonical-state.mjs";
 import { writeCheckpoint } from "../hooks/lib/checkpoint.mjs";
 import { createEventBudget } from "../hooks/lib/budget.mjs";
-import { policyFixture } from "./hook-test-helpers.mjs";
+import { evaluatePolicy } from "../hooks/lib/policy.mjs";
+import { hookEvent, policyFixture } from "./hook-test-helpers.mjs";
 
 const modulePath = new URL("../hooks/lib/task-transitions.mjs", import.meta.url);
 if (process.argv[2] === "writer") {
@@ -23,11 +24,11 @@ if (process.argv[2] === "writer") {
 } else {
   const temporary = [];
   test.afterEach(async () => Promise.all(temporary.splice(0).map((p) => rm(p, { recursive: true, force: true }))));
-  async function fixture() {
+  async function fixture({ qualifiedOwnership = false } = {}) {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-transitions-"));
     temporary.push(root, `${root}-feature`, `${root}-remote`);
-    const value = await policyFixture(root);
-    const project = await resolveProject(value.feature);
+    const value = await policyFixture(root, { qualifiedOwnership });
+    const project = await resolveProject(qualifiedOwnership ? root : value.feature);
     await writeFile(project.paths.tasks, "| ID | Requirement / acceptance | Owner | Depends on | Status | Revision / evidence | Next action |\n| --- | --- | --- | --- | --- | --- | --- |\n| AT-001 | Build requested feature | none | none | ready | none | Claim. |\n| AT-002 | Independent work | none | none | ready | none | Claim. |\n| AT-003 | Dependent work | none | AT-001 | ready | none | Wait. |\n");
     return { ...value, project, canonical: await loadCanonicalState(project) };
   }
@@ -571,9 +572,9 @@ if (process.argv[2] === "writer") {
   test("release gate evidence maps one owner-authorized batch from the initialized release hold", async () => {
     // This test catches release evidence that is receipted without establishing the policy fields it validated.
     const { recordGateEvidence } = await api();
-    const value = await fixture();
+    const value = await fixture({ qualifiedOwnership: true });
     const seeded = structuredClone((await loadCanonicalState(value.project)).state);
-    seeded.release = { ownerSessionId: "owner-session", authorized: false, autoDeploy: false, hold: true };
+    seeded.release = { ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1, authorized: false, autoDeploy: false, hold: true };
     const integrationEvidencePath = path.join(value.root, ".agent-team/integration.json");
     Object.assign(seeded.integration, { taskIds: ["AT-001"], remoteRef: "refs/heads/main", remoteMainDeploys: true,
       recordedEvidence: { path: integrationEvidencePath, fingerprint: "c".repeat(64), revision: value.revision, taskIds: ["AT-001"] } });
@@ -603,11 +604,14 @@ if (process.argv[2] === "writer") {
     await writeFile(evidencePath, JSON.stringify(evidence));
 
     const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "release-evidence", expectedVersion: 0,
-      expectedFingerprint: value.canonical.tracker.fingerprint, gate: "release", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath });
+      expectedFingerprint: value.canonical.tracker.fingerprint, gate: "release", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath },
+    { nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: value.root, ownershipEpoch: 1 } });
     const release = (await loadCanonicalState(value.project)).state.release;
 
     assert.equal(result.status, "applied");
     assert.equal(release.ownerSessionId, "owner-session");
+    assert.equal(release.ownerHost, "codex");
+    assert.equal(release.ownershipEpoch, 1);
     assert.equal(release.authorized, true);
     assert.equal(release.expectedRevision, value.revision);
     assert.equal(release.target, evidence.target);
@@ -631,6 +635,19 @@ if (process.argv[2] === "writer") {
     assert.equal(typeof release.evidenceAt, "string");
     assert.equal(release.trackerFingerprint, value.canonical.tracker.fingerprint);
     assert.equal(release.recordedEvidence.revision, value.revision);
+    const policy = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", cwd: value.root,
+      operation: { kind: "shell", command: "gh release create v1.0.0" } }), value.project, { now: new Date() });
+    assert.equal(policy.allow, true, JSON.stringify(policy));
+    for (const [field, replacement] of [["ownerHost", "claude-code"], ["ownershipEpoch", 2]]) {
+      const changed = JSON.parse(await readFile(value.project.paths.state, "utf8"));
+      changed.release[field] = replacement;
+      await writeFile(value.project.paths.state, JSON.stringify(changed));
+      const denied = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", cwd: value.root,
+        operation: { kind: "shell", command: "gh release create v1.0.0" } }), value.project, { now: new Date() });
+      assert.equal(denied.allow, false, field);
+      changed.release[field] = release[field];
+      await writeFile(value.project.paths.state, JSON.stringify(changed));
+    }
   });
 
   test("release gate evidence rejects incomplete, mismatched, paused, held, and fabricated authority without changing state", async (context) => {

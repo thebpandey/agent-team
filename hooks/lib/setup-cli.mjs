@@ -6,6 +6,7 @@ import { loadCanonicalState } from "./canonical-state.mjs";
 import { createDependencyRunner, inspectDependencies, prepareDependencies } from "./dependencies.mjs";
 import { ROLE_DEFINITIONS } from "./dependency-profiles.mjs";
 import { initializationRecordProblem } from "./initialization.mjs";
+import { validateNativeOwnerAuthority } from "./owner-recovery.mjs";
 import { resolveProject } from "./project.mjs";
 import { assessReadiness } from "./readiness.mjs";
 import { buildRoleMenu, buildSettingsWizard, inspectSettings, mutateSetup, updateSettings } from "./settings.mjs";
@@ -232,8 +233,11 @@ export async function runSetupCommand(command, options = {}, context = {}) {
     return { ...result, readyForDispatch: false, projectInitialization: { ...result.projectInitialization, required: true, projectRoot: project.root } };
   }
   const identity = mutationIdentity(envelope);
+  const nativeHost = context.nativeIdentity?.host === "claude" ? "claude-code" : context.nativeIdentity?.host;
+  if (!await validateNativeOwnerAuthority(project, context.nativeIdentity, project.setup.ownership, identity.writer.id)
+    || project.setup.ownership && nativeHost !== options.host) return { status: "conflict", reason: "project_owner_required" };
   identity.writer = { ...identity.writer, host: options.host, ...(project.setup.ownership?.epoch !== undefined
-    ? { ownershipEpoch: project.setup.ownership.epoch } : {}) };
+    ? { ownershipEpoch: context.nativeIdentity.ownershipEpoch } : {}) };
   const common = {
     setupPath: project.paths.setup, ...identity, budget: context.budget,
     loadRegistry: async () => {

@@ -358,7 +358,7 @@ test("integration evidence keeps an actual initialized project structurally read
     tracker: { kind: "markdown", path: ".agent-team/TASKS.md" }, plan: { scope: "Gate test", acceptance: ["Gate passes"], branch: "main", verification: ["node --test"],
       authority: { ownedPaths: ["tests/**"] }, tasks: [{ id: "AT-001", title: "Gate", status: "ready", dependencies: [] }] } };
   assert.equal((await initializeProject(root, request, { actorSessionId: "owner-session",
-    nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root } })).status, "applied");
+    nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1 } })).status, "applied");
   const project = await resolveProject(root);
   const canonical = await loadCanonicalState(project);
   const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
@@ -369,7 +369,7 @@ test("integration evidence keeps an actual initialized project structurally read
     recovery: { status: "reconciled", revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false }));
   assert.equal((await recordGateEvidence(project, { actorSessionId: "owner-session", operationId: "fresh-integration", expectedVersion: canonical.state.stateVersion,
     expectedFingerprint: canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: revision, evidencePath },
-  { nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root } })).status, "applied");
+  { nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1 } })).status, "applied");
   const mapped = await loadCanonicalState(project);
   assert.equal(initializationRecordProblem(project.setup, mapped, { projectRoot: root, validateTracker: true }), undefined);
 });

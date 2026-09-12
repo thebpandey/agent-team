@@ -285,7 +285,8 @@ export async function initializeProject(projectPath, request, options = {}) {
         ownerRecoveryLock: path.join(locks, "owner-recovery.lock") } };
       await repairOwnerRecovery(recoveryProject, { budget });
       const lockPath = path.join(locks, "setup.lock");
-      const writer = await captureWriterIdentity().catch(() => undefined);
+      const writer = await (options.captureWriterIdentity ?? captureWriterIdentity)().catch(() => undefined);
+      if (!writer) return decision("unavailable", "owner_writer_identity_unavailable");
       // Serialize recovery separately; never infer orphanhood from a timestamp or PID alone.
       await withDirectoryLock(path.join(locks, "setup-recovery.lock"), { kind: "initialization_lock_recovery", pid: process.pid, writer }, async () => {
         for (const recoverPath of [lockPath, path.join(locks, "state.lock")]) {

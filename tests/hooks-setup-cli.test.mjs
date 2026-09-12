@@ -62,7 +62,8 @@ async function fixture(t, overrides = {}, { trackerKind = "markdown", projectId 
   const consumer = path.join(root, "consumer.mjs");
   await writeFile(consumer, `import { runSetupCommand } from ${JSON.stringify(pathToFileURL(modulePath).href)};\ntry { console.log(JSON.stringify(await runSetupCommand(process.argv[2], JSON.parse(process.argv[3])))); } catch (error) { console.log(JSON.stringify({ status: "failed", error: error.message })); process.exitCode = 1; }\n`);
   const invoke = async (command, extra = {}) => JSON.parse((await exec(process.execPath, [consumer, command, JSON.stringify({ ...options, ...extra })])).stdout);
-  return { root, setupPath, statePath, tasksPath, trackerExecutable, setup, options, invoke };
+  const nativeIdentity = { host: "codex", sessionId: "owner", observed: true, cwd: root, ownershipEpoch: 1 };
+  return { root, setupPath, statePath, tasksPath, trackerExecutable, setup, options, invoke, nativeIdentity };
 }
 
 async function envelope(value, request, top = {}) {
@@ -80,7 +81,15 @@ async function legacyBrainVaultFixture(t) {
   delete setup.initialization.trackerFingerprint;
   delete setup.initialization.trackerSelection.root;
   delete setup.tracker.root;
+  delete setup.ownership;
   await writeFile(value.setupPath, `${JSON.stringify(setup, null, 2)}\n`);
+  const state = JSON.parse(await readFile(value.statePath, "utf8"));
+  delete state.ownership;
+  for (const gate of [state.integration, state.release]) { delete gate.ownerHost; delete gate.ownershipEpoch; }
+  await writeFile(value.statePath, `${JSON.stringify(state, null, 2)}\n`);
+  const teamsPath = path.join(value.root, ".agent-team", "TEAMS.md");
+  await writeFile(teamsPath, (await readFile(teamsPath, "utf8")).replace(/^Project owner host:.*\n/m, "").replace(/^Integration owner host:.*\n/m, ""));
+  await rm(path.join(value.root, ".agent-team", "owner-history.json"));
   return { ...value, legacyInitialization: JSON.stringify(setup.initialization) };
 }
 
@@ -124,19 +133,19 @@ test("settings changes use canonical owner/version and semantic operation identi
   const { runSetupCommand } = await import(modulePath);
   const value = await fixture(t);
   const request = await envelope(value, { change: { kind: "role", role: "developer", model: "quality", effort: "high" } });
-  const applied = await runSetupCommand("settings-update", { ...value.options, request }, { nativeChoices });
+  const applied = await runSetupCommand("settings-update", { ...value.options, request }, { nativeChoices, nativeIdentity: value.nativeIdentity });
   assert.equal(applied.status, "applied");
   assert.equal(applied.version, 4);
   assert.deepEqual(applied.setup.settings.hosts["claude-code"], value.setup.settings.hosts["claude-code"]);
   assert.equal(applied.setup.settings.custom, "keep");
-  assert.equal((await runSetupCommand("settings-update", { ...value.options, request }, { nativeChoices })).status, "duplicate");
+  assert.equal((await runSetupCommand("settings-update", { ...value.options, request }, { nativeChoices, nativeIdentity: value.nativeIdentity })).status, "duplicate");
   const reused = await envelope(value, { change: { kind: "run", values: { continuous: true } } });
-  assert.equal((await runSetupCommand("settings-update", { ...value.options, request: reused })).reason, "operation_id_reused");
+  assert.equal((await runSetupCommand("settings-update", { ...value.options, request: reused }, { nativeChoices, nativeIdentity: value.nativeIdentity })).reason, "operation_id_reused");
   const stale = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { operationId: "operation-2" });
-  assert.equal((await runSetupCommand("settings-update", { ...value.options, request: stale })).reason, "version_changed");
+  assert.equal((await runSetupCommand("settings-update", { ...value.options, request: stale }, { nativeChoices, nativeIdentity: value.nativeIdentity })).reason, "version_changed");
   const teamsPath = path.join(value.root, ".agent-team", "TEAMS.md");
   await writeFile(teamsPath, (await readFile(teamsPath, "utf8")).replace("Project owner: owner", "Project owner: replacement"));
-  assert.equal((await runSetupCommand("settings-update", { ...value.options, request: stale })).reason, "project_owner_required");
+  assert.equal((await runSetupCommand("settings-update", { ...value.options, request: stale }, { nativeChoices, nativeIdentity: value.nativeIdentity })).reason, "project_owner_required");
 });
 
 test("settings remain editable while the selected Beads tracker is unavailable", async (t) => {
@@ -145,7 +154,7 @@ test("settings remain editable while the selected Beads tracker is unavailable",
   await rm(value.trackerExecutable);
   const request = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { operationId: "settings-during-outage" });
 
-  const result = await runSetupCommand("settings-update", { ...value.options, request });
+  const result = await runSetupCommand("settings-update", { ...value.options, request }, { nativeIdentity: value.nativeIdentity });
 
   assert.equal(result.status, "applied");
   assert.equal(result.setup.settings.runDefaults.continuous, true);
@@ -157,18 +166,18 @@ test("settings reject a tracker selection rewritten after initialization", async
   await writeFile(value.setupPath, JSON.stringify({ ...value.setup, tracker: { kind: "beads", executable: "/missing/selected-bd" } }));
   const request = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { operationId: "rewritten-tracker" });
 
-  const result = await runSetupCommand("settings-update", { ...value.options, request });
+  const result = await runSetupCommand("settings-update", { ...value.options, request }, { nativeIdentity: value.nativeIdentity });
 
   assert.deepEqual(result, { status: "conflict", reason: "project_owner_required" });
   assert.equal(JSON.parse(await readFile(value.setupPath, "utf8")).settings.runDefaults?.continuous, undefined);
 });
 
-test("Node consumer applies run defaults but cannot submit native capability claims", async (t) => {
+test("Node consumer cannot mutate qualified settings or submit native capability claims", async (t) => {
   const value = await fixture(t);
   const request = await envelope(value, { change: { kind: "run", values: { continuous: true } } });
-  assert.equal((await value.invoke("settings-update", { request })).status, "applied");
+  assert.deepEqual(await value.invoke("settings-update", { request }), { status: "conflict", reason: "project_owner_required" });
   const forged = await envelope(value, { change: { kind: "role", role: "developer", model: "made-up", effort: "high" }, nativeChoices }, { expectedVersion: 4, operationId: "forged" });
-  await assert.rejects(value.invoke("settings-update", { request: forged }), (error) => /nativeChoices|Unsupported/.test(error.stdout));
+  assert.deepEqual(await value.invoke("settings-update", { request: forged }), { status: "conflict", reason: "project_owner_required" });
 });
 
 test("canonical readiness uses actual tasks and tracker and requires initialization identity", async (t) => {
@@ -213,14 +222,14 @@ test("dependency preparation fixes selected managed paths and keeps worker disco
       ? { status: "unverified", evidence: "No fresh worker" }
       : { status: "passed", version: dependency.version, evidence: "Fixture functional evidence" };
   };
-  const result = await runSetupCommand("dependencies-prepare", { ...value.options, request }, { createDependencyRunner: createRunner });
+  const result = await runSetupCommand("dependencies-prepare", { ...value.options, request }, { createDependencyRunner: createRunner, nativeIdentity: value.nativeIdentity });
   assert.equal(result.status, "incomplete");
   assert.equal(observedPaths.toolRoot, path.join(value.root, ".agent-team", "tools"));
   assert.equal(observedPaths.skillRoot, path.join(value.root, ".agents", "skills"));
   assert.ok(result.receipts.every(({ availableToWorker }) => availableToWorker === "unknown"));
   const home = path.join(value.root, "isolated-home");
   const second = await envelope(value, { selections: { defaults: [] } }, { expectedVersion: 4, operationId: "user-prepare" });
-  await runSetupCommand("dependencies-prepare", { ...value.options, scope: "user", home, request: second }, { createDependencyRunner: createRunner });
+  await runSetupCommand("dependencies-prepare", { ...value.options, scope: "user", home, request: second }, { createDependencyRunner: createRunner, nativeIdentity: value.nativeIdentity });
   assert.equal(observedPaths.toolRoot, path.join(home, ".agent-team", "tools"));
   assert.equal(observedPaths.skillRoot, path.join(home, ".agents", "skills"));
 });
@@ -231,7 +240,7 @@ test("user-scope dependency receipts can satisfy project readiness", async (t) =
   const request = await envelope(value, { selections: { defaults: [] } }, { operationId: "user-ready" });
   const createRunner = () => async ({ dependency }) => ({ status: "passed", version: dependency.version, evidence: "Bounded fixture evidence" });
 
-  assert.equal((await runSetupCommand("dependencies-prepare", { ...value.options, scope: "user", home: path.join(value.root, "home"), request }, { createDependencyRunner: createRunner })).status, "ready");
+  assert.equal((await runSetupCommand("dependencies-prepare", { ...value.options, scope: "user", home: path.join(value.root, "home"), request }, { createDependencyRunner: createRunner, nativeIdentity: value.nativeIdentity })).status, "ready");
   const ready = await runSetupCommand("readiness", { ...value.options, scope: "user" });
   assert.equal(ready.readyForDispatch, true);
   assert.equal(ready.eligibleTask.id, "T-2");
@@ -262,13 +271,13 @@ test("dashboard configuration requires Beads and explicit graph terms and preser
   const markdown = await fixture(t);
   const config = { snapshot: true, graph: { enabled: true, termsAcknowledged: true, executable: "/opt/bv" } };
   const markdownRequest = await envelope(markdown, { dashboard: config });
-  await assert.rejects(runSetupCommand("dashboard-configure", { ...markdown.options, request: markdownRequest }), /Beads/);
+  await assert.rejects(runSetupCommand("dashboard-configure", { ...markdown.options, request: markdownRequest }, { nativeIdentity: markdown.nativeIdentity }), /Beads/);
   const value = await fixture(t, {}, { trackerKind: "beads" });
   await rm(value.trackerExecutable);
   const request = await envelope(value, { dashboard: config });
   const denied = await envelope(value, { dashboard: { ...config, graph: { enabled: true, termsAcknowledged: false } } });
-  await assert.rejects(runSetupCommand("dashboard-configure", { ...value.options, request: denied }), /acknowledg/i);
-  const result = await value.invoke("dashboard-configure", { request });
+  await assert.rejects(runSetupCommand("dashboard-configure", { ...value.options, request: denied }, { nativeIdentity: value.nativeIdentity }), /acknowledg/i);
+  const result = await runSetupCommand("dashboard-configure", { ...value.options, request }, { nativeIdentity: value.nativeIdentity });
   assert.equal(result.status, "applied");
   assert.equal(result.setup.dashboard.custom, "keep");
   assert.equal(result.setup.dashboard.graph.custom, "keep");
@@ -288,7 +297,7 @@ test("malformed or ineffective input fails before mutation and request reads are
   await writeFile(huge, " ".repeat(256 * 1024 + 1));
   await assert.rejects(runSetupCommand("settings-update", { ...value.options, request: huge }), /bounded/);
   const injected = await envelope(value, { selections: {}, paths: { toolRoot: "/outside" } });
-  await assert.rejects(runSetupCommand("dependencies-prepare", { ...value.options, request: injected }), /paths/);
+  await assert.rejects(runSetupCommand("dependencies-prepare", { ...value.options, request: injected }, { nativeIdentity: value.nativeIdentity }), /paths/);
   const invalidVersion = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { expectedVersion: "3" });
   await assert.rejects(runSetupCommand("settings-update", { ...value.options, request: invalidVersion }), /expectedVersion/);
   assert.equal(await readFile(value.setupPath, "utf8"), before);
@@ -383,7 +392,7 @@ test("setup mutations recheck the initialization record after waiting for the se
   const request = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { operationId: "stale-setup" });
   const lock = path.join(value.root, ".agent-team", ".locks", "setup.lock");
   await mkdir(lock, { recursive: true });
-  const pending = runSetupCommand("settings-update", { ...value.options, request });
+  const pending = runSetupCommand("settings-update", { ...value.options, request }, { nativeIdentity: value.nativeIdentity });
   await new Promise((resolve) => setTimeout(resolve, 250));
   const setup = JSON.parse(await readFile(value.setupPath, "utf8"));
   delete setup.initialization;
@@ -402,7 +411,7 @@ test("setup mutations cannot switch to a different project while waiting for the
   const request = await envelope(original, { change: { kind: "run", values: { continuous: true } } }, { operationId: "project-switch" });
   const lock = path.join(original.root, ".agent-team", ".locks", "setup.lock");
   await mkdir(lock, { recursive: true });
-  const pending = runSetupCommand("settings-update", { ...original.options, request });
+  const pending = runSetupCommand("settings-update", { ...original.options, request }, { nativeIdentity: original.nativeIdentity });
   await new Promise((resolve) => setTimeout(resolve, 250));
   for (const name of ["setup.json", "TEAMS.md", "state.json", "operation-mappings.json"]) {
     await writeFile(path.join(original.root, ".agent-team", name), await readFile(path.join(replacement.root, ".agent-team", name)));

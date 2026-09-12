@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { cp, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { captureWriterIdentity } from "../hooks/lib/task-transitions.mjs";
 
 export async function copyTrackedSource(sourceRoot, destination) {
   const files = execFileSync("git", ["-C", sourceRoot, "ls-files", "-z"], { encoding: "utf8" }).split("\0").filter(Boolean);
@@ -29,6 +30,7 @@ export async function policyFixture(root, { now = "2026-09-06T12:00:00.000Z", qu
   execFileSync("git", ["worktree", "add", "-q", "-b", "feature", feature], { cwd: root });
   execFileSync("git", ["push", "-q", "-u", "origin", "feature"], { cwd: feature });
   const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: feature, encoding: "utf8" }).trim();
+  const ownershipWriter = qualifiedOwnership ? await captureWriterIdentity() : undefined;
 
   await mkdir(path.join(root, ".agent-team"));
   await writeFile(path.join(root, ".agent-team", "setup.json"), JSON.stringify({
@@ -36,7 +38,7 @@ export async function policyFixture(root, { now = "2026-09-06T12:00:00.000Z", qu
     projectId: "project-1",
     skill: "agent-team",
     ...(qualifiedOwnership ? { ownership: { epoch: 1, current: { host: "codex", sessionId: "owner-session", since: now,
-      operationId: "fixture-initialize", writer: { host: "fixture", pid: process.pid } } } } : {}),
+      operationId: "fixture-initialize", writer: ownershipWriter } } } : {}),
   }));
   await writeFile(path.join(root, ".agent-team", "TEAMS.md"), `# Agent-Team teams
 Project: project-1
@@ -66,7 +68,7 @@ ${qualifiedOwnership ? "Integration owner host: codex\n" : ""}
   const state = {
     schemaVersion: 1,
     ...(qualifiedOwnership ? { ownership: { epoch: 1, current: { host: "codex", sessionId: "owner-session", since: now,
-      operationId: "fixture-initialize", writer: { host: "fixture", pid: process.pid } } } } : {}),
+      operationId: "fixture-initialize", writer: ownershipWriter } } } : {}),
     integration: {
       ownerSessionId: "owner-session",
       ...(qualifiedOwnership ? { ownerHost: "codex", ownershipEpoch: 1 } : {}),

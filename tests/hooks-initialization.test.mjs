@@ -96,6 +96,15 @@ if (process.argv[2] === "initialize-worker") {
     await assert.rejects(access(path.join(value.feature, ".agent-team/setup.json")), { code: "ENOENT" });
   });
 
+  test("writer capture failure publishes no qualified ownership records or initialization journal", async () => {
+    const value = await fixture();
+    const result = await initialize(value.root, value.request, { captureWriterIdentity: async () => { throw new Error("unavailable"); } });
+    assert.deepEqual(result, { status: "unavailable", ready: false, reason: "owner_writer_identity_unavailable" });
+    for (const relative of ["TEAMS.md", "state.json", "setup.json", "owner-history.json", ".setup-initialization.json"]) {
+      await assert.rejects(access(path.join(value.root, ".agent-team", relative)), { code: "ENOENT" });
+    }
+  });
+
   test("standalone initialization accepts 101 tasks", async () => {
     const value = await fixture();
     value.request.plan.tasks = Array.from({ length: 101 }, (_, index) => ({
