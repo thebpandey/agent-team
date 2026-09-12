@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 
 import { getHealth, resolveHookEvidenceRoot } from "../hooks/lib/health.mjs";
 import { __installTest, installPackage as installReleasePackage, uninstallPackage } from "../hooks/lib/install.mjs";
-import { buildArtifacts } from "../hooks/lib/artifacts.mjs";
+import { buildArtifacts, fileMapDigest } from "../hooks/lib/artifacts.mjs";
 import { appendActivationLog } from "../hooks/lib/telemetry.mjs";
 import { copyTrackedSource } from "./hook-test-helpers.mjs";
 
@@ -148,62 +148,68 @@ test("both-host publication preserves a concurrently appeared second target and 
   await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
 });
 
-test("owned update never replaces a target changed immediately before its final swap", async () => {
-  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-owned-update-race-"));
+test("a differing present owned target requires manual replacement before any mutation", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-owned-update-manual-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-owned-update-source-"));
   temporary.push(home, changedSource);
   await copyTrackedSource(sourceRoot, changedSource);
   const target = path.join(home, ".agents", "skills", "agent-team");
   const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
+  const configPath = path.join(home, ".codex", "hooks.json");
   await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
   const priorReceipt = await readFile(receiptPath);
+  const priorConfig = await readFile(configPath);
+  const priorSkill = await readFile(path.join(target, "SKILL.md"));
+  const priorIdentity = await lstat(target);
+  const backupRoot = path.join(home, ".agent-team-hooks", "backups");
+  const priorBackups = await readdir(backupRoot, { recursive: true }).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error));
   await writeFile(path.join(changedSource, "README.md"), "changed release bytes\n");
   const artifact = await archiveFixture(changedSource);
-  let operatorIdentity;
+  let mutationHookCalls = 0;
 
-  await assert.rejects(__installTest.installPackage({ ...artifact, home, host: "codex", scope: "user" }, {
-    beforeTargetSwap: async () => {
-      await rm(target, { recursive: true });
-      await mkdir(target, { recursive: true });
-      await writeFile(path.join(target, "OPERATOR.md"), "operator replacement\n");
-      const current = await lstat(target);
-      operatorIdentity = { dev: current.dev, ino: current.ino };
-    },
-  }), /target_changed_before_swap/);
+  const result = await __installTest.installPackage({ ...artifact, home, host: "both", scope: "user" }, {
+    beforeTargetSwap: async () => { mutationHookCalls += 1; },
+    afterTargetPrecheck: async () => { mutationHookCalls += 1; },
+  });
 
-  const after = await lstat(target);
-  assert.deepEqual({ dev: after.dev, ino: after.ino }, operatorIdentity);
-  assert.equal(await readFile(path.join(target, "OPERATOR.md"), "utf8"), "operator replacement\n");
+  assert.equal(result.status, "update_requires_manual_replacement");
+  assert.equal(result.changed, false);
+  assert.equal(mutationHookCalls, 0);
+  const afterIdentity = await lstat(target);
+  assert.deepEqual({ dev: afterIdentity.dev, ino: afterIdentity.ino }, { dev: priorIdentity.dev, ino: priorIdentity.ino });
+  assert.deepEqual(await readFile(path.join(target, "SKILL.md")), priorSkill);
+  assert.deepEqual(await readFile(configPath), priorConfig);
   assert.deepEqual(await readFile(receiptPath), priorReceipt);
+  assert.deepEqual(await readdir(backupRoot, { recursive: true }).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error)), priorBackups);
+  await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".claude", "agents", "agent-team-developer.md")), { code: "ENOENT" });
 });
 
-test("owned update never touches an operator replacement after its final target precheck", async () => {
-  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-final-update-race-"));
-  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-final-update-source-"));
+test("a differing schema 3 target requires manual replacement without fabricating an update", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-schema3-update-manual-"));
+  const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-schema3-update-source-"));
   temporary.push(home, changedSource);
   await copyTrackedSource(sourceRoot, changedSource);
   const target = path.join(home, ".agents", "skills", "agent-team");
-  const displacedReservation = `${target}-installer-reservation`;
   const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
   await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
+  const receipt = JSON.parse(await readFile(receiptPath));
+  await writeFile(receiptPath, `${JSON.stringify({ ...receipt, schemaVersion: 3, artifact: undefined, installedFileMaps: undefined }, null, 2)}\n`);
   const priorReceipt = await readFile(receiptPath);
-  await writeFile(path.join(changedSource, "README.md"), "changed final-boundary bytes\n");
-  const artifact = await archiveFixture(changedSource);
-  let operatorIdentity;
+  const configPath = path.join(home, ".codex", "hooks.json");
+  const priorConfig = await readFile(configPath);
+  const priorIdentity = await lstat(target);
+  const priorSkill = await readFile(path.join(target, "SKILL.md"));
+  await writeFile(path.join(changedSource, "README.md"), "changed schema3 release bytes\n");
 
-  await assert.rejects(__installTest.installPackage({ ...artifact, home, host: "codex", scope: "user" }, {
-    afterTargetPrecheck: async () => {
-      await rename(target, displacedReservation);
-      await mkdir(target);
-      await writeFile(path.join(target, "OPERATOR.md"), "final-boundary operator replacement\n");
-      const current = await lstat(target);
-      operatorIdentity = { dev: current.dev, ino: current.ino };
-    },
-  }), /target_changed_during_publication/);
+  const result = await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user" });
 
-  const after = await lstat(target);
-  assert.deepEqual({ dev: after.dev, ino: after.ino }, operatorIdentity);
-  assert.equal(await readFile(path.join(target, "OPERATOR.md"), "utf8"), "final-boundary operator replacement\n");
+  assert.equal(result.status, "update_requires_manual_replacement");
+  assert.equal(result.changed, false);
+  const afterIdentity = await lstat(target);
+  assert.deepEqual({ dev: afterIdentity.dev, ino: afterIdentity.ino }, { dev: priorIdentity.dev, ino: priorIdentity.ino });
+  assert.deepEqual(await readFile(path.join(target, "SKILL.md")), priorSkill);
+  assert.deepEqual(await readFile(configPath), priorConfig);
   assert.deepEqual(await readFile(receiptPath), priorReceipt);
 });
 
@@ -239,6 +245,37 @@ test("schema 4 health rejects forged version target and installed-map receipt ch
     ["version", (receipt) => { receipt.version = "0.0.0"; }],
     ["target", (receipt, target) => { receipt.installedFileMaps.codex.target = `${target}-forged`; }],
     ["map", (receipt) => { receipt.installedFileMaps.codex.files = {}; }],
+    ["semver", (receipt) => {
+      const artifact = receipt.artifact;
+      receipt.version = artifact.version = "01.2.3";
+      artifact.releaseTag = `v${artifact.version}`;
+      artifact.archiveName = `agent-team-${artifact.version}.zip`;
+      artifact.releaseUrl = `${artifact.repository}/releases/tag/${artifact.releaseTag}`;
+      artifact.archiveUrl = `${artifact.repository}/releases/download/${artifact.releaseTag}/${artifact.archiveName}`;
+      artifact.checksumUrl = `${artifact.repository}/releases/download/${artifact.releaseTag}/${artifact.checksumFileName}`;
+    }],
+    ["checksum digest", (receipt) => { receipt.artifact.checksumFileSha256 = "not-a-sha256"; }],
+    ["archive metadata", (receipt) => {
+      receipt.artifact.archiveFileMap[".agent-team-source.json"] = { sha256: "d".repeat(64), mode: 0o644, size: 1 };
+      receipt.artifact.archiveContentDigest = fileMapDigest(receipt.artifact.archiveFileMap);
+    }],
+    ["empty maps", (receipt) => {
+      const artifact = receipt.artifact;
+      artifact.packageFileMap = {};
+      artifact.packageContentDigest = fileMapDigest({});
+      const metadata = { name: artifact.name, version: artifact.version, hosts: ["codex", "claude-code"],
+        repository: artifact.repository, releaseTag: artifact.releaseTag, releaseUrl: artifact.releaseUrl,
+        updateUrl: artifact.updateUrl, sourceRevision: artifact.sourceRevision, packageFileMap: {},
+        packageContentDigest: artifact.packageContentDigest };
+      const bytes = Buffer.from(`${JSON.stringify(metadata, null, 2)}\n`);
+      artifact.archiveFileMap = { ".agent-team-source.json": {
+        sha256: createHash("sha256").update(bytes).digest("hex"), mode: 0o644, size: bytes.length,
+      } };
+      artifact.archiveContentDigest = fileMapDigest(artifact.archiveFileMap);
+      receipt.installedFileMaps.codex.files = {};
+      receipt.installedFileMaps.codex.digest = fileMapDigest({});
+      receipt.targets.find(({ runtime }) => runtime === "codex").files = [];
+    }],
     ["joint identity", (receipt, target) => {
       const artifact = receipt.artifact;
       artifact.name = "agent-team-shadow";
@@ -285,9 +322,13 @@ test("post-install file-map hook receives only a label and cannot replace author
   assert.equal((await getHealth({ home })).runtimes.codex.artifact.status, "current");
 });
 
-test("post-install callback mutation is caught by the final map read and rolls back every runtime", async () => {
+test("post-install callback mutation preserves same-inode operator bytes and durable recovery truth", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-post-map-mutation-"));
   temporary.push(home);
+  const configPath = path.join(home, ".codex", "hooks.json");
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, '{"sentinel":"preimage"}\n');
+  const configPreimage = await readFile(configPath);
   const artifact = await archiveFixture();
   const codexTarget = path.join(home, ".agents", "skills", "agent-team");
   await assert.rejects(__installTest.installPackage({ ...artifact, home, host: "both", scope: "user" }, {
@@ -295,9 +336,14 @@ test("post-install callback mutation is caught by the final map read and rolls b
       if (runtime === "codex") await writeFile(path.join(codexTarget, "SKILL.md"), "callback mutation\n");
     },
   }), /installed_file_map_mismatch/);
-  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+  assert.equal(await readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md"), "utf8"), "callback mutation\n");
   await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
   await assert.rejects(readFile(path.join(home, ".agent-team-hooks", "install.json")), { code: "ENOENT" });
+  assert.deepEqual(await readFile(configPath), configPreimage);
+  const journal = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "transaction.json"), "utf8"));
+  assert.equal(journal.status, "recovery_conflicts");
+  assert.equal(journal.recoveryConflicts.some(({ target }) => target === codexTarget), true);
+  assert.ok((await readdir(path.join(home, ".agent-team-hooks", "backups"))).length > 0);
 });
 
 test("artifact installer denies semantic downgrade without changing the current receipt", async () => {
@@ -347,10 +393,12 @@ test("installer preserves an unreceipted custom skill directory and does not reg
   const result = await installPackage({ sourceRoot, home, host: "codex", scope: "user" });
 
   assert.equal(await readFile(path.join(target, "CUSTOM.md"), "utf8"), "unowned\n");
-  assert.equal(result.conflicts.some(({ kind, reason }) => kind === "skill" && reason === "unowned_target"), true);
+  assert.equal(result.status, "update_requires_manual_replacement");
+  assert.equal(result.conflicts.some(({ kind, reason }) => kind === "skill" && reason === "differing_present_target"), true);
   await assert.rejects(readFile(path.join(home, ".codex", "hooks.json")), { code: "ENOENT" });
   const uninstalled = await uninstallPackage({ home, host: "codex", scope: "user" });
-  assert.equal(uninstalled.conflicts.some(({ kind, reason }) => kind === "skill" && reason === "unowned_target"), true);
+  assert.equal(uninstalled.changed, false);
+  assert.deepEqual(uninstalled.conflicts, []);
   assert.equal(await readFile(path.join(target, "CUSTOM.md"), "utf8"), "unowned\n");
 });
 
@@ -392,7 +440,7 @@ test("installer uses but never claims an identical unreceipted skill directory",
   await readFile(path.join(target, "SKILL.md"));
 });
 
-test("an update preserves a package previously recorded as pre-existing", async () => {
+test("a changed release requires manual replacement for a package recorded as pre-existing", async () => {
   // A later release must not convert a content-identical unowned package into replaceable managed state.
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-skill-update-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-skill-source-"));
@@ -411,7 +459,8 @@ test("an update preserves a package previously recorded as pre-existing", async 
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
   const result = await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user" });
-  assert.equal(result.conflicts.some(({ kind, reason }) => kind === "skill" && reason === "preexisting_target"), true);
+  assert.equal(result.status, "update_requires_manual_replacement");
+  assert.equal(result.conflicts.some(({ kind, reason }) => kind === "skill" && reason === "differing_present_target"), true);
   await assert.rejects(readFile(path.join(target, addedFile)), { code: "ENOENT" });
   await uninstallPackage({ home, host: "codex", scope: "user" });
   await readFile(path.join(target, "SKILL.md"));
@@ -439,7 +488,7 @@ test("installer never claims an identical pre-existing Claude role", async () =>
   assert.deepEqual(remaining.claudeAgents.map(({ path: name }) => name), [target]);
 });
 
-test("an update preserves a Claude role previously recorded as pre-existing", async () => {
+test("a changed release leaves a pre-existing Claude role untouched pending manual replacement", async () => {
   // A changed release role cannot overwrite an identical role that existed before installation.
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-role-update-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-role-source-"));
@@ -454,7 +503,8 @@ test("an update preserves a Claude role previously recorded as pre-existing", as
   await writeFile(changedRole, `${original}\nchanged release\n`);
 
   const result = await installPackage({ sourceRoot: changedSource, home, host: "claude-code", scope: "user" });
-  assert.equal(result.conflicts.some(({ kind, reason, target: name }) => kind === "claude_agent" && reason === "preexisting_definition" && name === target), true);
+  assert.equal(result.status, "update_requires_manual_replacement");
+  assert.equal(result.conflicts.some(({ kind, reason }) => kind === "skill" && reason === "differing_present_target"), true);
   assert.equal(await readFile(target, "utf8"), original);
 });
 
@@ -518,7 +568,7 @@ test("source installs configure only the selected host and scope, including path
   }
 });
 
-test("handler receipts update exact owned handlers while preserving mixed siblings and customization", async () => {
+test("a changed handler release requires manual package replacement and preserves customization", async () => {
   // Whole-group ownership or substring matching would delete the sibling or overwrite the customized command.
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-handler-home-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-handler-source-"));
@@ -533,6 +583,9 @@ test("handler receipts update exact owned handlers while preserving mixed siblin
   group.label = "preserve-this-group-metadata";
   group.hooks.push({ type: "command", command: "unrelated-policy-check", timeout: 19 });
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  const beforeUpdate = await readFile(configPath);
+  const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
+  const receiptBeforeUpdate = await readFile(receiptPath);
 
   const declarationPath = path.join(changedSource, "hooks", "codex-hooks.json");
   const declaration = JSON.parse(await readFile(declarationPath, "utf8"));
@@ -542,8 +595,10 @@ test("handler receipts update exact owned handlers while preserving mixed siblin
   const afterUpdate = JSON.parse(await readFile(configPath, "utf8"));
   const updatedGroup = afterUpdate.hooks.PreToolUse.find((entry) => entry.hooks.some(({ command }) => command === "unrelated-policy-check"));
   assert.equal(updatedGroup.label, "preserve-this-group-metadata");
-  assert.equal(updatedGroup.hooks[0].statusMessage, "Updated managed policy check");
-  assert.deepEqual(updated.conflicts, []);
+  assert.notEqual(updatedGroup.hooks[0].statusMessage, "Updated managed policy check");
+  assert.equal(updated.status, "update_requires_manual_replacement");
+  assert.deepEqual(await readFile(configPath), beforeUpdate);
+  assert.deepEqual(await readFile(receiptPath), receiptBeforeUpdate);
 
   updatedGroup.hooks[0].command += " --custom-user-argument";
   await writeFile(configPath, `${JSON.stringify(afterUpdate, null, 2)}\n`);
@@ -551,7 +606,7 @@ test("handler receipts update exact owned handlers while preserving mixed siblin
   const afterReinstall = JSON.parse(await readFile(configPath, "utf8"));
   assert.equal(afterReinstall.hooks.PreToolUse.some((entry) => entry.hooks.some(({ command }) => command?.endsWith("--custom-user-argument"))), true);
   assert.equal(afterReinstall.hooks.PreToolUse.some((entry) => entry.hooks.some(({ command }) => command === "unrelated-policy-check")), true);
-  assert.equal(reinstalled.conflicts.some(({ kind, reason }) => kind === "handler" && reason === "customized_handler"), true);
+  assert.equal(reinstalled.status, "update_requires_manual_replacement");
 
   await uninstallPackage(args);
   const afterUninstall = JSON.parse(await readFile(configPath, "utf8"));
@@ -681,7 +736,7 @@ test("uninstall preserves a receipt-marked pre-existing exact handler and its pa
   await readFile(path.join(home, ".agents", "skills", "agent-team", "hooks", "agent-team-hook.mjs"));
 });
 
-test("an update preserves a pre-existing handler when the new declaration differs", async () => {
+test("a changed release preserves a pre-existing handler pending manual package replacement", async () => {
   // A release update must not turn an unowned exact handler into managed content and overwrite it.
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-update-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-update-source-"));
@@ -701,14 +756,14 @@ test("an update preserves a pre-existing handler when the new declaration differ
 
   const after = JSON.parse(await readFile(configPath, "utf8"));
   assert.notEqual(after.hooks.PreToolUse[0].hooks[0].statusMessage, "new release text");
-  assert.equal(result.conflicts.some(({ reason }) => reason === "preexisting_handler"), true);
+  assert.equal(result.status, "update_requires_manual_replacement");
+  assert.equal(result.conflicts.some(({ reason }) => reason === "differing_present_target"), true);
   await uninstallPackage({ home, host: "codex", scope: "user" });
   assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), original);
   await readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md"));
 });
 
-test("an update removes an unchanged owned handler retired by the new declaration", async () => {
-  // Rebuilding the receipt from current declarations alone would leave the retired hook live and unowned.
+test("a changed release cannot retire an owned handler before manual package replacement", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-retired-handler-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-retired-source-"));
   temporary.push(home, changedSource);
@@ -726,12 +781,12 @@ test("an update removes an unchanged owned handler retired by the new declaratio
   const result = await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user" });
   const config = JSON.parse(await readFile(path.join(home, ".codex", "hooks.json"), "utf8"));
   const receipt = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
-  assert.equal(config.hooks.Interrupt, undefined);
-  assert.equal(receipt.handlers.some(({ event }) => event === "Interrupt"), false);
-  assert.equal(result.conflicts.some(({ event }) => event === "Interrupt"), false);
+  assert.equal(result.status, "update_requires_manual_replacement");
+  assert.notEqual(config.hooks.Interrupt, undefined);
+  assert.equal(receipt.handlers.some(({ event }) => event === "Interrupt"), true);
 });
 
-test("an update retains customized retired handler identity and its package", async () => {
+test("a changed release preserves customized retired-handler identity pending manual replacement", async () => {
   // A customized retired hook must remain receipted as a conflict so uninstall cannot strand it.
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-custom-retired-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-custom-retired-source-"));
@@ -753,7 +808,7 @@ test("an update retains customized retired handler identity and its package", as
 
   const result = await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user" });
   const receipt = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
-  assert.equal(result.conflicts.some(({ event, reason }) => event === "Interrupt" && reason === "customized_handler"), true);
+  assert.equal(result.status, "update_requires_manual_replacement");
   assert.equal(receipt.handlers.some(({ event }) => event === "Interrupt"), true);
   await uninstallPackage({ home, host: "codex", scope: "user" });
   assert.match(await readFile(configPath, "utf8"), /--event Interrupt --custom/);
@@ -848,8 +903,7 @@ test("installer preserves unrelated settings, removes the legacy Codex duplicate
   assert.equal(backupCountAfter, backupCount);
 });
 
-test("installer upgrades an unchanged managed package when the manifest adds a file", async () => {
-  // This catches clean upgrades being mistaken for user changes when the package file list grows.
+test("installer requires manual replacement when a release manifest adds a file", async () => {
   const home = await homeFixture();
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-expanded-source-"));
   temporary.push(changedSource);
@@ -865,14 +919,13 @@ test("installer upgrades an unchanged managed package when the manifest adds a f
 
   const result = await installPackage({ sourceRoot: changedSource, home, host: "both", scope: "user", now: new Date("2026-09-06T12:01:00.000Z") });
 
-  assert.equal(result.changed, true);
-  assert.deepEqual(result.conflicts, []);
-  assert.equal(await readFile(path.join(home, ".agents", "skills", "agent-team", addedFile), "utf8"), "new managed file\n");
-  assert.equal(await readFile(path.join(home, ".claude", "skills", "agent-team", addedFile), "utf8"), "new managed file\n");
+  assert.equal(result.status, "update_requires_manual_replacement");
+  assert.equal(result.changed, false);
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", addedFile)), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", addedFile)), { code: "ENOENT" });
 });
 
-test("uninstall after a managed package update removes the installation instead of restoring V1", async () => {
-  // Treating an update snapshot as a pre-install backup would restore V1 and then discard its ownership receipt.
+test("uninstall after a denied automatic update removes the unchanged installed release", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-version-uninstall-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-version-source-"));
   temporary.push(home, changedSource);
@@ -885,12 +938,12 @@ test("uninstall after a managed package update removes the installation instead 
   manifest.files.push(addedFile);
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-  await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user", now: new Date("2026-09-06T12:01:00.000Z") });
+  const denied = await installPackage({ sourceRoot: changedSource, home, host: "codex", scope: "user", now: new Date("2026-09-06T12:01:00.000Z") });
   const receipt = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
+  assert.equal(denied.status, "update_requires_manual_replacement");
   assert.equal(receipt.version, manifest.version);
   assert.match(receipt.transactionId, /^[0-9a-f-]{36}$/);
-  assert.equal(receipt.backups.some(({ kind, purpose }) => kind === "skill" && purpose === "update_snapshot"), true);
-  assert.equal(receipt.backups.find(({ kind, purpose }) => kind === "skill" && purpose === "update_snapshot").transactionId, receipt.transactionId);
+  assert.equal(receipt.backups.some(({ kind, purpose }) => kind === "skill" && purpose === "update_snapshot"), false);
   await uninstallPackage({ home, host: "codex", scope: "user" });
   await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
 });
@@ -974,8 +1027,7 @@ test("health separates installed, registered, trusted, supported, and exercised"
   assert.equal(health.runtimes.claude.exercised, true);
 });
 
-test("installer can run from an authoritative Codex source already at its target path", async () => {
-  // This test catches an installer that moves its own source before it copies the Claude package.
+test("installer does not infer update authority from a Codex source already at its target path", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-source-home-"));
   temporary.push(home);
   const codexTarget = path.join(home, ".agents", "skills", "agent-team");
@@ -984,11 +1036,10 @@ test("installer can run from an authoritative Codex source already at its target
 
   const result = await installPackage({ sourceRoot: codexTarget, home, host: "both", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
 
-  assert.equal(result.status, "installed");
+  assert.equal(result.status, "update_requires_manual_replacement");
   assert.equal(await readFile(path.join(codexTarget, "SKILL.md"), "utf8").then(Boolean), true);
-  assert.equal(await readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md"), "utf8").then(Boolean), true);
-
-  await uninstallPackage({ home, host: "both", scope: "user" });
+  await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".agent-team-hooks", "install.json")), { code: "ENOENT" });
   assert.equal(await readFile(path.join(codexTarget, "SKILL.md"), "utf8").then(Boolean), true);
 });
 
@@ -1277,25 +1328,26 @@ test("installer manages current Claude roles, leaves unchanged roles, and report
   assert.equal(await readFile(developer, "utf8"), original);
 });
 
-test("installer updates a previously managed Claude role and backs up its prior version", async () => {
-  // This test catches managed role updates being mistaken for user customization.
+test("installer leaves a managed Claude role unchanged when package replacement is required", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-role-update-home-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-role-source-"));
   temporary.push(home, changedSource);
   await copyTrackedSource(sourceRoot, changedSource);
   await installPackage({ sourceRoot, home, host: "both", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
   const roleSource = path.join(changedSource, "assets", "claude-agents", "agent-team-developer.md");
+  const installedRole = path.join(home, ".claude", "agents", "agent-team-developer.md");
+  const before = await readFile(installedRole, "utf8");
   await writeFile(roleSource, `${await readFile(roleSource, "utf8")}\nManaged update marker.\n`);
 
   const result = await installPackage({ sourceRoot: changedSource, home, host: "both", scope: "user", now: new Date("2026-09-06T12:01:00.000Z") });
-  const installed = await readFile(path.join(home, ".claude", "agents", "agent-team-developer.md"), "utf8");
+  const installed = await readFile(installedRole, "utf8");
 
-  assert.match(installed, /Managed update marker/);
-  assert.equal(result.backups.some(({ kind }) => kind === "claude_agent"), true);
+  assert.equal(result.status, "update_requires_manual_replacement");
+  assert.equal(installed, before);
+  assert.equal(result.backups.some(({ kind }) => kind === "claude_agent"), false);
 });
 
-test("mixed-host update retains unavailable Claude ownership while updating Codex", async () => {
-  // A selected host that cannot accept a package update must retain all of its existing receipt records.
+test("mixed-host update requires manual replacement without changing either host", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-mixed-unavailable-home-"));
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-mixed-unavailable-source-"));
   temporary.push(home, changedSource);
@@ -1322,8 +1374,9 @@ test("mixed-host update retains unavailable Claude ownership while updating Code
   const result = await installPackage({ sourceRoot: changedSource, home, host: "both", scope: "user", now: new Date("2026-09-06T12:02:00.000Z") });
   const after = JSON.parse(await readFile(receiptPath, "utf8"));
 
-  assert.equal(result.conflicts.some(({ runtime, reason }) => runtime === "claude" && reason === "preexisting_target"), true);
-  assert.equal(await readFile(path.join(home, ".agents", "skills", "agent-team", addedFile), "utf8"), "changed package\n");
+  assert.equal(result.status, "update_requires_manual_replacement");
+  assert.equal(result.conflicts.every(({ reason }) => reason === "differing_present_target"), true);
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", addedFile)), { code: "ENOENT" });
   assert.equal(await readFile(claudeConfigPath, "utf8"), claudeConfig);
   assert.deepEqual(after.handlers.filter(({ runtime }) => runtime === "claude"), before.handlers.filter(({ runtime }) => runtime === "claude"));
   assert.deepEqual(after.claudeAgents, before.claudeAgents);

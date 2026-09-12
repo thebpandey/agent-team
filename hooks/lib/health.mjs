@@ -14,6 +14,39 @@ const supportedEvents = {
 };
 const RELEASE_REPOSITORY = "https://github.com/thebpandey/agent-team";
 const ARTIFACT_KEYS = ["archiveContentDigest", "archiveFileMap", "archiveName", "archiveSha256", "archiveUrl", "checksumFileName", "checksumFileSha256", "checksumUrl", "name", "packageContentDigest", "packageFileMap", "releaseTag", "releaseUrl", "repository", "sourceRevision", "updateUrl", "version"].sort();
+const FILE_MAP_RECORD_KEYS = ["mode", "sha256", "size"];
+
+function orderedFileMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = Object.entries(value).sort(([left], [right]) => Buffer.from(left).compare(Buffer.from(right)));
+  if (!entries.length || entries.some(([name, record]) => !name || name.startsWith("/") || name.includes("\\")
+    || name.split("/").some((part) => !part || part === "." || part === "..") || !record || typeof record !== "object"
+    || Array.isArray(record) || Object.keys(record).sort().join("\0") !== FILE_MAP_RECORD_KEYS.join("\0")
+    || !/^[0-9a-f]{64}$/.test(record.sha256) || ![0o644, 0o755].includes(record.mode)
+    || !Number.isSafeInteger(record.size) || record.size < 0)) return null;
+  return Object.fromEntries(entries);
+}
+
+function expectedArchiveFileMap(artifact) {
+  const packageFileMap = orderedFileMap(artifact.packageFileMap);
+  if (!packageFileMap) return null;
+  const metadata = {
+    name: artifact.name,
+    version: artifact.version,
+    hosts: ["codex", "claude-code"],
+    repository: artifact.repository,
+    releaseTag: artifact.releaseTag,
+    releaseUrl: artifact.releaseUrl,
+    updateUrl: artifact.updateUrl,
+    sourceRevision: artifact.sourceRevision,
+    packageFileMap,
+    packageContentDigest: artifact.packageContentDigest,
+  };
+  const bytes = Buffer.from(`${JSON.stringify(metadata, null, 2)}\n`);
+  return orderedFileMap({ ...packageFileMap, ".agent-team-source.json": {
+    sha256: createHash("sha256").update(bytes).digest("hex"), mode: 0o644, size: bytes.length,
+  } });
+}
 
 async function present(file) {
   try {
@@ -90,8 +123,10 @@ async function artifactHealth(root, runtime, installed, receipt) {
     const releaseTag = `v${artifact.version}`;
     const archiveName = `agent-team-${artifact.version}.zip`;
     const releaseAssetRoot = `${RELEASE_REPOSITORY}/releases/download/${releaseTag}`;
+    const expectedArchiveMap = expectedArchiveFileMap(artifact);
     if (Object.keys(artifact).sort().join("\0") !== ARTIFACT_KEYS.join("\0")
       || receipt.version !== artifact.version
+      || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(artifact.version)
       || artifact.name !== "agent-team"
       || artifact.repository !== RELEASE_REPOSITORY
       || artifact.releaseTag !== releaseTag
@@ -103,6 +138,9 @@ async function artifactHealth(root, runtime, installed, receipt) {
       || artifact.checksumUrl !== `${releaseAssetRoot}/SHA256SUMS`
       || !/^[0-9a-f]{40}$/.test(receipt.artifact.sourceRevision)
       || !/^[0-9a-f]{64}$/.test(receipt.artifact.archiveSha256)
+      || !/^[0-9a-f]{64}$/.test(receipt.artifact.checksumFileSha256)
+      || !expectedArchiveMap
+      || JSON.stringify(orderedFileMap(artifact.archiveFileMap)) !== JSON.stringify(expectedArchiveMap)
       || fileMapDigest(receipt.artifact.packageFileMap) !== receipt.artifact.packageContentDigest
       || fileMapDigest(receipt.artifact.archiveFileMap) !== receipt.artifact.archiveContentDigest) throw new Error("invalid receipt");
   } catch {

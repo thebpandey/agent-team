@@ -174,14 +174,15 @@ test("source and extracted universal CLIs complete every host and scope lifecycl
       const reinstalled = JSON.parse((await run(process.execPath, [cli, "install", ...releaseSelectors, ...selectors])).stdout);
       assert.equal(reinstalled.changed, false);
       const upgraded = JSON.parse((await run(process.execPath, [updatedCli, "install", "--archive", updatedArchive, "--checksums", updatedChecksums, ...selectors])).stdout);
-      assert.equal(upgraded.changed, true);
+      assert.equal(upgraded.status, "update_requires_manual_replacement");
+      assert.equal(upgraded.changed, false);
       const runtimes = host === "both" ? ["codex", "claude"] : [host === "claude-code" ? "claude" : "codex"];
       for (const runtime of runtimes) {
         const root = scope === "project" ? projectRoot : home;
         const target = runtime === "codex"
           ? path.join(root, ".agents", "skills", "agent-team")
           : path.join(root, ".claude", "skills", "agent-team");
-        assert.equal(await readFile(path.join(target, addedFile), "utf8"), "updated extracted consumer\n");
+        await assert.rejects(readFile(path.join(target, addedFile)), { code: "ENOENT" });
         const configured = JSON.parse(await readFile(configs[scope][runtime], "utf8"));
         assert.equal(configured.sentinel, path.basename(configs[scope][runtime]));
         assert.ok(Object.values(configured.hooks).flat().some((group) => group.hooks.some(({ command = "" }) => command.includes("agent-team-hook.mjs"))));
