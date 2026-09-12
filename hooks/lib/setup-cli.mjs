@@ -238,6 +238,7 @@ export async function runSetupCommand(command, options = {}, context = {}) {
       return initializationRecordProblem(fresh.setup, canonical, {
         projectRoot: fresh.root,
         validateTracker: false,
+        allowLegacy: true,
       }) ? { projectOwner: null } : canonical.registry;
     },
   };

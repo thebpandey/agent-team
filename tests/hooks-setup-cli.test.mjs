@@ -71,6 +71,19 @@ async function envelope(value, request, top = {}) {
   return file;
 }
 
+async function legacyBrainVaultFixture(t) {
+  const value = await fixture(t, {}, { trackerKind: "beads", projectId: "brainvault-system" });
+  await writeFile(value.trackerExecutable, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify([\n  { id: "brainvault-system-6zf", title: "Historical delivery", status: "closed", assignee: "", dependency_count: 0 },\n  { id: "T-1", title: "Complete prerequisite", status: "closed", assignee: "", dependency_count: 0 },\n  { id: "T-2", title: "Repair parser", status: "open", assignee: "", dependency_count: 0 }\n]));\n`);
+  await chmod(value.trackerExecutable, 0o755);
+  const setup = JSON.parse(await readFile(value.setupPath, "utf8"));
+  delete setup.initialization.initialTaskIds;
+  delete setup.initialization.trackerFingerprint;
+  delete setup.initialization.trackerSelection.root;
+  delete setup.tracker.root;
+  await writeFile(value.setupPath, `${JSON.stringify(setup, null, 2)}\n`);
+  return { ...value, legacyInitialization: JSON.stringify(setup.initialization) };
+}
+
 test("Node consumer inspects settings/dependencies without writes or invented native choices", async (t) => {
   const value = await fixture(t);
   const before = await readFile(value.setupPath, "utf8");
@@ -293,32 +306,66 @@ test('readiness requires a completed initialization receipt', async (t) => {
 });
 
 test("BrainVault-shaped pre-7.2 initialization remains readable without fabricating provenance", async (t) => {
-  const value = await fixture(t, {}, { trackerKind: "beads", projectId: "brainvault-system" });
-  await writeFile(value.trackerExecutable, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify([\n  { id: "brainvault-system-6zf", title: "Historical delivery", status: "closed", assignee: "", dependency_count: 0 },\n  { id: "T-1", title: "Complete prerequisite", status: "closed", assignee: "", dependency_count: 0 },\n  { id: "T-2", title: "Repair parser", status: "open", assignee: "", dependency_count: 0 }\n]));\n`);
-  await chmod(value.trackerExecutable, 0o755);
-  const setup = JSON.parse(await readFile(value.setupPath, "utf8"));
-  delete setup.initialization.initialTaskIds;
-  delete setup.initialization.trackerFingerprint;
-  delete setup.initialization.trackerSelection.root;
-  delete setup.tracker.root;
-  await writeFile(value.setupPath, `${JSON.stringify(setup, null, 2)}\n`);
+  const value = await legacyBrainVaultFixture(t);
   const paths = [value.setupPath, value.statePath, path.join(value.root, ".agent-team", "TEAMS.md")];
   const before = await Promise.all(paths.map((file) => readFile(file, "utf8")));
 
   const readiness = await value.invoke("readiness");
   const settings = await value.invoke("settings");
-  const mutation = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { operationId: "legacy-write" });
   const { runSetupCommand } = await import(modulePath);
-  const writeAttempt = await runSetupCommand("settings-update", { ...value.options, request: mutation });
 
   assert.equal(readiness.projectInitialization.required, false, readiness.projectInitialization.reason);
   assert.equal(readiness.projectInitialization.projectOwner, "owner");
   assert.equal(settings.host, "codex");
-  assert.deepEqual(writeAttempt, { status: "conflict", reason: "project_owner_required" });
+  assert.deepEqual(await Promise.all(paths.map((file) => readFile(file, "utf8"))), before);
+
+  const intruderRequest = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, {
+    operationId: "legacy-intruder-write", writer: { id: "other-owner", role: "project_orchestrator" },
+  });
+  const intruderResult = await runSetupCommand("settings-update", { ...value.options, request: intruderRequest });
+  assert.equal(intruderResult.status, "conflict");
+  assert.equal(intruderResult.reason, "project_owner_required");
+  assert.deepEqual(await Promise.all(paths.map((file) => readFile(file, "utf8"))), before);
+
+  const settingsRequest = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { operationId: "legacy-settings-write" });
+  const settingsResult = await runSetupCommand("settings-update", { ...value.options, request: settingsRequest });
+  assert.equal(settingsResult.status, "applied");
+  assert.equal(JSON.stringify(settingsResult.setup.initialization), value.legacyInitialization);
+
+  const dependencyRequest = await envelope(value, { selections: { defaults: [] } }, { expectedVersion: 4, operationId: "legacy-dependency-write" });
+  const createRunner = () => async ({ dependency }) => ({ status: "passed", version: dependency.version, evidence: "Legacy fixture evidence" });
+  const dependencyResult = await runSetupCommand("dependencies-prepare", { ...value.options, request: dependencyRequest }, { createDependencyRunner: createRunner });
+  assert.equal(dependencyResult.status, "ready");
+  assert.equal(JSON.stringify(dependencyResult.setup.initialization), value.legacyInitialization);
+
+  const finalSetup = JSON.parse(await readFile(value.setupPath, "utf8"));
+  assert.equal(JSON.stringify(finalSetup.initialization), value.legacyInitialization);
   assert.equal(Object.hasOwn(JSON.parse(await readFile(value.setupPath, "utf8")).initialization, "initialTaskIds"), false);
   assert.equal(Object.hasOwn(JSON.parse(await readFile(value.setupPath, "utf8")).initialization, "trackerFingerprint"), false);
   assert.equal(Object.hasOwn(JSON.parse(await readFile(value.setupPath, "utf8")).initialization.trackerSelection, "root"), false);
-  assert.deepEqual(await Promise.all(paths.map((file) => readFile(file, "utf8"))), before);
+  assert.deepEqual(await Promise.all(paths.slice(1).map((file) => readFile(file, "utf8"))), before.slice(1));
+});
+
+test("setup mutations reject tampered legacy initialization receipts without writes", async (t) => {
+  for (const command of ["settings-update", "dependencies-prepare"]) await t.test(command, async () => {
+    const value = await legacyBrainVaultFixture(t);
+    const setup = JSON.parse(await readFile(value.setupPath, "utf8"));
+    setup.initialization.initialTaskIds = setup.plan.taskIds;
+    await writeFile(value.setupPath, `${JSON.stringify(setup, null, 2)}\n`);
+    const paths = [value.setupPath, value.statePath, path.join(value.root, ".agent-team", "TEAMS.md")];
+    const before = await Promise.all(paths.map((file) => readFile(file, "utf8")));
+    const request = command === "settings-update"
+      ? { change: { kind: "run", values: { continuous: true } } }
+      : { selections: { defaults: [] } };
+    const requestPath = await envelope(value, request, { operationId: `tampered-${command}` });
+    const { runSetupCommand } = await import(modulePath);
+    const result = await runSetupCommand(command, { ...value.options, request: requestPath }, {
+      createDependencyRunner: () => async () => { throw new Error("tampered receipt reached dependency runner"); },
+    });
+    assert.equal(result.status, "conflict");
+    assert.equal(result.reason, "project_owner_required");
+    assert.deepEqual(await Promise.all(paths.map((file) => readFile(file, "utf8"))), before);
+  });
 });
 
 test("readiness rejects a receipt whose required initialization state is missing", async (t) => {
