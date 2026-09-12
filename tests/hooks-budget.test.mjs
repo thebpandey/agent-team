@@ -21,6 +21,21 @@ async function fixture() {
   return policyFixture(root);
 }
 
+async function withGuardedFifoWriter(statePath, startWriter, action) {
+  const fifo = await open(statePath, "r+");
+  let writer;
+  try {
+    writer = startWriter();
+    return await action();
+  } finally {
+    try {
+      if (writer) await writer;
+    } finally {
+      await fifo.close();
+    }
+  }
+}
+
 test("one event deadline bounds successive lint roots and preserves completed lint evidence", async () => {
   const value = await fixture();
   for (const name of ["fast", "slow", "later"]) {
@@ -154,18 +169,30 @@ test("outer deadline preserves mapped destructive classification when canonical 
   const statePath = path.join(value.root, ".agent-team/state.json");
   await rm(statePath);
   execFileSync("mkfifo", [statePath]);
-  const fifo = await open(statePath, "r+");
-  try {
-    const releaseRead = new Promise((resolve, reject) => setTimeout(() => {
-      writeFile(statePath, JSON.stringify(value.state)).then(resolve, reject);
-    }, 150));
-    const result = await runNormalizedHook(hookEvent(value, { sessionId: "owner-session", operation: {
+  const startWriter = () => new Promise((resolve, reject) => setTimeout(() => {
+    writeFile(statePath, JSON.stringify(value.state)).then(resolve, reject);
+  }, 150));
+  const runHook = () => runNormalizedHook(hookEvent(value, { sessionId: "owner-session", operation: {
       kind: "provider", tool: "mcp__database__execute", input: { query: "DROP TABLE records" },
     } }), { timeoutMs: 50 });
-    await releaseRead;
-    assert.equal(result.decision.allow, false);
-    assert.match(result.decision.messages.join(" "), /unavailable/i);
-  } finally {
-    await fifo.close();
-  }
+  const result = await withGuardedFifoWriter(statePath, startWriter, runHook);
+  assert.equal(result.decision.allow, false);
+  assert.match(result.decision.messages.join(" "), /unavailable/i);
+});
+
+test("FIFO guard settles its delayed writer before closing after guarded work rejects", async () => {
+  const value = await fixture();
+  const statePath = path.join(value.root, ".agent-team/state.json");
+  await rm(statePath);
+  execFileSync("mkfifo", [statePath]);
+  let writerSettled = false;
+  const startWriter = () => new Promise((resolve, reject) => setTimeout(() => {
+    writeFile(statePath, JSON.stringify(value.state)).then(() => {
+      writerSettled = true;
+      resolve();
+    }, reject);
+  }, 20));
+  const rejectWork = async () => { throw new Error("injected guarded-work failure"); };
+  await assert.rejects(withGuardedFifoWriter(statePath, startWriter, rejectWork), /injected guarded-work failure/);
+  assert.equal(writerSettled, true);
 });
