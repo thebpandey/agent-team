@@ -1220,6 +1220,9 @@ Expected: PASS with no reused path changes and independent Graphify evidence.
 
 ### Task 7: Bind Agent-Team installs to release artifacts (REL-007)
 
+**Accepted base:** `38b6ff5b2bc63f0b308fec9a555d6eca59c053e4`
+**Current review candidate:** `a336ce07bb61087f0cafc5e08d5f5303ca4427d6`
+
 **Files:**
 - Modify: hooks/lib/artifacts.mjs:110-196
 - Modify: hooks/lib/install.mjs:485-788,791-966
@@ -1228,15 +1231,18 @@ Expected: PASS with no reused path changes and independent Graphify evidence.
 - Test: tests/hooks-artifacts.test.mjs
 - Test: tests/hooks-install-health.test.mjs
 - Test: tests/hooks-package.test.mjs
+- Test: tests/hooks-cli.test.mjs
 
 **Interfaces:**
 - Consumes: verified archive path, SHA256SUMS, embedded .agent-team-source.json, host codex|claude-code|both, scope user|project.
 - Produces: install options --archive and --checksums; receipt artifact fields releaseTag, releaseUrl, sourceRevision, archiveSha256, archiveContentDigest, archiveFileMap, and per-host installedFileMaps; transaction/recovery identity independent of temporary extraction.
-- Private helpers defined and directly unit-tested in this task: artifact helpers `parseSha256Sums(source)`, `readArchiveOnce(path) -> { archiveName, bytes }`, `inspectArchiveClosedBytes(bytes, { prefix, metadata })`, and `verifyReleaseArtifactBytes({ archiveName, bytes, checksums })`; install helpers `withInstallLock(receiptPath, callback)`, `extractVerifiedArchiveBytesToSameFilesystem(bytes, targetParent, artifact)`, `fileMap(root)`, `fileMapDigest(map)`, and `installBothFromSealedTree(sealed, targets, options)`. Each file-map entry is exactly `{sha256,mode,size}`. `readArchiveOnce` opens the caller path once with no-follow regular-file checks, reads bounded bytes, verifies a stable pre/post stat identity, and closes it; no later helper receives that replaceable path. `inspectArchiveClosedBytes` rejects duplicate names, unsafe paths, unexpected directories, symlinks, and special entries before deriving the canonical archive map. The extraction helper creates every regular file exclusively with its canonical mode in an owner-only transaction directory; the install helper journals/restores both preimages and the prior receipt.
+- Private helpers defined and directly unit-tested in this task: artifact helpers `parseSha256Sums(source)`, `readArchiveOnce(path) -> { archiveName, bytes }`, `inspectArchiveClosedBytes(bytes, { prefix, metadata })`, and `verifyReleaseArtifactBytes({ archiveName, bytes, checksums })`; install helpers `withInstallLock(receiptPath, callback)`, `extractVerifiedArchiveBytesToSameFilesystem(bytes, targetParent, artifact)`, `fileMap(root)`, `fileMapDigest(map)`, and `installBothFromSealedTree(sealed, targets, options)`. Each file-map entry is exactly `{sha256,mode,size}`. `readArchiveOnce` opens the caller path once with no-follow regular-file checks, reads bounded bytes, verifies a stable pre/post stat identity, and closes it; no later helper receives that replaceable path. `inspectArchiveClosedBytes` rejects duplicate names, unsafe paths, unexpected directories, symlinks, and special entries before deriving the canonical archive map. The extraction helper creates every regular file exclusively with its canonical mode in an owner-only transaction directory. The installer preflights every selected target before mutation and admits only absent targets or exact byte/mode/size-identical no-target-mutation reinstalls.
+
+**Feasibility ruling:** Node 24's standard filesystem API has no inode-conditional directory replace. REL-007 therefore does not automatically replace a differing present package target. Any differing target, including an otherwise-owned or schema-3 target, returns `update_requires_manual_replacement`, `changed: false`, before any target, role, configuration, backup, or receipt mutation. A later release update is an explicit quiesced maintenance operation outside this automatic command: retain the verified old receipt, move the old target to a rollback backup, invoke the fresh absent-target installer, and restore the backup if the fresh transaction does not commit. Exact identical reinstall performs no target mutation. Fresh absent targets, including explicit `both`, retain journaled all-or-restored transaction behavior.
 
 - [ ] **Step 1: Write failing provenance tests.**
 
-Cover missing/tampered metadata, checksum mismatch, duplicate/unsafe/symlink/special entries, wrong mode/size, extraction deletion, exact reinstall, downgrade denial, customized target, installed drift, uninstall, injected second-host failure/rollback, archive/checksum replacement after precheck, and staged-byte mutation before swap.
+Cover missing/tampered metadata, checksum mismatch, duplicate/unsafe/symlink/special entries, wrong mode/size, extraction deletion, exact byte/mode/size-identical reinstall without target mutation, `update_requires_manual_replacement` and zero mutations for differing present owned/schema-3/unowned targets, downgrade denial, installed drift, uninstall, injected fresh second-host failure/rollback, archive/checksum replacement after precheck, and staged-byte mutation before publication. Preserve review-round-3 findings 2 and 3: schema-4 health rejects semantically invalid versions/checksum digests, unequal archive/package maps, and a forged metadata entry; a final-map mismatch never removes same-inode content changed after verification and instead retains the operator bytes plus durable recovery/old-backup evidence.
 
 ```js
 const originalEntries = await readZip(validArchive);
@@ -1335,7 +1341,7 @@ function inspectArchiveClosedBytes(bytes, { prefix, metadata }) {
 
 - [ ] **Step 4: Persist source-independent identity.**
 
-Inside the exclusive install lock, open/read the caller's archive exactly once, verify those immutable bytes, and extract only those same bytes into a transaction-owned same-filesystem directory using exclusive regular-file creation and canonical modes. Compare every staged and installed `{sha256,mode,size}` map to the archive-derived map, build each target only from this sealed staging tree, and persist the archive aggregate/map plus each installed-host map in the receipt. Never install from a prior extraction or moving source root, and never reopen the caller's replaceable archive path after verification. Archive/checksum/staged drift aborts and restores both preimages and the prior receipt; exact reinstall returns unchanged.
+Inside the exclusive install lock, open/read the caller's archive exactly once, verify those immutable bytes, and extract only those same bytes into a transaction-owned same-filesystem directory using exclusive regular-file creation and canonical modes. Before any selected-scope mutation, compare every present target's complete `{sha256,mode,size}` map with the archive-derived package map. An exact match is an unchanged reinstall with no target mutation. Any differing present target returns `update_requires_manual_replacement`, `changed: false`, with every target, role, configuration, backup, and receipt byte unchanged. Only absent targets enter fresh publication. Compare every staged and freshly installed map to archive authority and persist the archive aggregate/map plus each installed-host map in the receipt. Never install from a prior extraction or moving source root, and never reopen the caller's replaceable archive path after verification. Archive/checksum/staged drift aborts and restores every fresh mutation and the prior receipt.
 
 ```js
 return withInstallLock(receiptPath, async () => {
@@ -1350,7 +1356,7 @@ return withInstallLock(receiptPath, async () => {
 
 - [ ] **Step 5: Preserve ownership during rollback/uninstall.**
 
-Use installed digests to touch only unchanged owned resources. Never touch customized or reused_unowned paths.
+Use installed digests to touch only unchanged owned resources. Never touch customized or reused_unowned paths. Automatic install never performs a changed-target update. A separately authorized later release update first quiesces the runtime and performs a rollback-backed move of the old target, then uses this command only as a fresh absent-target install.
 
 - [ ] **Step 6: Run GREEN.**
 
@@ -1360,7 +1366,7 @@ Expected: PASS after deleting staged extraction.
 
 - [ ] **Step 7: Commit.**
 
-    git add hooks/lib/artifacts.mjs hooks/lib/install.mjs hooks/lib/health.mjs hooks/agent-team-cli.mjs tests/hooks-artifacts.test.mjs tests/hooks-install-health.test.mjs tests/hooks-package.test.mjs
+    git add hooks/lib/artifacts.mjs hooks/lib/install.mjs hooks/lib/health.mjs hooks/agent-team-cli.mjs tests/hooks-artifacts.test.mjs tests/hooks-install-health.test.mjs tests/hooks-package.test.mjs tests/hooks-cli.test.mjs
     git commit -m "feat: bind installs to release artifacts"
 
 ### Task 8: Agent-Team orchestration instructions and pressure tests (REL-008)
