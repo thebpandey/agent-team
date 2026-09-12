@@ -8,6 +8,7 @@ import { loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs"
 import { withDirectoryLock } from "./lock.mjs";
 import { inspectCheckpointEvidence } from "./recovery.mjs";
 import { beadsEnvironment } from "./tracker.mjs";
+import { assertNoOwnerRecoveryJournal, repairOwnerRecovery } from "./owner-recovery.mjs";
 
 const digest = (value) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
 const operationSignature = ({ expectedVersion, expectedFingerprint, ...operation }) => digest(operation);
@@ -113,14 +114,18 @@ export async function mutateOperationalState(project, request, mutator, options 
   if (!project.active) return { status: "unavailable", reason: "inactive" };
   if (!/^[\w.:-]{1,128}$/.test(request.operationId ?? "")) return conflict("operation_identity_required");
   try {
+    await repairOwnerRecovery(project, { budget });
     const execute = () => withDirectoryLock(path.join(project.paths.locks, "state.lock"), {
       operationId: request.operationId, actorSessionId: request.actorSessionId, pid: process.pid,
     }, async () => {
+      await assertNoOwnerRecoveryJournal(project);
       const canonical = await loadCanonicalState(project, { includeTasks: false, budget });
       const owner = canonical.registry.projectOwner;
+      const actorHost = options.nativeIdentity?.host === "claude" ? "claude-code" : options.nativeIdentity?.host;
       if (typeof owner !== "string" || !/^[\w.:-]{1,128}$/.test(owner) || ["none", "unknown", "unassigned", "-"].includes(owner.toLowerCase())
         || typeof request.actorSessionId !== "string" || !/^[\w.:-]{1,128}$/.test(request.actorSessionId)
-        || request.actorSessionId !== owner || !canonical.registry.projectId || canonical.registry.projectId !== project.projectId) return conflict("project_owner_required");
+        || request.actorSessionId !== owner || canonical.registry.projectOwnerHost && actorHost !== canonical.registry.projectOwnerHost
+        || !canonical.registry.projectId || canonical.registry.projectId !== project.projectId) return conflict("project_owner_required");
       const signature = operationSignature(request);
       const previous = canonical.state.operationReceipts?.[request.operationId];
       if (previous) return previous.signature === signature
@@ -131,7 +136,8 @@ export async function mutateOperationalState(project, request, mutator, options 
       if (!Number.isInteger(request.expectedVersion) || request.expectedVersion !== (canonical.state.stateVersion ?? 0)) return conflict("stale_version");
       const state = structuredClone(canonical.state);
       const persistIntent = async (intent) => {
-        state.pendingOperations = { ...state.pendingOperations, [request.operationId]: { ...intent, signature, ownerSessionId: request.actorSessionId } };
+        state.pendingOperations = { ...state.pendingOperations, [request.operationId]: { ...intent, signature, ownerSessionId: request.actorSessionId,
+          ...(canonical.registry.projectOwnerHost ? { ownerHost: actorHost, ownershipEpoch: canonical.registry.ownershipEpoch } : {}) } };
         state.stateVersion = (state.stateVersion ?? 0) + 1;
         await atomicWrite(project.paths.state, `${JSON.stringify(state, null, 2)}\n`, options);
       };

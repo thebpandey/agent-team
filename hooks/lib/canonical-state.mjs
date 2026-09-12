@@ -1,18 +1,32 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { withDirectoryLock } from "./lock.mjs";
 import { readTracker } from "./tracker.mjs";
+import { assertNoOwnerRecoveryJournal, repairOwnerRecovery } from "./owner-recovery.mjs";
 
 const criticalMappingKinds = new Set(["file_change", "integration", "release", "database_destructive", "completion"]);
 
 async function text(file) {
+  let handle;
   try {
-    return await readFile(file, "utf8");
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error("unsafe_canonical_record");
+    const bytes = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (!bytesRead) break;
+      offset += bytesRead;
+    }
+    if (offset !== bytes.length) throw new Error("canonical_record_changed");
+    return bytes.toString("utf8");
   } catch (error) {
     if (error.code === "ENOENT") return "";
     throw error;
-  }
+  } finally { await handle?.close(); }
 }
 
 function label(source, name) {
@@ -43,19 +57,49 @@ function cells(line) {
 
 /** Read identities and task status from their canonical records; state.json only carries gate evidence. */
 export async function loadCanonicalState(project, options = {}) {
-  const [teamsText, taskResult, stateText] = await Promise.all([
+  await repairOwnerRecovery(project, options);
+  const [teamsText, taskResult, stateText, setupText, ownerHistoryText] = await Promise.all([
     text(project.paths.teams),
     options.includeTasks === false ? null : loadCanonicalTracker(project, options),
     text(project.paths.state),
+    text(project.paths.setup),
+    project.paths.ownerHistory ? text(project.paths.ownerHistory) : "",
   ]);
+  try { await assertNoOwnerRecoveryJournal(project); }
+  catch (error) {
+    if (error.message !== "owner_recovery_in_progress" || options.ownerRecoveryRetry === false) throw error;
+    await repairOwnerRecovery(project, options);
+    return loadCanonicalState(project, { ...options, ownerRecoveryRetry: false });
+  }
   let state = {};
   if (stateText) state = JSON.parse(stateText);
+  const setup = setupText ? JSON.parse(setupText) : {};
+  let ownerHistory;
+  if (ownerHistoryText) {
+    ownerHistory = JSON.parse(ownerHistoryText);
+    const epoch = state.ownership?.epoch;
+    if (ownerHistory.schemaVersion !== 1 || !Number.isSafeInteger(ownerHistory.version) || ownerHistory.version < 1
+      || !Array.isArray(ownerHistory.entries) || !Number.isSafeInteger(epoch) || epoch < 1
+      || setup.ownership?.epoch !== epoch || ownerHistory.ownership?.epoch !== epoch
+      || JSON.stringify(setup.ownership?.current) !== JSON.stringify(state.ownership?.current)
+      || state.ownership?.current?.sessionId !== label(teamsText, "Project owner")
+      || state.ownership?.current?.host !== label(teamsText, "Project owner host")) {
+      throw new Error("owner_generation_mismatch");
+    }
+  } else if (state.ownership !== undefined || setup.ownership !== undefined) {
+    throw new Error("owner_history_missing");
+  }
   return {
     state,
+    setup,
+    ownerHistory,
     registry: {
       projectId: label(teamsText, "Project"),
       projectOwner: label(teamsText, "Project owner"),
+      projectOwnerHost: label(teamsText, "Project owner host"),
       integrationOwner: label(teamsText, "Integration owner"),
+      integrationOwnerHost: label(teamsText, "Integration owner host"),
+      ownershipEpoch: state.ownership?.epoch,
       teams: tables(teamsText).flatMap(({ rows }) => rows).filter((row) => row["team id"]),
     },
     tasks: taskResult?.tasks ?? [],
@@ -211,8 +255,12 @@ export async function operationMappingHealth(project) {
   }
 }
 
-export function identityFor(registry, sessionId) {
-  if (sessionId === registry.projectOwner) return { role: "project_owner", sessionId };
+export function identityFor(registry, host, sessionId) {
+  if (sessionId === undefined) { sessionId = host; host = undefined; }
+  const normalizedHost = host === "claude" ? "claude-code" : host;
+  if (sessionId === registry.projectOwner && (!registry.projectOwnerHost || normalizedHost === registry.projectOwnerHost)) {
+    return { role: "project_owner", host: registry.projectOwnerHost ?? normalizedHost, sessionId, ownershipEpoch: registry.ownershipEpoch };
+  }
   const team = registry.teams.find((entry) => entry.session.split(/\s*,\s*/).includes(sessionId));
-  return team ? { role: "team", sessionId, team } : { role: "unknown", sessionId };
+  return team ? { role: "team", host: normalizedHost, sessionId, team } : { role: "unknown", host: normalizedHost, sessionId };
 }

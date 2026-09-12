@@ -74,6 +74,7 @@
     "hooks/lib/lint.mjs",
     "hooks/lib/lock.mjs",
     "hooks/lib/operation.mjs",
+    "hooks/lib/owner-recovery.mjs",
     "hooks/lib/output.mjs",
     "hooks/lib/package-validator.mjs",
     "hooks/lib/policy.mjs",

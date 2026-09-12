@@ -142,6 +142,14 @@ function integrationAuthorization(gate, now) {
     && authorization.revision === gate.expectedRevision && sameIds(authorization.taskIds, gate.taskIds) && fresh(authorization.observedAt, now);
 }
 
+function currentOwner(canonical, event, gate = {}) {
+  const identity = identityFor(canonical.registry, event.runtime, event.sessionId);
+  if (identity.role !== "project_owner" || event.sessionId !== gate.ownerSessionId) return false;
+  if (!canonical.registry.projectOwnerHost) return true;
+  return gate.ownerHost === canonical.registry.projectOwnerHost
+    && gate.ownershipEpoch === canonical.registry.ownershipEpoch;
+}
+
 function configuredRemoteBaseRef(baseRef) {
   return typeof baseRef === "string" && /^[A-Za-z0-9][\w./-]*$/.test(baseRef)
     && !baseRef.startsWith("refs/") && !/[./]$|\.\.|\/\//.test(baseRef) ? `refs/heads/${baseRef}` : undefined;
@@ -154,7 +162,7 @@ function nonForcePushMatches(operation, gate) {
 
 async function integrationGate(event, project, canonical, operation, now, budget) {
   const gate = canonical.state.integration ?? {};
-  if (event.sessionId !== canonical.registry.integrationOwner || event.sessionId !== gate.ownerSessionId) return deny("The registered integration owner must run this operation.");
+  if (event.sessionId !== canonical.registry.integrationOwner || !currentOwner(canonical, event, gate)) return deny("The registered integration owner must run this operation.");
   if (!gate.authorized) return deny("Integration authorization is missing.");
   if (!integrationAuthorization(gate, now)) return deny("Integration authorization provenance is missing or mismatched.");
   if (gate.baseRemoteRef !== configuredRemoteBaseRef(gate.baseRef)) return deny("The integration remote base does not match the configured integration branch.");
@@ -241,7 +249,7 @@ function releaseArtifact(record, revision, taskIds) {
 
 async function releaseGate(event, project, canonical, operation, now, budget) {
   const gate = canonical.state.release ?? {};
-  if (event.sessionId !== gate.ownerSessionId || event.sessionId !== canonical.registry.integrationOwner) return deny("The registered release owner must run this operation.");
+  if (!currentOwner(canonical, event, gate) || event.sessionId !== canonical.registry.integrationOwner) return deny("The registered release owner must run this operation.");
   if (!gate.authorized) return deny("Release authorization is missing.");
   if (!gate.target) return deny("The release target is unknown.");
   const authorization = gate.authorization ?? {};
@@ -293,7 +301,7 @@ async function releaseGate(event, project, canonical, operation, now, budget) {
 function databaseGate(event, canonical, operation, now) {
   const gate = canonical.state.database ?? {};
   if (operation.parserFailed) return deny("The recognized destructive database operation could not be parsed safely.");
-  if (event.sessionId !== gate.ownerSessionId) return deny("The recorded database operation owner must run this operation.");
+  if (!currentOwner(canonical, event, gate)) return deny("The recorded database operation owner must run this operation.");
   if (!gate.authorized) return deny("Destructive database authorization is missing.");
   if (!gate.environment) return deny("The database target environment is unknown.");
   if (gate.environment === "production" && !gate.productionApproved) return deny("Production database approval is missing.");
@@ -316,7 +324,7 @@ function databaseGate(event, canonical, operation, now) {
 
 async function completionGate(event, project, canonical, operation, budget) {
   if (operation.parserFailed) return deny("Completion requires one explicit canonical task ID and an unambiguous command.");
-  const identity = identityFor(canonical.registry, event.sessionId);
+  const identity = identityFor(canonical.registry, event.runtime, event.sessionId);
   if (identity.role === "unknown") return deny("Registered task ownership is missing for completion.");
   const gate = canonical.state.completion ?? {};
   const taskId = operation.taskId ?? gate.taskId;
@@ -395,7 +403,7 @@ export async function evaluatePolicy(event, project, { now = new Date(), canonic
     return unavailableDecision(event, inventory, { inventoryStatus });
   }
 
-  const identity = identityFor(canonical.registry, event.sessionId);
+  const identity = identityFor(canonical.registry, event.runtime, event.sessionId);
   if (["completion", "release", "integration"].includes(operation.kind)) {
     if (canonical.tracker?.status === "not_read") Object.assign(canonical, await loadCanonicalTracker(project, { budget, runBeads }));
     if (canonical.tracker?.status !== "current") return deny(`The selected canonical tracker is unavailable (${canonical.tracker?.reason ?? "not_read"}).`);

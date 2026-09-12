@@ -368,7 +368,8 @@ test("integration evidence keeps an actual initialized project structurally read
     authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision, taskIds: ["AT-001"] },
     recovery: { status: "reconciled", revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false }));
   assert.equal((await recordGateEvidence(project, { actorSessionId: "owner-session", operationId: "fresh-integration", expectedVersion: canonical.state.stateVersion,
-    expectedFingerprint: canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: revision, evidencePath })).status, "applied");
+    expectedFingerprint: canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: revision, evidencePath },
+  { nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root } })).status, "applied");
   const mapped = await loadCanonicalState(project);
   assert.equal(initializationRecordProblem(project.setup, mapped, { projectRoot: root, validateTracker: true }), undefined);
 });

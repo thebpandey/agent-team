@@ -11,7 +11,7 @@ export async function copyTrackedSource(sourceRoot, destination) {
   }
 }
 
-export async function policyFixture(root, { now = "2026-09-06T12:00:00.000Z" } = {}) {
+export async function policyFixture(root, { now = "2026-09-06T12:00:00.000Z", qualifiedOwnership = false } = {}) {
   execFileSync("git", ["init", "-q", "-b", "main", root]);
   execFileSync("git", ["config", "user.name", "Hook Test"], { cwd: root });
   execFileSync("git", ["config", "user.email", "hook@example.test"], { cwd: root });
@@ -35,11 +35,14 @@ export async function policyFixture(root, { now = "2026-09-06T12:00:00.000Z" } =
     schemaVersion: 1,
     projectId: "project-1",
     skill: "agent-team",
+    ...(qualifiedOwnership ? { ownership: { epoch: 1, current: { host: "codex", sessionId: "owner-session", since: now,
+      operationId: "fixture-initialize", writer: { host: "fixture", pid: process.pid } } } } : {}),
   }));
   await writeFile(path.join(root, ".agent-team", "TEAMS.md"), `# Agent-Team teams
 Project: project-1
 Project owner: owner-session
-Integration owner: owner-session
+${qualifiedOwnership ? "Project owner host: codex\n" : ""}Integration owner: owner-session
+${qualifiedOwnership ? "Integration owner host: codex\n" : ""}
 
 | Team ID | Name | Session | Worktree | Branch | Owned paths | Tasks | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -62,8 +65,11 @@ Integration owner: owner-session
   };
   const state = {
     schemaVersion: 1,
+    ...(qualifiedOwnership ? { ownership: { epoch: 1, current: { host: "codex", sessionId: "owner-session", since: now,
+      operationId: "fixture-initialize", writer: { host: "fixture", pid: process.pid } } } } : {}),
     integration: {
       ownerSessionId: "owner-session",
+      ...(qualifiedOwnership ? { ownerHost: "codex", ownershipEpoch: 1 } : {}),
       authorized: true,
       expectedRevision: revision,
       baseRef: "main",
@@ -83,6 +89,7 @@ Integration owner: owner-session
     },
     release: {
       ownerSessionId: "owner-session",
+      ...(qualifiedOwnership ? { ownerHost: "codex", ownershipEpoch: 1 } : {}),
       authorized: true,
       expectedRevision: revision,
       evidenceAt: now,
@@ -117,6 +124,7 @@ Integration owner: owner-session
     },
     database: {
       ownerSessionId: "owner-session",
+      ...(qualifiedOwnership ? { ownerHost: "codex", ownershipEpoch: 1 } : {}),
       authorized: true,
       environment: "staging",
       productionApproved: false,
@@ -137,6 +145,9 @@ Integration owner: owner-session
     operationMappings,
   };
   await writeFile(path.join(root, ".agent-team", "state.json"), JSON.stringify(state, null, 2));
+  if (qualifiedOwnership) await writeFile(path.join(root, ".agent-team", "owner-history.json"), JSON.stringify({
+    schemaVersion: 1, version: 1, ownership: { epoch: 1 }, entries: [],
+  }, null, 2));
   await writeFile(path.join(root, ".agent-team", "operation-mappings.json"), JSON.stringify({
     schemaVersion: 1,
     kind: "agent-team-operation-mapping-cache",

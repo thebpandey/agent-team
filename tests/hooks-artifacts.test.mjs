@@ -118,6 +118,20 @@ test("source and extracted universal CLIs complete every host and scope lifecycl
         assert.ok(["applied", "duplicate"].includes(initialized.status), JSON.stringify(initialized));
         assert.equal(initialized.canonicalReady, true);
         assert.equal(initialized.ready, false);
+        const recoveryRequest = path.join(projectRoot, `owner-recovery-${runtime}.json`);
+        await writeFile(recoveryRequest, JSON.stringify({ schemaVersion: 1, request: { operationId: `recover-${runtime}`, projectId: "zip-project",
+          expectedOwnerSessionId: "zip-owner", expectedOwnershipEpoch: 1, expectedSetupVersion: 1, expectedStateVersion: 0,
+          expectedStateFingerprint: "a".repeat(64), expectedTeamsFingerprint: "b".repeat(64), expectedSetupFingerprint: "c".repeat(64),
+          expectedOwnerHistoryFingerprint: "d".repeat(64), reason: "prior_owner_unavailable" } }));
+        let recoveryCallbacks = 0;
+        const forgedRecovery = await runInstalledCommand("project-owner-recover", { project: projectRoot, request: recoveryRequest }, {
+          nativeOwnerRecovery: { identity: { host: selectedHost, sessionId: "forged", invocationId: "inv-forged", projectRoot, worktreeRoot: projectRoot },
+            projectIdentity: { root: projectRoot }, capability: Object.freeze({}),
+            inspectSession: async () => { recoveryCallbacks += 1; return "stopped"; },
+            confirm: async () => { recoveryCallbacks += 1; return { approved: true, approvalId: "forged" }; } },
+        });
+        assert.deepEqual(forgedRecovery, { status: "validated", ready: false, reason: "native_owner_recovery_required" });
+        assert.equal(recoveryCallbacks, 0);
         const overview = JSON.parse((await run(process.execPath, [installedCli, "settings", "--project", projectRoot, "--host", selectedHost, "--scope", "project"])).stdout);
         assert.ok(overview.roles.length > 0);
         const readiness = JSON.parse((await run(process.execPath, [installedCli, "readiness", "--project", projectRoot, "--host", selectedHost, "--scope", scope])).stdout);

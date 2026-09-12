@@ -10,6 +10,7 @@ import { withDirectoryLock } from "./lock.mjs";
 import { resolveProject } from "./project.mjs";
 import { captureWriterIdentity, inspectWriterIdentity, taskEligibility } from "./task-transitions.mjs";
 import { resolveTracker, trackerFingerprint as fingerprintTracker } from "./tracker.mjs";
+import { assertNoOwnerRecoveryJournal, repairOwnerRecovery } from "./owner-recovery.mjs";
 
 const run = promisify(execFile);
 const MAX_INITIALIZATION_REQUEST_BYTES = 256 * 1024;
@@ -47,6 +48,11 @@ function completeState(state, { taskIds, integrationOwner, branch }) {
       || !["pending", "passed", "failed", "skipped", "blocked", "unavailable"].includes(check.status)
       || (check.status === "passed" && (typeof check.revision !== "string" || !check.revision)))) return false;
   if (!Object.hasOwn(state, "operationMappings")) return false;
+  if (state.ownership !== undefined && (!Number.isSafeInteger(state.ownership.epoch) || state.ownership.epoch < 1
+    || !validId(state.ownership.current?.sessionId) || !["codex", "claude-code"].includes(state.ownership.current?.host)
+    || state.ownership.current.sessionId !== integrationOwner
+    || state.integration.ownerHost !== state.ownership.current.host || state.integration.ownershipEpoch !== state.ownership.epoch
+    || state.release.ownerHost !== state.ownership.current.host || state.release.ownershipEpoch !== state.ownership.epoch)) return false;
   try { validateOperationMappings(state.operationMappings); return true; } catch { return false; }
 }
 
@@ -55,7 +61,8 @@ function registryIdentity(source) {
     const matches = source?.match(new RegExp(`^${label}:[ \\t]*([^\\r\\n]+)$`, "gm")) ?? [];
     return matches.length === 1 ? matches[0].slice(label.length + 1).trim() : undefined;
   };
-  return { projectId: field("Project"), projectOwner: field("Project owner"), integrationOwner: field("Integration owner") };
+  return { projectId: field("Project"), projectOwner: field("Project owner"), projectOwnerHost: field("Project owner host"),
+    integrationOwner: field("Integration owner"), integrationOwnerHost: field("Integration owner host") };
 }
 
 const exactKeys = (value, required, optional = []) => value && typeof value === "object" && !Array.isArray(value)
@@ -272,6 +279,11 @@ export async function initializeProject(projectPath, request, options = {}) {
       await directory(stateRoot);
       const locks = path.join(stateRoot, ".locks");
       await directory(locks);
+      const recoveryProject = { ...found, paths: { ...(found.paths ?? {}), stateRoot, setup: path.join(stateRoot, "setup.json"),
+        teams: path.join(stateRoot, "TEAMS.md"), state: path.join(stateRoot, "state.json"), locks,
+        ownerHistory: path.join(stateRoot, "owner-history.json"), ownerRecoveryJournal: path.join(stateRoot, ".owner-recovery.json"),
+        ownerRecoveryLock: path.join(locks, "owner-recovery.lock") } };
+      await repairOwnerRecovery(recoveryProject, { budget });
       const lockPath = path.join(locks, "setup.lock");
       const writer = await captureWriterIdentity().catch(() => undefined);
       // Serialize recovery separately; never infer orphanhood from a timestamp or PID alone.
@@ -293,12 +305,15 @@ export async function initializeProject(projectPath, request, options = {}) {
       }, { budget });
       return withDirectoryLock(lockPath, { kind: "project_initialization", projectId: request.projectId, ownerSessionId: actorSessionId, operationId: request.operationId, pid: process.pid, writer }, async () => {
         return withDirectoryLock(path.join(locks, "state.lock"), { kind: "project_initialization", operationId: request.operationId, pid: process.pid, writer }, async () => {
+        await assertNoOwnerRecoveryJournal(recoveryProject);
         const current = await resolveProject(projectPath, { budget });
         if (current.root !== root || current.commonDirectory !== found.commonDirectory) return decision("conflict", "project_identity_changed");
         const tracker = resolveTracker(root, request.tracker);
         if (tracker.reason) return decision("conflict", "invalid_tracker_selection");
         const paths = { stateRoot, setup: path.join(stateRoot, "setup.json"), teams: path.join(stateRoot, "TEAMS.md"), state: path.join(stateRoot, "state.json"),
-          tasks: tracker.path, locks, operationMappings: path.join(stateRoot, "operation-mappings.json") };
+          tasks: tracker.path, locks, operationMappings: path.join(stateRoot, "operation-mappings.json"),
+          ownerHistory: path.join(stateRoot, "owner-history.json"), ownerRecoveryJournal: path.join(stateRoot, ".owner-recovery.json"),
+          ownerRecoveryLock: path.join(locks, "owner-recovery.lock") };
         const project = { ...current, active: true, projectId: request.projectId, setup: { tracker: request.tracker }, tracker, paths };
         const signature = hash(stable(request));
         const setupSource = await read(paths.setup);
@@ -317,8 +332,12 @@ export async function initializeProject(projectPath, request, options = {}) {
         try { await git(root, ["show-ref", "--verify", `refs/heads/${request.plan.branch}`]); }
         catch { if (await git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]) !== request.plan.branch) return decision("conflict", "integration_branch_unavailable"); }
         const finish = async (status) => {
-          for (const file of [paths.setup, paths.teams, paths.state]) if (await read(file) === undefined) return decision("unavailable", "required_records_missing");
+          for (const file of [paths.setup, paths.teams, paths.state, paths.ownerHistory]) if (await read(file) === undefined) return decision("unavailable", "required_state_facts_missing");
           const committed = JSON.parse(await read(paths.setup));
+          const rawIdentity = registryIdentity(await read(paths.teams));
+          const rawState = JSON.parse(await read(paths.state));
+          if (!completeState(rawState, { taskIds: committed.plan?.taskIds ?? [], integrationOwner: rawIdentity.integrationOwner,
+            branch: committed.plan?.branch })) return decision("unavailable", "required_state_facts_missing");
           const canonical = await loadCanonicalState({ ...project, setup: committed }, { ...options, budget });
           const problem = initializationRecordProblem(committed, canonical, { projectRoot: root, validateTracker: true });
           if (problem) return decision("unavailable", problem);
@@ -349,7 +368,8 @@ export async function initializeProject(projectPath, request, options = {}) {
         if (request.source === "standalone" && tracker.kind !== "markdown") return decision("unavailable", "tracker_initialization_required");
         const created = new Map();
         // Fingerprint the exact bytes whose authority was validated, not a later read.
-        const preserved = new Map([[paths.teams, teamsSource], [paths.state, await read(paths.state)], [paths.operationMappings, await read(paths.operationMappings)]]);
+        const preserved = new Map([[paths.teams, teamsSource], [paths.state, await read(paths.state)], [paths.ownerHistory, await read(paths.ownerHistory)],
+          [paths.operationMappings, await read(paths.operationMappings)]]);
         let tasks;
         let trackerFingerprint = null;
         if (request.source === "standalone") {
@@ -371,12 +391,16 @@ export async function initializeProject(projectPath, request, options = {}) {
         }
         if (journal && journal.trackerFingerprint !== trackerFingerprint) return decision("conflict", "tracker_changed_during_initialization");
         const taskIds = tasks.map(({ id }) => id);
-        const teams = `# Agent-Team teams\nProject: ${request.projectId}\nProject owner: ${actorSessionId}\nIntegration owner: ${actorSessionId}\n\n| Team ID | Name | Session | Worktree | Branch | Owned paths | Tasks | Status |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n`;
-        const initialState = { schemaVersion: 1, stateVersion: 0, run: { mode: "finite", taskIds, paused: false },
-          integration: { ownerSessionId: actorSessionId, authorized: false, baseRef: request.plan.branch, paused: false, hold: false },
-          release: { ownerSessionId: actorSessionId, authorized: false, autoDeploy: false, hold: true },
+        const ownerHost = options.nativeIdentity.host;
+        const ownership = setup?.ownership ?? journal?.ownership ?? { epoch: 1, current: { host: ownerHost, sessionId: actorSessionId, since: new Date().toISOString(),
+          operationId: request.operationId, writer } };
+        const teams = `# Agent-Team teams\nProject: ${request.projectId}\nProject owner: ${actorSessionId}\nProject owner host: ${ownerHost}\nIntegration owner: ${actorSessionId}\nIntegration owner host: ${ownerHost}\n\n| Team ID | Name | Session | Worktree | Branch | Owned paths | Tasks | Status |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n`;
+        const initialState = { schemaVersion: 1, stateVersion: 0, ownership, run: { mode: "finite", taskIds, paused: false },
+          integration: { ownerSessionId: actorSessionId, ownerHost, ownershipEpoch: 1, authorized: false, baseRef: request.plan.branch, paused: false, hold: false },
+          release: { ownerSessionId: actorSessionId, ownerHost, ownershipEpoch: 1, authorized: false, autoDeploy: false, hold: true },
           completion: { requirementsReconciled: false, checks: [] }, operationMappings: { providers: {}, shell: [] } };
-        for (const [file, source] of [[paths.teams, teams], [paths.state, json(initialState)]]) {
+        const initialHistory = { schemaVersion: 1, version: 1, ownership: { epoch: 1 }, entries: [] };
+        for (const [file, source] of [[paths.teams, teams], [paths.state, json(initialState)], [paths.ownerHistory, json(initialHistory)]]) {
           if (journal?.createPaths.includes(file) || preserved.get(file) === undefined) created.set(file, source);
         }
         const state = JSON.parse(created.get(paths.state) ?? preserved.get(paths.state));
@@ -398,7 +422,7 @@ export async function initializeProject(projectPath, request, options = {}) {
         if (lockedHandoffProblem) return decision("conflict", lockedHandoffProblem);
         if (!journal) {
           journal = { schemaVersion: 1, kind: "project_initialization", projectId: request.projectId, ownerSessionId: actorSessionId,
-            operationId: request.operationId, signature, setupFingerprint: setupSource === undefined ? null : hash(setupSource), trackerFingerprint, createPaths: [...created.keys()], records };
+            operationId: request.operationId, signature, ownership, setupFingerprint: setupSource === undefined ? null : hash(setupSource), trackerFingerprint, createPaths: [...created.keys()], records };
           await publish(journalPath, json(journal));
         } else if (stable(journal.records) !== stable(records)) return decision("conflict", "initialization_records_changed");
         for (const [file, source] of created) {
@@ -410,7 +434,7 @@ export async function initializeProject(projectPath, request, options = {}) {
         if ((await read(paths.setup)) !== setupSource) return decision("conflict", "setup_changed_during_initialization");
         const { tasks: _tasks, ...plan } = request.plan;
         const completed = { ...setup, schemaVersion: 1, version: (setup?.version ?? 0) + 1, skill: "agent-team", projectId: request.projectId,
-          tracker: request.tracker, plan: { ...setup?.plan, ...plan, taskIds }, initialization: { status: "complete", operationId: request.operationId,
+          tracker: request.tracker, ownership, plan: { ...setup?.plan, ...plan, taskIds }, initialization: { status: "complete", operationId: request.operationId,
             signature, source: request.source, trackerSelection: trackerSelection(request.tracker), initialTaskIds: taskIds, trackerFingerprint,
             ...(request.handoff ? { handoff: { ...request.handoff, consumptionOperationId: request.operationId, consumedAt: new Date().toISOString() } } : {}) } };
         await publish(paths.setup, json(completed), setupSource !== undefined);

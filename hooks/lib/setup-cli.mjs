@@ -124,7 +124,12 @@ function validateDraft(draft) {
 }
 
 async function canonicalReadiness(project, host, scope, context) {
-  const canonical = await loadCanonicalState(project, { budget: context.budget });
+  let canonical;
+  try { canonical = await loadCanonicalState(project, { budget: context.budget }); }
+  catch (error) {
+    return { status: "unavailable", reason: error.message, readyForDispatch: false, eligibleTask: null,
+      projectInitialization: { required: true, projectId: project.projectId, projectOwner: null, reason: error.message } };
+  }
   const eligible = new Set(taskEligibility(canonical, {
     scopeTaskIds: canonical.state.run?.taskIds,
     capacity: canonical.state.capacity,
@@ -227,6 +232,8 @@ export async function runSetupCommand(command, options = {}, context = {}) {
     return { ...result, readyForDispatch: false, projectInitialization: { ...result.projectInitialization, required: true, projectRoot: project.root } };
   }
   const identity = mutationIdentity(envelope);
+  identity.writer = { ...identity.writer, host: options.host, ...(project.setup.ownership?.epoch !== undefined
+    ? { ownershipEpoch: project.setup.ownership.epoch } : {}) };
   const common = {
     setupPath: project.paths.setup, ...identity, budget: context.budget,
     loadRegistry: async () => {
@@ -234,7 +241,9 @@ export async function runSetupCommand(command, options = {}, context = {}) {
       if (!fresh.active || fresh.root !== project.root || fresh.paths.setup !== project.paths.setup || fresh.projectId !== project.projectId) {
         return { projectOwner: null };
       }
-      const canonical = await loadCanonicalState(fresh, { includeTasks: false, budget: context.budget });
+      let canonical;
+      try { canonical = await loadCanonicalState(fresh, { includeTasks: false, budget: context.budget }); }
+      catch { return { projectOwner: null }; }
       return initializationRecordProblem(fresh.setup, canonical, {
         projectRoot: fresh.root,
         validateTracker: false,

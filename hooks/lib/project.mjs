@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { access, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import { resolveTracker } from "./tracker.mjs";
 
 const run = promisify(execFile);
@@ -59,6 +60,11 @@ export async function resolveProject(cwd, { budget } = {}) {
 
   const active = setup.skill === "agent-team" && typeof setup.projectId === "string" && setup.projectId.length > 0;
   const tracker = resolveTracker(root, setup.tracker);
+  const ownerHistoryPath = path.join(stateRoot, "owner-history.json");
+  let ownerHistoryFingerprint = null;
+  let ownerHistoryAbsent = false;
+  try { ownerHistoryFingerprint = createHash("sha256").update(await readFile(ownerHistoryPath)).digest("hex"); }
+  catch (error) { if (error.code === "ENOENT") ownerHistoryAbsent = true; else throw error; }
   return {
     active,
     reason: active ? "active" : "setup_unrecognized",
@@ -69,6 +75,8 @@ export async function resolveProject(cwd, { budget } = {}) {
     projectId: setup.projectId,
     setup,
     tracker,
+    ownerHistoryFingerprint,
+    ownerHistoryAbsent,
     paths: {
       stateRoot,
       setup: setupPath,
@@ -79,6 +87,9 @@ export async function resolveProject(cwd, { budget } = {}) {
       checkpoints: path.join(stateRoot, "checkpoints"),
       handoffs: path.join(stateRoot, "handoffs"),
       locks: path.join(stateRoot, ".locks"),
+      ownerHistory: ownerHistoryPath,
+      ownerRecoveryJournal: path.join(stateRoot, ".owner-recovery.json"),
+      ownerRecoveryLock: path.join(stateRoot, ".locks", "owner-recovery.lock"),
     },
   };
 }

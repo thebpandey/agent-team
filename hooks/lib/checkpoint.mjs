@@ -59,7 +59,7 @@ async function existing(file) {
 }
 
 /** Save a small factual recovery record without storing the native hook payload. */
-export async function writeCheckpoint(project, input, { now = new Date(), timeoutMs = 1000, budget, expectedVersion, actorSessionId, receiptFilesystem = {} } = {}) {
+export async function writeCheckpoint(project, input, { now = new Date(), timeoutMs = 1000, budget, expectedVersion, actorSessionId, nativeIdentity, receiptFilesystem = {} } = {}) {
   if (!project.active) return { created: false, skipped: "inactive" };
   if (actorSessionId !== undefined && actorSessionId !== input.sessionId) return { status: "conflict", reason: "checkpoint_owner_required" };
   if (Buffer.byteLength(JSON.stringify(input)) > 32768) return { status: "conflict", reason: "checkpoint_too_large" };
@@ -67,7 +67,7 @@ export async function writeCheckpoint(project, input, { now = new Date(), timeou
   if (actorSessionId !== undefined) {
     if (!Number.isInteger(expectedVersion) || !input.eventId) return { status: "conflict", reason: "checkpoint_version_and_operation_required" };
     const canonical = await loadCanonicalState(project, { includeTasks: false, budget });
-    if (identityFor(canonical.registry, actorSessionId).role === "unknown") return { status: "conflict", reason: "checkpoint_owner_required" };
+    if (identityFor(canonical.registry, nativeIdentity?.host, actorSessionId).role === "unknown") return { status: "conflict", reason: "checkpoint_owner_required" };
   }
   budget?.check();
   await bounded(() => mkdir(project.paths.checkpoints, { recursive: true, mode: 0o700 }));

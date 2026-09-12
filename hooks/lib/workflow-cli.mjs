@@ -272,6 +272,7 @@ export async function runWorkflowCommand(command, options, context = {}) {
     ...(options["stale-ms"] !== undefined ? { staleAfterMs: integer(options["stale-ms"], "--stale-ms") } : {}),
     includeProbes: boolean(options["include-probes"], "--include-probes"),
     includeGit: boolean(options["include-git"], "--include-git"),
+    host: context.nativeIdentity?.host,
   });
   if (command === "eligibility") {
     const canonical = await loadCanonicalState(project);
@@ -281,10 +282,10 @@ export async function runWorkflowCommand(command, options, context = {}) {
     const envelope = await readRequestEnvelope(options.request);
     const request = validateMutation(command, envelope, project);
     const result = command === 'checkpoint'
-      ? await writeCheckpoint(project, request, { actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion })
-      : command === 'task-transition' ? await transitionTask(project, request)
-        : command === 'gate-evidence' ? await recordGateEvidence(project, request)
-          : await cleanupDevelopmentWorktree(project, request);
+      ? await writeCheckpoint(project, request, { actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion, nativeIdentity: context.nativeIdentity })
+      : command === 'task-transition' ? await transitionTask(project, request, { nativeIdentity: context.nativeIdentity })
+        : command === 'gate-evidence' ? await recordGateEvidence(project, request, { nativeIdentity: context.nativeIdentity })
+          : await cleanupDevelopmentWorktree(project, request, { nativeIdentity: context.nativeIdentity });
     if (['applied', 'duplicate'].includes(result.status) && project.setup.dashboard?.snapshot === true) {
       return { ...result, dashboard: await refreshConfiguredDashboard(project) };
     }

@@ -122,7 +122,7 @@ async function runEvent(event, budget, runBeads, evidencePackageRoot) {
   let identity = { role: "unregistered" };
   if (project.active) {
     try {
-      identity = canonical ? identityFor(canonical.registry, event.sessionId) : { role: "unknown" };
+      identity = canonical ? identityFor(canonical.registry, event.runtime, event.sessionId) : { role: "unknown" };
     } catch {
       identity = { role: "unknown" };
     }

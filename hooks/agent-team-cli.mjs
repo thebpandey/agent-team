@@ -10,6 +10,7 @@ import { auditEffectiveness } from "./lib/telemetry.mjs";
 import { buildArtifacts, checkArtifacts } from "./lib/artifacts.mjs";
 import { getHealth } from "./lib/health.mjs";
 import { initializeProject, validateInitializationEnvelope } from "./lib/initialization.mjs";
+import { readOwnerRecoveryEnvelope, validateOwnerRecoveryEnvelope } from "./lib/owner-recovery.mjs";
 import { installPackage, rollbackPackage, uninstallPackage } from "./lib/install.mjs";
 import { checkInstalledPackage, checkPackage } from "./lib/package-validator.mjs";
 import { runSetupCommand, setupCommandFlags } from "./lib/setup-cli.mjs";
@@ -28,6 +29,7 @@ const commandFlags = {
   "check-artifacts": new Set(["source", "archive", "revision"]),
   "build-artifacts": new Set(["source", "output", "revision"]),
   "project-initialize": new Set(["project", "request"]),
+  "project-owner-recover": new Set(["project", "request"]),
   ...workflowCommandFlags,
   ...setupCommandFlags,
 };
@@ -98,6 +100,14 @@ export async function runCommand(command, options, context = {}) {
     });
     return { ...result, canonicalReady: result.ready, ready: false,
       ...(["applied", "duplicate"].includes(result.status) ? { nextAction: "Prepare selected dependencies and run readiness for the actual host and capability scope. Native trust and discovery remain separate." } : {}) };
+  }
+  if (command === "project-owner-recover") {
+    if (typeof options.project !== "string" || !options.project.trim()) throw new Error("--project is required.");
+    const envelope = await readOwnerRecoveryEnvelope(options.request);
+    const invalid = validateOwnerRecoveryEnvelope(envelope);
+    if (invalid) return { status: "conflict", ready: false, reason: invalid };
+    // No current host bootstrap can mint the opaque capability. Refuse before resolving or reading the project.
+    return { status: "validated", ready: false, reason: "native_owner_recovery_required" };
   }
   if (workflowCommandFlags[command]) return runWorkflowCommand(command, options, context);
   if (setupCommandFlags[command]) return runSetupCommand(command, options, context);

@@ -81,7 +81,7 @@ test("actual project CLI connects initialization, settings, claims, checkpoints 
   const claim = await request(root, "claim", { schemaVersion: 1, actorSessionId: "project-owner", expectedVersion: status.versions.operational,
     request: { operationId: "claim-WORK-1", taskId: "WORK-1", expectedFingerprint: status.freshness.fingerprint,
       expectedOwner: status.tasks[0].canonicalOwner, action: "claim", owner: "project-owner" } });
-  const claimed = await invoke("task-transition", root, "--request", claim);
+  const claimed = await runCommand("task-transition", { project: root, request: claim }, { nativeIdentity });
   assert.equal(claimed.status, "applied");
   assert.equal(claimed.dashboard.status, "published");
   const current = await invoke("status", root);
@@ -90,7 +90,7 @@ test("actual project CLI connects initialization, settings, claims, checkpoints 
   const checkpoint = await request(root, "checkpoint", { schemaVersion: 1, actorSessionId: "project-owner", expectedVersion: 0,
     request: { eventId: "journey-checkpoint", sessionId: "project-owner", taskIds: ["WORK-1"], worktree: root,
       revision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), nextAction: "Run the required verification." } });
-  assert.equal((await invoke("checkpoint", root, "--request", checkpoint)).status, "applied");
+  assert.equal((await runCommand("checkpoint", { project: root, request: checkpoint }, { nativeIdentity })).status, "applied");
   assert.match(await readFile(path.join(root, ".agent-team/dashboard/index.html"), "utf8"), /WORK-1/);
   assert.equal((await invoke("recovery", root, "--session", "project-owner")).nextAction, "Run the required verification.");
   assert.equal((await invoke("readiness", root, "--host", "codex", "--scope", "user")).readyForDispatch, false);

@@ -91,7 +91,7 @@ function operationPointers(state) {
   };
 }
 
-async function factualSnapshot(project, sessionId, probe, { worktree, includeProbes, budget, canonical: suppliedCanonical }) {
+async function factualSnapshot(project, sessionId, probe, { worktree, includeProbes, budget, canonical: suppliedCanonical, host }) {
   const boundedProbe = (executable, args, options) => probe(executable, args, { ...options, budget });
   const [branchProbe, revisionProbe, dirtyProbe, githubProbe] = await Promise.all([
     boundedProbe("git", ["branch", "--show-current"], { cwd: worktree, timeoutMs: 500, maxOutputBytes: 256 }),
@@ -107,7 +107,7 @@ async function factualSnapshot(project, sessionId, probe, { worktree, includePro
   } catch {
     canonical = undefined;
   }
-  const identity = canonical ? identityFor(canonical.registry, sessionId) : { role: "unknown" };
+  const identity = canonical ? identityFor(canonical.registry, host, sessionId) : { role: "unknown" };
   return {
     worktree,
     git: {
@@ -157,13 +157,14 @@ export async function inspectRecovery(project, {
   probe = runBoundedProbe,
   budget,
   canonical,
+  host,
 } = {}) {
   if (!project.active) return { status: "unavailable", reason: project.reason };
   worktree = path.resolve(project.root, worktree);
   const bounded = (action) => budget ? budget.run(action) : action();
   const finish = async (snapshot, factualWorktree = project.worktreeRoot) => {
     if (!includeProbes && !includeGit) return snapshot;
-    const facts = await factualSnapshot(project, sessionId, probe, { worktree: factualWorktree, includeProbes, budget, canonical });
+    const facts = await factualSnapshot(project, sessionId, probe, { worktree: factualWorktree, includeProbes, budget, canonical, host });
     const binding = snapshot.evidenceRevision ?? snapshot.revision;
     const stale = binding && (facts.git.revision.value !== binding || facts.git.dirty.entries.length > 0);
     return { ...snapshot, ...facts, ...(stale ? { status: "stale", evidenceStatus: "stale" } : {}) };

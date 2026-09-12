@@ -69,6 +69,23 @@ if (process.argv[2] === "initialize-worker") {
     assert.equal(main.setup.plan.branch, "main");
     const canonical = await loadCanonicalState(linked);
     assert.equal(canonical.registry.projectOwner, "owner-session");
+    assert.equal(canonical.registry.projectOwnerHost, "codex");
+    assert.equal(canonical.registry.integrationOwnerHost, "codex");
+    assert.deepEqual(canonical.state.ownership, {
+      epoch: 1,
+      current: {
+        host: "codex",
+        sessionId: "owner-session",
+        since: canonical.state.ownership.current.since,
+        operationId: "initialize-1",
+        writer: canonical.state.ownership.current.writer,
+      },
+    });
+    const history = JSON.parse(await readFile(main.paths.ownerHistory, "utf8"));
+    assert.equal(history.schemaVersion, 1);
+    assert.equal(history.version, 1);
+    assert.deepEqual(history.entries, []);
+    assert.equal(history.ownership.epoch, 1);
     assert.deepEqual(canonical.tasks.map(({ id, owner, status }) => ({ id, owner, status })), [{ id: "AT-001", owner: "none", status: "ready" }]);
     assert.equal(canonical.state.release.authorized, false);
     assert.equal(canonical.state.release.autoDeploy, false);
