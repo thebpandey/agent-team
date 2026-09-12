@@ -91,13 +91,25 @@ test("landing-page banner alt text does not misidentify retained artwork as the 
 
 // Text contracts catch instruction drift; behavioral/consumer/native tests remain separate gates.
 test("release version and public guidance stay consistent", async () => {
-  const [raw, skill, readme, changelog, guide] = await readMany(["hooks/manifest.json", "SKILL.md", "README.md", "CHANGELOG.md", "references/hooks.md"]);
+  const [raw, skill, readme, changelog, guide, gettingStarted, index] = await readMany(["hooks/manifest.json", "SKILL.md", "README.md", "CHANGELOG.md", "references/hooks.md", "GETTING_STARTED.md", "index.html"]);
   const manifest = JSON.parse(raw);
-  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(manifest.version, "7.2.0");
   assert.equal(manifest.repository, "https://github.com/thebpandey/agent-team");
   assert.ok(skill.includes('version: "' + manifest.version + '"'));
   assert.ok(readme.includes("current skill version is **" + manifest.version + "**"));
   assert.ok(changelog.includes("## " + manifest.version + " - "));
+  assert.match(index, /Version 7\.2\.0/);
+  for (const publicDoc of [readme, gettingStarted]) {
+    assert.match(publicDoc, /agent-team-7\.2\.0\.zip/);
+    assert.match(publicDoc, /SHA256SUMS/);
+    assert.match(publicDoc, /releases\/latest/);
+    assert.match(publicDoc, /Linux.*WSL.*\/proc\/self\/fd/is);
+    assert.match(publicDoc, /unsupported_platform/is);
+    assert.match(publicDoc, /update_requires_manual_replacement/is);
+    assert.match(publicDoc, /quiesc.*rollback-backed move.*fresh/is);
+    assert.doesNotMatch(publicDoc, /project-kickoff\/releases\/tag\/v0\.4\.1/i);
+    assert.match(publicDoc, /project-kickoff\/releases\/latest/i);
+  }
   for (const source of [skill, readme]) assert.match(source, /\(references\/hooks\.md\)/);
   assert.match(guide, /Requirements 1.?15/i);
 });
@@ -111,7 +123,7 @@ test("Graphify guidance accepts AST-origin inferred structural leads only", asyn
     "Semantic or missing provenance is invalid for Agent-Team's offline readiness evidence",
     "must not adopt a graph that may contain a prior semantic layer",
   ]) assert.ok(guide.includes(required), required);
-  assert.match(readme, /\[planned Project Kickoff v0\.4\.1 release\]\(https:\/\/github\.com\/thebpandey\/project-kickoff\/releases\/tag\/v0\.4\.1\)/);
+  assert.match(readme, /https:\/\/github\.com\/thebpandey\/project-kickoff\/releases\/latest/);
 });
 
 test("GitHub release publication remains tag-driven and checked", async () => {

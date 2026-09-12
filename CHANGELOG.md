@@ -1,5 +1,16 @@
 # Changelog
 
+## 7.2.0 - 2026-09-12
+
+Version 7.2.0 is compatible with existing projects while making setup, orchestration, dependency reuse, and artifact installation materially safer.
+
+- Route every state-changing setup through the current-effective settings wizard after dependency preparation; Cancel, Back, a missing answer, timeout, or interruption preserves saved settings bytes while retaining completed dependency preparation.
+- Require trusted native identity for owner-qualified mutation, preserve immutable initialization and effective-run provenance, reconcile task-keyed delivery history, scope holds to their targets, and select terminal-underfilled batches without waiving gates. Live owner recovery remains honestly bounded by `native_owner_recovery_required` where hosts cannot issue the opaque capability.
+- Keep `generatedBy`, `testedAgainst`, `loadedRuntime`, `sourceCandidate`, and readiness separate, including truthful `local_only` and `enabled_but_held: target_required` states. Code-publication authority remains separate from production/deployment-target authority.
+- Reuse compatible user-installed dependencies as `reused_unowned` without copying sidecar skills; keep LeanCTX and Graphify independent and bind ast-grep to its absolute canonical executable rather than `/usr/bin/sg`.
+- Define the active-host-turn loop as immediate question response, reconciliation, independent review and serial integration, then proven-free slot refill, with no more than 60 seconds between active-work heartbeats. Add no cron, daemon, timer, hosted monitor, nested scheduler, recurring execution, or post-final activity.
+- Install only from one sealed archive/checksum authority and record schema-4 artifact-bound receipt provenance. Automatic installation is qualified on Linux and WSL with functional `/proc/self/fd` traversal; present differing targets require explicit manual replacement rather than automatic update.
+
 ## 7.1.1 - 2026-09-11
 
 Version 7.1.1 clarifies the evidence boundary for Graphify's offline structural graph.

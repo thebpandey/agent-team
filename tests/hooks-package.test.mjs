@@ -80,6 +80,13 @@ test("verified release maps agree with the structurally valid extracted package"
   assert.equal((await validators.checkInstalledPackage(path.join(extracted, "agent-team"))).status, "passed");
   assert.equal(artifact.archiveContentDigest, fileMapDigest(artifact.archiveFileMap));
   assert.deepEqual(Object.keys(artifact.packageFileMap).sort(), JSON.parse(await readFile(path.join(sourceRoot, "hooks", "manifest.json"))).files.sort());
+  assert.equal(Object.keys(artifact.packageFileMap).length, 96);
+  assert.equal(Object.keys(artifact.archiveFileMap).length, 97);
+  assert.ok(artifact.packageFileMap["hooks/lib/owner-recovery.mjs"]);
+  assert.ok(artifact.packageFileMap["hooks/lib/run-state.mjs"]);
+  for (const excluded of ["index.html", "tests/hooks-package.test.mjs", ".github/workflows/release.yml"]) {
+    assert.equal(artifact.packageFileMap[excluded], undefined);
+  }
 });
 
 test("installed-package validation rejects a self-consistent manifest that drops one host adapter", async () => {

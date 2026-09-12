@@ -1,6 +1,6 @@
 # Project Kickoff + Agent-Team: first-time guide
 
-Agent-Team 7.0 uses one complete package for Codex and Claude Code. Installation lets you choose the host and whether to install for one project or your user account. The [standalone dark-green HTML guide](Getting_Started_with_Agent-Team.html) contains the complete prompts, collapsible instructions and reference library. The [README](README.md) adds workflow flowcharts and an overview of automatic repair, settings and dashboard behavior.
+Agent-Team 7.2.0 uses one complete package for Codex and Claude Code. Installation lets you choose the host and whether to install for one project or your user account. The [standalone dark-green HTML guide](Getting_Started_with_Agent-Team.html) remains a historical guide; the [README](README.md) is the current release and workflow reference.
 
 These are prompts to paste into Codex or Claude Code—not Bash commands.
 
@@ -25,7 +25,7 @@ Complete the browser sign-in yourself. Repository visibility does not grant lice
 Its proprietary license requires the owner's permission. Install the whole package, not just SKILL.md:
 
 ```text
-Install the complete Project Kickoff package from https://github.com/thebpandey/project-kickoff at tag v0.3.0, under its applicable license, in this confirmed project root. Use .agents/skills/project-kickoff for Codex or .claude/skills/project-kickoff for Claude Code.
+Install the complete Project Kickoff package from https://github.com/thebpandey/project-kickoff/releases/latest, under its applicable license, in this confirmed project root. Use .agents/skills/project-kickoff for Codex or .claude/skills/project-kickoff for Claude Code. Do not assume an unpublished future version is available.
 
 Preserve customized installations and unrelated files. Keep references, assets, scripts and metadata together. Exclude the proprietary package from application commits through this repository's local Git exclude and verify that exclusion. Do not change global settings or activate hooks. Verify discovery and tell me whether to reload.
 ```
@@ -59,6 +59,23 @@ Use this actual host only: codex or claude-code. Use user scope unless I request
 | Project | `.agents/skills/agent-team` | `.claude/skills/agent-team` |
 
 Project hook configuration is `.codex/hooks.json` or `.claude/settings.local.json`. Node.js 24 must be ready before running package helpers and hooks.
+
+Download `agent-team-7.2.0.zip` and its matching one-entry `SHA256SUMS` from [v7.2.0](https://github.com/thebpandey/agent-team/releases/tag/v7.2.0), with update discovery at [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify and install the sealed bytes:
+
+```sh
+sha256sum -c /absolute/download/SHA256SUMS
+node /absolute/extracted/agent-team/hooks/agent-team-cli.mjs install \
+  --archive /absolute/download/agent-team-7.2.0.zip \
+  --checksums /absolute/download/SHA256SUMS \
+  --host codex \
+  --scope user
+```
+
+Use `--host claude-code` for Claude Code or explicit `--host both` for both hosts. Project scope requires `--scope project --project /absolute/project/root`. `install --source` is rejected; source validation or a local build is not official installation evidence.
+
+Automatic artifact installation is qualified only on Linux and WSL where `/proc/self/fd` directory traversal functions. Missing or nonfunctional descriptor-root support returns `unsupported_platform`, `changed: false` before the lock or any mutation. Exact byte/mode/size-identical reinstall returns `installed`, `changed: false` with no target mutation. Every differing present target, owned and schema-3 targets included, returns `update_requires_manual_replacement`, `changed: false`, with zero target, configuration, role, backup, or receipt mutation. A changed release requires separately authorized quiescence and an explicit rollback-backed move of the old target, followed by a normal fresh absent-target install and restoration on failure.
+
+The embedded `.agent-team-source.json` records the ten-field package source identity and package map. Verified artifact authority and schema-4 receipts separately bind archive/checksum identity, complete archive and installed maps, selected hosts/scope, transaction, recovery, targets, and time. They do not prove publication, host reload/trust, dependency readiness, or live owner recovery.
 
 ## 4. Reload and review hook trust
 
