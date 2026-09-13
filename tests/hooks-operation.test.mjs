@@ -25,6 +25,8 @@ test("git push parsing binds one non-force HEAD refspec to its remote", () => {
 
 test("git push parsing fails closed on every malformed or alternate global option form", () => {
   for (const command of [
+    "GIT_DIR=/tmp/other.git git push origin HEAD:main",
+    "env GIT_DIR=/tmp/other.git git push origin HEAD:main",
     "git --git-dir=/repo/.git push origin HEAD:main",
     "git --work-tree /repo push origin HEAD:main",
     "git --namespace tenant push origin HEAD:main",
@@ -33,12 +35,18 @@ test("git push parsing fails closed on every malformed or alternate global optio
     "git -C push origin HEAD:main",
     "git -C -- push origin HEAD:main",
     "git -- push origin HEAD:main",
+    "git -c alias.deploy='push origin HEAD:main' deploy",
   ]) {
     const parsed = classifyOperation({ operation: { kind: "shell", command } });
     assert.equal(parsed.kind, "integration", command);
     assert.equal(parsed.method, "push", command);
     assert.equal(parsed.push.valid, false, command);
   }
+  assert.deepEqual(classifyOperation({ operation: { kind: "shell",
+    command: 'lean-ctx -c --raw "git -C /repo push origin HEAD:main"' } }), {
+    kind: "integration", repository: "/repo", method: "push",
+    push: { valid: true, remote: "origin", targetRef: "refs/heads/main" },
+  });
 });
 
 test("PR integration remains distinct from exact push parsing", () => {

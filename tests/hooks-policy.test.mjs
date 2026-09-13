@@ -439,6 +439,8 @@ test("integration permits only an evidenced non-force remote-main advance", asyn
   for (const command of [
     `git -C ${value.root} push origin +HEAD:main`,
     `git -C ${value.root} push --force-with-lease=refs/heads/main:${remoteBase} origin HEAD:main`,
+    `GIT_DIR=/tmp/other.git git push origin HEAD:main`,
+    `env GIT_DIR=/tmp/other.git git push origin HEAD:main`,
     `git --git-dir=${path.join(value.root, ".git")} push origin HEAD:main`,
     `git --work-tree ${value.root} push origin HEAD:main`,
     `git --namespace tenant push origin HEAD:main`,
@@ -447,6 +449,7 @@ test("integration permits only an evidenced non-force remote-main advance", asyn
     `git -C push origin HEAD:main`,
     `git -C -- push origin HEAD:main`,
     `git -- push origin HEAD:main`,
+    `git -c alias.deploy='push origin HEAD:main' deploy`,
     `git -C ${value.root} push backup HEAD:main`,
     `git -C ${value.root} push origin HEAD:main HEAD:other`,
     `git -C ${value.root} push origin HEAD:main ; git status`,
@@ -521,7 +524,7 @@ exec "$AT_TEST_REAL_GIT" "$@"
   try {
     const stable = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation }), value.project,
       { now: new Date("2026-09-06T12:01:00.000Z") });
-    assert.equal(stable.allow, true, "validation remains bound to the tag object resolved before the local ref moves");
+    assert.equal(stable.allow, false, "a source tag that moves after validation must be denied at the final local boundary");
   } finally {
     for (const [key, prior] of Object.entries(previousEnvironment)) {
       if (prior === undefined) delete process.env[key];

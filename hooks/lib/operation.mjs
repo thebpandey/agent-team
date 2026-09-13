@@ -49,7 +49,7 @@ function gitOperation(tokens) {
   if (index === -1) return undefined;
   let cursor = index + 1;
   let repository;
-  let parserFailed = false;
+  let parserFailed = index !== 0;
   let seenRepository = false;
   while (cursor < tokens.length && tokens[cursor].startsWith("-")) {
     if (tokens[cursor] === "-C") {
@@ -64,11 +64,15 @@ function gitOperation(tokens) {
     cursor += 1;
   }
   let commandIndex = cursor;
+  let command = tokens[commandIndex];
   if (parserFailed) {
     const pushIndex = tokens.findIndex((token, position) => position > index && token === "push");
-    if (pushIndex !== -1) commandIndex = pushIndex;
+    if (pushIndex !== -1) {
+      commandIndex = pushIndex;
+      command = "push";
+    } else if (tokens.slice(index + 1).some((token) => /(?:^|[=\s])push(?:\s|$)/.test(token))) command = "push";
   }
-  return { command: tokens[commandIndex], repository, commandIndex, parserFailed };
+  return { command, repository, commandIndex, parserFailed };
 }
 
 function pushOperation(tokens, git) {
