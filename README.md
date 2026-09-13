@@ -60,6 +60,8 @@ The source repositories are publicly visible, but visibility is **not** a licens
 
 [Project Kickoff](https://github.com/thebpandey/project-kickoff), also by thebpandey, defines a new project, audits an existing one, or replans a major revision. It produces approved planning records and an Agent-Team handoff; it does not implement the product or automatically launch Agent-Team.
 
+Agent-Team 7.2.1 accepts Project Kickoff 0.4.1 handoffs tested against 7.2.1 and retains the approved 0.4.1/7.2.0 compatibility pair.
+
 ```text
 Install the complete Project Kickoff package from its [latest release discovery page](https://github.com/thebpandey/project-kickoff/releases/latest) under its applicable license. Do not infer that an unpublished future version is available.
 Use this confirmed project's .agents/skills/project-kickoff for Codex or .claude/skills/project-kickoff for Claude Code.

@@ -158,7 +158,7 @@ if (process.argv[2] === "initialize-worker") {
     const observedRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
     value.request.handoff = { schemaVersion: 1, path: "AGENT_TEAM_HANDOFF.json",
       sha256: createHash("sha256").update(handoffBytes).digest("hex"),
-      generatedBy: { name: "project-kickoff", version: "0.4.1" }, testedAgainst: { name: "agent-team", version: "7.2.0" },
+      generatedBy: { name: "project-kickoff", version: "0.4.1" }, testedAgainst: { name: "agent-team", version: "7.2.1" },
       generationBaseline, observedRevision };
     const result = await initialize(value.root, value.request);
     assert.equal(result.status, "applied");

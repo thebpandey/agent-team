@@ -5,6 +5,7 @@
 Version 7.2.1 keeps the 7.2.0 owner-adoption safety boundary while removing a timing-dependent integration receipt check.
 
 - Accept a prior integration operation receipt when its separately captured application timestamp is equal to or later than its recorded-evidence timestamp. Preserve exact operation, revision, tracker, owner, task, authorization, adoption receipt, and epoch-one history bindings, and reject reversed timestamp order.
+- Accept Project Kickoff 0.4.1 handoffs tested against Agent-Team 7.2.1 while preserving the existing approved compatibility pairs, including 0.4.1/7.2.0.
 
 ## 7.2.0 - 2026-09-12
 
