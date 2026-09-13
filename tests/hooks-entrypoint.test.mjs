@@ -12,6 +12,8 @@ import { normalizeEvent } from '../hooks/lib/event.mjs';
 import { runNormalizedHook } from '../hooks/agent-team-hook.mjs';
 import { resolveProject } from '../hooks/lib/project.mjs';
 import { readTracker } from '../hooks/lib/tracker.mjs';
+import { runCommand } from '../hooks/agent-team-cli.mjs';
+import { effectiveRunFingerprint } from '../hooks/lib/run-state.mjs';
 
 const hook = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-hook.mjs");
 const cli = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-cli.mjs");
@@ -19,11 +21,11 @@ const temporary = [];
 
 test.afterEach(async () => Promise.all(temporary.splice(0).map((item) => rm(item, { force: true, recursive: true }))));
 
-async function fixture() {
+async function fixture(options) {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-entry-"));
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-entry-home-"));
   temporary.push(root, `${root}-feature`, `${root}-remote`, home);
-  return { ...(await policyFixture(root)), home };
+  return { ...(await policyFixture(root, options)), home };
 }
 
 function effectiveRun(ownerHost) {
@@ -92,6 +94,38 @@ async function legacyEntryFixture() {
   return { ...value, project, request, requestPath };
 }
 
+async function ownerRunFixture({ scopeTask = false, host = "codex" } = {}) {
+  const value = await fixture({ qualifiedOwnership: true });
+  if (host !== "codex") {
+    for (const file of ["setup.json", "state.json"]) {
+      const target = path.join(value.root, ".agent-team", file);
+      const record = JSON.parse(await readFile(target, "utf8"));
+      await writeFile(target, `${JSON.stringify(record, (_key, entry) => entry === "codex" ? host : entry, 2)}\n`);
+    }
+    const teams = path.join(value.root, ".agent-team", "TEAMS.md");
+    await writeFile(teams, (await readFile(teams, "utf8")).replaceAll("host: codex", `host: ${host}`));
+  }
+  const project = await resolveProject(value.root);
+  if (scopeTask) await writeFile(project.paths.tasks,
+    `${await readFile(project.paths.tasks, "utf8")}| AT-002 | Later delivery | none | AT-001 | ready | none | Claim. | task | |\n`);
+  const state = JSON.parse(await readFile(project.paths.state, "utf8"));
+  state.run = effectiveRun(host);
+  await writeFile(project.paths.state, `${JSON.stringify(state, null, 2)}\n`);
+  const tracker = await readTracker(project);
+  const proposal = Object.fromEntries(["id", "mode", "taskIds", "teamLimit", "autoDeploy", "batchSize", "source", "settingSources"]
+    .map((key) => [key, state.run[key]]));
+  const body = scopeTask
+    ? { operationId: "native-scope-extension", expectedTrackerFingerprint: tracker.tracker.fingerprint,
+      taskIds: ["AT-002"], reason: "Admit the tracked dependent delivery." }
+    : { operationId: "native-run-reconcile", expectedTrackerFingerprint: tracker.tracker.fingerprint,
+      expectedRunFingerprint: effectiveRunFingerprint(state.run), authoritativeSource: "explicit_run",
+      reason: "Confirm the effective native-owner run.", affectedTaskIds: ["AT-001"], run: proposal };
+  const requestPath = path.join(project.paths.stateRoot, scopeTask ? "scope.json" : "reconcile.json");
+  await writeFile(requestPath, `${JSON.stringify({ schemaVersion: 1, actorSessionId: "owner-session",
+    expectedVersion: state.stateVersion ?? 0, request: body }, null, 2)}\n`);
+  return { ...value, project, requestPath };
+}
+
 test("native PreToolUse performs exact legacy adoption while bare CLI only reports required native authority or replay", async () => {
   const value = await legacyEntryFixture();
   const bare = invokeCli("legacy-owner-adopt", { project: value.root, request: value.requestPath });
@@ -158,6 +192,33 @@ test("adopted owner can apply exact gate evidence through the same trusted nativ
   assert.equal(stored.completion.taskId, "AT-001");
   assert.equal(stored.completion.requirementsReconciled, true);
 });
+
+for (const command of ["run-reconcile", "run-scope-extend"]) {
+  for (const [runtime, host] of [["codex", "codex"], ["claude", "claude-code"]]) {
+    test(`${runtime} native PreToolUse derives owner identity for ${command}`, async () => {
+      const value = await ownerRunFixture({ scopeTask: command === "run-scope-extend", host });
+      const invocation = `node ${cli} ${command} --project ${value.root} --request ${value.requestPath}`;
+      const result = await runNormalizedHook(normalizeEvent(runtime, "PreToolUse", { cwd: value.root,
+        session_id: "owner-session", event_id: `${runtime}-${command}`, tool_name: "exec_command", tool_input: { cmd: invocation } }));
+      assert.equal(result.decision.allow, true, JSON.stringify(result.decision));
+      assert.equal(result.decision.mutations.some((entry) => entry.command === command && entry.status === "applied"), true,
+        JSON.stringify(result.decision));
+      const stored = JSON.parse(await readFile(value.project.paths.state, "utf8"));
+      if (command === "run-reconcile") assert.equal(stored.run.operationalVersion, stored.stateVersion);
+      else assert.deepEqual(stored.run.taskIds, ["AT-001", "AT-002"]);
+    });
+  }
+
+  test(`exported runCommand rejects caller-supplied native identity for ${command}`, async () => {
+    const value = await ownerRunFixture({ scopeTask: command === "run-scope-extend" });
+    const before = await readFile(value.project.paths.state);
+    const result = await runCommand(command, { project: value.root, request: value.requestPath }, { nativeIdentity: {
+      host: "codex", sessionId: "owner-session", observed: true, cwd: value.root, ownershipEpoch: 1,
+    } });
+    assert.deepEqual(result, { status: "conflict", reason: "native_hook_identity_required" });
+    assert.deepEqual(await readFile(value.project.paths.state), before);
+  });
+}
 
 test('checkpoint events without native IDs remain distinct and complete batch IDs cannot collide', async () => {
   const value = await fixture();

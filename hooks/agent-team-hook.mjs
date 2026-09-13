@@ -131,7 +131,7 @@ async function runEvent(event, budget, runBeads, evidencePackageRoot) {
             } }, { budget }));
           } else {
             const { runWorkflowCommand } = await budget.run(() => import("./lib/workflow-cli.mjs"));
-            result = await budget.run(() => runWorkflowCommand("gate-evidence", { project: target.root, request: operation.request }, {
+            result = await budget.run(() => runWorkflowCommand(operation.command, { project: target.root, request: operation.request }, {
               nativeIdentity: { host, sessionId: event.sessionId, observed: true, cwd: eventCwd,
                 ownershipEpoch: target.setup.ownership?.epoch }, budget,
             }));
@@ -139,7 +139,9 @@ async function runEvent(event, budget, runBeads, evidencePackageRoot) {
         } catch (error) {
           result = { status: "conflict", reason: error.message };
         }
-        decision.mutations.push({ kind: operation.command === "legacy-owner-adopt" ? "legacy_owner_adoption" : "gate_evidence",
+        const mutationKinds = { "legacy-owner-adopt": "legacy_owner_adoption", "gate-evidence": "gate_evidence",
+          "run-reconcile": "run_reconciliation", "run-scope-extend": "run_scope_extension" };
+        decision.mutations.push({ kind: mutationKinds[operation.command], command: operation.command,
           status: result.status, ...(result.reason ? { reason: result.reason } : {}) });
         if (!["applied", "duplicate"].includes(result.status)) {
           decision.allow = false;

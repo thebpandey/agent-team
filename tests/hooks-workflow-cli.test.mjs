@@ -157,7 +157,7 @@ test("scoped migration routes are exact closed and native qualified", async () =
   const body = { operationId: "workflow-scope-extension", expectedTrackerFingerprint: current.tracker.fingerprint, taskIds: ["AT-002"], reason: "Admit later work." };
   const file = await requestFile({ requests: path.join(root, ".agent-team") }, "workflow-scope-extension", envelope("owner-session", current.state.stateVersion ?? 0, body));
   const before = await readFile(project.paths.state);
-  assert.equal((await invoke("run-scope-extend", "--project", root, "--request", file)).reason, "project_owner_required");
+  assert.equal((await invoke("run-scope-extend", "--project", root, "--request", file)).reason, "native_hook_identity_required");
   assert.deepEqual(await readFile(project.paths.state), before);
   assert.equal((await runWorkflowCommand("run-scope-extend", { project: root, request: file }, { nativeIdentity: {
     host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1,

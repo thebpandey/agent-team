@@ -126,6 +126,9 @@ export async function runCommand(command, options, context = {}) {
     if (!project.active) return { status: "conflict", ready: false, reason: "inactive" };
     return inspectLegacyOwnerAdoption(project, envelope);
   }
+  if (["run-reconcile", "run-scope-extend"].includes(command)) {
+    return { status: "conflict", reason: "native_hook_identity_required" };
+  }
   if (workflowCommandFlags[command]) return runWorkflowCommand(command, options, context);
   if (setupCommandFlags[command]) return runSetupCommand(command, options, context);
   throw new Error(`Unknown command: ${command ?? "missing"}`);

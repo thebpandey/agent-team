@@ -1,5 +1,12 @@
 # Changelog
 
+## 7.2.2 - 2026-09-13
+
+Version 7.2.2 closes the native owner-routing gap for adopted projects.
+
+- Route exact, non-chained installed-CLI `run-reconcile` and `run-scope-extend` invocations through the native `PreToolUse` adapter, deriving host, session, canonical working directory, and ownership epoch from the event.
+- Refuse caller-supplied identity for those commands at the exported CLI router so direct Node consumers cannot bypass the native event boundary.
+
 ## 7.2.1 - 2026-09-13
 
 Version 7.2.1 keeps the 7.2.0 owner-adoption safety boundary while removing a timing-dependent integration receipt check.

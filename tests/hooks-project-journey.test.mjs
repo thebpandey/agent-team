@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { runCommand } from "../hooks/agent-team-cli.mjs";
+import { runNormalizedHook } from "../hooks/agent-team-hook.mjs";
+import { normalizeEvent } from "../hooks/lib/event.mjs";
 
 const run = promisify(execFile);
 const cli = path.resolve(import.meta.dirname, "../hooks/agent-team-cli.mjs");
@@ -117,9 +119,15 @@ test("native scoped migration commands route replay and preserve unrelated state
   const canonical = await loadCanonicalState(await resolveProject(root));
   const scopeRequest = await request(root, "scope-extension", { schemaVersion: 1, actorSessionId: "project-owner", expectedVersion: canonical.state.stateVersion,
     request: { operationId: "extend-work-2", expectedTrackerFingerprint: canonical.tracker.fingerprint, taskIds: ["WORK-2"], reason: "Admit later delivery." } });
-  const applied = await runCommand("run-scope-extend", { project: root, request: scopeRequest }, { nativeIdentity: ownerIdentity });
-  assert.equal(applied.status, "applied", JSON.stringify(applied));
-  assert.equal((await runCommand("run-scope-extend", { project: root, request: scopeRequest }, { nativeIdentity: ownerIdentity })).status, "duplicate");
+  const command = `node ${JSON.stringify(cli)} run-scope-extend --project ${JSON.stringify(root)} --request ${JSON.stringify(scopeRequest)}`;
+  const invokeNative = (eventId) => runNormalizedHook(normalizeEvent("codex", "PreToolUse", { cwd: root,
+    session_id: ownerIdentity.sessionId, event_id: eventId, tool_name: "exec_command", tool_input: { cmd: command } }));
+  const applied = await invokeNative("journey-scope-apply");
+  assert.equal(applied.decision.mutations.some((entry) => entry.command === "run-scope-extend" && entry.status === "applied"), true,
+    JSON.stringify(applied.decision));
+  const replay = await invokeNative("journey-scope-replay");
+  assert.equal(replay.decision.mutations.some((entry) => entry.command === "run-scope-extend" && entry.status === "duplicate"), true,
+    JSON.stringify(replay.decision));
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).unrelated, { keep: true });
 });
 

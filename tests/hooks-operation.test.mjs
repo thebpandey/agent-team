@@ -53,23 +53,27 @@ test("PR integration remains distinct from exact push parsing", () => {
   assert.deepEqual(classifyOperation({ operation: { kind: "shell", command: "gh pr merge 1 --merge" } }), { kind: "integration", method: "pull_request" });
 });
 
-test("legacy owner adoption and native gate evidence require exact non-chained CLI forms", () => {
+test("owner-only native commands require exact non-chained CLI forms", () => {
   const cli = "/opt/agent-team/hooks/agent-team-cli.mjs";
-  assert.deepEqual(classifyOperation({ operation: { kind: "shell", command:
-    `node ${cli} legacy-owner-adopt --project /srv/project --request /srv/adopt.json` } }), {
-    kind: "agent_team_native_command", command: "legacy-owner-adopt", cliPath: cli,
-    project: "/srv/project", request: "/srv/adopt.json", valid: true,
-  });
-  assert.deepEqual(classifyOperation({ operation: { kind: "shell", command:
-    `node ${cli} gate-evidence --project /srv/project --request /srv/gate.json` } }), {
-    kind: "agent_team_native_command", command: "gate-evidence", cliPath: cli,
-    project: "/srv/project", request: "/srv/gate.json", valid: true,
+  for (const [nativeCommand, request] of [
+    ["legacy-owner-adopt", "/srv/adopt.json"],
+    ["gate-evidence", "/srv/gate.json"],
+    ["run-reconcile", "/srv/reconcile.json"],
+    ["run-scope-extend", "/srv/scope.json"],
+  ]) assert.deepEqual(classifyOperation({ operation: { kind: "shell", command:
+    `node ${cli} ${nativeCommand} --project /srv/project --request ${request}` } }), {
+    kind: "agent_team_native_command", command: nativeCommand, cliPath: cli,
+    project: "/srv/project", request, valid: true,
   });
   for (const command of [
     `node ${cli} legacy-owner-adopt --request /srv/adopt.json --project /srv/project`,
     `node ${cli} legacy-owner-adopt --project relative --request /srv/adopt.json`,
     `node ${cli} legacy-owner-adopt --project /srv/project --request /srv/adopt.json ; true`,
     `lean-ctx raw "node ${cli} legacy-owner-adopt --project /srv/project --request /srv/adopt.json"`,
+    `node ${cli} run-reconcile --request /srv/reconcile.json --project /srv/project`,
+    `node ${cli} run-reconcile --project /srv/project --request /srv/reconcile.json ; true`,
+    `node ${cli} run-scope-extend --project relative --request /srv/scope.json`,
+    `lean-ctx raw "node ${cli} run-scope-extend --project /srv/project --request /srv/scope.json"`,
     `node ${cli} status --project /srv/project`,
   ]) {
     assert.notEqual(classifyOperation({ operation: { kind: "shell", command } }).kind, "agent_team_native_command", command);
