@@ -561,7 +561,7 @@ export function validateLegacyOwnerAdoptionEnvelope(envelope) {
   const request = envelope.request;
   const tracker = request.expectedTracker;
   const authorization = request.authorization;
-  if (!validId(request.operationId) || !validId(request.projectId) || request.expectedLegacyOwnerSessionId !== "root"
+  if (!validId(request.operationId) || !validId(request.projectId) || !validId(request.expectedLegacyOwnerSessionId)
     || typeof request.expectedProjectRoot !== "string" || !path.isAbsolute(request.expectedProjectRoot)
     || path.normalize(request.expectedProjectRoot) !== request.expectedProjectRoot || !hex(request.expectedRevision, 40)
     || !exactKeys(tracker, ["kind", "path", "fingerprint"]) || !["markdown", "beads"].includes(tracker.kind)
@@ -586,7 +586,9 @@ const nativeEvidenceKeys = ["host", "sessionId", "cwd", "invocationId", "writer"
 
 function validateLegacyOwnerAdoptionReceipt(receipt) {
   return exactKeys(receipt, adoptionReceiptKeys) && receipt.schemaVersion === 1 && validId(receipt.operationId) && hex(receipt.signature, 64)
-    && validId(receipt.projectId) && receipt.expectedLegacyOwnerSessionId === "root" && receipt.ownershipEpoch === 1
+    && validId(receipt.projectId) && validId(receipt.expectedLegacyOwnerSessionId)
+    && (receipt.expectedLegacyOwnerSessionId === "root" || receipt.expectedLegacyOwnerSessionId === receipt.newOwner?.sessionId)
+    && receipt.ownershipEpoch === 1
     && qualifiedIdentity(receipt.newOwner) && timestamp(receipt.appliedAt) && exactKeys(receipt.authorization, adoptionAuthorizationKeys)
     && receipt.authorization.status === "approved" && receipt.authorization.scope === "legacy_owner_adoption"
     && typeof receipt.authorization.source === "string" && receipt.authorization.source.trim() && receipt.authorization.source.length <= 256
@@ -639,13 +641,13 @@ async function adoptionGitIdentity(location) {
 
 function addLegacyHostLabels(source, host) {
   if (/^Project owner host:/m.test(source) || /^Integration owner host:/m.test(source)) throw new Error("legacy_owner_shape_invalid");
-  let next = source.replace(/^Project owner: root$/m, `Project owner: root\nProject owner host: ${host}`);
-  next = next.replace(/^Integration owner: root$/m, `Integration owner: root\nIntegration owner host: ${host}`);
+  let next = source.replace(/^(Project owner:.*)$/m, `$1\nProject owner host: ${host}`);
+  next = next.replace(/^(Integration owner:.*)$/m, `$1\nIntegration owner host: ${host}`);
   if (next === source || !/^Project owner host:/m.test(next) || !/^Integration owner host:/m.test(next)) throw new Error("legacy_owner_shape_invalid");
   return next;
 }
 
-function exactLegacyTeamsShape(source, projectId) {
+function exactLegacyTeamsShape(source, projectId, legacyOwner) {
   const labels = ["Project", "Project owner", "Integration owner", "Project owner host", "Integration owner host"];
   const occurrences = Object.fromEntries(labels.map((label) => [label, []]));
   for (const rawLine of source.split("\n")) {
@@ -657,7 +659,7 @@ function exactLegacyTeamsShape(source, projectId) {
   }
   const exact = (label, expected) => occurrences[label].length === 1
     && occurrences[label][0].replace(/^[ \t]+|[ \t]+$/g, "") === expected;
-  return exact("Project", projectId) && exact("Project owner", "root") && exact("Integration owner", "root")
+  return exact("Project", projectId) && exact("Project owner", legacyOwner) && exact("Integration owner", legacyOwner)
     && occurrences["Project owner host"].length === 0 && occurrences["Integration owner host"].length === 0;
 }
 
@@ -702,20 +704,22 @@ function semanticAdoptionJournal(journal, project) {
   const receipt = journal.receipt;
   const identity = parseTeams(priorTeams);
   const owner = receipt.newOwner;
+  const legacyOwner = receipt.expectedLegacyOwnerSessionId;
   const expectedOwnership = { epoch: 1, current: { ...owner, since: receipt.appliedAt, operationId: receipt.operationId,
     writer: receipt.nativeEvidence.writer } };
   const stripGate = (gate) => without(gate, ["ownerSessionId", "ownerHost", "ownershipEpoch", "authorized", "hold"]);
   if (!priorState || !postState || !priorSetup || !postSetup || !priorTeams
     || records["owner-history"].prior !== null || records.receipt.prior !== null
+    || legacyOwner !== "root" && legacyOwner !== owner.sessionId
     || journal.records.find(({ name }) => name === "state").priorSha256 !== receipt.prior.stateFingerprint
     || journal.records.find(({ name }) => name === "teams").priorSha256 !== receipt.prior.teamsFingerprint
     || journal.records.find(({ name }) => name === "setup").priorSha256 !== receipt.prior.setupFingerprint
     || receipt.prior.ownerHistoryFingerprint !== null || stable(postReceipt) !== stable(receipt)
-    || !exactLegacyTeamsShape(priorTeams, receipt.projectId)
-    || identity.projectId !== receipt.projectId || identity.owner !== "root" || identity.integrationOwner !== "root"
+    || !exactLegacyTeamsShape(priorTeams, receipt.projectId, legacyOwner)
+    || identity.projectId !== receipt.projectId || identity.owner !== legacyOwner || identity.integrationOwner !== legacyOwner
     || identity.ownerHost !== undefined || identity.integrationOwnerHost !== undefined
     || priorState.ownership !== undefined || priorSetup.ownership !== undefined
-    || priorState.integration?.ownerSessionId !== "root" || priorState.release?.ownerSessionId !== "root"
+    || priorState.integration?.ownerSessionId !== legacyOwner || priorState.release?.ownerSessionId !== legacyOwner
     || priorState.integration?.ownerHost !== undefined || priorState.integration?.ownershipEpoch !== undefined
     || priorState.release?.ownerHost !== undefined || priorState.release?.ownershipEpoch !== undefined
     || priorState.pendingOperations && Object.keys(priorState.pendingOperations).length
@@ -789,7 +793,8 @@ export async function adoptLegacyProjectOwner(project, envelope, context = {}, o
   const native = context.nativeIdentity;
   const nativeHost = native?.host === "claude" ? "claude-code" : native?.host;
   if (native?.observed !== true || !runtimes.has(nativeHost) || !validId(native.sessionId) || native.sessionId === "root"
-    || !validId(native.invocationId) || typeof native.cwd !== "string" || request.authorization.host !== nativeHost) {
+    || !validId(native.invocationId) || typeof native.cwd !== "string" || request.authorization.host !== nativeHost
+    || request.expectedLegacyOwnerSessionId !== "root" && request.expectedLegacyOwnerSessionId !== native.sessionId) {
     return { status: "validated", ready: false, reason: "native_legacy_owner_adoption_required" };
   }
   let git;
@@ -842,9 +847,10 @@ export async function adoptLegacyProjectOwner(project, envelope, context = {}, o
           if (refreshedGit.revision !== request.expectedRevision || refreshedGit.branch !== "main" || !refreshedGit.clean || refreshedGit.canonicalTop !== project.root
             || identity.projectId !== request.projectId || project.projectId !== request.projectId
             || setup.version !== request.expectedSetupVersion || state.stateVersion !== request.expectedStateVersion) return refusal("stale_owner_or_version");
-          const gateShape = (gate) => gate && gate.ownerSessionId === "root" && gate.ownerHost === undefined && gate.ownershipEpoch === undefined;
-          if (!exactLegacyTeamsShape(byName.teams.toString("utf8"), request.projectId)
-            || identity.owner !== "root" || identity.integrationOwner !== "root" || identity.ownerHost !== undefined || identity.integrationOwnerHost !== undefined
+          const legacyOwner = request.expectedLegacyOwnerSessionId;
+          const gateShape = (gate) => gate && gate.ownerSessionId === legacyOwner && gate.ownerHost === undefined && gate.ownershipEpoch === undefined;
+          if (!exactLegacyTeamsShape(byName.teams.toString("utf8"), request.projectId, legacyOwner)
+            || identity.owner !== legacyOwner || identity.integrationOwner !== legacyOwner || identity.ownerHost !== undefined || identity.integrationOwnerHost !== undefined
             || state.ownership !== undefined || setup.ownership !== undefined || !gateShape(state.integration) || !gateShape(state.release)
             || byName["owner-history"] !== null || state.pendingOperations && Object.keys(state.pendingOperations).length) return refusal("legacy_owner_shape_invalid");
           const appliedAt = (options.now ?? (() => new Date().toISOString()))();
@@ -864,7 +870,7 @@ export async function adoptLegacyProjectOwner(project, envelope, context = {}, o
           nextTeams = replaceLabel(nextTeams, "Integration owner", newOwner.sessionId);
           const nextHistory = { schemaVersion: 1, version: 1, ownership: { epoch: 1 }, entries: [] };
           const receipt = { schemaVersion: 1, operationId: request.operationId, signature: requestSignature, projectId: request.projectId,
-            expectedLegacyOwnerSessionId: "root", ownershipEpoch: 1, newOwner, appliedAt,
+            expectedLegacyOwnerSessionId: legacyOwner, ownershipEpoch: 1, newOwner, appliedAt,
             authorization: structuredClone(request.authorization), prior: { stateFingerprint: hashes.state, teamsFingerprint: hashes.teams,
               setupFingerprint: hashes.setup, ownerHistoryFingerprint: null },
             nativeEvidence: { host: nativeHost, sessionId: native.sessionId, cwd: git.nativeCwd, invocationId: native.invocationId, writer }, reason: request.reason };

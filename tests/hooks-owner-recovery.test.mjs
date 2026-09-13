@@ -113,21 +113,21 @@ async function nativeContext(module, project, { liveness = "stopped", approved =
     confirm: async () => approved ? { approved: true, approvalId: "approval-1" } : { approved: false } };
 }
 
-async function legacyFixture() {
+async function legacyFixture(legacyOwner = "root") {
   const project = await fixture();
   const state = JSON.parse(await readFile(project.paths.state, "utf8"));
   const setup = JSON.parse(await readFile(project.paths.setup, "utf8"));
   delete state.ownership;
   delete setup.ownership;
-  state.integration.ownerSessionId = "root";
-  state.release.ownerSessionId = "root";
+  state.integration.ownerSessionId = legacyOwner;
+  state.release.ownerSessionId = legacyOwner;
   for (const gate of [state.integration, state.release]) {
     delete gate.ownerHost;
     delete gate.ownershipEpoch;
   }
   let teams = await readFile(project.paths.teams, "utf8");
-  teams = teams.replace(/^Project owner:.*$/m, "Project owner: root")
-    .replace(/^Integration owner:.*$/m, "Integration owner: root")
+  teams = teams.replace(/^Project owner:.*$/m, `Project owner: ${legacyOwner}`)
+    .replace(/^Integration owner:.*$/m, `Integration owner: ${legacyOwner}`)
     .replace(/^Project owner host:.*\n/m, "")
     .replace(/^Integration owner host:.*\n/m, "");
   await writeFile(project.paths.state, `${JSON.stringify(state, null, 2)}\n`);
@@ -168,7 +168,7 @@ test("legacy adoption envelope is closed and cannot supply actor writer or liven
     assert.equal(module.validateLegacyOwnerAdoptionEnvelope({ ...envelope, request: { ...envelope.request, [field]: "forged" } }), "invalid_request");
   }
   assert.equal(module.validateLegacyOwnerAdoptionEnvelope({ ...envelope, request: { ...envelope.request,
-    expectedLegacyOwnerSessionId: "somebody" } }), "invalid_request");
+    expectedLegacyOwnerSessionId: "some/body" } }), "invalid_request");
 });
 
 test("trusted native adoption creates epoch one, invalidates inherited gates, and replays exactly", async () => {
@@ -205,6 +205,56 @@ test("trusted native adoption creates epoch one, invalidates inherited gates, an
   assert.equal((await module.adoptLegacyProjectOwner(project, changed, context)).reason, "operation_identity_reused");
   const second = await adoptionEnvelope(project, { operationId: "another-adoption" });
   assert.equal((await module.adoptLegacyProjectOwner(project, second, context)).reason, "legacy_owner_adoption_already_completed");
+});
+
+test("trusted native session can self-qualify an otherwise exact legacy owner without extending run scope", async () => {
+  const module = await testHarness();
+  const sessionId = "01a08d53-dc5d-7fe2-9c3a-371cde406965";
+  let project = await legacyFixture(sessionId);
+  const legacyState = JSON.parse(await readFile(project.paths.state, "utf8"));
+  legacyState.run = { mode: "finite", taskIds: ["T-1"], paused: false };
+  await writeFile(project.paths.state, `${JSON.stringify(legacyState, null, 2)}\n`);
+  project = await resolveProject(project.root);
+  const envelope = await adoptionEnvelope(project, {
+    operationId: "self-qualify-native-owner", expectedLegacyOwnerSessionId: sessionId,
+    reason: "qualify the already-registered native owner",
+  });
+  const beforeState = JSON.parse(await readFile(project.paths.state, "utf8"));
+  const context = { nativeIdentity: { host: "codex", sessionId, observed: true, cwd: project.root,
+    invocationId: "native-self-qualification" } };
+  const applied = await module.adoptLegacyProjectOwner(project, envelope, context, { now: () => "2026-09-12T00:00:01.000Z" });
+  assert.equal(applied.status, "applied");
+  project = await resolveProject(project.root);
+  const canonical = await loadCanonicalState(project);
+  assert.deepEqual({ owner: canonical.registry.projectOwner, host: canonical.registry.projectOwnerHost, epoch: canonical.registry.ownershipEpoch },
+    { owner: sessionId, host: "codex", epoch: 1 });
+  assert.deepEqual(canonical.state.run, beforeState.run);
+  assert.deepEqual(canonical.state.run.taskIds, ["T-1"]);
+  assert.equal((await module.adoptLegacyProjectOwner(project, envelope, context)).status, "duplicate");
+  const tampered = structuredClone(envelope);
+  tampered.request.reason = "different";
+  assert.equal((await module.adoptLegacyProjectOwner(project, tampered, context)).reason, "operation_identity_reused");
+});
+
+test("legacy self-qualification rejects mismatched session host and cwd without writes", async () => {
+  const module = await testHarness();
+  const sessionId = "01a08d53-dc5d-7fe2-9c3a-371cde406965";
+  for (const [name, nativeIdentity] of [
+    ["session", { host: "codex", sessionId: "01a08d53-dc5d-7fe2-9c3a-371cde406966" }],
+    ["host", { host: "claude-code", sessionId }],
+    ["cwd", { host: "codex", sessionId, cwd: path.dirname(process.cwd()) }],
+  ]) {
+    const project = await legacyFixture(sessionId);
+    const envelope = await adoptionEnvelope(project, { expectedLegacyOwnerSessionId: sessionId });
+    const before = await Promise.all([project.paths.teams, project.paths.state, project.paths.setup].map((file) => readFile(file)));
+    const result = await module.adoptLegacyProjectOwner(project, envelope, { nativeIdentity: {
+      observed: true, cwd: project.root, invocationId: `self-qualify-${name}`, ...nativeIdentity,
+    } });
+    assert.notEqual(result.status, "applied", name);
+    assert.deepEqual(await Promise.all([project.paths.teams, project.paths.state, project.paths.setup].map((file) => readFile(file))), before, name);
+    await assert.rejects(access(path.join(project.paths.stateRoot, ".legacy-owner-adoption.json")), { code: "ENOENT" });
+    await assert.rejects(access(path.join(project.paths.stateRoot, "legacy-owner-adoption.json")), { code: "ENOENT" });
+  }
 });
 
 test("legacy adoption rejects dirty shape stale facts and untrusted invocation without writes", async () => {
@@ -269,6 +319,66 @@ test("hash-consistent adoption journal cannot authorize gates or rewrite unrelat
   await assert.rejects(module.adoptLegacyProjectOwner(await resolveProject(project.root), envelope, context),
     /legacy_owner_adoption_manual_reconciliation_required/);
   assert.deepEqual(await Promise.all([project.paths.teams, project.paths.state, project.paths.setup].map((file) => readFile(file))), before);
+});
+
+test("hash-consistent self-qualification journal cannot substitute a different legacy owner", async () => {
+  const module = await testHarness();
+  const nativeSession = "01a08d53-dc5d-7fe2-9c3a-371cde406965";
+  const substitutedSession = "01a08d53-dc5d-7fe2-9c3a-371cde406966";
+  const project = await legacyFixture(nativeSession);
+  const envelope = await adoptionEnvelope(project, { expectedLegacyOwnerSessionId: nativeSession });
+  const context = { nativeIdentity: { host: "codex", sessionId: nativeSession, observed: true, cwd: project.root,
+    invocationId: "substituted-legacy-owner" } };
+  await assert.rejects(module.adoptLegacyProjectOwner(project, envelope, context, {
+    now: () => "2026-09-12T00:00:01.000Z", failAfterJournal: true,
+  }), /injected_legacy_owner_adoption_crash/);
+  const journalPath = path.join(project.paths.stateRoot, ".legacy-owner-adoption.json");
+  const journal = JSON.parse(await readFile(journalPath, "utf8"));
+  journal.receipt.expectedLegacyOwnerSessionId = substitutedSession;
+  const teamsRecord = journal.records.find(({ name }) => name === "teams");
+  const priorTeams = Buffer.from(teamsRecord.priorimageBase64, "base64").toString("utf8")
+    .replaceAll(nativeSession, substitutedSession);
+  const priorTeamsBytes = Buffer.from(priorTeams);
+  teamsRecord.priorimageBase64 = priorTeamsBytes.toString("base64");
+  teamsRecord.priorSha256 = createHash("sha256").update(priorTeamsBytes).digest("hex");
+  journal.receipt.prior.teamsFingerprint = teamsRecord.priorSha256;
+  const stateRecord = journal.records.find(({ name }) => name === "state");
+  const priorState = JSON.parse(Buffer.from(stateRecord.priorimageBase64, "base64"));
+  priorState.integration.ownerSessionId = substitutedSession;
+  priorState.release.ownerSessionId = substitutedSession;
+  const priorStateBytes = Buffer.from(`${JSON.stringify(priorState, null, 2)}\n`);
+  stateRecord.priorimageBase64 = priorStateBytes.toString("base64");
+  stateRecord.priorSha256 = createHash("sha256").update(priorStateBytes).digest("hex");
+  journal.receipt.prior.stateFingerprint = stateRecord.priorSha256;
+  const receiptRecord = journal.records.find(({ name }) => name === "receipt");
+  const receiptBytes = Buffer.from(`${JSON.stringify(journal.receipt, null, 2)}\n`);
+  receiptRecord.postimageBase64 = receiptBytes.toString("base64");
+  receiptRecord.postSha256 = createHash("sha256").update(receiptBytes).digest("hex");
+  await writeFile(project.paths.teams, priorTeamsBytes);
+  await writeFile(project.paths.state, priorStateBytes);
+  await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+  const before = await Promise.all([project.paths.teams, project.paths.state, project.paths.setup, journalPath].map((file) => readFile(file)));
+  await assert.rejects(module.adoptLegacyProjectOwner(await resolveProject(project.root), envelope, context),
+    /legacy_owner_adoption_manual_reconciliation_required/);
+  assert.deepEqual(await Promise.all([project.paths.teams, project.paths.state, project.paths.setup, journalPath].map((file) => readFile(file))), before);
+});
+
+test("standalone inspection rejects a permanent receipt with a substituted legacy owner", async () => {
+  const module = await testHarness();
+  const nativeSession = "01a08d53-dc5d-7fe2-9c3a-371cde406965";
+  const project = await legacyFixture(nativeSession);
+  const envelope = await adoptionEnvelope(project, { expectedLegacyOwnerSessionId: nativeSession });
+  const context = { nativeIdentity: { host: "codex", sessionId: nativeSession, observed: true, cwd: project.root,
+    invocationId: "tampered-permanent-receipt" } };
+  assert.equal((await module.adoptLegacyProjectOwner(project, envelope, context)).status, "applied");
+  const receiptPath = path.join(project.paths.stateRoot, "legacy-owner-adoption.json");
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  receipt.expectedLegacyOwnerSessionId = "01a08d53-dc5d-7fe2-9c3a-371cde406966";
+  await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  const before = await readFile(receiptPath);
+  assert.equal((await module.inspectLegacyOwnerAdoption(await resolveProject(project.root), envelope)).reason,
+    "legacy_owner_adoption_manual_reconciliation_required");
+  assert.deepEqual(await readFile(receiptPath), before);
 });
 
 test("canonical readers fail closed during a partial adoption generation", async () => {
