@@ -311,6 +311,54 @@ test("simultaneous recovery and adoption journals require manual reconciliation 
     path.join(project.paths.stateRoot, ".legacy-owner-adoption.json"), project.paths.ownerRecoveryJournal].map((file) => readFile(file))), before);
 });
 
+test("legacy adoption rejects every duplicate authority label before journal or receipt publication", async () => {
+  const module = await testHarness();
+  for (const [label, value] of [["Project", "owner-recovery"], ["Project owner", "root"],
+    ["Integration owner", "root"], ["Project owner host", "codex"], ["Integration owner host", "codex"]]) {
+    const project = await legacyFixture();
+    await writeFile(project.paths.teams, `${await readFile(project.paths.teams, "utf8")}${label}: ${value}\n`);
+    const envelope = await adoptionEnvelope(await resolveProject(project.root));
+    const before = await Promise.all([project.paths.teams, project.paths.state, project.paths.setup].map((file) => readFile(file)));
+    const result = await module.adoptLegacyProjectOwner(await resolveProject(project.root), envelope, { nativeIdentity: {
+      host: "codex", sessionId: "native-owner", observed: true, cwd: project.root, invocationId: `duplicate-${label.replaceAll(" ", "-")}`,
+    } });
+    assert.equal(result.reason, "legacy_owner_shape_invalid", label);
+    assert.deepEqual(await Promise.all([project.paths.teams, project.paths.state, project.paths.setup].map((file) => readFile(file))), before, label);
+    await assert.rejects(access(path.join(project.paths.stateRoot, ".legacy-owner-adoption.json")), { code: "ENOENT" });
+    await assert.rejects(access(path.join(project.paths.stateRoot, "legacy-owner-adoption.json")), { code: "ENOENT" });
+  }
+});
+
+test("hash-consistent adoption journal rejects duplicated legacy authority labels", async () => {
+  const module = await testHarness();
+  const project = await legacyFixture();
+  const envelope = await adoptionEnvelope(project);
+  const context = { nativeIdentity: { host: "codex", sessionId: "native-owner", observed: true, cwd: project.root,
+    invocationId: "duplicate-journal-invocation" } };
+  await assert.rejects(module.adoptLegacyProjectOwner(project, envelope, context, { failAfterJournal: true,
+    now: () => "2026-09-12T00:00:01.000Z" }), /injected_legacy_owner_adoption_crash/);
+  const journalPath = path.join(project.paths.stateRoot, ".legacy-owner-adoption.json");
+  const journal = JSON.parse(await readFile(journalPath, "utf8"));
+  const teamsRecord = journal.records.find(({ name }) => name === "teams");
+  const priorTeams = `${Buffer.from(teamsRecord.priorimageBase64, "base64")}Project owner: root\n`;
+  const postTeams = priorTeams.replace(/^Project owner: root$/m, "Project owner: root\nProject owner host: codex")
+    .replace(/^Integration owner: root$/m, "Integration owner: root\nIntegration owner host: codex")
+    .replace(/^Project owner:.*$/m, "Project owner: native-owner")
+    .replace(/^Integration owner:.*$/m, "Integration owner: native-owner");
+  const priorBytes = Buffer.from(priorTeams); const postBytes = Buffer.from(postTeams);
+  teamsRecord.priorimageBase64 = priorBytes.toString("base64"); teamsRecord.priorSha256 = createHash("sha256").update(priorBytes).digest("hex");
+  teamsRecord.postimageBase64 = postBytes.toString("base64"); teamsRecord.postSha256 = createHash("sha256").update(postBytes).digest("hex");
+  journal.receipt.prior.teamsFingerprint = teamsRecord.priorSha256;
+  const receiptRecord = journal.records.find(({ name }) => name === "receipt");
+  const receiptBytes = Buffer.from(`${JSON.stringify(journal.receipt, null, 2)}\n`);
+  receiptRecord.postimageBase64 = receiptBytes.toString("base64"); receiptRecord.postSha256 = createHash("sha256").update(receiptBytes).digest("hex");
+  await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+  const before = await Promise.all([project.paths.teams, project.paths.state, project.paths.setup, journalPath].map((file) => readFile(file)));
+  await assert.rejects(module.adoptLegacyProjectOwner(await resolveProject(project.root), envelope, context),
+    /legacy_owner_adoption_manual_reconciliation_required/);
+  assert.deepEqual(await Promise.all([project.paths.teams, project.paths.state, project.paths.setup, journalPath].map((file) => readFile(file))), before);
+});
+
 test("owner recovery envelope is exact and cannot assert native facts", async () => {
   const project = await fixture();
   const envelope = await recoveryEnvelope(project);

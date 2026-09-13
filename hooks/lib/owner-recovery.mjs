@@ -645,6 +645,16 @@ function addLegacyHostLabels(source, host) {
   return next;
 }
 
+function exactLegacyTeamsShape(source, projectId) {
+  const values = (label) => source.match(new RegExp(`^${label}:\\s*([^\\r\\n]+)$`, "gm")) ?? [];
+  const exact = (label, expected) => {
+    const matches = values(label);
+    return matches.length === 1 && matches[0].slice(label.length + 1).trim() === expected;
+  };
+  return exact("Project", projectId) && exact("Project owner", "root") && exact("Integration owner", "root")
+    && values("Project owner host").length === 0 && values("Integration owner host").length === 0;
+}
+
 function validateAdoptionJournal(journal, project) {
   const paths = adoptionPaths(project);
   const names = ["teams", "state", "setup", "owner-history", "receipt"];
@@ -695,6 +705,7 @@ function semanticAdoptionJournal(journal, project) {
     || journal.records.find(({ name }) => name === "teams").priorSha256 !== receipt.prior.teamsFingerprint
     || journal.records.find(({ name }) => name === "setup").priorSha256 !== receipt.prior.setupFingerprint
     || receipt.prior.ownerHistoryFingerprint !== null || stable(postReceipt) !== stable(receipt)
+    || !exactLegacyTeamsShape(priorTeams, receipt.projectId)
     || identity.projectId !== receipt.projectId || identity.owner !== "root" || identity.integrationOwner !== "root"
     || identity.ownerHost !== undefined || identity.integrationOwnerHost !== undefined
     || priorState.ownership !== undefined || priorSetup.ownership !== undefined
@@ -826,7 +837,8 @@ export async function adoptLegacyProjectOwner(project, envelope, context = {}, o
             || identity.projectId !== request.projectId || project.projectId !== request.projectId
             || setup.version !== request.expectedSetupVersion || state.stateVersion !== request.expectedStateVersion) return refusal("stale_owner_or_version");
           const gateShape = (gate) => gate && gate.ownerSessionId === "root" && gate.ownerHost === undefined && gate.ownershipEpoch === undefined;
-          if (identity.owner !== "root" || identity.integrationOwner !== "root" || identity.ownerHost !== undefined || identity.integrationOwnerHost !== undefined
+          if (!exactLegacyTeamsShape(byName.teams.toString("utf8"), request.projectId)
+            || identity.owner !== "root" || identity.integrationOwner !== "root" || identity.ownerHost !== undefined || identity.integrationOwnerHost !== undefined
             || state.ownership !== undefined || setup.ownership !== undefined || !gateShape(state.integration) || !gateShape(state.release)
             || byName["owner-history"] !== null || state.pendingOperations && Object.keys(state.pendingOperations).length) return refusal("legacy_owner_shape_invalid");
           const appliedAt = (options.now ?? (() => new Date().toISOString()))();
