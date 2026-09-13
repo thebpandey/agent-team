@@ -5,6 +5,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { runCommand } from "../hooks/agent-team-cli.mjs";
 import { initializeProject } from "../hooks/lib/initialization.mjs";
 import { resolveProject } from "../hooks/lib/project.mjs";
@@ -97,10 +98,14 @@ async function independentPostimages(project, envelope, { invocationId, now = "2
 
 async function testHarness() {
   const sourcePath = new URL("../hooks/lib/owner-recovery.mjs", import.meta.url);
-  const generated = new URL(`../hooks/lib/.owner-recovery-test-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`, import.meta.url);
-  await writeFile(generated, `${await readFile(sourcePath, "utf8")}\nexport { mintOwnerRecoveryCapabilityFromHostBootstrap as __mint, setOwnerRecoveryTestObserver as __observeIo };\n`);
-  temporary.push(generated);
-  return import(`${generated.href}?test=${Date.now()}`);
+  const harnessRoot = await mkdtemp(path.join(os.tmpdir(), "agent-team-owner-recovery-module-"));
+  temporary.push(harnessRoot);
+  const generated = path.join(harnessRoot, `owner-recovery-test-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`);
+  const source = (await readFile(sourcePath, "utf8"))
+    .replace('"./lock.mjs"', JSON.stringify(new URL("../hooks/lib/lock.mjs", import.meta.url).href))
+    .replace('"./tracker.mjs"', JSON.stringify(new URL("../hooks/lib/tracker.mjs", import.meta.url).href));
+  await writeFile(generated, `${source}\nexport { mintOwnerRecoveryCapabilityFromHostBootstrap as __mint, setOwnerRecoveryTestObserver as __observeIo };\n`);
+  return import(`${pathToFileURL(generated).href}?test=${Date.now()}`);
 }
 
 async function nativeContext(module, project, { liveness = "stopped", approved = true, sessionId = "new-owner", host = "claude-code",
