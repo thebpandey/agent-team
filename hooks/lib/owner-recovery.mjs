@@ -646,13 +646,19 @@ function addLegacyHostLabels(source, host) {
 }
 
 function exactLegacyTeamsShape(source, projectId) {
-  const values = (label) => source.match(new RegExp(`^${label}:\\s*([^\\r\\n]+)$`, "gm")) ?? [];
-  const exact = (label, expected) => {
-    const matches = values(label);
-    return matches.length === 1 && matches[0].slice(label.length + 1).trim() === expected;
-  };
+  const labels = ["Project", "Project owner", "Integration owner", "Project owner host", "Integration owner host"];
+  const occurrences = Object.fromEntries(labels.map((label) => [label, []]));
+  for (const rawLine of source.split("\n")) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    for (const label of labels) {
+      const prefix = `${label}:`;
+      if (line.startsWith(prefix)) { occurrences[label].push(line.slice(prefix.length)); break; }
+    }
+  }
+  const exact = (label, expected) => occurrences[label].length === 1
+    && occurrences[label][0].replace(/^[ \t]+|[ \t]+$/g, "") === expected;
   return exact("Project", projectId) && exact("Project owner", "root") && exact("Integration owner", "root")
-    && values("Project owner host").length === 0 && values("Integration owner host").length === 0;
+    && occurrences["Project owner host"].length === 0 && occurrences["Integration owner host"].length === 0;
 }
 
 function validateAdoptionJournal(journal, project) {
