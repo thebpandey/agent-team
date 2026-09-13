@@ -1,5 +1,13 @@
 # Changelog
 
+## 7.2.5 - 2026-09-13
+
+Version 7.2.5 repairs the trusted native route used to reconcile already-published delivery history.
+
+- Classify exact installed-CLI `evidence-store-register` and `completion-history-reconcile` invocations as native owner commands, and report their distinct mutation kinds.
+- Observe `origin:refs/heads/main` through one bounded exact-ref `git ls-remote` query during history reconciliation. Missing, changed, malformed, or ambiguous observations fail closed.
+- Accept Project Kickoff 0.4.2 handoffs tested against Agent-Team 7.2.5 while preserving the prior explicit compatibility pairs.
+
 ## 7.2.4 - 2026-09-13
 
 Version 7.2.4 corrects deployment-queue admission for recovered, already-scoped deliveries without weakening integration evidence.

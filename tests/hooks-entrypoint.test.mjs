@@ -162,6 +162,23 @@ test("native command adapter rejects copied CLI paths and chains without adoptin
   await assert.rejects(readFile(path.join(value.root, ".agent-team/legacy-owner-adoption.json")), { code: "ENOENT" });
 });
 
+test("native historical reconciliation commands report their exact mutation kinds", async () => {
+  const value = await fixture({ qualifiedOwnership: true });
+  for (const [command, kind] of [
+    ["evidence-store-register", "evidence_store_registration"],
+    ["completion-history-reconcile", "completion_history_reconciliation"],
+  ]) {
+    const request = path.join(value.root, ".agent-team", `${command}.json`);
+    await writeFile(request, `${JSON.stringify({ schemaVersion: 1, actorSessionId: "owner-session", expectedVersion: 0, request: {} })}\n`);
+    const invocation = `node ${cli} ${command} --project ${value.root} --request ${request}`;
+    const result = await runNormalizedHook(normalizeEvent("codex", "PreToolUse", { cwd: value.root,
+      session_id: "owner-session", event_id: `native-${command}`, tool_name: "exec_command", tool_input: { cmd: invocation } }));
+    assert.equal(result.decision.allow, false, JSON.stringify(result.decision));
+    assert.equal(result.decision.mutations.some((entry) => entry.kind === kind && entry.command === command
+      && entry.status === "conflict" && entry.reason === "invalid_request"), true, JSON.stringify(result.decision));
+  }
+});
+
 test("adopted owner can apply exact gate evidence through the same trusted native adapter", async () => {
   const value = await legacyEntryFixture();
   const adoptionCommand = `node ${cli} legacy-owner-adopt --project ${value.root} --request ${value.requestPath}`;

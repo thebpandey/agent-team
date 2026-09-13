@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { loadCanonicalState } from "./canonical-state.mjs";
 import { writeCheckpoint } from "./checkpoint.mjs";
@@ -18,6 +20,27 @@ import { extendRunScope, readRunDecision, reconcileRun, startRun } from "./run-s
 const requestLimit = 256 * 1024;
 const actorPattern = /^[\w.:-]{1,128}$/;
 const assetsDirectory = fileURLToPath(new URL("../../assets/dashboard/", import.meta.url));
+const run = promisify(execFile);
+
+/** Observe exactly one named remote ref without accepting wildcard or abbreviated output. */
+export async function observePublicationTarget(project, target, { runGit = run } = {}) {
+  const match = String(target ?? "").match(/^([\w.-]{1,128}):(refs\/heads\/[\w./-]+)$/);
+  if (!match) return { target, status: "invalid" };
+  let stdout;
+  try {
+    ({ stdout } = await runGit("git", ["ls-remote", "--refs", match[1], match[2]], {
+      cwd: project.root, encoding: "utf8", timeout: 1500, maxBuffer: 16 * 1024,
+    }));
+  } catch {
+    return { target, status: "unavailable" };
+  }
+  const lines = String(stdout ?? "").split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) return { target, status: "missing" };
+  if (lines.length !== 1) return { target, status: "ambiguous" };
+  const observed = lines[0].match(/^([0-9a-f]{40})\t([^\s]+)$/);
+  if (!observed || observed[2] !== match[2]) return { target, status: "ambiguous" };
+  return { target, revision: observed[1] };
+}
 
 export const workflowCommandFlags = Object.freeze({
   status: new Set(["project"]),
@@ -312,7 +335,11 @@ export async function runWorkflowCommand(command, options, context = {}) {
     if (command === "completion-quarantine") return quarantineCompletion(project, envelope.request, mutationOptions);
     if (command === "completion-rebind") return rebindCompletion(project, envelope.request, mutationOptions);
     if (command === "evidence-store-register") return registerEvidenceStore(project, envelope.request, mutationOptions);
-    return reconcileCompletionHistory(project, envelope.request, mutationOptions);
+    return reconcileCompletionHistory(project, envelope.request, {
+      ...mutationOptions,
+      observePublicationTarget: context.observePublicationTarget
+        ?? ((observation) => observePublicationTarget(observation.project, observation.target, { runGit: context.runGit })),
+    });
   }
   if (["checkpoint", "task-transition", "gate-evidence", "cleanup"].includes(command)) {
     const envelope = await readRequestEnvelope(options.request);

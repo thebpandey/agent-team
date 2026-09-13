@@ -69,6 +69,49 @@ async function configureDashboardGraph(value, graph) {
   return setupPath;
 }
 
+async function publicationObserver() {
+  const workflow = await import("../hooks/lib/workflow-cli.mjs");
+  assert.equal(typeof workflow.observePublicationTarget, "function");
+  return workflow.observePublicationTarget;
+}
+
+test("publication observer returns one exact remote ref revision and echoes its target", async () => {
+  const value = await fixture();
+  const observe = await publicationObserver();
+  assert.deepEqual(await observe(value.project, "origin:refs/heads/main"), {
+    target: "origin:refs/heads/main", revision: value.revision,
+  });
+});
+
+test("publication observer reports the newly changed exact remote ref revision", async () => {
+  const value = await fixture();
+  execFileSync("git", ["commit", "--allow-empty", "-qm", "advance main"], { cwd: value.root });
+  execFileSync("git", ["push", "-q", "origin", "HEAD:refs/heads/main"], { cwd: value.root });
+  const changed = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+  const observe = await publicationObserver();
+  assert.deepEqual(await observe(value.project, "origin:refs/heads/main"), {
+    target: "origin:refs/heads/main", revision: changed,
+  });
+  assert.notEqual(changed, value.revision);
+});
+
+test("publication observer fails closed when the exact remote ref is missing", async () => {
+  const value = await fixture();
+  const observe = await publicationObserver();
+  assert.deepEqual(await observe(value.project, "origin:refs/heads/missing"), {
+    target: "origin:refs/heads/missing", status: "missing",
+  });
+});
+
+test("publication observer fails closed on ambiguous exact-ref output", async () => {
+  const value = await fixture();
+  const observe = await publicationObserver();
+  const a = "a".repeat(40); const b = "b".repeat(40);
+  assert.deepEqual(await observe(value.project, "origin:refs/heads/main", { runGit: async () => ({
+    stdout: `${a}\trefs/heads/main\n${b}\trefs/heads/main\n`,
+  }) }), { target: "origin:refs/heads/main", status: "ambiguous" });
+});
+
 async function invokeFailure(command, ...args) {
   try {
     await run(process.execPath, [cli, command, ...args], { encoding: "utf8", timeout: 2000 });

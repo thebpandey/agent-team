@@ -60,6 +60,8 @@ test("owner-only native commands require exact non-chained CLI forms", () => {
     ["gate-evidence", "/srv/gate.json"],
     ["run-reconcile", "/srv/reconcile.json"],
     ["run-scope-extend", "/srv/scope.json"],
+    ["evidence-store-register", "/srv/evidence-store.json"],
+    ["completion-history-reconcile", "/srv/completion-history.json"],
   ]) assert.deepEqual(classifyOperation({ operation: { kind: "shell", command:
     `node ${cli} ${nativeCommand} --project /srv/project --request ${request}` } }), {
     kind: "agent_team_native_command", command: nativeCommand, cliPath: cli,

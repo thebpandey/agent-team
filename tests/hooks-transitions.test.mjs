@@ -12,6 +12,7 @@ import { loadCanonicalState } from "../hooks/lib/canonical-state.mjs";
 import { writeCheckpoint } from "../hooks/lib/checkpoint.mjs";
 import { createEventBudget } from "../hooks/lib/budget.mjs";
 import { evaluatePolicy } from "../hooks/lib/policy.mjs";
+import { runWorkflowCommand } from "../hooks/lib/workflow-cli.mjs";
 import { hookEvent, policyFixture } from "./hook-test-helpers.mjs";
 
 const modulePath = new URL("../hooks/lib/task-transitions.mjs", import.meta.url);
@@ -1234,6 +1235,7 @@ if (process.argv[2] === "writer") {
     const boundaryRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
     execFileSync("git", ["commit", "--allow-empty", "-qm", "later main"], { cwd: value.root });
     const headRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+    execFileSync("git", ["push", "-q", "origin", "HEAD:refs/heads/main"], { cwd: value.root });
     await writeFile(value.project.paths.tasks, "| ID | Requirement / acceptance | Owner | Depends on | Status | Revision / evidence | Next action | Type | Parent ID |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| AT-001 | First | none | none | done | source | Reconcile. | task | |\n| AT-002 | Second | none | none | done | source | Reconcile. | task | |\n");
     const store = await mkdtemp(path.join(os.tmpdir(), "agent-team-history-store-")); temporary.push(store);
     const teams = `${await readFile(value.project.paths.teams, "utf8")}Evidence root: ${store}/<team>/.\n`;
@@ -1279,11 +1281,12 @@ if (process.argv[2] === "writer") {
         expectedRunFingerprint: fingerprint(current.state.run), expectedTeamsFingerprint: createHash("sha256").update(teams).digest("hex"),
         expectedOwnershipEpoch: 1, expectedActiveCompletion: { taskId: "AT-009", operationId: "unrelated-completion", resultFingerprint: "9".repeat(64) },
         publicationTarget: "origin:refs/heads/main", observedRemoteRevision: headRevision };
-      const imported = await reconcileCompletionHistory(value.project, request, { ...nativeOptions(value, current.state.stateVersion),
-        observePublicationTarget: async ({ target }) => {
-          assert.equal(target, "origin:refs/heads/main");
-          return { target, revision: headRevision };
-        } });
+      const requestPath = path.join(value.project.paths.stateRoot, `history-${index + 1}.request.json`);
+      await writeFile(requestPath, `${JSON.stringify({ schemaVersion: 1, actorSessionId: "owner-session",
+        expectedVersion: current.state.stateVersion, request })}\n`);
+      const imported = await runWorkflowCommand("completion-history-reconcile", { project: value.root, request: requestPath }, {
+        nativeIdentity: nativeOptions(value).nativeIdentity,
+      });
       assert.equal(imported.status, "applied", JSON.stringify(imported));
     }
     const imported = await loadCanonicalState(value.project);

@@ -140,7 +140,9 @@ async function runEvent(event, budget, runBeads, evidencePackageRoot) {
           result = { status: "conflict", reason: error.message };
         }
         const mutationKinds = { "legacy-owner-adopt": "legacy_owner_adoption", "gate-evidence": "gate_evidence",
-          "run-reconcile": "run_reconciliation", "run-scope-extend": "run_scope_extension" };
+          "run-reconcile": "run_reconciliation", "run-scope-extend": "run_scope_extension",
+          "evidence-store-register": "evidence_store_registration",
+          "completion-history-reconcile": "completion_history_reconciliation" };
         decision.mutations.push({ kind: mutationKinds[operation.command], command: operation.command,
           status: result.status, ...(result.reason ? { reason: result.reason } : {}) });
         if (!["applied", "duplicate"].includes(result.status)) {
