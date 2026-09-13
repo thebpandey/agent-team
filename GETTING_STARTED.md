@@ -1,6 +1,6 @@
 # Project Kickoff + Agent-Team: first-time guide
 
-Agent-Team 7.2.0 uses one complete package for Codex and Claude Code. Installation lets you choose the host and whether to install for one project or your user account. The [standalone dark-green HTML guide](Getting_Started_with_Agent-Team.html) remains a historical guide; the [README](README.md) is the current release and workflow reference.
+Agent-Team 7.2.1 uses one complete package for Codex and Claude Code. Installation lets you choose the host and whether to install for one project or your user account. The [standalone dark-green HTML guide](Getting_Started_with_Agent-Team.html) remains a historical guide; the [README](README.md) is the current release and workflow reference.
 
 These are prompts to paste into Codex or Claude Code—not Bash commands.
 
@@ -60,12 +60,12 @@ Use this actual host only: codex or claude-code. Use user scope unless I request
 
 Project hook configuration is `.codex/hooks.json` or `.claude/settings.local.json`. Node.js 24 must be ready before running package helpers and hooks.
 
-Download `agent-team-7.2.0.zip` and its matching one-entry `SHA256SUMS` from [v7.2.0](https://github.com/thebpandey/agent-team/releases/tag/v7.2.0), with update discovery at [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify and install the sealed bytes:
+Download `agent-team-7.2.1.zip` and its matching one-entry `SHA256SUMS` from [v7.2.1](https://github.com/thebpandey/agent-team/releases/tag/v7.2.1), with update discovery at [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify and install the sealed bytes:
 
 ```sh
 (cd /absolute/download && sha256sum -c SHA256SUMS)
 node /absolute/extracted/agent-team/hooks/agent-team-cli.mjs install \
-  --archive /absolute/download/agent-team-7.2.0.zip \
+  --archive /absolute/download/agent-team-7.2.1.zip \
   --checksums /absolute/download/SHA256SUMS \
   --host codex \
   --scope user

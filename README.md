@@ -2,7 +2,7 @@
 
 Created by [thebpandey](https://github.com/thebpandey). An orchestrator-led development skill for Codex and Claude Code: small parallel assignments, independent review, automatic repair of ordinary findings, and verified integration.
 
-> **Version 7.2.0.** One complete, compatible, and materially safer package for Codex and Claude Code. It binds setup and runtime mutation to trusted native identity, freezes initialization and run provenance, reconciles task-keyed evidence, and lets a subsequent fresh owner-bound integration operation clear only a provably adoption-created hold after the first operation records authority. It reuses compatible unowned dependencies without claiming ownership and installs from sealed archive/checksum bytes with schema-4 receipts. The active host turn answers questions immediately, reconciles work, reviews and integrates serially, refills proven-free slots, and emits active-work heartbeats at least every 60 seconds—without a cron, daemon, timer, hosted monitor, nested scheduler, recurring execution, or post-final activity.
+> **Version 7.2.1.** One complete, compatible, and materially safer package for Codex and Claude Code. It binds setup and runtime mutation to trusted native identity, freezes initialization and run provenance, reconciles task-keyed evidence, and lets a subsequent fresh owner-bound integration operation clear only a provably adoption-created hold after the first operation records authority. It reuses compatible unowned dependencies without claiming ownership and installs from sealed archive/checksum bytes with schema-4 receipts. The active host turn answers questions immediately, reconciles work, reviews and integrates serially, refills proven-free slots, and emits active-work heartbeats at least every 60 seconds—without a cron, daemon, timer, hosted monitor, nested scheduler, recurring execution, or post-final activity.
 
 New here? Open the [hosted Agent-Team 7.1.0 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.1.0.html) in your browser, or read the [short Markdown guide](GETTING_STARTED.md). The [7.0.2 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.0.2.html) remains reachable as historical documentation. Both start with GitHub authentication and optional Project Kickoff.
 
@@ -99,12 +99,12 @@ Confirm discovery with `$agent-team help` or `/agent-team help`. Installation, r
 
 ### Official artifact installer reference
 
-Download `agent-team-7.2.0.zip` and its matching one-entry `SHA256SUMS` from the [Agent-Team v7.2.0 candidate release](https://github.com/thebpandey/agent-team/releases/tag/v7.2.0), or find updates through [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify the exact downloaded pair, then run the CLI from the extracted archive:
+Download `agent-team-7.2.1.zip` and its matching one-entry `SHA256SUMS` from the [Agent-Team v7.2.1 candidate release](https://github.com/thebpandey/agent-team/releases/tag/v7.2.1), or find updates through [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify the exact downloaded pair, then run the CLI from the extracted archive:
 
 ```bash
 (cd /absolute/download && sha256sum -c SHA256SUMS)
 node /absolute/extracted/agent-team/hooks/agent-team-cli.mjs install \
-  --archive /absolute/download/agent-team-7.2.0.zip \
+  --archive /absolute/download/agent-team-7.2.1.zip \
   --checksums /absolute/download/SHA256SUMS \
   --host codex \
   --scope user
@@ -262,7 +262,7 @@ See [recovery](references/recovery.md), [canonical state](references/state.md), 
 
 ## Source, versions and updates
 
-The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.2.0**; `metadata.version` in `SKILL.md` is authoritative. Candidate identity is [v7.2.0](https://github.com/thebpandey/agent-team/releases/tag/v7.2.0); publication is a later gated task, so this source preparation alone is not an official release claim. Version [7.1.1](https://github.com/thebpandey/agent-team/releases/tag/v7.1.1) accepts AST-origin `INFERRED` Graphify relationships as offline structural leads while rejecting semantic or missing provenance for readiness evidence. Version [7.1.0](https://github.com/thebpandey/agent-team/releases/tag/v7.1.0) makes the orchestrator a pure orchestrator and routes verification to a delegated verifier. Version [7.0.2](https://github.com/thebpandey/agent-team/releases/tag/v7.0.2) supports larger projects and includes the illustrated field guide. Find published packages and checksums in the [latest official release](https://github.com/thebpandey/agent-team/releases/latest). See the [changelog](CHANGELOG.md).
+The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.2.1**; `metadata.version` in `SKILL.md` is authoritative. Candidate identity is [v7.2.1](https://github.com/thebpandey/agent-team/releases/tag/v7.2.1); publication is a later gated task, so this source preparation alone is not an official release claim. Version [7.2.0](https://github.com/thebpandey/agent-team/releases/tag/v7.2.0) introduced the reliability, ownership, installation, and active-turn safeguards summarized in the changelog. Version [7.1.1](https://github.com/thebpandey/agent-team/releases/tag/v7.1.1) accepts AST-origin `INFERRED` Graphify relationships as offline structural leads while rejecting semantic or missing provenance for readiness evidence. Version [7.1.0](https://github.com/thebpandey/agent-team/releases/tag/v7.1.0) makes the orchestrator a pure orchestrator and routes verification to a delegated verifier. Version [7.0.2](https://github.com/thebpandey/agent-team/releases/tag/v7.0.2) supports larger projects and includes the illustrated field guide. Find published packages and checksums in the [latest official release](https://github.com/thebpandey/agent-team/releases/latest). See the [changelog](CHANGELOG.md).
 
 Use an identified authorized revision and the complete package. Universal archives have an `agent-team/` prefix and include `SKILL.md`, `README.md`, `LICENSE`, `CHANGELOG.md`, `agents/`, `references/`, `assets/` and `hooks/`. External dependencies and model access are not bundled. Inactive `legacy/` and maintenance tests are excluded. Provenance lives in `.agent-team-source.json`; verify the exact revision and checksum.
 
@@ -271,8 +271,8 @@ Maintainer reference, from a qualified committed source revision:
 ```bash
 node hooks/agent-team-cli.mjs check-package
 node hooks/agent-team-cli.mjs build-artifacts --revision <full-commit-id> --output ../agent-team-artifacts
-node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --archive ../agent-team-artifacts/agent-team-7.2.0.zip
-sha256sum ../agent-team-artifacts/agent-team-7.2.0.zip
+node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --archive ../agent-team-artifacts/agent-team-7.2.1.zip
+sha256sum ../agent-team-artifacts/agent-team-7.2.1.zip
 ```
 
 On macOS, use `shasum -a 256` on the same exact archive. These commands reproduce and validate the versioned artifact from an identified revision; verify any published checksum against the exact GitHub release asset. Change the version consistently before releasing altered contents; never replace an existing released version with different files.

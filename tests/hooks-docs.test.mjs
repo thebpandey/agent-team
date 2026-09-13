@@ -93,14 +93,14 @@ test("landing-page banner alt text does not misidentify retained artwork as the 
 test("release version and public guidance stay consistent", async () => {
   const [raw, skill, readme, changelog, guide, gettingStarted, index] = await readMany(["hooks/manifest.json", "SKILL.md", "README.md", "CHANGELOG.md", "references/hooks.md", "GETTING_STARTED.md", "index.html"]);
   const manifest = JSON.parse(raw);
-  assert.equal(manifest.version, "7.2.0");
+  assert.equal(manifest.version, "7.2.1");
   assert.equal(manifest.repository, "https://github.com/thebpandey/agent-team");
   assert.ok(skill.includes('version: "' + manifest.version + '"'));
   assert.ok(readme.includes("current skill version is **" + manifest.version + "**"));
   assert.ok(changelog.includes("## " + manifest.version + " - "));
-  assert.match(index, /Version 7\.2\.0/);
+  assert.match(index, /Version 7\.2\.1/);
   for (const publicDoc of [readme, gettingStarted]) {
-    assert.match(publicDoc, /agent-team-7\.2\.0\.zip/);
+    assert.match(publicDoc, /agent-team-7\.2\.1\.zip/);
     assert.match(publicDoc, /SHA256SUMS/);
     assert.match(publicDoc, /releases\/latest/);
     assert.match(publicDoc, /Linux.*WSL.*\/proc\/self\/fd/is);

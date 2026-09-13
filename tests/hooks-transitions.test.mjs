@@ -99,6 +99,19 @@ if (process.argv[2] === "writer") {
     return { actorSessionId: "owner-session", operationId, expectedVersion, expectedFingerprint: value.canonical.tracker.fingerprint,
       gate: "integration", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath: value.evidencePath };
   }
+  function seedRecordedIntegration(state, value, { gateAt = "2026-09-06T12:01:00.000Z",
+    recordedAt = "2026-09-06T12:01:00.001Z", appliedAt = "2026-09-06T12:01:00.002Z" } = {}) {
+    state.integration.authorized = true;
+    state.integration.trackerFingerprint = value.canonical.tracker.fingerprint;
+    state.integration.evidenceAt = gateAt;
+    state.integration.authorization = { source: "prior-accepted-packet", scope: "integration", ownerSessionId: "owner-session",
+      revision: value.revision, taskIds: ["AT-001"], observedAt: gateAt };
+    state.integration.taskIds = ["AT-001"];
+    state.integration.recordedEvidence = { path: value.evidencePath, fingerprint: "e".repeat(64), revision: value.revision,
+      taskIds: ["AT-001"], operationId: "prior-integration-evidence", observedAt: recordedAt };
+    state.operationReceipts = { ...state.operationReceipts, "prior-integration-evidence": { signature: "f".repeat(64), appliedAt,
+      result: { gate: "integration", trackerFingerprint: value.canonical.tracker.fingerprint, revision: value.revision } } };
+  }
   function child(root, request) {
     return new Promise((resolve, reject) => {
       const process_ = spawn(process.execPath, [fileURLToPath(import.meta.url), "claim-worker", root, JSON.stringify(request)], { stdio: ["ignore", "pipe", "pipe"] });
@@ -616,18 +629,7 @@ if (process.argv[2] === "writer") {
     const { recordGateEvidence } = await api();
     const value = await heldIntegrationFixture();
     const state = structuredClone((await loadCanonicalState(value.project)).state);
-    state.integration.authorized = true;
-    const observedAt = "2026-09-06T12:01:00.000Z";
-    const recordedAt = "2026-09-06T12:01:00.001Z";
-    state.integration.trackerFingerprint = value.canonical.tracker.fingerprint;
-    state.integration.evidenceAt = observedAt;
-    state.integration.authorization = { source: "prior-accepted-packet", scope: "integration", ownerSessionId: "owner-session",
-      revision: value.revision, taskIds: ["AT-001"], observedAt };
-    state.integration.taskIds = ["AT-001"];
-    state.integration.recordedEvidence = { path: value.evidencePath, fingerprint: "e".repeat(64), revision: value.revision,
-      taskIds: ["AT-001"], operationId: "prior-integration-evidence", observedAt: recordedAt };
-    state.operationReceipts = { ...state.operationReceipts, "prior-integration-evidence": { signature: "f".repeat(64), appliedAt: recordedAt,
-      result: { gate: "integration", trackerFingerprint: value.canonical.tracker.fingerprint, revision: value.revision } } };
+    seedRecordedIntegration(state, value);
     await writeFile(value.project.paths.state, `${JSON.stringify(state, null, 2)}\n`);
     await writeAdoptionReceipt(value);
     const applied = await recordGateEvidence(value.project, integrationRequest(value), { nativeIdentity: value.nativeIdentity });
@@ -648,13 +650,16 @@ if (process.argv[2] === "writer") {
       }],
       ["wrong adoption epoch", (receipt) => { receipt.ownershipEpoch = 2; }],
       ["manual hold after authorization", () => {}, (state) => { state.integration.authorized = true; }],
+      ["reversed prior operation timestamp", () => {}, (state, value) => seedRecordedIntegration(state, value, {
+        recordedAt: "2026-09-06T12:01:00.002Z", appliedAt: "2026-09-06T12:01:00.001Z",
+      })],
     ];
     for (const [name, mutate, mutateState] of cases) await context.test(name, async () => {
       const { recordGateEvidence } = await api();
       const value = await heldIntegrationFixture();
       if (mutateState) {
         const state = structuredClone((await loadCanonicalState(value.project)).state);
-        mutateState(state);
+        mutateState(state, value);
         await writeFile(value.project.paths.state, `${JSON.stringify(state, null, 2)}\n`);
       }
       if (mutate) await writeAdoptionReceipt(value, mutate);

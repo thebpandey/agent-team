@@ -1,5 +1,11 @@
 # Changelog
 
+## 7.2.1 - 2026-09-13
+
+Version 7.2.1 keeps the 7.2.0 owner-adoption safety boundary while removing a timing-dependent integration receipt check.
+
+- Accept a prior integration operation receipt when its separately captured application timestamp is equal to or later than its recorded-evidence timestamp. Preserve exact operation, revision, tracker, owner, task, authorization, adoption receipt, and epoch-one history bindings, and reject reversed timestamp order.
+
 ## 7.2.0 - 2026-09-12
 
 Version 7.2.0 is compatible with existing projects while making setup, orchestration, dependency reuse, and artifact installation materially safer.

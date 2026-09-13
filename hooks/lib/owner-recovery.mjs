@@ -624,7 +624,7 @@ export async function currentLegacyOwnerAdoption(project, canonical) {
     && typeof recorded.path === "string" && recorded.path.length > 0 && hex(recorded.fingerprint, 64)
     && hex(recorded.revision, 40) && validId(recorded.operationId) && timestamp(recorded.observedAt)
     && exactKeys(operation, ["signature", "result", "appliedAt"]) && hex(operation.signature, 64)
-    && timestamp(operation.appliedAt) && operation.appliedAt === recorded.observedAt
+    && timestamp(operation.appliedAt) && Date.parse(operation.appliedAt) >= Date.parse(recorded.observedAt)
     && exactKeys(result, ["gate", "trackerFingerprint", "revision"]) && result.gate === "integration"
     && result.trackerFingerprint === gate.trackerFingerprint && result.revision === recorded.revision
     && gate.expectedRevision === recorded.revision && stable(gate.taskIds) === stable(recorded.taskIds)
