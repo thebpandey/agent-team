@@ -439,6 +439,14 @@ test("integration permits only an evidenced non-force remote-main advance", asyn
   for (const command of [
     `git -C ${value.root} push origin +HEAD:main`,
     `git -C ${value.root} push --force-with-lease=refs/heads/main:${remoteBase} origin HEAD:main`,
+    `git --git-dir=${path.join(value.root, ".git")} push origin HEAD:main`,
+    `git --work-tree ${value.root} push origin HEAD:main`,
+    `git --namespace tenant push origin HEAD:main`,
+    `git -c protocol.version=2 push origin HEAD:main`,
+    `git -C ${value.root} -C ${value.root} push origin HEAD:main`,
+    `git -C push origin HEAD:main`,
+    `git -C -- push origin HEAD:main`,
+    `git -- push origin HEAD:main`,
     `git -C ${value.root} push backup HEAD:main`,
     `git -C ${value.root} push origin HEAD:main HEAD:other`,
     `git -C ${value.root} push origin HEAD:main ; git status`,
@@ -471,6 +479,57 @@ test("tag integration requires an absent exact remote target until creation", as
     const allowed = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: candidate }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
     assert.equal(allowed.allow, true, candidate.command);
   }
+  const realGit = execFileSync("/usr/bin/env", ["sh", "-c", "command -v git"], { encoding: "utf8" }).trim();
+  const wrapperDirectory = await mkdtemp(path.join(os.tmpdir(), "agent-team-git-wrapper-"));
+  temporary.push(wrapperDirectory);
+  const wrapper = path.join(wrapperDirectory, "git");
+  const marker = path.join(wrapperDirectory, "tag-swapped");
+  const tree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd: value.feature, encoding: "utf8" }).trim();
+  const replacement = execFileSync("git", ["commit-tree", tree, "-m", "replacement"], { cwd: value.feature, encoding: "utf8" }).trim();
+  await writeFile(wrapper, `#!/bin/sh
+set -eu
+if [ "$1" = "cat-file" ] && [ "$2" = "-t" ] && [ "$3" = "$AT_TEST_SWAP_REF" ]; then
+  result="$($AT_TEST_REAL_GIT "$@")"
+  "$AT_TEST_REAL_GIT" update-ref "$AT_TEST_SWAP_REF" "$AT_TEST_SWAP_TO"
+  : > "$AT_TEST_SWAP_MARKER"
+  printf '%s\\n' "$result"
+  exit 0
+fi
+if [ "$1" = "rev-parse" ] && [ "$2" = "$AT_TEST_SWAP_REF^{}" ]; then
+  while [ ! -f "$AT_TEST_SWAP_MARKER" ]; do sleep 0.01; done
+  exec "$AT_TEST_REAL_GIT" "$@"
+fi
+if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ] && [ "$3" = "$AT_TEST_SWAP_REF^{object}" ]; then
+  result="$($AT_TEST_REAL_GIT "$@")"
+  "$AT_TEST_REAL_GIT" update-ref "$AT_TEST_SWAP_REF" "$AT_TEST_SWAP_TO"
+  : > "$AT_TEST_SWAP_MARKER"
+  printf '%s\\n' "$result"
+  exit 0
+fi
+exec "$AT_TEST_REAL_GIT" "$@"
+`);
+  await chmod(wrapper, 0o700);
+  const previousEnvironment = Object.fromEntries(["PATH", "AT_TEST_REAL_GIT", "AT_TEST_SWAP_REF", "AT_TEST_SWAP_TO", "AT_TEST_SWAP_MARKER"]
+    .map((key) => [key, process.env[key]]));
+  Object.assign(process.env, {
+    PATH: `${wrapperDirectory}${path.delimiter}${process.env.PATH}`,
+    AT_TEST_REAL_GIT: realGit,
+    AT_TEST_SWAP_REF: "refs/tags/v7.1.0",
+    AT_TEST_SWAP_TO: replacement,
+    AT_TEST_SWAP_MARKER: marker,
+  });
+  try {
+    const stable = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation }), value.project,
+      { now: new Date("2026-09-06T12:01:00.000Z") });
+    assert.equal(stable.allow, true, "validation remains bound to the tag object resolved before the local ref moves");
+  } finally {
+    for (const [key, prior] of Object.entries(previousEnvironment)) {
+      if (prior === undefined) delete process.env[key];
+      else process.env[key] = prior;
+    }
+  }
+  execFileSync("git", ["tag", "-d", "v7.1.0"], { cwd: value.feature, stdio: "ignore" });
+  execFileSync("git", ["tag", "-a", "v7.1.0", "-m", "Agent-Team v7.1.0"], { cwd: value.feature });
   execFileSync("git", ["tag", "-d", "v7.1.0"], { cwd: value.feature, stdio: "ignore" });
   execFileSync("git", ["tag", "v7.1.0"], { cwd: value.feature });
   assert.equal((await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation }), value.project,

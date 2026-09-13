@@ -23,6 +23,24 @@ test("git push parsing binds one non-force HEAD refspec to its remote", () => {
   }
 });
 
+test("git push parsing fails closed on every malformed or alternate global option form", () => {
+  for (const command of [
+    "git --git-dir=/repo/.git push origin HEAD:main",
+    "git --work-tree /repo push origin HEAD:main",
+    "git --namespace tenant push origin HEAD:main",
+    "git -c protocol.version=2 push origin HEAD:main",
+    "git -C /repo -C /other push origin HEAD:main",
+    "git -C push origin HEAD:main",
+    "git -C -- push origin HEAD:main",
+    "git -- push origin HEAD:main",
+  ]) {
+    const parsed = classifyOperation({ operation: { kind: "shell", command } });
+    assert.equal(parsed.kind, "integration", command);
+    assert.equal(parsed.method, "push", command);
+    assert.equal(parsed.push.valid, false, command);
+  }
+});
+
 test("PR integration remains distinct from exact push parsing", () => {
   assert.deepEqual(classifyOperation({ operation: { kind: "shell", command: "gh pr merge 1 --merge" } }), { kind: "integration", method: "pull_request" });
 });

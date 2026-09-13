@@ -164,9 +164,10 @@ function nonForcePushMatches(operation, gate) {
 async function annotatedTagMatches(cwd, sourceRef, revision, budget) {
   if (!sourceRef) return true;
   try {
+    const object = await gitValue(cwd, ["rev-parse", "--verify", `${sourceRef}^{object}`], budget);
     const [type, peeled] = await Promise.all([
-      gitValue(cwd, ["cat-file", "-t", sourceRef], budget),
-      gitValue(cwd, ["rev-parse", `${sourceRef}^{}`], budget),
+      gitValue(cwd, ["cat-file", "-t", object], budget),
+      gitValue(cwd, ["rev-parse", `${object}^{}`], budget),
     ]);
     return type === "tag" && peeled === revision;
   } catch {

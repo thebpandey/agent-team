@@ -49,11 +49,26 @@ function gitOperation(tokens) {
   if (index === -1) return undefined;
   let cursor = index + 1;
   let repository;
+  let parserFailed = false;
+  let seenRepository = false;
   while (cursor < tokens.length && tokens[cursor].startsWith("-")) {
-    if (tokens[cursor] === "-C") repository = tokens[++cursor];
+    if (tokens[cursor] === "-C") {
+      const candidate = tokens[cursor + 1];
+      if (seenRepository || !candidate || candidate === "push" || candidate.startsWith("-") || [";", "|", "&"].includes(candidate)) parserFailed = true;
+      else {
+        repository = candidate;
+        seenRepository = true;
+        cursor += 1;
+      }
+    } else parserFailed = true;
     cursor += 1;
   }
-  return { command: tokens[cursor], repository, commandIndex: cursor };
+  let commandIndex = cursor;
+  if (parserFailed) {
+    const pushIndex = tokens.findIndex((token, position) => position > index && token === "push");
+    if (pushIndex !== -1) commandIndex = pushIndex;
+  }
+  return { command: tokens[commandIndex], repository, commandIndex, parserFailed };
 }
 
 function pushOperation(tokens, git) {
@@ -70,7 +85,7 @@ function pushOperation(tokens, git) {
     && name.split("/").every((component) => !component.startsWith(".") && !component.toLowerCase().endsWith(".lock"));
   const validTag = tag && validTagName(tag[2]) && (!tag[3] || validTagName(tag[4]) && tag[1] === tag[3]);
   const targetRef = validTag ? tag[1] : branch ? `refs/heads/${branch[1].replace(/^refs\/heads\//, "")}` : undefined;
-  return { valid: !control && !force && !options && typeof remote === "string" && Boolean(targetRef) && extra.length === 0,
+  return { valid: !git.parserFailed && !control && !force && !options && typeof remote === "string" && Boolean(targetRef) && extra.length === 0,
     ...(typeof remote === "string" ? { remote } : {}), ...(validTag ? { sourceRef: tag[1] } : {}), ...(targetRef ? { targetRef } : {}) };
 }
 
