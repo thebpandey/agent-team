@@ -262,6 +262,7 @@ test("real CLI forwards versioned transition, gate-evidence, and cleanup request
 
 test("real CLI persists integration evidence that policy can consume", async () => {
   const value = await fixture();
+  await writeFile(value.project.paths.tasks, (await readFile(value.project.paths.tasks, "utf8")).replace("in_progress", "completed"));
   const canonical = await admitRun(value.project);
   const evidencePath = path.join(value.root, ".agent-team", "evidence", "cli-integration.json");
   await mkdir(path.dirname(evidencePath), { recursive: true });
@@ -285,6 +286,7 @@ test("real CLI persists integration evidence that policy can consume", async () 
 
 test("real CLI maps a fresh initialized integration record and a raw autoDeploy flag cannot bypass the main deployment gate", async () => {
   const value = await fixture();
+  await writeFile(value.project.paths.tasks, (await readFile(value.project.paths.tasks, "utf8")).replace("in_progress", "completed"));
   const state = structuredClone((await admitRun(value.project)).state);
   state.integration = { ownerSessionId: "owner-session", authorized: false, baseRef: "main", paused: false, hold: false };
   state.release.autoDeploy = false;
@@ -319,7 +321,6 @@ test("real CLI maps one release batch before allowing its deployment-triggering 
   const nativeIdentity = { host: "codex", sessionId: "owner-session", observed: true, cwd: value.root, ownershipEpoch: 1 };
   const record = (request) => runWorkflowCommand("gate-evidence", { project: value.root, request }, { nativeIdentity });
   const seeded = structuredClone((await admitRun(value.project)).state);
-  seeded.run.pendingDeliveryIds = ["AT-001"];
   seeded.integration = { ownerSessionId: "owner-session", ...actor, authorized: false, baseRef: "main", paused: false, hold: false };
   seeded.release = { ownerSessionId: "owner-session", ...actor, authorized: false, autoDeploy: false, hold: true };
   await writeFile(value.project.paths.state, JSON.stringify(seeded));
@@ -351,6 +352,7 @@ test("real CLI maps one release batch before allowing its deployment-triggering 
     expectedRevision: value.revision, evidencePath: integrationPath,
   }));
   assert.equal((await record(integrationRequest)).status, "applied");
+  assert.deepEqual((await loadCanonicalState(value.project)).state.run.pendingDeliveryIds, ["AT-001"]);
   const pushEvent = hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:main` } });
   const beforeRelease = await evaluatePolicy(pushEvent, value.project);
   assert.equal(beforeRelease.allow, false);
@@ -476,6 +478,7 @@ test("integration evidence keeps an actual initialized project structurally read
     expectedFingerprint: canonical.tracker.fingerprint, gate: "completion", taskIds: ["AT-001"], expectedRevision: revision, evidencePath: completionPath },
   { nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, cwd: root, ownershipEpoch: 1 } });
   assert.equal(completion.status, "applied", JSON.stringify(completion));
+  await writeFile(project.paths.tasks, (await readFile(project.paths.tasks, "utf8")).replace("ready", "completed"));
   const afterCompletion = await loadCanonicalState(project);
   const evidencePath = path.join(root, ".agent-team", "integration.json");
   await writeFile(evidencePath, JSON.stringify({ status: "passed", revision, taskIds: ["AT-001"],

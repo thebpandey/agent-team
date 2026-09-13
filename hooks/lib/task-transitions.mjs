@@ -16,7 +16,9 @@ const operationSignature = ({ expectedVersion, expectedFingerprint, ...operation
 const run = promisify(execFile);
 const conflict = (reason) => ({ status: "conflict", reason });
 const finished = new Set(["verified", "integrated", "deployed", "closed", "done", "complete", "completed", "cancelled", "canceled"]);
+const completed = new Set(["verified", "integrated", "deployed", "closed", "done", "complete", "completed"]);
 const unclaimed = new Set(["", "none", "unassigned", "-"]);
+const topLevel = (task) => task?.isTopLevelDelivery === true || task?.parentId === null && task?.taskType !== "epic" && task?.isEpic !== true;
 const split = (value) => Array.isArray(value) ? value : String(value ?? "").split(/\s*,\s*/).filter((id) => id && !["none", "-"].includes(id));
 const sameIds = (left, right) => Array.isArray(left) && Array.isArray(right) && left.length === right.length
   && [...left].sort().every((value, index) => value === [...right].sort()[index]);
@@ -455,6 +457,10 @@ export async function recordGateEvidence(project, request, options = {}) {
         || !provenance(evidence.authorization, { ownerSessionId, revision, taskIds: request.taskIds })
         || !recovery(evidence.recovery, { revision, taskIds: request.taskIds }) || !preview(evidence.preview, revision)
         || typeof evidence.remoteMainDeploys !== "boolean") return conflict("integration_evidence_mismatch");
+      const deliveries = request.taskIds.map((taskId) => canonical.tasks.find((task) => task.id === taskId)).filter(topLevel);
+      if (deliveries.some((task) => !completed.has(String(task.status).toLowerCase()))) {
+        return conflict("integration_task_not_complete");
+      }
       if (validId(state.run?.id) && state.ownership) {
         const authority = evidence.targetAuthorization;
         const authorityKeys = ["status", "source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"];
@@ -476,6 +482,11 @@ export async function recordGateEvidence(project, request, options = {}) {
         taskIds: [...request.taskIds].sort(), authorization, evidenceAt: observedAt, deltaClean: true, recoveryReconciled: true,
         updatesRemoteMain: remote.targetRef === "refs/heads/main", remoteMainDeploys: evidence.remoteMainDeploys,
         preview: evidence.preview.required ? { required: true, approvedRevision: revision } : { required: false } };
+      const deployed = new Set(state.run.deployedTaskIds);
+      state.run.pendingDeliveryIds = [...new Set([
+        ...state.run.pendingDeliveryIds,
+        ...deliveries.map(({ id }) => id).filter((taskId) => !deployed.has(taskId)),
+      ])];
     }
     if (request.gate === "release") {
       const ownerSessionId = state.release?.ownerSessionId;

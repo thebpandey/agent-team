@@ -95,11 +95,11 @@ test("status exposes immutable effective run target and migration provenance", (
 test("status separates loaded runtime source candidate handoff and readiness", () => {
   const model = createStatusModel(project, effectiveCanonical(), {
     authenticatedLoadedRuntime: { status: "current", version: "7.2.0" },
-    observedSourceCandidate: { status: "current", version: "7.2.3", authoritative: false },
+    observedSourceCandidate: { status: "current", version: "7.2.4", authoritative: false },
     currentReadinessEvidence: { status: "passed", worker: "fresh" },
   });
   assert.deepEqual(model.provenance.loadedRuntime, { status: "current", version: "7.2.0" });
-  assert.deepEqual(model.provenance.sourceCandidate, { status: "current", version: "7.2.3", authoritative: false });
+  assert.deepEqual(model.provenance.sourceCandidate, { status: "current", version: "7.2.4", authoritative: false });
   assert.deepEqual(model.provenance.readiness, { status: "passed", worker: "fresh" });
   assert.notDeepEqual(model.provenance.loadedRuntime, model.provenance.sourceCandidate);
 });

@@ -1,5 +1,12 @@
 # Changelog
 
+## 7.2.4 - 2026-09-13
+
+Version 7.2.4 corrects deployment-queue admission for recovered, already-scoped deliveries without weakening integration evidence.
+
+- Queue completed top-level, nondeployed delivery tasks when their accepted integration evidence is recorded, preserving integration order and enabling recovered completions already admitted to the run.
+- Fail closed when any top-level delivery in the accepted integration set is incomplete, and never queue subtasks or epics as deployment deliveries.
+
 ## 7.2.3 - 2026-09-13
 
 Version 7.2.3 accepts the paired Project Kickoff 0.4.2 handoff contract without widening compatibility implicitly.

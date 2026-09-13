@@ -30,12 +30,13 @@ if (process.argv[2] === "writer") {
     ownershipEpoch: 1, mode: "finite", taskIds, teamLimit: 3, autoDeploy: false, batchSize: 1, source: "explicit_run",
     settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
     paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible", ...extra });
-  async function fixture({ qualifiedOwnership = false } = {}) {
+  async function fixture({ qualifiedOwnership = false, completedTaskIds = [] } = {}) {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-transitions-"));
     temporary.push(root, `${root}-feature`, `${root}-remote`);
     const value = await policyFixture(root, { qualifiedOwnership });
     const project = await resolveProject(qualifiedOwnership ? root : value.feature);
-    await writeFile(project.paths.tasks, "| ID | Requirement / acceptance | Owner | Depends on | Status | Revision / evidence | Next action |\n| --- | --- | --- | --- | --- | --- | --- |\n| AT-001 | Build requested feature | none | none | ready | none | Claim. |\n| AT-002 | Independent work | none | none | ready | none | Claim. |\n| AT-003 | Dependent work | none | AT-001 | ready | none | Wait. |\n");
+    const taskStatus = (id) => completedTaskIds.includes(id) ? "verified" : "ready";
+    await writeFile(project.paths.tasks, `| ID | Requirement / acceptance | Owner | Depends on | Status | Revision / evidence | Next action |\n| --- | --- | --- | --- | --- | --- | --- |\n| AT-001 | Build requested feature | none | none | ${taskStatus("AT-001")} | none | Claim. |\n| AT-002 | Independent work | none | none | ${taskStatus("AT-002")} | none | Claim. |\n| AT-003 | Dependent work | none | AT-001 | ${taskStatus("AT-003")} | none | Wait. |\n`);
     const canonical = await loadCanonicalState(project);
     canonical.state.run = activeRun();
     await writeFile(project.paths.state, JSON.stringify(canonical.state, null, 2));
@@ -75,7 +76,7 @@ if (process.argv[2] === "writer") {
     await writeFile(path.join(value.project.paths.stateRoot, "legacy-owner-adoption.json"), `${JSON.stringify(receipt, null, 2)}\n`);
   }
   async function heldIntegrationFixture() {
-    const value = await fixture({ qualifiedOwnership: true });
+    const value = await fixture({ qualifiedOwnership: true, completedTaskIds: ["AT-001"] });
     const state = structuredClone((await loadCanonicalState(value.project)).state);
     state.integration.authorized = false;
     state.integration.hold = true;
@@ -98,6 +99,14 @@ if (process.argv[2] === "writer") {
   function integrationRequest(value, operationId = "adoption-integration", expectedVersion = 0) {
     return { actorSessionId: "owner-session", operationId, expectedVersion, expectedFingerprint: value.canonical.tracker.fingerprint,
       gate: "integration", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath: value.evidencePath };
+  }
+  function basicIntegrationEvidence(value, taskIds) {
+    return {
+      status: "passed", revision: value.revision, taskIds,
+      remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/heads/feature", targetRevision: value.revision },
+      authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds },
+      recovery: { status: "reconciled", revision: value.revision, taskIds }, preview: { required: false }, remoteMainDeploys: false,
+    };
   }
   function seedRecordedIntegration(state, value, { gateAt = "2026-09-06T12:01:00.000Z",
     recordedAt = "2026-09-06T12:01:00.001Z", appliedAt = "2026-09-06T12:01:00.002Z" } = {}) {
@@ -515,6 +524,7 @@ if (process.argv[2] === "writer") {
     assert.deepEqual(current.state.completion.review, { status: "passed", revision: value.revision, taskId: "AT-001" });
     assert.deepEqual(current.state.completion.checks, [{ name: "unit", status: "passed", revision: value.revision, taskId: "AT-001" }]);
     assert.equal(current.state.completion.authorized, value.state.completion.authorized);
+    assert.deepEqual(current.state.run.pendingDeliveryIds, []);
     await writeFile(path.join(value.feature, "src/owned.js"), "dirty now\n");
     const changed = await module.recordGateEvidence(value.project, { ...wanted, operationId: "dirty-evidence", expectedVersion: current.state.stateVersion });
     assert.equal(changed.reason, "dirty_revision");
@@ -553,6 +563,52 @@ if (process.argv[2] === "writer") {
     }
   });
 
+  test("integration gate rejects a task that is not complete instead of creating an early pending delivery", async () => {
+    const { recordGateEvidence } = await api();
+    const value = await fixture();
+    const evidencePath = path.join(value.root, ".agent-team/integration-before-completion.json");
+    await writeFile(evidencePath, JSON.stringify({
+      status: "passed", revision: value.revision, taskIds: ["AT-001"],
+      remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/heads/feature", targetRevision: value.revision },
+      authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
+      recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"] }, preview: { required: false }, remoteMainDeploys: false,
+    }));
+    const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "integration-before-completion",
+      expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath });
+    assert.deepEqual(result, { status: "conflict", reason: "integration_task_not_complete" });
+    assert.deepEqual((await loadCanonicalState(value.project)).state.run.pendingDeliveryIds, []);
+  });
+
+  test("integration gate preserves pending integration order and never requeues deployed deliveries", async () => {
+    const { recordGateEvidence } = await api();
+    const value = await fixture({ completedTaskIds: ["AT-001", "AT-002", "AT-003"] });
+    const state = structuredClone((await loadCanonicalState(value.project)).state);
+    state.run.pendingDeliveryIds = ["AT-002"];
+    state.run.deployedTaskIds = ["AT-003"];
+    await writeFile(value.project.paths.state, JSON.stringify(state, null, 2));
+    const evidencePath = path.join(value.root, ".agent-team/integration-ordered.json");
+    await writeFile(evidencePath, JSON.stringify(basicIntegrationEvidence(value, ["AT-001", "AT-003"])));
+    const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "integration-ordered",
+      expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001", "AT-003"], expectedRevision: value.revision, evidencePath });
+    assert.equal(result.status, "applied");
+    const current = (await loadCanonicalState(value.project)).state;
+    assert.deepEqual(current.run.pendingDeliveryIds, ["AT-002", "AT-001"]);
+    assert.deepEqual(current.run.deployedTaskIds, ["AT-003"]);
+  });
+
+  test("integration gate records subtask evidence without adding a subtask to the release queue", async () => {
+    const { recordGateEvidence } = await api();
+    const value = await fixture();
+    await writeFile(value.project.paths.tasks, "| ID | Requirement / acceptance | Owner | Depends on | Status | Parent | Type | Revision / evidence | Next action |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| AT-001 | Parent epic | none | none | verified | | epic | none | Done. |\n| AT-002 | Child task | none | none | verified | AT-001 | task | none | Done. |\n| AT-003 | Top-level task | none | none | ready | | task | none | Claim. |\n");
+    const current = await loadCanonicalState(value.project);
+    const evidencePath = path.join(value.root, ".agent-team/integration-subtask.json");
+    await writeFile(evidencePath, JSON.stringify(basicIntegrationEvidence(value, ["AT-002"])));
+    const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "integration-subtask",
+      expectedVersion: 0, expectedFingerprint: current.tracker.fingerprint, gate: "integration", taskIds: ["AT-002"], expectedRevision: value.revision, evidencePath });
+    assert.equal(result.status, "applied");
+    assert.deepEqual((await loadCanonicalState(value.project)).state.run.pendingDeliveryIds, []);
+  });
+
   test("integration gate evidence maps only exact owner-authorized remote-base provenance", async (context) => {
     const invalid = [
       ["missing provenance", (evidence) => { delete evidence.authorization; }],
@@ -585,7 +641,7 @@ if (process.argv[2] === "writer") {
     });
 
     const { recordGateEvidence } = await api();
-    const value = await fixture();
+    const value = await fixture({ completedTaskIds: ["AT-001"] });
     const evidencePath = path.join(value.root, ".agent-team/integration.json");
     await writeFile(evidencePath, JSON.stringify({
       status: "passed", revision: value.revision, taskIds: ["AT-001"],
@@ -596,7 +652,8 @@ if (process.argv[2] === "writer") {
     const before = structuredClone((await loadCanonicalState(value.project)).state.integration);
     const result = await recordGateEvidence(value.project, { actorSessionId: "owner-session", operationId: "integration-evidence",
       expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint, gate: "integration", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath });
-    const integration = (await loadCanonicalState(value.project)).state.integration;
+    const current = (await loadCanonicalState(value.project)).state;
+    const integration = current.integration;
     assert.equal(result.status, "applied");
     assert.equal(integration.baseRef, before.baseRef);
     assert.equal(integration.ownerSessionId, before.ownerSessionId);
@@ -608,6 +665,7 @@ if (process.argv[2] === "writer") {
     assert.equal(integration.updatesRemoteMain, false);
     assert.deepEqual({ ...integration.authorization, observedAt: undefined }, { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"], observedAt: undefined });
     assert.equal(typeof integration.authorization.observedAt, "string");
+    assert.deepEqual(current.run.pendingDeliveryIds, ["AT-001"]);
   });
 
   test("first fresh integration evidence authorizes but preserves an adoption hold", async () => {
@@ -711,7 +769,7 @@ if (process.argv[2] === "writer") {
 
   test("integration evidence records an explicitly absent exact tag target", async () => {
     const { recordGateEvidence } = await api();
-    const value = await fixture();
+    const value = await fixture({ completedTaskIds: ["AT-001"] });
     const evidencePath = path.join(value.root, ".agent-team/tag-evidence.json");
     await writeFile(evidencePath, JSON.stringify({ status: "passed", revision: value.revision, taskIds: ["AT-001"],
       remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/tags/v7.1.0", targetAbsent: true },
@@ -1068,11 +1126,11 @@ if (process.argv[2] === "writer") {
 
   test("completion and integration bind seven task-keyed receipts from one evidence read", async () => {
     const { recordGateEvidence } = await api();
-    const value = await fixture({ qualifiedOwnership: true });
+    const value = await fixture({ qualifiedOwnership: true, completedTaskIds: ["AT-001"] });
     value.canonical.state.run = { id: "delivery-run", ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1,
       mode: "finite", taskIds: ["AT-001"], teamLimit: 1, autoDeploy: true, batchSize: 1, source: "explicit_run",
       settingSources: Object.fromEntries(["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"].map((key) => [key, "explicit_run"])),
-      paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: ["AT-001"], deployedTaskIds: [], terminalClassification: "progress_possible" };
+      paused: false, operationalVersion: 0, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
     await writeFile(value.project.paths.state, JSON.stringify(value.canonical.state, null, 2));
     const completionPath = path.join(value.root, ".agent-team/completion-rel004.json");
     await writeFile(completionPath, JSON.stringify({ status: "passed", revision: value.revision, taskIds: ["AT-001"], requirementsReconciled: true,
@@ -1097,6 +1155,7 @@ if (process.argv[2] === "writer") {
     assert.equal(state.deliveryReceipts.recovery["AT-001"].artifact, "git:known-good");
     assert.equal(state.deliveryReceipts.integration["AT-001"].ownerHost, "codex");
     assert.deepEqual(state.deliveryReceipts.target["AT-001"].authority.taskIds, ["AT-001"]);
+    assert.deepEqual(state.run.pendingDeliveryIds, ["AT-001"]);
     assert.deepEqual(state.deliveryReceipts.completion["AT-001"].evidence, state.completion.recordedEvidence);
     assert.deepEqual(state.deliveryReceipts.integration["AT-001"].evidence, state.integration.recordedEvidence);
   });

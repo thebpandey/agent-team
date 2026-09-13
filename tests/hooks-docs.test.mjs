@@ -93,14 +93,14 @@ test("landing-page banner alt text does not misidentify retained artwork as the 
 test("release version and public guidance stay consistent", async () => {
   const [raw, skill, readme, changelog, guide, gettingStarted, index] = await readMany(["hooks/manifest.json", "SKILL.md", "README.md", "CHANGELOG.md", "references/hooks.md", "GETTING_STARTED.md", "index.html"]);
   const manifest = JSON.parse(raw);
-  assert.equal(manifest.version, "7.2.3");
+  assert.equal(manifest.version, "7.2.4");
   assert.equal(manifest.repository, "https://github.com/thebpandey/agent-team");
   assert.ok(skill.includes('version: "' + manifest.version + '"'));
   assert.ok(readme.includes("current skill version is **" + manifest.version + "**"));
   assert.ok(changelog.includes("## " + manifest.version + " - "));
-  assert.match(index, /Version 7\.2\.3/);
+  assert.match(index, /Version 7\.2\.4/);
   for (const publicDoc of [readme, gettingStarted]) {
-    assert.match(publicDoc, /agent-team-7\.2\.3\.zip/);
+    assert.match(publicDoc, /agent-team-7\.2\.4\.zip/);
     assert.match(publicDoc, /SHA256SUMS/);
     assert.match(publicDoc, /releases\/latest/);
     assert.match(publicDoc, /Linux.*WSL.*\/proc\/self\/fd/is);
@@ -316,6 +316,19 @@ test("run decisions and underfilled release batches use exact canonical evidence
     /outside.*run.*never.*widen.*continuous/is,
   ]) assert.match(all, pattern);
   assert.match(status, /run-decision.*read-only/i);
+});
+
+test("accepted integration queues only complete top-level nondeployed deliveries", async () => {
+  const [skill, hooks, readme, gettingStarted] = await readMany([
+    "SKILL.md", "references/hooks.md", "README.md", "GETTING_STARTED.md",
+  ]);
+  const all = [skill, hooks, readme, gettingStarted].join("\n");
+  for (const pattern of [
+    /accepted integration evidence.*completed top-level.*nondeployed.*integration order/is,
+    /recovered completions.*(?:already scoped|within the run scope)/is,
+    /incomplete top-level.*fail(?:s)? closed/is,
+    /subtasks.*epics.*(?:never|do not).*queue/is,
+  ]) assert.match(all, pattern);
 });
 
 test("dependency instructions separate compatibility ownership and prerequisite edges", async () => {

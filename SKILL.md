@@ -1,7 +1,7 @@
 ---
 name: agent-team
 metadata:
-  version: "7.2.3"
+  version: "7.2.4"
 description: Use when coordinating development in Codex or Claude Code, continuing Agent-Team tasks, or requesting agent-team setup, settings, start, status, pause, resume, review, or release.
 ---
 
@@ -50,6 +50,8 @@ Use the smallest useful team within actual host capacity, reserving review capac
 Claim under the selected tracker's supported atomic or single-writer controls. Implement with relevant TDD/debugging guidance and inspect exact source. Independently review requirements and code quality, repair findings, recheck affected behavior and integrate the verified revision serially.
 
 Ordinary lint, test and review failures trigger automatic in-scope repair—never “shall I fix this?” or “continue?”. After two attempts without useful progress, diagnose and change approach or use an approved escalation. Park a genuinely blocked task after a verified safe checkpoint and stopped writer; retain its claim, gates and worktree while freeing compute for independent ready work. A retry cap never waives required acceptance.
+
+Accepted integration evidence queues completed top-level, nondeployed delivery tasks in integration order, including recovered completions already admitted to the run. Incomplete top-level integration fails closed; subtasks and epics never enter the deployment queue.
 
 Continuous runs refill from authorized eligible tasks without new prompts. A proposed improvement is not authorized implementation; record it in Beads or the same TASKS.md, not backlog.md. Ask only for genuinely missing authority/access or a material product decision. Explicit project pause holds admission.
 
