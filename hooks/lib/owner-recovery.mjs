@@ -619,7 +619,7 @@ export async function currentLegacyOwnerAdoption(project, canonical) {
   const recorded = gate?.recordedEvidence;
   const operation = canonical?.state?.operationReceipts?.[recorded?.operationId];
   const result = operation?.result;
-  const freshAuthorization = gate?.authorized === false || exactKeys(recorded,
+  const freshAuthorization = gate?.authorized === true && exactKeys(recorded,
     ["path", "fingerprint", "revision", "taskIds", "operationId", "observedAt"])
     && typeof recorded.path === "string" && recorded.path.length > 0 && hex(recorded.fingerprint, 64)
     && hex(recorded.revision, 40) && validId(recorded.operationId) && timestamp(recorded.observedAt)

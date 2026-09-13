@@ -95,8 +95,8 @@ if (process.argv[2] === "writer") {
     }));
     return { ...value, evidencePath, nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, ownershipEpoch: 1, cwd: value.project.root } };
   }
-  function integrationRequest(value, operationId = "adoption-integration") {
-    return { actorSessionId: "owner-session", operationId, expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint,
+  function integrationRequest(value, operationId = "adoption-integration", expectedVersion = 0) {
+    return { actorSessionId: "owner-session", operationId, expectedVersion, expectedFingerprint: value.canonical.tracker.fingerprint,
       gate: "integration", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath: value.evidencePath };
   }
   function child(root, request) {
@@ -597,8 +597,8 @@ if (process.argv[2] === "writer") {
     assert.equal(typeof integration.authorization.observedAt, "string");
   });
 
-  test("fresh integration evidence clears only the hold bound to the exact current legacy-adoption receipt", async () => {
-    // This catches the adoption migration leaving its deliberately invalidated integration gate permanently unusable.
+  test("first fresh integration evidence authorizes but preserves an adoption hold", async () => {
+    // This catches an adoption receipt clearing its hold before a supported integration operation records fresh authority.
     const { recordGateEvidence } = await api();
     const value = await heldIntegrationFixture();
     await writeAdoptionReceipt(value);
@@ -606,7 +606,7 @@ if (process.argv[2] === "writer") {
     assert.equal(applied.status, "applied", JSON.stringify(applied));
     const current = (await loadCanonicalState(value.project)).state;
     assert.equal(current.integration.authorized, true);
-    assert.equal(current.integration.hold, false);
+    assert.equal(current.integration.hold, true);
     assert.equal(current.integration.paused, false);
     assert.equal(current.release.hold, true);
   });
@@ -677,11 +677,15 @@ if (process.argv[2] === "writer") {
 
     const value = await heldIntegrationFixture();
     await writeAdoptionReceipt(value);
-    const request = integrationRequest(value);
-    const applied = await recordGateEvidence(value.project, request, { nativeIdentity: value.nativeIdentity });
-    assert.equal(applied.status, "applied", JSON.stringify(applied));
-    assert.equal((await recordGateEvidence(value.project, request, { nativeIdentity: value.nativeIdentity })).status, "duplicate");
-    const stale = await recordGateEvidence(value.project, integrationRequest(value, "adoption-integration-next"), { nativeIdentity: value.nativeIdentity });
+    const firstRequest = integrationRequest(value);
+    const first = await recordGateEvidence(value.project, firstRequest, { nativeIdentity: value.nativeIdentity });
+    assert.equal(first.status, "applied", JSON.stringify(first));
+    assert.equal((await loadCanonicalState(value.project)).state.integration.hold, true);
+    assert.equal((await recordGateEvidence(value.project, firstRequest, { nativeIdentity: value.nativeIdentity })).status, "duplicate");
+    const secondRequest = integrationRequest(value, "adoption-integration-next", 1);
+    const second = await recordGateEvidence(value.project, secondRequest, { nativeIdentity: value.nativeIdentity });
+    assert.equal(second.status, "applied", JSON.stringify(second));
+    const stale = await recordGateEvidence(value.project, integrationRequest(value, "adoption-integration-stale", 1), { nativeIdentity: value.nativeIdentity });
     assert.deepEqual(stale, { status: "conflict", reason: "stale_version" });
     assert.equal((await loadCanonicalState(value.project)).state.integration.hold, false);
   });
