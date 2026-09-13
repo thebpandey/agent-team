@@ -603,6 +603,48 @@ function validateLegacyOwnerAdoptionReceipt(receipt) {
     && typeof receipt.reason === "string" && receipt.reason.length > 0 && receipt.reason.length <= 4096;
 }
 
+/** Prove that the current epoch-one owner was created by the durable legacy-adoption transaction. */
+export async function currentLegacyOwnerAdoption(project, canonical) {
+  let receipt;
+  try {
+    const source = await safeBytes(path.join(project.paths.stateRoot, "legacy-owner-adoption.json"), { absent: true });
+    if (source === null) return false;
+    receipt = JSON.parse(source);
+  } catch { return false; }
+  const ownership = canonical?.state?.ownership;
+  const setupOwnership = canonical?.setup?.ownership;
+  const owner = ownership?.current;
+  const gate = canonical?.state?.integration;
+  const history = canonical?.ownerHistory;
+  const recorded = gate?.recordedEvidence;
+  const operation = canonical?.state?.operationReceipts?.[recorded?.operationId];
+  const result = operation?.result;
+  const freshAuthorization = gate?.authorized === false || exactKeys(recorded,
+    ["path", "fingerprint", "revision", "taskIds", "operationId", "observedAt"])
+    && typeof recorded.path === "string" && recorded.path.length > 0 && hex(recorded.fingerprint, 64)
+    && hex(recorded.revision, 40) && validId(recorded.operationId) && timestamp(recorded.observedAt)
+    && exactKeys(operation, ["signature", "result", "appliedAt"]) && hex(operation.signature, 64)
+    && timestamp(operation.appliedAt) && operation.appliedAt === recorded.observedAt
+    && exactKeys(result, ["gate", "trackerFingerprint", "revision"]) && result.gate === "integration"
+    && result.trackerFingerprint === gate.trackerFingerprint && result.revision === recorded.revision
+    && gate.expectedRevision === recorded.revision && stable(gate.taskIds) === stable(recorded.taskIds)
+    && gate.authorization?.scope === "integration" && gate.authorization.ownerSessionId === owner?.sessionId
+    && gate.authorization.revision === recorded.revision && stable(gate.authorization.taskIds) === stable(recorded.taskIds)
+    && timestamp(gate.authorization.observedAt) && gate.authorization.observedAt === gate.evidenceAt;
+  return validateLegacyOwnerAdoptionReceipt(receipt) && validateQualifiedOwnership(ownership)
+    && stable(setupOwnership) === stable(ownership) && ownership.epoch === 1
+    && receipt.operationId === owner.operationId && receipt.ownershipEpoch === ownership.epoch
+    && receipt.projectId === project.projectId && receipt.appliedAt === owner.since
+    && receipt.newOwner.host === owner.host && receipt.newOwner.sessionId === owner.sessionId
+    && receipt.nativeEvidence.host === owner.host && receipt.nativeEvidence.sessionId === owner.sessionId
+    && receipt.nativeEvidence.cwd === project.root && stable(receipt.nativeEvidence.writer) === stable(owner.writer)
+    && receipt.authorization.projectId === project.projectId && receipt.authorization.host === owner.host
+    && gate?.ownerHost === owner.host && gate?.ownerSessionId === owner.sessionId && gate?.ownershipEpoch === ownership.epoch
+    && freshAuthorization
+    && exactKeys(history, ["schemaVersion", "version", "ownership", "entries"]) && history.schemaVersion === 1
+    && history.version === 1 && history.ownership?.epoch === 1 && Array.isArray(history.entries) && history.entries.length === 0;
+}
+
 const adoptionPaths = (project) => ({
   journal: path.join(project.paths.stateRoot, ".legacy-owner-adoption.json"),
   lock: path.join(project.paths.locks, "legacy-owner-adoption.lock"),

@@ -9,7 +9,7 @@ import { loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs"
 import { withDirectoryLock } from "./lock.mjs";
 import { inspectCheckpointEvidence } from "./recovery.mjs";
 import { beadsEnvironment } from "./tracker.mjs";
-import { assertNoOwnerRecoveryJournal, repairOwnerRecovery, validateNativeOwnerAuthority } from "./owner-recovery.mjs";
+import { assertNoOwnerRecoveryJournal, currentLegacyOwnerAdoption, repairOwnerRecovery, validateNativeOwnerAuthority } from "./owner-recovery.mjs";
 
 const digest = (value) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
 const operationSignature = ({ expectedVersion, expectedFingerprint, ...operation }) => digest(operation);
@@ -466,10 +466,11 @@ export async function recordGateEvidence(project, request, options = {}) {
           || authority.ownershipEpoch !== state.release?.ownershipEpoch || !boundedString(evidence.recovery.artifactId, 4096)
           || !boundedString(evidence.recovery.action, 4096)) return conflict("integration_delivery_evidence_mismatch");
       }
+      const clearAdoptionHold = state.integration?.hold === true && await currentLegacyOwnerAdoption(project, canonicalState);
       const observedAt = new Date().toISOString();
       const authorization = { source: evidence.authorization.source, scope: "integration", ownerSessionId, revision,
         taskIds: [...request.taskIds].sort(), observedAt };
-      state.integration = { ...state.integration, authorized: true, expectedRevision: revision, baseRevision: remote.revision,
+      state.integration = { ...state.integration, authorized: true, ...(clearAdoptionHold ? { hold: false } : {}), expectedRevision: revision, baseRevision: remote.revision,
         remoteName: remote.name, baseRemoteRef: remote.baseRef, remoteRef: remote.targetRef,
         ...(remote.targetAbsent === true ? { targetAbsent: true, remoteRevision: undefined } : { remoteRevision: remote.targetRevision, targetAbsent: false }),
         taskIds: [...request.taskIds].sort(), authorization, evidenceAt: observedAt, deltaClean: true, recoveryReconciled: true,

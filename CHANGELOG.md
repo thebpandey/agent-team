@@ -11,6 +11,7 @@ Version 7.2.0 is compatible with existing projects while making setup, orchestra
 - Define the active-host-turn loop as immediate question response, reconciliation, independent review and serial integration, then proven-free slot refill, with no more than 60 seconds between active-work heartbeats. Add no cron, daemon, timer, hosted monitor, nested scheduler, recurring execution, or post-final activity.
 - Install only from one sealed archive/checksum authority and record schema-4 artifact-bound receipt provenance. Automatic installation is qualified on Linux and WSL with functional `/proc/self/fd` traversal; present differing targets require explicit manual replacement rather than automatic update.
 - Preserve annotated release tags by accepting only an exact same-name `refs/tags/<tag>` push (with an optional identical destination), verifying that its local source is an annotated tag for the authorized revision, and rejecting commit-to-tag refspecs.
+- Let fresh native-owner integration evidence clear only the hold created by a still-valid legacy-owner adoption receipt; missing, malformed, stale, mismatched, and ordinary holds remain in force.
 
 ## 7.1.1 - 2026-09-11
 

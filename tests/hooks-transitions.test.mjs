@@ -49,6 +49,56 @@ if (process.argv[2] === "writer") {
   function request(value, operationId, owner = "TEAM-001") {
     return { operationId, actorSessionId: "owner-session", expectedVersion: 0, taskId: "AT-001", expectedFingerprint: value.canonical.tracker.fingerprint, expectedOwner: "none", action: "claim", owner };
   }
+  async function writeAdoptionReceipt(value, mutate = () => {}) {
+    const canonical = await loadCanonicalState(value.project);
+    const ownership = canonical.state.ownership;
+    const receipt = {
+      schemaVersion: 1,
+      operationId: ownership.current.operationId,
+      signature: "a".repeat(64),
+      projectId: value.project.projectId,
+      expectedLegacyOwnerSessionId: ownership.current.sessionId,
+      ownershipEpoch: ownership.epoch,
+      newOwner: { host: ownership.current.host, sessionId: ownership.current.sessionId },
+      appliedAt: ownership.current.since,
+      authorization: {
+        status: "approved", scope: "legacy_owner_adoption", source: "fixture-approved migration", approvalId: "fixture-adoption-approval",
+        grantedAt: ownership.current.since, projectId: value.project.projectId, revision: value.revision,
+        trackerFingerprint: canonical.tracker.fingerprint, host: ownership.current.host,
+      },
+      prior: { stateFingerprint: "b".repeat(64), teamsFingerprint: "c".repeat(64), setupFingerprint: "d".repeat(64), ownerHistoryFingerprint: null },
+      nativeEvidence: { host: ownership.current.host, sessionId: ownership.current.sessionId, cwd: value.project.root,
+        invocationId: "fixture-adoption-invocation", writer: structuredClone(ownership.current.writer) },
+      reason: "qualify the historical owner",
+    };
+    mutate(receipt);
+    await writeFile(path.join(value.project.paths.stateRoot, "legacy-owner-adoption.json"), `${JSON.stringify(receipt, null, 2)}\n`);
+  }
+  async function heldIntegrationFixture() {
+    const value = await fixture({ qualifiedOwnership: true });
+    const state = structuredClone((await loadCanonicalState(value.project)).state);
+    state.integration.authorized = false;
+    state.integration.hold = true;
+    state.release.hold = true;
+    state.deliveryReceipts = { completion: { "AT-001": { taskId: "AT-001", status: "passed", sourceRevision: value.revision } } };
+    await writeFile(value.project.paths.state, `${JSON.stringify(state, null, 2)}\n`);
+    const evidencePath = path.join(value.root, ".agent-team/adoption-integration.json");
+    await writeFile(evidencePath, JSON.stringify({
+      status: "passed", revision: value.revision, taskIds: ["AT-001"],
+      remote: { name: "origin", baseRef: "refs/heads/main", revision: value.revision, targetRef: "refs/heads/feature", targetRevision: value.revision },
+      authorization: { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"] },
+      recovery: { status: "reconciled", revision: value.revision, taskIds: ["AT-001"], artifactId: "fixture-known-good", action: "restore fixture" },
+      sourceRevisions: { "AT-001": value.revision },
+      targetAuthorization: { status: "authorized", source: "fixture-approved target", target: "refs/heads/feature", revision: value.revision,
+        taskIds: ["AT-001"], ownerHost: "codex", ownerSessionId: "owner-session", ownershipEpoch: 1 },
+      preview: { required: false }, remoteMainDeploys: false,
+    }));
+    return { ...value, evidencePath, nativeIdentity: { host: "codex", sessionId: "owner-session", observed: true, ownershipEpoch: 1, cwd: value.project.root } };
+  }
+  function integrationRequest(value, operationId = "adoption-integration") {
+    return { actorSessionId: "owner-session", operationId, expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint,
+      gate: "integration", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath: value.evidencePath };
+  }
   function child(root, request) {
     return new Promise((resolve, reject) => {
       const process_ = spawn(process.execPath, [fileURLToPath(import.meta.url), "claim-worker", root, JSON.stringify(request)], { stdio: ["ignore", "pipe", "pipe"] });
@@ -545,6 +595,95 @@ if (process.argv[2] === "writer") {
     assert.equal(integration.updatesRemoteMain, false);
     assert.deepEqual({ ...integration.authorization, observedAt: undefined }, { source: "accepted-packet", scope: "integration", ownerSessionId: "owner-session", revision: value.revision, taskIds: ["AT-001"], observedAt: undefined });
     assert.equal(typeof integration.authorization.observedAt, "string");
+  });
+
+  test("fresh integration evidence clears only the hold bound to the exact current legacy-adoption receipt", async () => {
+    // This catches the adoption migration leaving its deliberately invalidated integration gate permanently unusable.
+    const { recordGateEvidence } = await api();
+    const value = await heldIntegrationFixture();
+    await writeAdoptionReceipt(value);
+    const applied = await recordGateEvidence(value.project, integrationRequest(value), { nativeIdentity: value.nativeIdentity });
+    assert.equal(applied.status, "applied", JSON.stringify(applied));
+    const current = (await loadCanonicalState(value.project)).state;
+    assert.equal(current.integration.authorized, true);
+    assert.equal(current.integration.hold, false);
+    assert.equal(current.integration.paused, false);
+    assert.equal(current.release.hold, true);
+  });
+
+  test("adoption hold clearing accepts fresh evidence after the gate was already reauthorized", async () => {
+    // This catches the deployed state-16 case where evidence authorization changed but the inherited hold remained true.
+    const { recordGateEvidence } = await api();
+    const value = await heldIntegrationFixture();
+    const state = structuredClone((await loadCanonicalState(value.project)).state);
+    state.integration.authorized = true;
+    const observedAt = "2026-09-06T12:01:00.000Z";
+    const recordedAt = "2026-09-06T12:01:00.001Z";
+    state.integration.trackerFingerprint = value.canonical.tracker.fingerprint;
+    state.integration.evidenceAt = observedAt;
+    state.integration.authorization = { source: "prior-accepted-packet", scope: "integration", ownerSessionId: "owner-session",
+      revision: value.revision, taskIds: ["AT-001"], observedAt };
+    state.integration.taskIds = ["AT-001"];
+    state.integration.recordedEvidence = { path: value.evidencePath, fingerprint: "e".repeat(64), revision: value.revision,
+      taskIds: ["AT-001"], operationId: "prior-integration-evidence", observedAt: recordedAt };
+    state.operationReceipts = { ...state.operationReceipts, "prior-integration-evidence": { signature: "f".repeat(64), appliedAt: recordedAt,
+      result: { gate: "integration", trackerFingerprint: value.canonical.tracker.fingerprint, revision: value.revision } } };
+    await writeFile(value.project.paths.state, `${JSON.stringify(state, null, 2)}\n`);
+    await writeAdoptionReceipt(value);
+    const applied = await recordGateEvidence(value.project, integrationRequest(value), { nativeIdentity: value.nativeIdentity });
+    assert.equal(applied.status, "applied", JSON.stringify(applied));
+    assert.equal((await loadCanonicalState(value.project)).state.integration.hold, false);
+  });
+
+  test("integration evidence preserves holds without exact current adoption provenance", async (context) => {
+    // This catches a broad unhold that would erase ordinary, malformed, or stale/manual safety holds.
+    const cases = [
+      ["missing receipt", undefined],
+      ["tampered receipt", (receipt) => { receipt.signature = "tampered"; }],
+      ["stale adoption operation", (receipt) => { receipt.operationId = "older-adoption"; }],
+      ["wrong adoption owner", (receipt) => {
+        receipt.expectedLegacyOwnerSessionId = "other-owner";
+        receipt.newOwner.sessionId = "other-owner";
+        receipt.nativeEvidence.sessionId = "other-owner";
+      }],
+      ["wrong adoption epoch", (receipt) => { receipt.ownershipEpoch = 2; }],
+      ["manual hold after authorization", () => {}, (state) => { state.integration.authorized = true; }],
+    ];
+    for (const [name, mutate, mutateState] of cases) await context.test(name, async () => {
+      const { recordGateEvidence } = await api();
+      const value = await heldIntegrationFixture();
+      if (mutateState) {
+        const state = structuredClone((await loadCanonicalState(value.project)).state);
+        mutateState(state);
+        await writeFile(value.project.paths.state, `${JSON.stringify(state, null, 2)}\n`);
+      }
+      if (mutate) await writeAdoptionReceipt(value, mutate);
+      const result = await recordGateEvidence(value.project, integrationRequest(value), { nativeIdentity: value.nativeIdentity });
+      assert.equal(result.status, "applied");
+      assert.equal((await loadCanonicalState(value.project)).state.integration.hold, true);
+    });
+  });
+
+  test("adoption hold clear remains owner-bound and has ordinary operation replay/version semantics", async () => {
+    // This catches bypass of native owner identity and special-case replay behavior around the one-time migration repair.
+    const { recordGateEvidence } = await api();
+    const wrongActor = await heldIntegrationFixture();
+    await writeAdoptionReceipt(wrongActor);
+    const denied = await recordGateEvidence(wrongActor.project, integrationRequest(wrongActor), {
+      nativeIdentity: { ...wrongActor.nativeIdentity, sessionId: "other-owner" },
+    });
+    assert.deepEqual(denied, { status: "conflict", reason: "project_owner_required" });
+    assert.equal((await loadCanonicalState(wrongActor.project)).state.integration.hold, true);
+
+    const value = await heldIntegrationFixture();
+    await writeAdoptionReceipt(value);
+    const request = integrationRequest(value);
+    const applied = await recordGateEvidence(value.project, request, { nativeIdentity: value.nativeIdentity });
+    assert.equal(applied.status, "applied", JSON.stringify(applied));
+    assert.equal((await recordGateEvidence(value.project, request, { nativeIdentity: value.nativeIdentity })).status, "duplicate");
+    const stale = await recordGateEvidence(value.project, integrationRequest(value, "adoption-integration-next"), { nativeIdentity: value.nativeIdentity });
+    assert.deepEqual(stale, { status: "conflict", reason: "stale_version" });
+    assert.equal((await loadCanonicalState(value.project)).state.integration.hold, false);
   });
 
   test("integration evidence rejects an untracked non-ignored worktree file", async () => {
