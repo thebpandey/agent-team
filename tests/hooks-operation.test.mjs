@@ -27,10 +27,34 @@ test("PR integration remains distinct from exact push parsing", () => {
   assert.deepEqual(classifyOperation({ operation: { kind: "shell", command: "gh pr merge 1 --merge" } }), { kind: "integration", method: "pull_request" });
 });
 
-test("git push parsing accepts only an exact valid tag target", () => {
-  const tag = classifyOperation({ operation: { kind: "shell", command: "git push origin HEAD:refs/tags/v7.1.0" } });
-  assert.deepEqual(tag.push, { valid: true, remote: "origin", targetRef: "refs/tags/v7.1.0" });
-  for (const command of ["git push origin HEAD:refs/tags/.bad", "git push origin HEAD:refs/tags/v7..1", "git push origin HEAD:refs/tags/v7.1 HEAD:refs/tags/v7.2"]) {
+test("git push parsing preserves one exact local tag object and target identity", () => {
+  for (const command of [
+    "git push origin refs/tags/v7.2.0",
+    "git push origin refs/tags/v7.2.0:refs/tags/v7.2.0",
+  ]) {
+    const tag = classifyOperation({ operation: { kind: "shell", command } });
+    assert.deepEqual(tag.push, {
+      valid: true,
+      remote: "origin",
+      sourceRef: "refs/tags/v7.2.0",
+      targetRef: "refs/tags/v7.2.0",
+    }, command);
+  }
+  for (const command of [
+    "git push origin HEAD:refs/tags/v7.2.0",
+    "git push origin :refs/tags/v7.2.0",
+    "git push --delete origin refs/tags/v7.2.0",
+    "git push -d origin refs/tags/v7.2.0",
+    "git push --mirror origin refs/tags/v7.2.0",
+    "git push origin refs/heads/main:refs/tags/v7.2.0",
+    "git push origin refs/tags/v7.2.0:refs/tags/v7.2.1",
+    "git push origin refs/tags/.bad",
+    "git push origin refs/tags/v/.bad",
+    "git push origin refs/tags/v7.2.0.lock",
+    "git push origin refs/tags/v7..2",
+    "git push origin refs/tags/v7.2.0 refs/tags/v7.2.1",
+    "git push origin refs/tags/*:refs/tags/*",
+  ]) {
     assert.equal(classifyOperation({ operation: { kind: "shell", command } }).push.valid, false, command);
   }
 });

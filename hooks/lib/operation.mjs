@@ -61,14 +61,17 @@ function pushOperation(tokens, git) {
   const control = tokens.some((token) => [";", "|", "&"].includes(token));
   const force = arguments_.some((token) => /^--force(?:$|=|-)/.test(token)
     || (/^-[^-]/.test(token) && token.slice(1).includes("f")));
+  const options = arguments_.some((token) => token.startsWith("-"));
   const positional = arguments_.filter((token) => !token.startsWith("-"));
   const [remote, refspec, ...extra] = positional;
   const branch = typeof refspec === "string" && refspec.match(/^HEAD:((?:refs\/heads\/|(?!refs\/))[\w./-]+)$/);
-  const tag = typeof refspec === "string" && refspec.match(/^HEAD:refs\/tags\/([\w./-]+)$/);
-  const validTag = tag && /^[A-Za-z0-9][\w./-]*$/.test(tag[1]) && !/[./]$|\.\.|\/\//.test(tag[1]);
-  const targetRef = validTag ? `refs/tags/${tag[1]}` : branch ? `refs/heads/${branch[1].replace(/^refs\/heads\//, "")}` : undefined;
-  return { valid: !control && !force && typeof remote === "string" && Boolean(targetRef) && extra.length === 0,
-    ...(typeof remote === "string" ? { remote } : {}), ...(targetRef ? { targetRef } : {}) };
+  const tag = typeof refspec === "string" && refspec.match(/^(refs\/tags\/([\w./-]+))(?::(refs\/tags\/([\w./-]+)))?$/);
+  const validTagName = (name) => /^[A-Za-z0-9][\w./-]*$/.test(name) && !/[./]$|\.\.|\/\//.test(name)
+    && name.split("/").every((component) => !component.startsWith(".") && !component.toLowerCase().endsWith(".lock"));
+  const validTag = tag && validTagName(tag[2]) && (!tag[3] || validTagName(tag[4]) && tag[1] === tag[3]);
+  const targetRef = validTag ? tag[1] : branch ? `refs/heads/${branch[1].replace(/^refs\/heads\//, "")}` : undefined;
+  return { valid: !control && !force && !options && typeof remote === "string" && Boolean(targetRef) && extra.length === 0,
+    ...(typeof remote === "string" ? { remote } : {}), ...(validTag ? { sourceRef: tag[1] } : {}), ...(targetRef ? { targetRef } : {}) };
 }
 
 function sqlClient(tokens) {

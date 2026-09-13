@@ -434,14 +434,16 @@ test("real CLI maps one release batch before allowing its deployment-triggering 
     expectedRevision: value.revision, evidencePath: tagPath,
   }));
   assert.equal((await record(tagRequest)).status, "applied");
-  const tagCommand = `git -C ${value.feature} push origin HEAD:refs/tags/v1.0.0`;
+  execFileSync("git", ["tag", "-a", "v1.0.0", "-m", "v1.0.0"], { cwd: value.feature });
+  const tagCommand = `git -C ${value.feature} push origin refs/tags/v1.0.0`;
   assert.equal((await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: tagCommand } }), value.project)).allow, true);
   for (const command of [
-    `git -C ${value.feature} push backup HEAD:refs/tags/v1.0.0`,
-    `git -C ${value.feature} push origin HEAD:refs/tags/v1.0.1`,
-    `git -C ${value.feature} push origin HEAD:refs/tags/v1.0.0 HEAD:refs/tags/v1.0.1`,
+    `git -C ${value.feature} push backup refs/tags/v1.0.0`,
+    `git -C ${value.feature} push origin refs/tags/v1.0.1`,
+    `git -C ${value.feature} push origin refs/tags/v1.0.0 refs/tags/v1.0.1`,
+    `git -C ${value.feature} push origin HEAD:refs/tags/v1.0.0`,
   ]) assert.equal((await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command } }), value.project)).allow, false, command);
-  execFileSync("git", ["push", "-q", "origin", "HEAD:refs/tags/v1.0.0"], { cwd: value.feature });
+  execFileSync("git", ["push", "-q", "origin", "refs/tags/v1.0.0"], { cwd: value.feature });
   assert.equal((await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: tagCommand } }), value.project)).allow, false);
 });
 

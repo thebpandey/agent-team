@@ -161,6 +161,19 @@ function nonForcePushMatches(operation, gate) {
     && operation.push.targetRef === gate.remoteRef);
 }
 
+async function annotatedTagMatches(cwd, sourceRef, revision, budget) {
+  if (!sourceRef) return true;
+  try {
+    const [type, peeled] = await Promise.all([
+      gitValue(cwd, ["cat-file", "-t", sourceRef], budget),
+      gitValue(cwd, ["rev-parse", `${sourceRef}^{}`], budget),
+    ]);
+    return type === "tag" && peeled === revision;
+  } catch {
+    return false;
+  }
+}
+
 async function integrationGate(event, project, canonical, operation, now, budget) {
   const gate = canonical.state.integration ?? {};
   if (event.sessionId !== canonical.registry.integrationOwner || !currentOwner(canonical, event, gate)) return deny("The registered integration owner must run this operation.");
@@ -214,6 +227,9 @@ async function integrationGate(event, project, canonical, operation, now, budget
   try { if (!await isAncestor(targetProject.worktreeRoot, gate.baseRevision, gate.expectedRevision, budget)) return deny("The observed remote base is not an ancestor of the exact integration revision."); }
   catch { return deny("Integration ancestry evidence is unavailable."); }
   if (!nonForcePushMatches(operation, gate)) return deny("Integration push must be the evidenced non-force advance.");
+  if (!await annotatedTagMatches(targetProject.worktreeRoot, operation.push?.sourceRef, gate.expectedRevision, budget)) {
+    return deny("Integration tag push must preserve an annotated local tag for the exact integration revision.");
+  }
   try {
     const target = await remoteTarget(targetProject.worktreeRoot, gate.remoteName, gate.remoteRef, budget);
     if (gate.targetAbsent ? target.status !== "absent" : target.revision !== gate.remoteRevision) return deny("The integration target changed after evidence was recorded.");

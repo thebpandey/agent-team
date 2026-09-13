@@ -459,19 +459,33 @@ test("PR integration retains its non-push evidence route", async () => {
 
 test("tag integration requires an absent exact remote target until creation", async () => {
   const value = await fixture();
+  execFileSync("git", ["tag", "-a", "v7.1.0", "-m", "Agent-Team v7.1.0"], { cwd: value.feature });
   const state = structuredClone(value.state);
   state.integration.remoteRef = "refs/tags/v7.1.0";
   state.integration.targetAbsent = true;
   delete state.integration.remoteRevision;
   await saveState(value, state);
-  const operation = { kind: "shell", command: `git -C ${value.feature} push origin HEAD:refs/tags/v7.1.0` };
-  const allowed = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
-  assert.equal(allowed.allow, true);
-  for (const command of [`git -C ${value.feature} push backup HEAD:refs/tags/v7.1.0`, `git -C ${value.feature} push origin HEAD:refs/tags/v7.1.1`]) {
+  const operation = { kind: "shell", command: `git -C ${value.feature} push origin refs/tags/v7.1.0` };
+  const explicitOperation = { kind: "shell", command: `git -C ${value.feature} push origin refs/tags/v7.1.0:refs/tags/v7.1.0` };
+  for (const candidate of [operation, explicitOperation]) {
+    const allowed = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: candidate }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+    assert.equal(allowed.allow, true, candidate.command);
+  }
+  execFileSync("git", ["tag", "-d", "v7.1.0"], { cwd: value.feature, stdio: "ignore" });
+  execFileSync("git", ["tag", "v7.1.0"], { cwd: value.feature });
+  assert.equal((await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation }), value.project,
+    { now: new Date("2026-09-06T12:01:00.000Z") })).allow, false, "lightweight local tag");
+  execFileSync("git", ["tag", "-d", "v7.1.0"], { cwd: value.feature, stdio: "ignore" });
+  execFileSync("git", ["tag", "-a", "v7.1.0", "-m", "Agent-Team v7.1.0"], { cwd: value.feature });
+  for (const command of [
+    `git -C ${value.feature} push backup refs/tags/v7.1.0`,
+    `git -C ${value.feature} push origin refs/tags/v7.1.1`,
+    `git -C ${value.feature} push origin HEAD:refs/tags/v7.1.0`,
+  ]) {
     const denied = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command } }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
     assert.equal(denied.allow, false, command);
   }
-  execFileSync("git", ["push", "-q", "origin", "HEAD:refs/tags/v7.1.0"], { cwd: value.feature });
+  execFileSync("git", ["push", "-q", "origin", "refs/tags/v7.1.0"], { cwd: value.feature });
   const drifted = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
   assert.equal(drifted.allow, false);
 });
@@ -483,6 +497,7 @@ test("absent-tag integration rejects a substituted remote feature base after rem
   execFileSync("git", ["add", "local-main-advance.txt"], { cwd: value.root });
   execFileSync("git", ["commit", "-q", "-m", "local main advance"], { cwd: value.root });
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+  execFileSync("git", ["tag", "-a", "v7.1.0", "-m", "Agent-Team v7.1.0"], { cwd: value.root });
   const tree = execFileSync("git", ["rev-parse", `${original}^{tree}`], { cwd: value.root, encoding: "utf8" }).trim();
   const divergentRemoteMain = execFileSync("git", ["commit-tree", tree, "-p", original, "-m", "remote main divergence"], { cwd: value.root, encoding: "utf8" }).trim();
   execFileSync("git", ["push", "-q", "origin", `${divergentRemoteMain}:refs/heads/main`], { cwd: value.root });
@@ -497,7 +512,7 @@ test("absent-tag integration rejects a substituted remote feature base after rem
   const project = await resolveProject(value.root);
   const decision = await evaluatePolicy(hookEvent(value, {
     cwd: value.root, sessionId: "owner-session",
-    operation: { kind: "shell", command: `git -C ${value.root} push origin HEAD:refs/tags/v7.1.0` },
+    operation: { kind: "shell", command: `git -C ${value.root} push origin refs/tags/v7.1.0` },
   }), project, { now: new Date("2026-09-06T12:01:00.000Z") });
 
   assert.equal(decision.allow, false, "a tampered canonical baseRemoteRef cannot substitute an unchanged feature for divergent remote main");
