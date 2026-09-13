@@ -152,7 +152,16 @@ export function classifyOperation(event, mappings = {}, { tracker } = {}) {
   if (event.operation.kind !== "shell") return event.operation;
 
   const command = event.operation.command;
-  const tokens = unwrapLeanCtx(tokenizeShell(command));
+  const rawTokens = tokenizeShell(command);
+  if (rawTokens.length === 7 && ["node", "node.exe"].includes(executable(rawTokens[0]))
+    && path.isAbsolute(rawTokens[1]) && executable(rawTokens[1]) === "agent-team-cli.mjs"
+    && ["legacy-owner-adopt", "gate-evidence"].includes(rawTokens[2])
+    && rawTokens[3] === "--project" && path.isAbsolute(rawTokens[4]) && path.normalize(rawTokens[4]) === rawTokens[4]
+    && rawTokens[5] === "--request" && path.isAbsolute(rawTokens[6]) && path.normalize(rawTokens[6]) === rawTokens[6]) {
+    return { kind: "agent_team_native_command", command: rawTokens[2], cliPath: rawTokens[1],
+      project: rawTokens[4], request: rawTokens[6], valid: true };
+  }
+  const tokens = unwrapLeanCtx(rawTokens);
   const bd = tokens.findIndex((token) => ["bd", "bd.exe"].includes(executable(token)));
   if (bd !== -1 && (!tracker || tracker.kind === "beads")) {
     const action = tokens.findIndex((token, index) => index > bd && ["close", "update"].includes(token));

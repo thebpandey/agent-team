@@ -96,6 +96,7 @@ These are Node helpers from [the official Agent-Team package](https://github.com
 | --- | --- |
 | `project-initialize --project /path/to/project --request /path/to/request.json` | Create/adopt approved canonical records with exact owner, branch and complete tracker IDs. Reports canonical readiness separately from native/dependency readiness. |
 | `project-owner-recover --project /path/to/project --request /path/to/request.json` | Validate a closed owner-recovery request, but only native authority can execute recovery; bare CLI returns `native_owner_recovery_required`. |
+| `legacy-owner-adopt --project /absolute/project --request /absolute/request.json` | One-time migration only for the historical synthetic `root` owner. The bare CLI validates intent or reads an exact permanent replay receipt; only the installed native `PreToolUse` adapter may apply it. |
 | `settings`, `settings-wizard`, `settings-update` | Require project/host/project-scope selectors. Read overview or compatible role menus; mutations require the versioned setup envelope described in [setup](setup.md). |
 | `dependencies`, `dependencies-prepare`, `readiness` | Require project/host and selected user/project capability scope. Installation is not proof of functional or fresh-worker access. |
 | `dashboard-configure` | Save explicit snapshot/optional graph preferences under setup ownership/version checks; never starts a server or installs bv. |
@@ -111,6 +112,8 @@ These are Node helpers from [the official Agent-Team package](https://github.com
 | `cleanup --project /path/to/project --request /path/to/request.json` | Remove only the requested eligible verified worktree; uncertain or retained resources remain untouched. |
 | `dashboard-snapshot --project /path/to/project` | Generate `.agent-team/dashboard/index.html` once. This does not silently enable future snapshots. |
 | `dashboard-start --project /path/to/project --port 0` | Explicitly run the foreground loopback viewer. Reports its actual URL; Ctrl-C/SIGTERM stops this helper. A requested occupied port fails instead of moving silently. |
+
+`legacy-owner-adopt` is not owner recovery and performs no liveness inference. Its closed schema accepts the expected project/revision/tracker and record fingerprints, an explicit `legacy_owner_adoption` authorization, and a reason; actor, replacement owner, writer, liveness, and capability fields are forbidden. The adapter derives the new runtime/session/canonical cwd from the native event and captures the `/proc` writer identity. It accepts only the exact, non-chained installed CLI form on canonical clean `main`, requires the unqualified `root` legacy shape and no pending shared operation, and publishes epoch-one ownership plus an empty epoch-one history through a dedicated durable journal. Existing integration/release evidence is retained but made inert with `authorized: false` and `hold: true`. Exact replay is idempotent; another adoption, altered replay, partial/tampered journal, linked worktree, stale hash, or manual ambiguity fails closed. After adoption, the same exact native route may apply `gate-evidence`; a plain CLI still cannot mint mutation authority.
 
 ### Release evidence artifact
 

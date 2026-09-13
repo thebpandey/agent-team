@@ -10,7 +10,8 @@ import { auditEffectiveness } from "./lib/telemetry.mjs";
 import { buildArtifacts, checkArtifacts } from "./lib/artifacts.mjs";
 import { getHealth } from "./lib/health.mjs";
 import { initializeProject, validateInitializationEnvelope } from "./lib/initialization.mjs";
-import { readOwnerRecoveryEnvelope, validateOwnerRecoveryEnvelope } from "./lib/owner-recovery.mjs";
+import { resolveProject } from "./lib/project.mjs";
+import { inspectLegacyOwnerAdoption, readOwnerRecoveryEnvelope, validateLegacyOwnerAdoptionEnvelope, validateOwnerRecoveryEnvelope } from "./lib/owner-recovery.mjs";
 import { installPackage, rollbackPackage, uninstallPackage } from "./lib/install.mjs";
 import { checkInstalledPackage, checkPackage } from "./lib/package-validator.mjs";
 import { runSetupCommand, setupCommandFlags } from "./lib/setup-cli.mjs";
@@ -30,6 +31,7 @@ const commandFlags = {
   "build-artifacts": new Set(["source", "output", "revision"]),
   "project-initialize": new Set(["project", "request"]),
   "project-owner-recover": new Set(["project", "request"]),
+  "legacy-owner-adopt": new Set(["project", "request"]),
   ...workflowCommandFlags,
   ...setupCommandFlags,
 };
@@ -114,6 +116,15 @@ export async function runCommand(command, options, context = {}) {
     if (invalid) return { status: "conflict", ready: false, reason: invalid };
     // No current host bootstrap can mint the opaque capability. Refuse before resolving or reading the project.
     return { status: "validated", ready: false, reason: "native_owner_recovery_required" };
+  }
+  if (command === "legacy-owner-adopt") {
+    if (typeof options.project !== "string" || !options.project.trim()) throw new Error("--project is required.");
+    const envelope = await readOwnerRecoveryEnvelope(options.request);
+    const invalid = validateLegacyOwnerAdoptionEnvelope(envelope);
+    if (invalid) return { status: "conflict", ready: false, reason: invalid };
+    const project = await resolveProject(path.resolve(options.project));
+    if (!project.active) return { status: "conflict", ready: false, reason: "inactive" };
+    return inspectLegacyOwnerAdoption(project, envelope);
   }
   if (workflowCommandFlags[command]) return runWorkflowCommand(command, options, context);
   if (setupCommandFlags[command]) return runSetupCommand(command, options, context);

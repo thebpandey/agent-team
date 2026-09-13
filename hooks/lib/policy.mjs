@@ -30,7 +30,7 @@ function deny(message, context = {}) {
 export function unavailableDecision(event, mappings = {}, { inventoryStatus = "unavailable" } = {}) {
   const operation = classifyOperation(event, mappings);
   const critical = !["PostToolUse", "PostToolBatch"].includes(event.event)
-    && ["file_change", "integration", "release", "database_destructive", "completion"].includes(operation.kind);
+    && ["file_change", "integration", "release", "database_destructive", "completion", "agent_team_native_command"].includes(operation.kind);
   const cache = ["missing", "invalid"].includes(inventoryStatus)
     ? ` Agent-Team mapping cache is ${inventoryStatus}; mapped critical protection is unavailable.`
     : "";

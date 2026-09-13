@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { mkdir, open, realpath, rename, rm, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, readlink, realpath, rename, rm, unlink } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { withDirectoryLock } from "./lock.mjs";
+import { readTracker } from "./tracker.mjs";
 
 const MAX_REQUEST_BYTES = 256 * 1024;
 const validId = (value) => typeof value === "string" && /^[\w.:-]{1,128}$/.test(value)
@@ -414,6 +416,9 @@ async function rollForward(project, journal, options = {}) {
 export async function assertNoOwnerRecoveryJournal(project) {
   if (!project?.paths?.ownerRecoveryJournal) return;
   if (await safeBytes(project.paths.ownerRecoveryJournal, { absent: true }) !== null) throw new Error("owner_recovery_in_progress");
+  if (await safeBytes(path.join(project.paths.stateRoot, ".legacy-owner-adoption.json"), { absent: true }) !== null) {
+    throw new Error("legacy_owner_adoption_in_progress");
+  }
 }
 
 /** Repair the four-record barrier before any canonical reader exposes state. */
@@ -421,6 +426,9 @@ export async function repairOwnerRecovery(project, options = {}) {
   if (!project?.paths?.ownerRecoveryJournal) return { status: "none" };
   const source = await safeBytes(project.paths.ownerRecoveryJournal, { absent: true });
   if (source === null) return { status: "none" };
+  if (await safeBytes(path.join(project.paths.stateRoot, ".legacy-owner-adoption.json"), { absent: true }) !== null) {
+    throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+  }
   return withDirectoryLock(project.paths.ownerRecoveryLock, { kind: "owner_recovery_repair", pid: process.pid }, async () =>
     withDirectoryLock(path.join(project.paths.locks, "setup.lock"), { kind: "owner_recovery_repair", pid: process.pid }, async () =>
       withDirectoryLock(path.join(project.paths.locks, "state.lock"), { kind: "owner_recovery_repair", pid: process.pid }, async () => {
@@ -539,4 +547,318 @@ export async function recoverProjectOwner(project, envelope, options = {}) {
         const result = await rollForward(project, journal, options);
         return { status: "applied", result };
       }, { budget: options.budget }), { budget: options.budget }), { budget: options.budget });
+}
+
+const legacyAdoptionRequestKeys = ["operationId", "projectId", "expectedLegacyOwnerSessionId", "expectedProjectRoot",
+  "expectedRevision", "expectedTracker", "expectedSetupVersion", "expectedStateVersion", "expectedTeamsFingerprint",
+  "expectedSetupFingerprint", "expectedStateFingerprint", "expectedOwnerHistoryFingerprint", "authorization", "reason"];
+const adoptionAuthorizationKeys = ["status", "scope", "source", "approvalId", "grantedAt", "projectId", "revision", "trackerFingerprint", "host"];
+
+/** Validate the one-time migration request without accepting any asserted actor identity. */
+export function validateLegacyOwnerAdoptionEnvelope(envelope) {
+  if (!exactKeys(envelope, ["schemaVersion", "request"]) || envelope.schemaVersion !== 1
+    || Buffer.byteLength(JSON.stringify(envelope)) > MAX_REQUEST_BYTES || !exactKeys(envelope.request, legacyAdoptionRequestKeys)) return "invalid_request";
+  const request = envelope.request;
+  const tracker = request.expectedTracker;
+  const authorization = request.authorization;
+  if (!validId(request.operationId) || !validId(request.projectId) || request.expectedLegacyOwnerSessionId !== "root"
+    || typeof request.expectedProjectRoot !== "string" || !path.isAbsolute(request.expectedProjectRoot)
+    || path.normalize(request.expectedProjectRoot) !== request.expectedProjectRoot || !hex(request.expectedRevision, 40)
+    || !exactKeys(tracker, ["kind", "path", "fingerprint"]) || !["markdown", "beads"].includes(tracker.kind)
+    || typeof tracker.path !== "string" || !path.isAbsolute(tracker.path) || path.normalize(tracker.path) !== tracker.path || !hex(tracker.fingerprint, 64)
+    || !Number.isSafeInteger(request.expectedSetupVersion) || request.expectedSetupVersion < 1
+    || !Number.isSafeInteger(request.expectedStateVersion) || request.expectedStateVersion < 0
+    || ![request.expectedTeamsFingerprint, request.expectedSetupFingerprint, request.expectedStateFingerprint].every((value) => hex(value, 64))
+    || request.expectedOwnerHistoryFingerprint !== null || !exactKeys(authorization, adoptionAuthorizationKeys)
+    || authorization.status !== "approved" || authorization.scope !== "legacy_owner_adoption"
+    || typeof authorization.source !== "string" || !authorization.source.trim() || authorization.source.length > 256
+    || !validId(authorization.approvalId) || !timestamp(authorization.grantedAt) || authorization.projectId !== request.projectId
+    || authorization.revision !== request.expectedRevision || authorization.trackerFingerprint !== tracker.fingerprint
+    || !runtimes.has(authorization.host) || typeof request.reason !== "string" || request.reason.trim() !== request.reason
+    || !request.reason || Buffer.byteLength(request.reason) > 4096) return "invalid_request";
+  return undefined;
+}
+
+const adoptionReceiptKeys = ["schemaVersion", "operationId", "signature", "projectId", "expectedLegacyOwnerSessionId",
+  "ownershipEpoch", "newOwner", "appliedAt", "authorization", "prior", "nativeEvidence", "reason"];
+const priorKeys = ["stateFingerprint", "teamsFingerprint", "setupFingerprint", "ownerHistoryFingerprint"];
+const nativeEvidenceKeys = ["host", "sessionId", "cwd", "invocationId", "writer"];
+
+function validateLegacyOwnerAdoptionReceipt(receipt) {
+  return exactKeys(receipt, adoptionReceiptKeys) && receipt.schemaVersion === 1 && validId(receipt.operationId) && hex(receipt.signature, 64)
+    && validId(receipt.projectId) && receipt.expectedLegacyOwnerSessionId === "root" && receipt.ownershipEpoch === 1
+    && qualifiedIdentity(receipt.newOwner) && timestamp(receipt.appliedAt) && exactKeys(receipt.authorization, adoptionAuthorizationKeys)
+    && receipt.authorization.status === "approved" && receipt.authorization.scope === "legacy_owner_adoption"
+    && typeof receipt.authorization.source === "string" && receipt.authorization.source.trim() && receipt.authorization.source.length <= 256
+    && validId(receipt.authorization.approvalId) && timestamp(receipt.authorization.grantedAt)
+    && receipt.authorization.projectId === receipt.projectId && hex(receipt.authorization.revision, 40)
+    && hex(receipt.authorization.trackerFingerprint, 64) && receipt.authorization.host === receipt.newOwner.host
+    && exactKeys(receipt.prior, priorKeys) && hex(receipt.prior.stateFingerprint, 64) && hex(receipt.prior.teamsFingerprint, 64)
+    && hex(receipt.prior.setupFingerprint, 64) && receipt.prior.ownerHistoryFingerprint === null
+    && exactKeys(receipt.nativeEvidence, nativeEvidenceKeys) && receipt.nativeEvidence.host === receipt.newOwner.host
+    && receipt.nativeEvidence.sessionId === receipt.newOwner.sessionId && typeof receipt.nativeEvidence.cwd === "string"
+    && validId(receipt.nativeEvidence.invocationId) && validateOwnershipWriter(receipt.nativeEvidence.writer)
+    && typeof receipt.reason === "string" && receipt.reason.length > 0 && receipt.reason.length <= 4096;
+}
+
+const adoptionPaths = (project) => ({
+  journal: path.join(project.paths.stateRoot, ".legacy-owner-adoption.json"),
+  lock: path.join(project.paths.locks, "legacy-owner-adoption.lock"),
+  receipt: path.join(project.paths.stateRoot, "legacy-owner-adoption.json"),
+});
+
+/** Bare CLI path: validate intent and report a sealed replay without acquiring mutation authority. */
+export async function inspectLegacyOwnerAdoption(project, envelope) {
+  if (validateLegacyOwnerAdoptionEnvelope(envelope)) return refusal("invalid_request");
+  const request = envelope.request;
+  const source = await safeBytes(adoptionPaths(project).receipt, { absent: true });
+  if (source === null) return { status: "validated", ready: false, reason: "native_legacy_owner_adoption_required" };
+  let receipt;
+  try { receipt = JSON.parse(source); } catch { return refusal("legacy_owner_adoption_manual_reconciliation_required"); }
+  if (!validateLegacyOwnerAdoptionReceipt(receipt)) return refusal("legacy_owner_adoption_manual_reconciliation_required");
+  if (receipt.operationId !== request.operationId) return refusal("legacy_owner_adoption_already_completed");
+  return receipt.signature === sha256(stable(request)) ? { status: "duplicate", result: receipt } : refusal("operation_identity_reused");
+}
+
+async function captureAdoptionWriter() {
+  const [stat, bootId, pidNamespace] = await Promise.all([
+    readFile(`/proc/${process.pid}/stat`, "utf8"), readFile("/proc/sys/kernel/random/boot_id", "utf8"), readlink("/proc/self/ns/pid"),
+  ]);
+  const startTime = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[19];
+  const writer = { pid: process.pid, startTime, bootId: bootId.trim(), host: os.hostname(), pidNamespace };
+  if (!validateOwnershipWriter(writer)) throw new Error("legacy_owner_adoption_writer_unavailable");
+  return writer;
+}
+
+async function adoptionGitIdentity(location) {
+  const identity = await gitIdentity(location);
+  const git = async (...args) => (await run("git", ["-C", identity.nativeCwd, ...args], { encoding: "utf8", timeout: 1000, maxBuffer: 16384 })).stdout.trim();
+  return { ...identity, revision: await git("rev-parse", "HEAD"), branch: await git("symbolic-ref", "--short", "HEAD"),
+    clean: await git("status", "--porcelain", "--untracked-files=no") === "" };
+}
+
+function addLegacyHostLabels(source, host) {
+  if (/^Project owner host:/m.test(source) || /^Integration owner host:/m.test(source)) throw new Error("legacy_owner_shape_invalid");
+  let next = source.replace(/^Project owner: root$/m, `Project owner: root\nProject owner host: ${host}`);
+  next = next.replace(/^Integration owner: root$/m, `Integration owner: root\nIntegration owner host: ${host}`);
+  if (next === source || !/^Project owner host:/m.test(next) || !/^Integration owner host:/m.test(next)) throw new Error("legacy_owner_shape_invalid");
+  return next;
+}
+
+function validateAdoptionJournal(journal, project) {
+  const paths = adoptionPaths(project);
+  const names = ["teams", "state", "setup", "owner-history", "receipt"];
+  const files = [project.paths.teams, project.paths.state, project.paths.setup, project.paths.ownerHistory, paths.receipt];
+  if (!exactKeys(journal, ["schemaVersion", "operationId", "signature", "phase", "nextRecord", "receipt", "records"])
+    || journal.schemaVersion !== 1 || !validId(journal.operationId) || !hex(journal.signature, 64)
+    || !validateLegacyOwnerAdoptionReceipt(journal.receipt) || journal.receipt.operationId !== journal.operationId
+    || journal.receipt.signature !== journal.signature
+    || !Array.isArray(journal.records) || journal.records.length !== names.length || !Number.isInteger(journal.nextRecord)
+    || journal.nextRecord < 0 || journal.nextRecord > names.length) throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+  const expectedPhase = journal.nextRecord === 0 ? "prepared" : journal.nextRecord === names.length && journal.phase === "committed"
+    ? "committed" : `renamed:${journal.nextRecord}`;
+  if (journal.phase !== expectedPhase) throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+  for (let index = 0; index < names.length; index += 1) {
+    const record = journal.records[index];
+    const prior = record?.priorimageBase64 === null ? null : decodeCanonicalBase64(record?.priorimageBase64);
+    const post = decodeCanonicalBase64(record?.postimageBase64);
+    if (!exactKeys(record, journalRecordKeys) || record.name !== names[index] || record.path !== files[index]
+      || !(record.priorSha256 === null || hex(record.priorSha256, 64)) || !hex(record.postSha256, 64)
+      || post === undefined || sha256(post) !== record.postSha256 || (prior === null) !== (record.priorSha256 === null)
+      || prior !== null && sha256(prior) !== record.priorSha256) throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+  }
+  return journal;
+}
+
+function semanticAdoptionJournal(journal, project) {
+  const records = Object.fromEntries(journal.records.map((record) => [record.name, {
+    prior: record.priorimageBase64 === null ? null : Buffer.from(record.priorimageBase64, "base64"),
+    post: Buffer.from(record.postimageBase64, "base64"),
+  }]));
+  let priorState; let postState; let priorSetup; let postSetup; let postHistory; let postReceipt;
+  try {
+    priorState = JSON.parse(records.state.prior); postState = JSON.parse(records.state.post);
+    priorSetup = JSON.parse(records.setup.prior); postSetup = JSON.parse(records.setup.post);
+    postHistory = JSON.parse(records["owner-history"].post); postReceipt = JSON.parse(records.receipt.post);
+  } catch { throw new Error("legacy_owner_adoption_manual_reconciliation_required"); }
+  const priorTeams = records.teams.prior?.toString("utf8");
+  const postTeams = records.teams.post.toString("utf8");
+  const receipt = journal.receipt;
+  const identity = parseTeams(priorTeams);
+  const owner = receipt.newOwner;
+  const expectedOwnership = { epoch: 1, current: { ...owner, since: receipt.appliedAt, operationId: receipt.operationId,
+    writer: receipt.nativeEvidence.writer } };
+  const stripGate = (gate) => without(gate, ["ownerSessionId", "ownerHost", "ownershipEpoch", "authorized", "hold"]);
+  if (!priorState || !postState || !priorSetup || !postSetup || !priorTeams
+    || records["owner-history"].prior !== null || records.receipt.prior !== null
+    || journal.records.find(({ name }) => name === "state").priorSha256 !== receipt.prior.stateFingerprint
+    || journal.records.find(({ name }) => name === "teams").priorSha256 !== receipt.prior.teamsFingerprint
+    || journal.records.find(({ name }) => name === "setup").priorSha256 !== receipt.prior.setupFingerprint
+    || receipt.prior.ownerHistoryFingerprint !== null || stable(postReceipt) !== stable(receipt)
+    || identity.projectId !== receipt.projectId || identity.owner !== "root" || identity.integrationOwner !== "root"
+    || identity.ownerHost !== undefined || identity.integrationOwnerHost !== undefined
+    || priorState.ownership !== undefined || priorSetup.ownership !== undefined
+    || priorState.integration?.ownerSessionId !== "root" || priorState.release?.ownerSessionId !== "root"
+    || priorState.integration?.ownerHost !== undefined || priorState.integration?.ownershipEpoch !== undefined
+    || priorState.release?.ownerHost !== undefined || priorState.release?.ownershipEpoch !== undefined
+    || priorState.pendingOperations && Object.keys(priorState.pendingOperations).length
+    || postState.stateVersion !== priorState.stateVersion + 1 || postSetup.version !== priorSetup.version + 1
+    || stable(postState.ownership) !== stable(expectedOwnership) || stable(postSetup.ownership) !== stable(expectedOwnership)
+    || stable(without(postState, ["stateVersion", "ownership", "integration", "release"])) !== stable(without(priorState, ["stateVersion", "ownership", "integration", "release"]))
+    || stable(without(postSetup, ["version", "ownership"])) !== stable(without(priorSetup, ["version", "ownership"]))
+    || stable(stripGate(postState.integration)) !== stable(stripGate(priorState.integration))
+    || stable(stripGate(postState.release)) !== stable(stripGate(priorState.release))
+    || postState.integration.ownerSessionId !== owner.sessionId || postState.integration.ownerHost !== owner.host
+    || postState.integration.ownershipEpoch !== 1 || postState.integration.authorized !== false || postState.integration.hold !== true
+    || postState.release.ownerSessionId !== owner.sessionId || postState.release.ownerHost !== owner.host
+    || postState.release.ownershipEpoch !== 1 || postState.release.authorized !== false || postState.release.hold !== true
+    || stable(postHistory) !== stable({ schemaVersion: 1, version: 1, ownership: { epoch: 1 }, entries: [] })) {
+    throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+  }
+  let expectedTeams;
+  try {
+    expectedTeams = addLegacyHostLabels(priorTeams, owner.host);
+    expectedTeams = replaceLabel(expectedTeams, "Project owner", owner.sessionId);
+    expectedTeams = replaceLabel(expectedTeams, "Integration owner", owner.sessionId);
+  } catch { throw new Error("legacy_owner_adoption_manual_reconciliation_required"); }
+  if (postTeams !== expectedTeams || receipt.nativeEvidence.cwd !== project.root) {
+    throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+  }
+  return records;
+}
+
+async function readAdoptionJournal(project) {
+  const source = await safeBytes(adoptionPaths(project).journal, { absent: true });
+  if (source === null) return undefined;
+  try {
+    const journal = validateAdoptionJournal(JSON.parse(source), project);
+    semanticAdoptionJournal(journal, project);
+    return journal;
+  }
+  catch { throw new Error("legacy_owner_adoption_manual_reconciliation_required"); }
+}
+
+async function rollForwardAdoption(project, journal, options = {}) {
+  validateAdoptionJournal(journal, project);
+  semanticAdoptionJournal(journal, project);
+  const journalPath = adoptionPaths(project).journal;
+  for (let index = 0; index < journal.records.length; index += 1) {
+    const record = journal.records[index];
+    const current = await safeBytes(record.path, { absent: true });
+    const currentHash = current === null ? null : sha256(current);
+    if (index < journal.nextRecord && currentHash !== record.postSha256) throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+    if (index > journal.nextRecord && currentHash !== record.priorSha256) throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+    if (currentHash === record.priorSha256) await durableReplace(record.path, Buffer.from(record.postimageBase64, "base64"));
+    else if (currentHash !== record.postSha256) throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+    if (index < journal.nextRecord) continue;
+    journal = { ...journal, phase: `renamed:${index + 1}`, nextRecord: index + 1 };
+    await durableWrite(journalPath, encodeJson(journal));
+    if (options.failAfterRename === index + 1) throw new Error(`injected_legacy_owner_adoption_crash_${index + 1}`);
+  }
+  for (const record of journal.records) if (sha256(await safeBytes(record.path)) !== record.postSha256) {
+    throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+  }
+  journal = { ...journal, phase: "committed", nextRecord: journal.records.length };
+  await durableWrite(journalPath, encodeJson(journal));
+  if (options.failAfterCommitted) throw new Error("injected_legacy_owner_adoption_crash_committed");
+  await durableUnlink(journalPath);
+  return journal.receipt;
+}
+
+/** One-time migration for the historically known synthetic `root` owner. */
+export async function adoptLegacyProjectOwner(project, envelope, context = {}, options = {}) {
+  if (validateLegacyOwnerAdoptionEnvelope(envelope)) return refusal("invalid_request");
+  const request = envelope.request;
+  const native = context.nativeIdentity;
+  const nativeHost = native?.host === "claude" ? "claude-code" : native?.host;
+  if (native?.observed !== true || !runtimes.has(nativeHost) || !validId(native.sessionId) || native.sessionId === "root"
+    || !validId(native.invocationId) || typeof native.cwd !== "string" || request.authorization.host !== nativeHost) {
+    return { status: "validated", ready: false, reason: "native_legacy_owner_adoption_required" };
+  }
+  let git;
+  try { git = await adoptionGitIdentity(native.cwd); }
+  catch { return refusal("native_project_cwd_mismatch"); }
+  if (project.root !== project.worktreeRoot || project.root !== git.canonicalTop || git.nativeTop !== git.canonicalTop
+    || project.commonDirectory !== git.commonDirectory || git.nativeCwd !== project.root || request.expectedProjectRoot !== project.root
+    || git.branch !== "main") return refusal("native_project_cwd_mismatch");
+  if (!git.clean) return refusal("dirty_revision");
+  const writer = await captureAdoptionWriter();
+  const paths = adoptionPaths(project);
+  return withDirectoryLock(project.paths.ownerRecoveryLock, { kind: "legacy_owner_adoption", operationId: request.operationId, pid: process.pid }, async () =>
+    withDirectoryLock(paths.lock, { kind: "legacy_owner_adoption", operationId: request.operationId, pid: process.pid }, async () =>
+      withDirectoryLock(path.join(project.paths.locks, "setup.lock"), { kind: "legacy_owner_adoption", operationId: request.operationId, pid: process.pid }, async () =>
+        withDirectoryLock(path.join(project.paths.locks, "state.lock"), { kind: "legacy_owner_adoption", operationId: request.operationId, pid: process.pid }, async () => {
+          const existingJournal = await readAdoptionJournal(project);
+          if (existingJournal && await safeBytes(project.paths.ownerRecoveryJournal, { absent: true }) !== null) {
+            throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+          }
+          if (existingJournal) {
+            if (existingJournal.operationId !== request.operationId || existingJournal.signature !== sha256(stable(request))) return refusal("operation_identity_reused");
+            return { status: "applied", result: await rollForwardAdoption(project, existingJournal, options) };
+          }
+          if (await safeBytes(project.paths.ownerRecoveryJournal, { absent: true }) !== null) return refusal("owner_recovery_in_progress");
+          const requestSignature = sha256(stable(request));
+          const existingReceiptBytes = await safeBytes(paths.receipt, { absent: true });
+          if (existingReceiptBytes !== null) {
+            let receipt;
+            try { receipt = JSON.parse(existingReceiptBytes); } catch { throw new Error("legacy_owner_adoption_manual_reconciliation_required"); }
+            if (!validateLegacyOwnerAdoptionReceipt(receipt)) throw new Error("legacy_owner_adoption_manual_reconciliation_required");
+            if (receipt.operationId === request.operationId) return receipt.signature === requestSignature
+              ? { status: "duplicate", result: receipt } : refusal("operation_identity_reused");
+            return refusal("legacy_owner_adoption_already_completed");
+          }
+          const entries = await Promise.all([
+            ["teams", project.paths.teams], ["state", project.paths.state], ["setup", project.paths.setup],
+            ["owner-history", project.paths.ownerHistory], ["receipt", paths.receipt],
+          ].map(async ([name, file]) => [name, file, await safeBytes(file, { absent: ["owner-history", "receipt"].includes(name) })]));
+          const byName = Object.fromEntries(entries.map(([name, , bytes]) => [name, bytes]));
+          const hashes = Object.fromEntries(entries.map(([name, , bytes]) => [name, bytes === null ? null : sha256(bytes)]));
+          if (hashes.state !== request.expectedStateFingerprint || hashes.teams !== request.expectedTeamsFingerprint
+            || hashes.setup !== request.expectedSetupFingerprint || hashes["owner-history"] !== null) return refusal("stale_fingerprint");
+          let state; let setup;
+          try { state = JSON.parse(byName.state); setup = JSON.parse(byName.setup); } catch { return refusal("owner_records_invalid"); }
+          const identity = parseTeams(byName.teams.toString("utf8"));
+          const tracker = await readTracker(project, options);
+          if (tracker.tracker.status !== "current" || tracker.tracker.kind !== request.expectedTracker.kind
+            || tracker.tracker.path !== request.expectedTracker.path || tracker.tracker.fingerprint !== request.expectedTracker.fingerprint) return refusal("stale_tracker");
+          const refreshedGit = await adoptionGitIdentity(native.cwd);
+          if (refreshedGit.revision !== request.expectedRevision || refreshedGit.branch !== "main" || !refreshedGit.clean || refreshedGit.canonicalTop !== project.root
+            || identity.projectId !== request.projectId || project.projectId !== request.projectId
+            || setup.version !== request.expectedSetupVersion || state.stateVersion !== request.expectedStateVersion) return refusal("stale_owner_or_version");
+          const gateShape = (gate) => gate && gate.ownerSessionId === "root" && gate.ownerHost === undefined && gate.ownershipEpoch === undefined;
+          if (identity.owner !== "root" || identity.integrationOwner !== "root" || identity.ownerHost !== undefined || identity.integrationOwnerHost !== undefined
+            || state.ownership !== undefined || setup.ownership !== undefined || !gateShape(state.integration) || !gateShape(state.release)
+            || byName["owner-history"] !== null || state.pendingOperations && Object.keys(state.pendingOperations).length) return refusal("legacy_owner_shape_invalid");
+          const appliedAt = (options.now ?? (() => new Date().toISOString()))();
+          if (!timestamp(appliedAt)) return refusal("legacy_owner_adoption_time_invalid");
+          const newOwner = { host: nativeHost, sessionId: native.sessionId };
+          const ownership = { epoch: 1, current: { ...newOwner, since: appliedAt, operationId: request.operationId, writer } };
+          const nextState = structuredClone(state);
+          nextState.stateVersion += 1;
+          nextState.ownership = ownership;
+          nextState.integration = { ...nextState.integration, ownerSessionId: newOwner.sessionId, ownerHost: newOwner.host,
+            ownershipEpoch: 1, authorized: false, hold: true };
+          nextState.release = { ...nextState.release, ownerSessionId: newOwner.sessionId, ownerHost: newOwner.host,
+            ownershipEpoch: 1, authorized: false, hold: true };
+          const nextSetup = { ...setup, version: setup.version + 1, ownership: structuredClone(ownership) };
+          let nextTeams = addLegacyHostLabels(byName.teams.toString("utf8"), nativeHost);
+          nextTeams = replaceLabel(nextTeams, "Project owner", newOwner.sessionId);
+          nextTeams = replaceLabel(nextTeams, "Integration owner", newOwner.sessionId);
+          const nextHistory = { schemaVersion: 1, version: 1, ownership: { epoch: 1 }, entries: [] };
+          const receipt = { schemaVersion: 1, operationId: request.operationId, signature: requestSignature, projectId: request.projectId,
+            expectedLegacyOwnerSessionId: "root", ownershipEpoch: 1, newOwner, appliedAt,
+            authorization: structuredClone(request.authorization), prior: { stateFingerprint: hashes.state, teamsFingerprint: hashes.teams,
+              setupFingerprint: hashes.setup, ownerHistoryFingerprint: null },
+            nativeEvidence: { host: nativeHost, sessionId: native.sessionId, cwd: git.nativeCwd, invocationId: native.invocationId, writer }, reason: request.reason };
+          const nextBytes = { teams: Buffer.from(nextTeams), state: encodeJson(nextState), setup: encodeJson(nextSetup),
+            "owner-history": encodeJson(nextHistory), receipt: encodeJson(receipt) };
+          const records = entries.map(([name, file, before]) => journalRecord(name, file, before, nextBytes[name]));
+          const journal = { schemaVersion: 1, operationId: request.operationId, signature: requestSignature, phase: "prepared", nextRecord: 0,
+            receipt, records: records.map((record) => ({ name: record.name, path: record.path, priorSha256: record.priorSha256,
+              priorimageBase64: record.before === null ? null : record.before.toString("base64"), postSha256: record.postSha256,
+              postimageBase64: record.after.toString("base64") })) };
+          await durableWrite(paths.journal, encodeJson(journal));
+          if (options.failAfterJournal) throw new Error("injected_legacy_owner_adoption_crash_prepared");
+          return { status: "applied", result: await rollForwardAdoption(project, journal, options) };
+        }, { budget: options.budget }), { budget: options.budget }), { budget: options.budget }), { budget: options.budget });
 }

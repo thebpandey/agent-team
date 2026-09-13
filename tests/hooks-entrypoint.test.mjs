@@ -10,6 +10,8 @@ import { readActivationLogs } from "../hooks/lib/telemetry.mjs";
 import { policyFixture } from "./hook-test-helpers.mjs";
 import { normalizeEvent } from '../hooks/lib/event.mjs';
 import { runNormalizedHook } from '../hooks/agent-team-hook.mjs';
+import { resolveProject } from '../hooks/lib/project.mjs';
+import { readTracker } from '../hooks/lib/tracker.mjs';
 
 const hook = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-hook.mjs");
 const cli = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-cli.mjs");
@@ -52,6 +54,110 @@ function invoke(runtime, event, payload, home) {
 function output(result) {
   return JSON.parse(result.stdout);
 }
+
+async function legacyEntryFixture() {
+  const value = await fixture();
+  const setupPath = path.join(value.root, ".agent-team/setup.json");
+  const statePath = path.join(value.root, ".agent-team/state.json");
+  const teamsPath = path.join(value.root, ".agent-team/TEAMS.md");
+  const setup = JSON.parse(await readFile(setupPath, "utf8"));
+  const state = JSON.parse(await readFile(statePath, "utf8"));
+  setup.version = 1; delete setup.ownership;
+  state.stateVersion = 0; delete state.ownership;
+  for (const gate of [state.integration, state.release]) {
+    gate.ownerSessionId = "root"; delete gate.ownerHost; delete gate.ownershipEpoch;
+  }
+  let teams = await readFile(teamsPath, "utf8");
+  teams = teams.replace(/^Project owner:.*$/m, "Project owner: root").replace(/^Integration owner:.*$/m, "Integration owner: root")
+    .replace(/^Project owner host:.*\n/m, "").replace(/^Integration owner host:.*\n/m, "");
+  await writeFile(setupPath, `${JSON.stringify(setup, null, 2)}\n`);
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  await writeFile(teamsPath, teams);
+  const project = await resolveProject(value.root);
+  const tracker = await readTracker(project);
+  const digest = async (file) => createHash("sha256").update(await readFile(file)).digest("hex");
+  const request = { schemaVersion: 1, request: {
+    operationId: "entry-adopt-root", projectId: project.projectId, expectedLegacyOwnerSessionId: "root",
+    expectedProjectRoot: project.root, expectedRevision: value.revision,
+    expectedTracker: { kind: tracker.tracker.kind, path: tracker.tracker.path, fingerprint: tracker.tracker.fingerprint },
+    expectedSetupVersion: 1, expectedStateVersion: 0, expectedTeamsFingerprint: await digest(project.paths.teams),
+    expectedSetupFingerprint: await digest(project.paths.setup), expectedStateFingerprint: await digest(project.paths.state),
+    expectedOwnerHistoryFingerprint: null, authorization: { status: "approved", scope: "legacy_owner_adoption",
+      source: "approved-entry-test", approvalId: "entry-approval", grantedAt: "2026-09-12T00:00:00.000Z",
+      projectId: project.projectId, revision: value.revision, trackerFingerprint: tracker.tracker.fingerprint, host: "codex" },
+    reason: "adopt synthetic root",
+  } };
+  const requestPath = path.join(project.paths.stateRoot, "adopt.json");
+  await writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`);
+  return { ...value, project, request, requestPath };
+}
+
+test("native PreToolUse performs exact legacy adoption while bare CLI only reports required native authority or replay", async () => {
+  const value = await legacyEntryFixture();
+  const bare = invokeCli("legacy-owner-adopt", { project: value.root, request: value.requestPath });
+  assert.equal(bare.status, 0);
+  assert.equal(bare.output.reason, "native_legacy_owner_adoption_required");
+  const command = `node ${cli} legacy-owner-adopt --project ${value.root} --request ${value.requestPath}`;
+  const event = normalizeEvent("codex", "PreToolUse", { cwd: value.root, session_id: "native-owner", event_id: "entry-invocation",
+    tool_name: "exec_command", tool_input: { cmd: command } });
+  const result = await runNormalizedHook(event);
+  assert.equal(result.decision.allow, true);
+  assert.equal(result.decision.mutations.some((entry) => entry.kind === "legacy_owner_adoption" && entry.status === "applied"), true,
+    JSON.stringify(result.decision));
+  const state = JSON.parse(await readFile(value.project.paths.state, "utf8"));
+  assert.equal(state.ownership.current.sessionId, "native-owner");
+  assert.equal(state.integration.authorized, false);
+  assert.equal(state.release.authorized, false);
+  const replay = invokeCli("legacy-owner-adopt", { project: value.root, request: value.requestPath });
+  assert.equal(replay.output.status, "duplicate");
+});
+
+test("native command adapter rejects copied CLI paths and chains without adopting", async () => {
+  const value = await legacyEntryFixture();
+  const copied = path.join(value.root, "agent-team-cli.mjs");
+  await cp(cli, copied);
+  for (const command of [
+    `node ${copied} legacy-owner-adopt --project ${value.root} --request ${value.requestPath}`,
+    `node ${cli} legacy-owner-adopt --project ${value.root} --request ${value.requestPath} ; true`,
+  ]) {
+    const event = normalizeEvent("codex", "PreToolUse", { cwd: value.root, session_id: "native-owner", event_id: "bad-invocation",
+      tool_name: "exec_command", tool_input: { cmd: command } });
+    const result = await runNormalizedHook(event);
+    assert.equal(result.decision.mutations.some((entry) => entry.kind === "legacy_owner_adoption"), false, `${command}\n${JSON.stringify(result.decision)}`);
+  }
+  await assert.rejects(readFile(path.join(value.root, ".agent-team/legacy-owner-adoption.json")), { code: "ENOENT" });
+});
+
+test("adopted owner can apply exact gate evidence through the same trusted native adapter", async () => {
+  const value = await legacyEntryFixture();
+  const adoptionCommand = `node ${cli} legacy-owner-adopt --project ${value.root} --request ${value.requestPath}`;
+  const adopted = await runNormalizedHook(normalizeEvent("codex", "PreToolUse", { cwd: value.root, session_id: "native-owner",
+    event_id: "adoption-before-gate", tool_name: "exec_command", tool_input: { cmd: adoptionCommand } }));
+  assert.equal(adopted.decision.mutations.some((entry) => entry.kind === "legacy_owner_adoption" && entry.status === "applied"), true);
+  const project = await resolveProject(value.root);
+  const state = JSON.parse(await readFile(project.paths.state, "utf8"));
+  state.run = effectiveRun("codex");
+  state.run.ownerSessionId = "native-owner";
+  await writeFile(project.paths.state, `${JSON.stringify(state, null, 2)}\n`);
+  const tracker = await readTracker(project);
+  const evidencePath = path.join(project.paths.stateRoot, "gate-evidence.json");
+  await writeFile(evidencePath, `${JSON.stringify({ status: "passed", revision: value.revision, taskIds: ["AT-001"],
+    requirementsReconciled: true, review: { status: "passed", revision: value.revision, taskId: "AT-001" },
+    checks: [{ name: "unit", status: "passed", revision: value.revision, taskId: "AT-001" }] }, null, 2)}\n`, { mode: 0o600 });
+  const gateRequestPath = path.join(project.paths.stateRoot, "gate.json");
+  await writeFile(gateRequestPath, `${JSON.stringify({ schemaVersion: 1, actorSessionId: "native-owner", expectedVersion: state.stateVersion,
+    request: { operationId: "native-gate-after-adoption", gate: "completion", taskIds: ["AT-001"],
+      expectedFingerprint: tracker.tracker.fingerprint, expectedRevision: value.revision, evidencePath } }, null, 2)}\n`);
+  const command = `node ${cli} gate-evidence --project ${value.root} --request ${gateRequestPath}`;
+  const result = await runNormalizedHook(normalizeEvent("codex", "PreToolUse", { cwd: value.root, session_id: "native-owner",
+    event_id: "gate-invocation", tool_name: "exec_command", tool_input: { cmd: command } }));
+  assert.equal(result.decision.allow, true, JSON.stringify(result.decision));
+  assert.equal(result.decision.mutations.some((entry) => entry.kind === "gate_evidence" && entry.status === "applied"), true,
+    JSON.stringify(result.decision));
+  const stored = JSON.parse(await readFile(project.paths.state, "utf8"));
+  assert.equal(stored.completion.taskId, "AT-001");
+  assert.equal(stored.completion.requirementsReconciled, true);
+});
 
 test('checkpoint events without native IDs remain distinct and complete batch IDs cannot collide', async () => {
   const value = await fixture();

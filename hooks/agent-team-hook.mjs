@@ -2,6 +2,7 @@
 import process from "node:process";
 import os from "node:os";
 import path from "node:path";
+import { realpath } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { normalizeEvent } from "./lib/event.mjs";
@@ -11,6 +12,8 @@ import { inspectRecovery } from "./lib/recovery.mjs";
 import { writeCheckpoint } from "./lib/checkpoint.mjs";
 import { adaptOutput, adaptTransport } from "./lib/output.mjs";
 import { evaluatePolicy, unavailableDecision } from "./lib/policy.mjs";
+import { classifyOperation } from "./lib/operation.mjs";
+import { adoptLegacyProjectOwner, readOwnerRecoveryEnvelope } from "./lib/owner-recovery.mjs";
 import { activationRecordFor, appendActivationLog } from "./lib/telemetry.mjs";
 import { createEventBudget } from "./lib/budget.mjs";
 import { lintMessages } from "./lib/lint.mjs";
@@ -102,6 +105,50 @@ async function runEvent(event, budget, runBeads, evidencePackageRoot) {
     if (progress.lint) {
       decision.capabilities.lint = structuredClone(progress.lint);
       decision.messages.push(...lintMessages(decision.capabilities.lint, project.worktreeRoot));
+    }
+  }
+  if (decision.allow && event.event === "PreToolUse") {
+    const operation = progress.operation ?? classifyOperation(event);
+    if (operation.kind === "agent_team_native_command" && operation.valid === true) {
+      let installedCli;
+      let requestedCli;
+      try {
+        installedCli = await realpath(path.join(path.dirname(fileURLToPath(import.meta.url)), "agent-team-cli.mjs"));
+        requestedCli = await realpath(operation.cliPath);
+      } catch { /* A missing or non-canonical executable is not the installed native route. */ }
+      if (installedCli && requestedCli && installedCli === requestedCli) {
+        const host = event.runtime === "claude" ? "claude-code" : event.runtime;
+        let result;
+        try {
+          const target = await budget.run(() => resolveProject(operation.project, { budget }));
+          const eventCwd = await budget.run(() => realpath(event.cwd));
+          if (!target.active || target.root !== target.worktreeRoot || target.root !== eventCwd || target.root !== operation.project) {
+            result = { status: "conflict", reason: "native_project_cwd_mismatch" };
+          } else if (operation.command === "legacy-owner-adopt") {
+            const envelope = await budget.run(() => readOwnerRecoveryEnvelope(operation.request));
+            result = await budget.run(() => adoptLegacyProjectOwner(target, envelope, { nativeIdentity: {
+              host, sessionId: event.sessionId, observed: true, cwd: eventCwd, invocationId: event.eventId,
+            } }, { budget }));
+          } else {
+            const { runWorkflowCommand } = await budget.run(() => import("./lib/workflow-cli.mjs"));
+            result = await budget.run(() => runWorkflowCommand("gate-evidence", { project: target.root, request: operation.request }, {
+              nativeIdentity: { host, sessionId: event.sessionId, observed: true, cwd: eventCwd,
+                ownershipEpoch: target.setup.ownership?.epoch }, budget,
+            }));
+          }
+        } catch (error) {
+          result = { status: "conflict", reason: error.message };
+        }
+        decision.mutations.push({ kind: operation.command === "legacy-owner-adopt" ? "legacy_owner_adoption" : "gate_evidence",
+          status: result.status, ...(result.reason ? { reason: result.reason } : {}) });
+        if (!["applied", "duplicate"].includes(result.status)) {
+          decision.allow = false;
+          decision.mode = "enforce";
+          decision.messages.push(`Agent-Team native ${operation.command} refused: ${result.reason ?? result.status}.`);
+        } else {
+          decision.messages.push(`Agent-Team native ${operation.command} ${result.status}.`);
+        }
+      }
     }
   }
   const canonical = progress.canonical;

@@ -113,6 +113,204 @@ async function nativeContext(module, project, { liveness = "stopped", approved =
     confirm: async () => approved ? { approved: true, approvalId: "approval-1" } : { approved: false } };
 }
 
+async function legacyFixture() {
+  const project = await fixture();
+  const state = JSON.parse(await readFile(project.paths.state, "utf8"));
+  const setup = JSON.parse(await readFile(project.paths.setup, "utf8"));
+  delete state.ownership;
+  delete setup.ownership;
+  state.integration.ownerSessionId = "root";
+  state.release.ownerSessionId = "root";
+  for (const gate of [state.integration, state.release]) {
+    delete gate.ownerHost;
+    delete gate.ownershipEpoch;
+  }
+  let teams = await readFile(project.paths.teams, "utf8");
+  teams = teams.replace(/^Project owner:.*$/m, "Project owner: root")
+    .replace(/^Integration owner:.*$/m, "Integration owner: root")
+    .replace(/^Project owner host:.*\n/m, "")
+    .replace(/^Integration owner host:.*\n/m, "");
+  await writeFile(project.paths.state, `${JSON.stringify(state, null, 2)}\n`);
+  await writeFile(project.paths.setup, `${JSON.stringify(setup, null, 2)}\n`);
+  await writeFile(project.paths.teams, teams);
+  await rm(project.paths.ownerHistory);
+  return resolveProject(project.root);
+}
+
+async function adoptionEnvelope(project, overrides = {}) {
+  const digest = async (file) => createHash("sha256").update(await readFile(file)).digest("hex");
+  const state = JSON.parse(await readFile(project.paths.state, "utf8"));
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project.root, encoding: "utf8" }).trim();
+  const tracker = await import("../hooks/lib/tracker.mjs").then(({ readTracker }) => readTracker(project));
+  const setup = JSON.parse(await readFile(project.paths.setup, "utf8"));
+  const request = {
+    operationId: "adopt-legacy-root", projectId: project.projectId, expectedLegacyOwnerSessionId: "root",
+    expectedProjectRoot: project.root, expectedRevision: revision,
+    expectedTracker: { kind: tracker.tracker.kind, path: tracker.tracker.path, fingerprint: tracker.tracker.fingerprint },
+    expectedSetupVersion: setup.version, expectedStateVersion: state.stateVersion,
+    expectedTeamsFingerprint: await digest(project.paths.teams), expectedSetupFingerprint: await digest(project.paths.setup),
+    expectedStateFingerprint: await digest(project.paths.state), expectedOwnerHistoryFingerprint: null,
+    authorization: { status: "approved", scope: "legacy_owner_adoption", source: "user-approved-migration",
+      approvalId: "approval-legacy-1", grantedAt: "2026-09-12T00:00:00.000Z", projectId: project.projectId,
+      revision, trackerFingerprint: tracker.tracker.fingerprint, host: "codex" },
+    reason: "migrate historical synthetic owner",
+    ...overrides,
+  };
+  return { schemaVersion: 1, request };
+}
+
+test("legacy adoption envelope is closed and cannot supply actor writer or liveness", async () => {
+  const module = await testHarness();
+  const project = await legacyFixture();
+  const envelope = await adoptionEnvelope(project);
+  assert.equal(module.validateLegacyOwnerAdoptionEnvelope(envelope), undefined);
+  for (const field of ["actorSessionId", "newOwner", "sessionId", "writer", "liveness", "capability"]) {
+    assert.equal(module.validateLegacyOwnerAdoptionEnvelope({ ...envelope, request: { ...envelope.request, [field]: "forged" } }), "invalid_request");
+  }
+  assert.equal(module.validateLegacyOwnerAdoptionEnvelope({ ...envelope, request: { ...envelope.request,
+    expectedLegacyOwnerSessionId: "somebody" } }), "invalid_request");
+});
+
+test("trusted native adoption creates epoch one, invalidates inherited gates, and replays exactly", async () => {
+  const module = await testHarness();
+  let project = await legacyFixture();
+  const envelope = await adoptionEnvelope(project);
+  const context = { nativeIdentity: { host: "codex", sessionId: "native-owner", observed: true, cwd: project.root,
+    invocationId: "native-invocation-1" }, writer: await import("../hooks/lib/task-transitions.mjs").then(({ captureWriterIdentity }) => captureWriterIdentity()) };
+  const before = JSON.parse(await readFile(project.paths.state, "utf8"));
+  const applied = await module.adoptLegacyProjectOwner(project, envelope, context, { now: () => "2026-09-12T00:00:01.000Z" });
+  assert.equal(applied.status, "applied");
+  assert.equal(applied.result.ownershipEpoch, 1);
+  project = await resolveProject(project.root);
+  const canonical = await loadCanonicalState(project);
+  assert.deepEqual({ owner: canonical.registry.projectOwner, host: canonical.registry.projectOwnerHost, epoch: canonical.registry.ownershipEpoch },
+    { owner: "native-owner", host: "codex", epoch: 1 });
+  assert.deepEqual(canonical.state.ownership, canonical.setup.ownership);
+  assert.equal(canonical.ownerHistory.version, 1);
+  assert.deepEqual(canonical.ownerHistory.entries, []);
+  for (const gate of [canonical.state.integration, canonical.state.release]) {
+    assert.equal(gate.ownerSessionId, "native-owner");
+    assert.equal(gate.ownerHost, "codex");
+    assert.equal(gate.ownershipEpoch, 1);
+    assert.equal(gate.authorized, false);
+    assert.equal(gate.hold, true);
+  }
+  assert.equal(canonical.state.stateVersion, before.stateVersion + 1);
+  const receipt = JSON.parse(await readFile(path.join(project.paths.stateRoot, "legacy-owner-adoption.json"), "utf8"));
+  assert.equal(receipt.authorization.approvalId, "approval-legacy-1");
+  assert.equal(receipt.nativeEvidence.sessionId, "native-owner");
+  assert.equal(receipt.prior.ownerHistoryFingerprint, null);
+  assert.equal((await module.adoptLegacyProjectOwner(project, envelope, context)).status, "duplicate");
+  const changed = structuredClone(envelope); changed.request.reason = "different";
+  assert.equal((await module.adoptLegacyProjectOwner(project, changed, context)).reason, "operation_identity_reused");
+  const second = await adoptionEnvelope(project, { operationId: "another-adoption" });
+  assert.equal((await module.adoptLegacyProjectOwner(project, second, context)).reason, "legacy_owner_adoption_already_completed");
+});
+
+test("legacy adoption rejects dirty shape stale facts and untrusted invocation without writes", async () => {
+  const module = await testHarness();
+  for (const mutate of [
+    async (project) => { const state = JSON.parse(await readFile(project.paths.state)); state.pendingOperations = { x: { phase: "uncertain" } }; await writeFile(project.paths.state, JSON.stringify(state)); },
+    async (project) => writeFile(project.paths.ownerHistory, '{"schemaVersion":1,"version":1,"ownership":{"epoch":1},"entries":[]}\n'),
+    async (project) => { const state = JSON.parse(await readFile(project.paths.state)); state.ownership = { epoch: 1 }; await writeFile(project.paths.state, JSON.stringify(state)); },
+  ]) {
+    const project = await legacyFixture();
+    await mutate(project);
+    const envelope = await adoptionEnvelope(await resolveProject(project.root));
+    const before = await rawFour({ paths: { ...project.paths, ownerHistory: project.paths.ownerHistory } }).catch(() => []);
+    const result = await module.adoptLegacyProjectOwner(await resolveProject(project.root), envelope,
+      { nativeIdentity: { host: "codex", sessionId: "native-owner", observed: false, cwd: project.root, invocationId: "inv" }, writer: {} });
+    assert.notEqual(result.status, "applied");
+    if (before.length) assert.deepEqual(await rawFour(project), before);
+  }
+});
+
+test("legacy adoption crash seams roll forward to one byte-identical epoch-one generation", async () => {
+  const module = await testHarness();
+  for (const seam of [1, 2, 3, 4, 5, "committed"]) {
+    let project = await legacyFixture();
+    const envelope = await adoptionEnvelope(project);
+    const context = { nativeIdentity: { host: "codex", sessionId: "native-owner", observed: true, cwd: project.root,
+      invocationId: "crash-invocation" } };
+    await assert.rejects(module.adoptLegacyProjectOwner(project, envelope, context, {
+      now: () => "2026-09-12T00:00:01.000Z", ...(seam === "committed" ? { failAfterCommitted: true } : { failAfterRename: seam }),
+    }), /injected_legacy_owner_adoption_crash/);
+    const journal = JSON.parse(await readFile(path.join(project.paths.stateRoot, ".legacy-owner-adoption.json"), "utf8"));
+    const expected = journal.records.map((record) => Buffer.from(record.postimageBase64, "base64"));
+    project = await resolveProject(project.root);
+    const repaired = await module.adoptLegacyProjectOwner(project, envelope, context);
+    assert.equal(repaired.status, "applied", String(seam));
+    const bytes = await Promise.all([...fourPaths(project), path.join(project.paths.stateRoot, "legacy-owner-adoption.json")].map((file) => readFile(file)));
+    assert.deepEqual(bytes, expected, String(seam));
+    await assert.rejects(access(path.join(project.paths.stateRoot, ".legacy-owner-adoption.json")), { code: "ENOENT" });
+  }
+});
+
+test("hash-consistent adoption journal cannot authorize gates or rewrite unrelated state", async () => {
+  const module = await testHarness();
+  const project = await legacyFixture();
+  const envelope = await adoptionEnvelope(project);
+  const context = { nativeIdentity: { host: "codex", sessionId: "native-owner", observed: true, cwd: project.root,
+    invocationId: "tamper-invocation" } };
+  await assert.rejects(module.adoptLegacyProjectOwner(project, envelope, context, {
+    now: () => "2026-09-12T00:00:01.000Z", failAfterJournal: true,
+  }), /injected_legacy_owner_adoption_crash/);
+  const journalPath = path.join(project.paths.stateRoot, ".legacy-owner-adoption.json");
+  const journal = JSON.parse(await readFile(journalPath, "utf8"));
+  const stateRecord = journal.records.find(({ name }) => name === "state");
+  const state = JSON.parse(Buffer.from(stateRecord.postimageBase64, "base64"));
+  state.integration.authorized = true;
+  state.integration.unrelatedInjected = "forged";
+  const bytes = Buffer.from(`${JSON.stringify(state, null, 2)}\n`);
+  stateRecord.postimageBase64 = bytes.toString("base64");
+  stateRecord.postSha256 = createHash("sha256").update(bytes).digest("hex");
+  await writeFile(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+  const before = await Promise.all([project.paths.teams, project.paths.state, project.paths.setup].map((file) => readFile(file)));
+  await assert.rejects(module.adoptLegacyProjectOwner(await resolveProject(project.root), envelope, context),
+    /legacy_owner_adoption_manual_reconciliation_required/);
+  assert.deepEqual(await Promise.all([project.paths.teams, project.paths.state, project.paths.setup].map((file) => readFile(file))), before);
+});
+
+test("canonical readers fail closed during a partial adoption generation", async () => {
+  const module = await testHarness();
+  const project = await legacyFixture();
+  const envelope = await adoptionEnvelope(project);
+  const context = { nativeIdentity: { host: "codex", sessionId: "native-owner", observed: true, cwd: project.root,
+    invocationId: "reader-fence-invocation" } };
+  await assert.rejects(module.adoptLegacyProjectOwner(project, envelope, context, { failAfterRename: 1 }),
+    /injected_legacy_owner_adoption_crash/);
+  await assert.rejects(loadCanonicalState(await resolveProject(project.root)), /legacy_owner_adoption_in_progress/);
+});
+
+test("legacy adoption requires a clean tracked main revision", async () => {
+  const module = await testHarness();
+  const project = await legacyFixture();
+  const envelope = await adoptionEnvelope(project);
+  await writeFile(path.join(project.root, "README.md"), "dirty tracked content\n");
+  const result = await module.adoptLegacyProjectOwner(project, envelope, { nativeIdentity: {
+    host: "codex", sessionId: "native-owner", observed: true, cwd: project.root, invocationId: "dirty-invocation",
+  } });
+  assert.equal(result.reason, "dirty_revision");
+  await assert.rejects(access(path.join(project.paths.stateRoot, "legacy-owner-adoption.json")), { code: "ENOENT" });
+});
+
+test("simultaneous recovery and adoption journals require manual reconciliation without roll-forward", async () => {
+  const module = await testHarness();
+  const project = await legacyFixture();
+  const envelope = await adoptionEnvelope(project);
+  const context = { nativeIdentity: { host: "codex", sessionId: "native-owner", observed: true, cwd: project.root,
+    invocationId: "ambiguous-journal-invocation" } };
+  await assert.rejects(module.adoptLegacyProjectOwner(project, envelope, context, { failAfterJournal: true }),
+    /injected_legacy_owner_adoption_crash/);
+  await writeFile(project.paths.ownerRecoveryJournal, "{}\n");
+  const before = await Promise.all([project.paths.teams, project.paths.state, project.paths.setup,
+    path.join(project.paths.stateRoot, ".legacy-owner-adoption.json"), project.paths.ownerRecoveryJournal].map((file) => readFile(file)));
+  await assert.rejects(module.adoptLegacyProjectOwner(await resolveProject(project.root), envelope, context),
+    /legacy_owner_adoption_manual_reconciliation_required/);
+  assert.deepEqual(await Promise.all([project.paths.teams, project.paths.state, project.paths.setup,
+    path.join(project.paths.stateRoot, ".legacy-owner-adoption.json"), project.paths.ownerRecoveryJournal].map((file) => readFile(file))), before);
+});
+
 test("owner recovery envelope is exact and cannot assert native facts", async () => {
   const project = await fixture();
   const envelope = await recoveryEnvelope(project);

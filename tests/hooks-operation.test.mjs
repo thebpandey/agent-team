@@ -53,6 +53,29 @@ test("PR integration remains distinct from exact push parsing", () => {
   assert.deepEqual(classifyOperation({ operation: { kind: "shell", command: "gh pr merge 1 --merge" } }), { kind: "integration", method: "pull_request" });
 });
 
+test("legacy owner adoption and native gate evidence require exact non-chained CLI forms", () => {
+  const cli = "/opt/agent-team/hooks/agent-team-cli.mjs";
+  assert.deepEqual(classifyOperation({ operation: { kind: "shell", command:
+    `node ${cli} legacy-owner-adopt --project /srv/project --request /srv/adopt.json` } }), {
+    kind: "agent_team_native_command", command: "legacy-owner-adopt", cliPath: cli,
+    project: "/srv/project", request: "/srv/adopt.json", valid: true,
+  });
+  assert.deepEqual(classifyOperation({ operation: { kind: "shell", command:
+    `node ${cli} gate-evidence --project /srv/project --request /srv/gate.json` } }), {
+    kind: "agent_team_native_command", command: "gate-evidence", cliPath: cli,
+    project: "/srv/project", request: "/srv/gate.json", valid: true,
+  });
+  for (const command of [
+    `node ${cli} legacy-owner-adopt --request /srv/adopt.json --project /srv/project`,
+    `node ${cli} legacy-owner-adopt --project relative --request /srv/adopt.json`,
+    `node ${cli} legacy-owner-adopt --project /srv/project --request /srv/adopt.json ; true`,
+    `lean-ctx raw "node ${cli} legacy-owner-adopt --project /srv/project --request /srv/adopt.json"`,
+    `node ${cli} status --project /srv/project`,
+  ]) {
+    assert.notEqual(classifyOperation({ operation: { kind: "shell", command } }).kind, "agent_team_native_command", command);
+  }
+});
+
 test("git push parsing preserves one exact local tag object and target identity", () => {
   for (const command of [
     "git push origin refs/tags/v7.2.0",
