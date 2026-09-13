@@ -1,5 +1,14 @@
 # Changelog
 
+## 7.2.6 - 2026-09-13
+
+Version 7.2.6 keeps multi-task delivery batches releasable after sequential completion and integration gates.
+
+- Anchor live completion and integration evidence per task while preserving narrowly validated legacy singleton evidence during the first post-upgrade write.
+- Keep the release selector and release gate bound to the same current-HEAD integration group; retained evidence is reopened and hash-verified before release.
+- Fail closed on missing, malformed, substituted, cross-task, stale-boundary, or mixed-authority anchors, and preserve task-specific quarantine and rebind behavior.
+- Accept Project Kickoff 0.4.2 handoffs tested against Agent-Team 7.2.6 while preserving every prior explicit compatibility pair.
+
 ## 7.2.5 - 2026-09-13
 
 Version 7.2.5 repairs the trusted native route used to reconcile already-published delivery history.

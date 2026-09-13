@@ -266,10 +266,12 @@ if (process.argv[2] === "initialize-worker") {
       ["0.4.2", "7.2.3", "applied"],
       ["0.4.2", "7.2.4", "applied"],
       ["0.4.2", "7.2.5", "applied"],
+      ["0.4.2", "7.2.6", "applied"],
       ["0.4.2", "7.2.2", "conflict"],
       ["0.4.1", "7.2.3", "conflict"],
       ["0.4.1", "7.2.4", "conflict"],
       ["0.4.1", "7.2.5", "conflict"],
+      ["0.4.1", "7.2.6", "conflict"],
     ]) await t.test(`${kickoffVersion}/${agentTeamVersion}`, async () => {
       const value = await fixture();
       const generationBaseline = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();

@@ -259,9 +259,12 @@ function targetAuthorityReady(value, { id, boundary, target, releaseOwner, integ
 function evidenceReady(evidence, id, canonical) {
   const integrationOwner = canonical.state?.integration;
   const releaseOwner = canonical.state?.release;
+  const integrationTaskIds = Array.isArray(evidence?.integration?.evidence?.taskIds)
+    ? evidence.integration.evidence.taskIds : integrationOwner?.taskIds;
   const source = evidence?.sourceRevision;
   const boundary = evidence?.revision;
   return exactKeys(evidence, joinedEvidenceKeys) && evidence.taskId === id && fullRevision(source) && fullRevision(boundary)
+    && boundary === canonical.git?.headRevision
     && evidence.integratedRevision === boundary
     && evidence.completion?.taskId === id && evidence.completion?.status === "passed" && evidence.completion?.sourceRevision === source
     && evidence.integration?.taskId === id && evidence.integration?.status === "passed" && evidence.integration?.sourceRevision === source
@@ -273,7 +276,7 @@ function evidenceReady(evidence, id, canonical) {
     && (evidence.preview.required ? evidence.preview.status === "passed" : evidence.preview.status === "not_required")
     && evidence.target?.taskId === id && evidence.target?.revision === boundary && boundedAuthority(evidence.target?.target)
     && targetAuthorityReady(evidence.target?.authority, { id, boundary, target: evidence.target.target, releaseOwner,
-      integrationTaskIds: integrationOwner?.taskIds })
+      integrationTaskIds })
     && evidence.recovery?.taskId === id && evidence.recovery?.revision === boundary
     && boundedAuthority(evidence.recovery?.artifact) && boundedAuthority(evidence.recovery?.action)
     && evidence.target?.status === "authorized" && evidence.recovery?.status === "ready"
@@ -293,7 +296,9 @@ export function selectReleaseBatch(canonical, classification) {
     : ready.length && ["finite_exhausted", "continuous_scope_exhausted", "blocked_tail"].includes(classification.kind) ? ready : [];
   if (!selected.length) return [];
   const authority = stable(canonical.deliveryEvidence[selected[0]].target.authority);
-  return selected.every((id) => stable(canonical.deliveryEvidence[id].target.authority) === authority) ? selected : [];
+  const integrationEvidence = stable(canonical.deliveryEvidence[selected[0]].integration.evidence);
+  return selected.every((id) => stable(canonical.deliveryEvidence[id].target.authority) === authority
+    && stable(canonical.deliveryEvidence[id].integration.evidence) === integrationEvidence) ? selected : [];
 }
 
 export function readRunDecision(canonical, { writerLiveness = {} } = {}) {

@@ -304,6 +304,9 @@ test("release batches are oldest first full or terminally underfilled", () => {
   const stale = structuredClone(view);
   stale.deliveryEvidence["AT-001"].target.ownershipEpoch = 0;
   assert.deepEqual(selectReleaseBatch(stale, { kind: "finite_exhausted", eligibleTaskIds: [], blockedTaskIds: [] }), []);
+  const olderBoundary = canonical(one, [task("AT-001", "done")], { deliveryEvidence: { "AT-001": joinedEvidence("AT-001", "b".repeat(40)) } });
+  assert.deepEqual(selectReleaseBatch(olderBoundary, { kind: "finite_exhausted", eligibleTaskIds: [], blockedTaskIds: [] }), [],
+    "an ancestor integration boundary cannot authorize publication of the current HEAD");
   const invalid = [
     (evidence) => { evidence.extra = true; },
     (evidence) => { evidence.completion.sourceRevision = "b".repeat(40); },

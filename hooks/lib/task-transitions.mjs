@@ -97,12 +97,32 @@ async function readSealed(file, { maximum = 256 * 1024, expectedUid } = {}) {
   } finally { await handle?.close(); }
 }
 
+function prepareDeliveryEvidenceAnchors(state, gate) {
+  state[gate] ??= {};
+  if (state[gate].recordedEvidenceByTask === undefined) {
+    state[gate].recordedEvidenceByTask = {};
+    const legacy = state[gate].recordedEvidence;
+    const legacyTaskIds = gate === "completion" ? [state[gate].taskId] : state[gate].taskIds;
+    if (exactKeys(legacy, ["path", "fingerprint", "revision", "taskIds", "operationId", "observedAt"])
+      && boundedString(legacy.path, 4096) && hex(legacy.fingerprint, 64) && hex(legacy.revision, 40)
+      && validId(legacy.operationId) && boundedString(legacy.observedAt, 128) && Number.isFinite(Date.parse(legacy.observedAt))
+      && Array.isArray(legacyTaskIds) && legacyTaskIds.length > 0 && legacyTaskIds.every(validId)
+      && sameIds(legacy.taskIds, legacyTaskIds)) {
+      for (const taskId of legacyTaskIds) state[gate].recordedEvidenceByTask[taskId] = structuredClone(legacy);
+    }
+  } else if (!state[gate].recordedEvidenceByTask || typeof state[gate].recordedEvidenceByTask !== "object"
+    || Array.isArray(state[gate].recordedEvidenceByTask)) {
+    throw new Error("invalid_delivery_evidence_anchors");
+  }
+}
+
 function bindTaskDeliveryReceipts(state, gate, taskIds, revision, evidence, recordedEvidence) {
   const categories = ["completion", "review", "checks", "integration", "preview", "target", "recovery"];
   state.deliveryReceipts ??= Object.fromEntries(categories.map((category) => [category, {}]));
   for (const category of categories) state.deliveryReceipts[category] ??= {};
   const put = (category, taskId, value) => { state.deliveryReceipts[category][taskId] = { taskId, ...value }; };
   for (const taskId of taskIds) {
+    state[gate].recordedEvidenceByTask[taskId] = structuredClone(recordedEvidence);
     if (gate === "completion") {
       put("completion", taskId, { status: "passed", sourceRevision: revision, evidence: recordedEvidence });
       put("review", taskId, { status: "passed", revision, evidence: recordedEvidence });
@@ -430,6 +450,9 @@ export async function recordGateEvidence(project, request, options = {}) {
     const evidence = sealed.parsed;
     if (evidence.status !== "passed" || evidence.revision !== revision || !Array.isArray(evidence.taskIds)
       || JSON.stringify([...evidence.taskIds].sort()) !== JSON.stringify([...request.taskIds].sort())) return conflict("evidence_mismatch");
+    if (["completion", "integration"].includes(request.gate) && validId(state.run?.id) && state.ownership) {
+      prepareDeliveryEvidenceAnchors(state, request.gate);
+    }
     if (request.gate === "completion") {
       if (request.taskIds.length !== 1) return conflict("completion_task_count");
       const [taskId] = request.taskIds;
@@ -498,7 +521,53 @@ export async function recordGateEvidence(project, request, options = {}) {
       const artifact = evidence.artifact;
       const integration = evidence.integration;
       const activeIntegration = state.integration;
-      const integrationReceipt = activeIntegration?.recordedEvidence;
+      const deliveryCanonical = await loadCanonicalState(project, { readOnly: true, budget, allowPendingReleaseAuthorization: true });
+      const selectedDeliveries = request.taskIds.map((taskId) => deliveryCanonical.deliveryEvidence?.[taskId]);
+      const keyedIntegrationReceipt = selectedDeliveries[0]?.integration?.evidence;
+      const legacyIntegrationReceipt = state.integration?.recordedEvidenceByTask === undefined
+        && sameIds(activeIntegration?.recordedEvidence?.taskIds, activeIntegration?.taskIds)
+        && request.taskIds.every((taskId) => activeIntegration.taskIds.includes(taskId)) ? activeIntegration.recordedEvidence : null;
+      const integrationReceipt = keyedIntegrationReceipt ?? legacyIntegrationReceipt;
+      const usingLegacyIntegration = !keyedIntegrationReceipt && integrationReceipt === legacyIntegrationReceipt;
+      const oneIntegrationGroup = integrationReceipt && (usingLegacyIntegration || selectedDeliveries.every((delivery) => delivery
+        && stable(delivery.integration?.evidence) === stable(integrationReceipt)));
+      const activeIntegrationMatches = usingLegacyIntegration && oneIntegrationGroup
+        && stable(activeIntegration?.recordedEvidence) === stable(integrationReceipt);
+      let integrationSource = activeIntegrationMatches ? {
+        authorized: activeIntegration.authorized, expectedRevision: activeIntegration.expectedRevision,
+        remoteName: activeIntegration.remoteName, baseRef: activeIntegration.baseRemoteRef, baseRevision: activeIntegration.baseRevision,
+        targetRef: activeIntegration.remoteRef, remoteMainDeploys: activeIntegration.remoteMainDeploys,
+      } : null;
+      if (oneIntegrationGroup && !activeIntegrationMatches) {
+        try {
+          const prior = await bounded(() => readSealed(integrationReceipt.path));
+          const parsed = prior.parsed;
+          const remote = parsed?.remote;
+          const authority = parsed?.targetAuthorization;
+          if (prior.sha256 === integrationReceipt.fingerprint && parsed?.status === "passed"
+            && parsed.revision === integrationReceipt.revision && sameIds(parsed.taskIds, integrationReceipt.taskIds)
+            && exactKeys(parsed.sourceRevisions, parsed.taskIds) && Object.values(parsed.sourceRevisions).every((sourceRevision) => hex(sourceRevision, 40))
+            && remote && boundedString(remote.name, 128) && /^refs\/heads\/[\w./-]+$/.test(remote.baseRef ?? "")
+            && ref(remote.targetRef) && hex(remote.revision, 40)
+            && (remote.targetAbsent === true ? remote.targetRevision === undefined : hex(remote.targetRevision, 40))
+            && provenance(parsed.authorization, { ownerSessionId: state.integration?.ownerSessionId, revision: parsed.revision, taskIds: parsed.taskIds })
+            && recovery(parsed.recovery, { revision: parsed.revision, taskIds: parsed.taskIds })
+            && boundedString(parsed.recovery.artifactId, 4096) && boundedString(parsed.recovery.action, 4096)
+            && preview(parsed.preview, parsed.revision) && typeof parsed.remoteMainDeploys === "boolean"
+            && exactKeys(authority, ["status", "source", "target", "revision", "taskIds", "ownerHost", "ownerSessionId", "ownershipEpoch"])
+            && authority.status === "authorized" && boundedString(authority.source) && authority.target === remote.targetRef
+            && authority.revision === parsed.revision && sameIds(authority.taskIds, parsed.taskIds)
+            && authority.ownerHost === state.release?.ownerHost && authority.ownerSessionId === state.release?.ownerSessionId
+            && authority.ownershipEpoch === state.release?.ownershipEpoch) {
+            integrationSource = { authorized: true, expectedRevision: parsed.revision, remoteName: remote.name,
+              baseRef: remote.baseRef, baseRevision: remote.revision, targetRef: remote.targetRef,
+              remoteMainDeploys: parsed.remoteMainDeploys };
+          }
+        } catch (error) {
+          if (error.code === "EVENT_DEADLINE") throw error;
+          integrationSource = null;
+        }
+      }
       const verification = evidence.verification;
       const releasePreview = evidence.preview;
       const delta = evidence.delta;
@@ -522,14 +591,16 @@ export async function recordGateEvidence(project, request, options = {}) {
         && (artifact.checksumSha256 === undefined || /^[0-9a-f]{64}$/i.test(artifact.checksumSha256))
         && (artifact.checksumEntry === undefined || boundedString(artifact.checksumEntry, 4096));
       const integrationBindingValid = releaseRecord(integration, "passed")
-        && sameIds(integration.recordedTaskIds, activeIntegration?.taskIds)
-        && activeIntegration?.authorized === true && activeIntegration.expectedRevision === revision
-        && integration.remoteName === activeIntegration.remoteName && integration.baseRef === activeIntegration.baseRemoteRef
-        && integration.baseRevision === activeIntegration.baseRevision && integration.targetRef === activeIntegration.remoteRef
+        && oneIntegrationGroup && sameIds(integration.recordedTaskIds, integrationReceipt?.taskIds)
+        && request.taskIds.every((taskId) => integrationReceipt.taskIds.includes(taskId))
+        && integrationSource?.authorized === true && integrationSource.expectedRevision === revision
+        && integration.remoteName === integrationSource.remoteName && integration.baseRef === integrationSource.baseRef
+        && integration.baseRevision === integrationSource.baseRevision && integration.targetRef === integrationSource.targetRef
         && integration.targetRevision === revision && integration.evidencePath === integrationReceipt?.path
-        && integrationReceipt?.revision === revision && sameIds(integrationReceipt?.taskIds, activeIntegration.taskIds)
+        && integrationReceipt?.revision === revision
         && /^[0-9a-f]{64}$/i.test(integrationReceipt?.fingerprint)
-        && typeof integration.remoteMainDeploys === "boolean" && integration.remoteMainDeploys === activeIntegration.remoteMainDeploys
+        && typeof integration.remoteMainDeploys === "boolean" && integration.remoteMainDeploys === integrationSource.remoteMainDeploys
+        && (usingLegacyIntegration || selectedDeliveries.every((delivery) => delivery.revision === revision && delivery.target?.target === integration.targetRef))
         && (integration.deploymentTarget === undefined || boundedString(integration.deploymentTarget, 4096));
       const deltaBindingValid = releaseRecord(delta, "clean")
         && (delta.remoteBaseRevision === undefined || /^[0-9a-f]{40,64}$/i.test(delta.remoteBaseRevision));
@@ -641,8 +712,9 @@ export async function quarantineCompletion(project, request, options = {}) {
   return mutateOperationalState(project, mutationRequest(request, options), async (state) => {
     if (state.run?.paused) return conflict("paused");
     if (state.run?.taskIds?.includes(request.taskId)) return conflict("quarantine_scope_mismatch");
-    if (state.completion?.taskId !== request.taskId
-      || stable(completionIdentity(state.completion.recordedEvidence)) !== stable(request.expectedEvidence)) return conflict("completion_evidence_changed");
+    const anchoredEvidence = state.completion?.recordedEvidenceByTask?.[request.taskId]
+      ?? (state.completion?.taskId === request.taskId ? state.completion.recordedEvidence : null);
+    if (stable(completionIdentity(anchoredEvidence)) !== stable(request.expectedEvidence)) return conflict("completion_evidence_changed");
     const tracker = await loadCanonicalTracker(project, options);
     if (tracker.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable" };
     if (!tracker.tasks.some((task) => task.id === request.taskId)) return conflict("quarantine_scope_mismatch");
@@ -650,14 +722,21 @@ export async function quarantineCompletion(project, request, options = {}) {
     if (sealed.sha256 !== request.expectedEvidence.fingerprint || sealed.parsed.revision !== request.expectedEvidence.revision
       || !sameIds(sealed.parsed.taskIds ?? [sealed.parsed.taskId], [request.taskId])) return conflict("completion_evidence_changed");
     const quarantineId = `completion:${request.taskId}:${request.expectedEvidence.fingerprint}`;
-    const { recordedEvidence: _removed, ...completion } = state.completion;
-    if (state.deliveryReceipts?.completion) delete state.deliveryReceipts.completion[request.taskId];
+    const activeCompletionCleared = state.completion?.taskId === request.taskId
+      && stable(completionIdentity(state.completion.recordedEvidence)) === stable(request.expectedEvidence);
+    const completion = structuredClone(state.completion);
+    if (activeCompletionCleared) delete completion.recordedEvidence;
+    if (completion.recordedEvidenceByTask) delete completion.recordedEvidenceByTask[request.taskId];
+    for (const category of ["completion", "review", "checks"]) {
+      if (state.deliveryReceipts?.[category]) delete state.deliveryReceipts[category][request.taskId];
+    }
     const quarantinedAt = (options.now ?? (() => new Date().toISOString()))();
     const record = { quarantineId, taskId: request.taskId, evidence: structuredClone(request.expectedEvidence),
-      historicalOwnerSessionId: state.completion.ownerSessionId ?? null, historicalOperationId: state.completion.operationId ?? state.completion.recordedEvidence.operationId ?? null,
+      historicalOwnerSessionId: state.completion.ownerSessionId ?? null,
+      historicalOperationId: anchoredEvidence?.operationId ?? (activeCompletionCleared ? state.completion.operationId : null) ?? null,
       authenticatedActor: currentActor(state), reason: request.reason, quarantinedAt };
     return { state: { ...state, completion, quarantinedEvidence: [...(state.quarantinedEvidence ?? []), record] },
-      result: { quarantineId, taskId: request.taskId, reason: request.reason, evidence: request.expectedEvidence, activeCompletionCleared: true } };
+      result: { quarantineId, taskId: request.taskId, reason: request.reason, evidence: request.expectedEvidence, activeCompletionCleared } };
   }, options);
 }
 
@@ -698,6 +777,7 @@ export async function rebindCompletion(project, request, options = {}) {
       : { ...state.completion, taskId: request.taskId, evidenceRevision: request.expectedSourceRevision, requirementsReconciled: true,
         review: { status: "passed", revision: request.expectedSourceRevision, taskId: request.taskId },
         checks: sealed.parsed.checks.map(({ name, status }) => ({ name, status, revision: request.expectedSourceRevision, taskId: request.taskId })), recordedEvidence: pointer };
+    completion.recordedEvidenceByTask = { ...(completion.recordedEvidenceByTask ?? {}), [request.taskId]: structuredClone(pointer) };
     state.quarantinedEvidence = state.quarantinedEvidence.map((entry) => entry.quarantineId === request.quarantineId
       ? { ...entry, reboundByOperationId: request.operationId, reboundAt: observedAt } : entry);
     return { state: { ...state, completion }, result: { taskId: request.taskId, quarantineId: request.quarantineId,

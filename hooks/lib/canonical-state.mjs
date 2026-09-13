@@ -125,7 +125,9 @@ export async function loadCanonicalState(project, options = {}) {
   }
   const headRevision = await loadHeadRevision(project, options.budget);
   canonical.git = { headRevision };
-  canonical.deliveryEvidence = await loadDeliveryEvidence(project, state, canonical, options.budget);
+  canonical.deliveryEvidence = await loadDeliveryEvidence(project, state, canonical, options.budget, {
+    allowPendingReleaseAuthorization: options.allowPendingReleaseAuthorization === true,
+  });
   return canonical;
 }
 
@@ -194,12 +196,22 @@ const relativeEvidencePath = (value) => typeof value === "string" && value.lengt
   && !path.isAbsolute(value) && path.normalize(value) === value && !value.split(/[\\/]/).includes("..") && !/[\r\n\0]/.test(value);
 
 function evidencePointerKind(value, state, taskId, category) {
+  const completionCategory = ["completion", "review", "checks"].includes(category);
   if (exactObjectKeys(value, ["path", "fingerprint", "revision", "taskIds", "operationId", "observedAt"])
     && typeof value.path === "string" && value.path.length > 0 && Buffer.byteLength(value.path) <= 4096
     && /^[a-f0-9]{64}$/.test(value.fingerprint ?? "") && revisionPattern.test(value.revision ?? "")
     && validReceiptId(value.operationId) && validObservedAt(value.observedAt)
-    && Array.isArray(value.taskIds) && value.taskIds.includes(taskId) && new Set(value.taskIds).size === value.taskIds.length) {
-    const expected = ["completion", "review", "checks"].includes(category) ? state.completion?.recordedEvidence : state.integration?.recordedEvidence;
+    && exactTaskIds(value.taskIds, value.taskIds) && value.taskIds.includes(taskId)
+    && (!completionCategory || exactTaskIds(value.taskIds, [taskId]))) {
+    const gate = completionCategory ? state.completion : state.integration;
+    const anchors = gate?.recordedEvidenceByTask;
+    let expected;
+    if (anchors !== undefined) {
+      if (!anchors || typeof anchors !== "object" || Array.isArray(anchors)) return null;
+      expected = anchors[taskId];
+    } else if (completionCategory ? gate?.taskId === taskId : exactTaskIds(gate?.taskIds, value.taskIds) && gate.taskIds.includes(taskId)) {
+      expected = gate?.recordedEvidence;
+    }
     return stableValue(value) === stableValue(expected) ? "live" : null;
   }
   if (exactObjectKeys(value, ["evidenceStoreId", "relativePath", "sha256", "operationId", "observedAt"])
@@ -222,6 +234,8 @@ function receiptShape(part, state, taskId) {
   }
   const historical = pointerKinds.completion === "history";
   if (Object.values(pointerKinds).some((kind) => kind !== (historical ? "history" : "live"))) return false;
+  if (!historical && (["review", "checks"].some((category) => stableValue(part[category].evidence) !== stableValue(part.completion.evidence))
+    || ["preview", "target", "recovery"].some((category) => stableValue(part[category].evidence) !== stableValue(part.integration.evidence)))) return false;
   const history = historical && (state.completionHistory ?? []).find((entry) => entry?.taskId === taskId
     && stableValue(entry.completionEvidence) === stableValue(part.completion.evidence)
     && stableValue(entry.integrationEvidence) === stableValue(part.integration.evidence));
@@ -260,7 +274,7 @@ function targetAuthorityValid(value, { taskId, boundaryRevision, target, release
     && ownerTriple(value) === releaseOwner;
 }
 
-async function loadDeliveryEvidence(project, state, canonical, budget) {
+async function loadDeliveryEvidence(project, state, canonical, budget, { allowPendingReleaseAuthorization = false } = {}) {
   const categories = receiptCategories;
   const receipts = state.deliveryReceipts;
   if (!revisionPattern.test(canonical.git?.headRevision ?? "") || !exactObjectKeys(receipts, categories)
@@ -300,10 +314,10 @@ async function loadDeliveryEvidence(project, state, canonical, budget) {
       || !["passed", "not_required"].includes(part.preview.status) || part.preview.revision !== boundaryRevision
       || typeof part.preview.required !== "boolean" || (part.preview.required && part.preview.status !== "passed")
       || (!part.preview.required && part.preview.status !== "not_required") || ownerTriple(part.preview) !== integrationOwner
-      || !releaseOwner || nestedReleaseOwner !== releaseOwner
+      || !releaseOwner || !allowPendingReleaseAuthorization && nestedReleaseOwner !== releaseOwner
       || part.target.status !== "authorized" || part.target.revision !== boundaryRevision || ownerTriple(part.target) !== releaseOwner
       || !targetAuthorityValid(part.target.authority, { taskId, boundaryRevision, target: part.target.target, releaseOwner,
-        integrationTaskIds: state.integration?.taskIds })
+        integrationTaskIds: Array.isArray(part.integration.evidence.taskIds) ? part.integration.evidence.taskIds : state.integration?.taskIds })
       || part.recovery.status !== "ready" || part.recovery.revision !== boundaryRevision || ownerTriple(part.recovery) !== releaseOwner
       || typeof part.target.target !== "string" || !part.target.target || Buffer.byteLength(part.target.target) > 4096
       || typeof part.recovery.artifact !== "string" || !part.recovery.artifact || Buffer.byteLength(part.recovery.artifact) > 4096
