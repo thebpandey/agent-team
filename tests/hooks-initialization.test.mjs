@@ -256,6 +256,42 @@ if (process.argv[2] === "initialize-worker") {
     });
   });
 
+  test("handoff compatibility preserves every qualified pair and rejects adjacent unqualified pairs", async (t) => {
+    for (const [kickoffVersion, agentTeamVersion, expectedStatus] of [
+      ["0.3.1", "7.0.2", "applied"],
+      ["0.4.0", "7.0.2", "applied"],
+      ["0.4.1", "7.1.0", "applied"],
+      ["0.4.1", "7.2.0", "applied"],
+      ["0.4.1", "7.2.1", "applied"],
+      ["0.4.2", "7.2.3", "applied"],
+      ["0.4.2", "7.2.2", "conflict"],
+      ["0.4.1", "7.2.3", "conflict"],
+    ]) await t.test(`${kickoffVersion}/${agentTeamVersion}`, async () => {
+      const value = await fixture();
+      const generationBaseline = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+      const bytes = Buffer.from('{"schemaVersion":1,"kind":"project-kickoff-agent-team-handoff"}\n');
+      await writeFile(path.join(value.root, "AGENT_TEAM_HANDOFF.json"), bytes);
+      execFileSync("git", ["add", "AGENT_TEAM_HANDOFF.json"], { cwd: value.root });
+      execFileSync("git", ["commit", "-qm", `handoff ${kickoffVersion}/${agentTeamVersion}`], { cwd: value.root });
+      const observedRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+      value.request.handoff = {
+        schemaVersion: 1,
+        path: "AGENT_TEAM_HANDOFF.json",
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        generatedBy: { name: "project-kickoff", version: kickoffVersion },
+        testedAgainst: { name: "agent-team", version: agentTeamVersion },
+        generationBaseline,
+        observedRevision,
+      };
+      const result = await initialize(value.root, value.request);
+      assert.equal(result.status, expectedStatus, JSON.stringify(result));
+      if (expectedStatus === "conflict") {
+        assert.equal(result.reason, "unsupported_handoff_contract");
+        await assert.rejects(access(path.join(value.root, ".agent-team")), { code: "ENOENT" });
+      }
+    });
+  });
+
   test("standalone initialization rejects 501 tasks without publishing setup", async () => {
     const value = await fixture();
     value.request.plan.tasks = Array.from({ length: 501 }, (_, index) => ({

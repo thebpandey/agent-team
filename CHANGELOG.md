@@ -1,5 +1,12 @@
 # Changelog
 
+## 7.2.3 - 2026-09-13
+
+Version 7.2.3 accepts the paired Project Kickoff 0.4.2 handoff contract without widening compatibility implicitly.
+
+- Accept Project Kickoff 0.4.2 handoffs tested against Agent-Team 7.2.3 through the explicit compatibility allowlist.
+- Preserve every previously approved handoff pair and reject adjacent unqualified pairs such as 0.4.2/7.2.2 and 0.4.1/7.2.3.
+
 ## 7.2.2 - 2026-09-13
 
 Version 7.2.2 closes the native owner-routing gap for adopted projects.
