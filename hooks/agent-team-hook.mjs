@@ -13,7 +13,7 @@ import { writeCheckpoint } from "./lib/checkpoint.mjs";
 import { adaptOutput, adaptTransport } from "./lib/output.mjs";
 import { evaluatePolicy, unavailableDecision } from "./lib/policy.mjs";
 import { classifyOperation } from "./lib/operation.mjs";
-import { adoptLegacyProjectOwner, readOwnerRecoveryEnvelope } from "./lib/owner-recovery.mjs";
+import { adoptLegacyProjectOwner, readOwnerRecoveryEnvelope, transferProjectCoordinator } from "./lib/owner-recovery.mjs";
 import { activationRecordFor, appendActivationLog } from "./lib/telemetry.mjs";
 import { createEventBudget } from "./lib/budget.mjs";
 import { lintMessages } from "./lib/lint.mjs";
@@ -129,6 +129,9 @@ async function runEvent(event, budget, runBeads, evidencePackageRoot) {
             result = await budget.run(() => adoptLegacyProjectOwner(target, envelope, { nativeIdentity: {
               host, sessionId: event.sessionId, observed: true, cwd: eventCwd, invocationId: event.eventId,
             } }, { budget }));
+          } else if (operation.command === "coordinator-continuity-transfer") {
+            const envelope = await budget.run(() => readOwnerRecoveryEnvelope(operation.request));
+            result = await budget.run(() => transferProjectCoordinator(target, envelope, { budget }));
           } else {
             const { runWorkflowCommand } = await budget.run(() => import("./lib/workflow-cli.mjs"));
             result = await budget.run(() => runWorkflowCommand(operation.command, { project: target.root, request: operation.request }, {
@@ -139,7 +142,8 @@ async function runEvent(event, budget, runBeads, evidencePackageRoot) {
         } catch (error) {
           result = { status: "conflict", reason: error.message };
         }
-        const mutationKinds = { "legacy-owner-adopt": "legacy_owner_adoption", "gate-evidence": "gate_evidence",
+        const mutationKinds = { "legacy-owner-adopt": "legacy_owner_adoption", "coordinator-continuity-transfer": "coordinator_continuity_transfer",
+          "gate-evidence": "gate_evidence",
           "run-reconcile": "run_reconciliation", "run-scope-extend": "run_scope_extension",
           "evidence-store-register": "evidence_store_registration",
           "completion-history-reconcile": "completion_history_reconciliation" };

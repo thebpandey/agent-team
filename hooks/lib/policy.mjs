@@ -72,7 +72,33 @@ function owns(patterns, relative) {
 
 async function ownership(event, project, canonical, identity) {
   if (event.event !== "PreToolUse" || event.operation.kind !== "file_change") return undefined;
-  if (identity.role === "unknown") return deny("Registered Agent-Team ownership is missing for this session.");
+  for (const file of event.operation.files) {
+    for (const changedPath of [file.previousPath, file.path].filter(Boolean)) {
+      const target = await canonicalTarget(event.cwd, changedPath);
+      if (inside(project.commonDirectory, target)) {
+        return deny(`Git metadata must be changed through a supported native Git route, not the file path ${changedPath}.`);
+      }
+    }
+  }
+  if (identity.role === "unknown") {
+    if (!["codex", "claude-code"].includes(identity.host) || typeof identity.sessionId !== "string" || !identity.sessionId
+      || identity.sessionId === canonical.registry.projectOwner
+      || project.root !== project.worktreeRoot) return deny("Registered Agent-Team ownership is missing for this session.");
+    for (const file of event.operation.files) {
+      for (const changedPath of [file.previousPath, file.path].filter(Boolean)) {
+        const target = await canonicalTarget(event.cwd, changedPath);
+        if (target === project.tracker?.path) return deny("A registered project coordinator must change the selected canonical tracker.");
+        if (!inside(project.root, target)) return deny(`The changed path ${changedPath} resolves outside the canonical project checkout.`);
+        const relative = path.relative(project.root, target).replaceAll("\\", "/");
+        if (relative === "MISTAKES.md" || relative === ".agent-team" || relative.startsWith(".agent-team/")) {
+          return deny(`A registered project coordinator must change the shared path ${changedPath}.`);
+        }
+        const claimed = canonical.registry.teams.find((team) => owns(team["owned paths"].split(/\s*,\s*/).filter(Boolean), relative));
+        if (claimed) return deny(`The registered team ${claimed["team id"]} owns ${changedPath}.`);
+      }
+    }
+    return undefined;
+  }
   if (identity.role === "project_owner") return undefined;
   if (typeof identity.team.worktree !== "string" || !identity.team.worktree.trim()) return deny("The registered team worktree is missing.");
   const registeredWorktree = await realpath(path.resolve(project.root, identity.team.worktree));

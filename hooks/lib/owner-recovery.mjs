@@ -34,6 +34,10 @@ export function validateOwnershipWriter(writer) {
       && typeof writer.host === "string" && writer.host.length > 0 && writer.host.length <= 255
       && typeof writer.pidNamespace === "string" && /^pid:\[\d+\]$/.test(writer.pidNamespace);
   }
+  if (exactKeys(writer, ["kind", "host", "operationId", "approvalId"])) {
+    return writer.kind === "user-directed-maintenance" && runtimes.has(writer.host)
+      && validId(writer.operationId) && validId(writer.approvalId);
+  }
   return exactKeys(writer, ["kind", "host", "invocationId", "approvalId"])
     && writer.kind === "host-bootstrap" && runtimes.has(writer.host) && validId(writer.invocationId) && validId(writer.approvalId);
 }
@@ -55,8 +59,23 @@ export function validateOwnerRecoveryReceipt(receipt) {
 
 const historyEntryKeys = ["operationId", "signature", "receipt", "epoch", "oldOwner", "newOwner", "reason", "approvalId",
   "writer", "livenessEvidence", "priorStateFingerprint", "priorTeamsFingerprint", "priorSetupFingerprint", "priorOwnerHistoryFingerprint", "appliedAt"];
+const continuityHistoryEntryKeys = [...historyEntryKeys, "kind", "authorization"];
+const continuityAuthorizationKeys = ["kind", "status", "scope", "source", "approvalId", "grantedAt", "projectId", "oldOwner", "newOwner"];
 function validStoppedEvidence(value) {
   return exactKeys(value, ["status", "observedAt"]) && value.status === "stopped" && timestamp(value.observedAt);
+}
+
+function validContinuityAuthorization(value) {
+  return exactKeys(value, continuityAuthorizationKeys) && value.kind === "user-directed-maintenance"
+    && value.status === "approved" && value.scope === "coordinator_continuity_transfer"
+    && typeof value.source === "string" && value.source.trim() === value.source && value.source.length > 0 && value.source.length <= 256
+    && validId(value.approvalId) && timestamp(value.grantedAt) && validId(value.projectId)
+    && qualifiedIdentity(value.oldOwner) && qualifiedIdentity(value.newOwner)
+    && stable(value.oldOwner) !== stable(value.newOwner);
+}
+
+function validContinuityEvidence(value) {
+  return exactKeys(value, ["status", "observedAt"]) && value.status === "not_asserted" && timestamp(value.observedAt);
 }
 
 export function validateOwnerHistory(history, currentOwnership) {
@@ -69,15 +88,22 @@ export function validateOwnerHistory(history, currentOwnership) {
   const operations = new Set();
   for (let index = 0; index < history.entries.length; index += 1) {
     const entry = history.entries[index];
-    if (!exactKeys(entry, historyEntryKeys) || !validId(entry.operationId) || operations.has(entry.operationId) || !hex(entry.signature, 64)
+    const continuity = exactKeys(entry, continuityHistoryEntryKeys) && entry.kind === "coordinator_continuity";
+    if (!(continuity || exactKeys(entry, historyEntryKeys)) || !validId(entry.operationId) || operations.has(entry.operationId) || !hex(entry.signature, 64)
       || entry.epoch !== index + 1 || !qualifiedIdentity(entry.oldOwner) || !qualifiedIdentity(entry.newOwner)
       || !validateOwnerRecoveryReceipt(entry.receipt) || entry.receipt.operationId !== entry.operationId
       || entry.receipt.ownershipEpoch !== entry.epoch + 1 || stable(entry.receipt.oldOwner) !== stable(entry.oldOwner)
       || stable(entry.receipt.newOwner) !== stable(entry.newOwner) || entry.receipt.appliedAt !== entry.appliedAt
       || typeof entry.reason !== "string" || !entry.reason || entry.reason.length > 4096 || !validId(entry.approvalId)
-      || !validateOwnershipWriter(entry.writer) || entry.writer.kind !== "host-bootstrap" || entry.writer.host !== entry.newOwner.host
+      || !validateOwnershipWriter(entry.writer) || entry.writer.host !== entry.newOwner.host
       || entry.writer.approvalId !== entry.approvalId
-      || !validStoppedEvidence(entry.livenessEvidence) || !hex(entry.priorStateFingerprint, 64)
+      || !(continuity
+        ? entry.writer.kind === "user-directed-maintenance" && entry.writer.operationId === entry.operationId
+          && validContinuityEvidence(entry.livenessEvidence) && validContinuityAuthorization(entry.authorization)
+          && entry.authorization.approvalId === entry.approvalId && entry.authorization.projectId
+          && stable(entry.authorization.oldOwner) === stable(entry.oldOwner) && stable(entry.authorization.newOwner) === stable(entry.newOwner)
+        : entry.writer.kind === "host-bootstrap" && validStoppedEvidence(entry.livenessEvidence))
+      || !hex(entry.priorStateFingerprint, 64)
       || !hex(entry.priorTeamsFingerprint, 64) || !hex(entry.priorSetupFingerprint, 64)
       || !(entry.priorOwnerHistoryFingerprint === null || hex(entry.priorOwnerHistoryFingerprint, 64)) || !timestamp(entry.appliedAt)
       || priorOwner && stable(entry.oldOwner) !== stable(priorOwner)) return false;
@@ -125,6 +151,37 @@ export function validateOwnerRecoveryEnvelope(envelope) {
     || !Number.isSafeInteger(request.expectedStateVersion) || request.expectedStateVersion < 0
     || ![request.expectedStateFingerprint, request.expectedTeamsFingerprint, request.expectedSetupFingerprint].every((value) => hex(value, 64))
     || !(request.expectedOwnerHistoryFingerprint === null || hex(request.expectedOwnerHistoryFingerprint, 64))
+    || typeof request.reason !== "string" || request.reason.trim() !== request.reason || !request.reason
+    || Buffer.byteLength(request.reason) > 4096) return "invalid_request";
+  return undefined;
+}
+
+const continuityRequestKeys = ["operationId", "projectId", "expectedProjectRoot", "expectedOwner", "newOwner",
+  "expectedOwnershipEpoch", "expectedSetupVersion", "expectedStateVersion", "expectedStateFingerprint",
+  "expectedTeamsFingerprint", "expectedSetupFingerprint", "expectedOwnerHistoryFingerprint", "expectedTracker",
+  "authorization", "reason"];
+
+/** Validate local maintenance intent. The envelope records authorization but is not an authentication token. */
+export function validateCoordinatorContinuityEnvelope(envelope) {
+  if (!exactKeys(envelope, ["schemaVersion", "request"]) || envelope.schemaVersion !== 1
+    || Buffer.byteLength(JSON.stringify(envelope)) > MAX_REQUEST_BYTES || !exactKeys(envelope.request, continuityRequestKeys)) return "invalid_request";
+  const request = envelope.request;
+  const tracker = request.expectedTracker;
+  if (!validId(request.operationId) || !validId(request.projectId) || typeof request.expectedProjectRoot !== "string"
+    || !path.isAbsolute(request.expectedProjectRoot) || path.normalize(request.expectedProjectRoot) !== request.expectedProjectRoot
+    || !qualifiedIdentity(request.expectedOwner) || !qualifiedIdentity(request.newOwner)
+    || stable(request.expectedOwner) === stable(request.newOwner)
+    || !Number.isSafeInteger(request.expectedOwnershipEpoch) || request.expectedOwnershipEpoch < 1
+    || !Number.isSafeInteger(request.expectedSetupVersion) || request.expectedSetupVersion < 1
+    || !Number.isSafeInteger(request.expectedStateVersion) || request.expectedStateVersion < 0
+    || ![request.expectedStateFingerprint, request.expectedTeamsFingerprint, request.expectedSetupFingerprint,
+      request.expectedOwnerHistoryFingerprint].every((value) => hex(value, 64))
+    || !exactKeys(tracker, ["kind", "path", "fingerprint"]) || !["markdown", "beads"].includes(tracker.kind)
+    || typeof tracker.path !== "string" || !path.isAbsolute(tracker.path) || path.normalize(tracker.path) !== tracker.path
+    || !hex(tracker.fingerprint, 64) || !validContinuityAuthorization(request.authorization)
+    || request.authorization.projectId !== request.projectId
+    || stable(request.authorization.oldOwner) !== stable(request.expectedOwner)
+    || stable(request.authorization.newOwner) !== stable(request.newOwner)
     || typeof request.reason !== "string" || request.reason.trim() !== request.reason || !request.reason
     || Buffer.byteLength(request.reason) > 4096) return "invalid_request";
   return undefined;
@@ -329,6 +386,10 @@ function semanticJournalPostimages(journal, project) {
   const priorHistory = records["owner-history"].prior === null ? undefined : parseJsonBytes(records["owner-history"].prior);
   const postHistory = parseJsonBytes(records["owner-history"].post);
   const receipt = journal.receipt;
+  const entry = Array.isArray(postHistory?.entries) ? postHistory.entries.at(-1) : undefined;
+  const continuity = entry?.kind === "coordinator_continuity";
+  const changedGateKeys = continuity ? ["ownerSessionId", "ownerHost", "ownershipEpoch", "authorized", "hold"]
+    : ["ownerSessionId", "ownerHost", "ownershipEpoch"];
   if (![priorState, postState, priorSetup, postSetup, priorHistory, postHistory,
     priorState?.ownership, priorState?.ownership?.current, priorState?.integration, priorState?.release,
     postState?.ownership, postState?.ownership?.current, postState?.integration, postState?.release,
@@ -353,8 +414,10 @@ function semanticJournalPostimages(journal, project) {
       ownershipEpoch: postState.release.ownershipEpoch }) !== stable({ ownerSessionId: receipt.newOwner.sessionId,
       ownerHost: receipt.newOwner.host, ownershipEpoch: receipt.ownershipEpoch })
     || stable(without(postState, ["stateVersion", "ownership", "integration", "release"])) !== stable(without(priorState, ["stateVersion", "ownership", "integration", "release"]))
-    || stable(without(postState.integration, ["ownerSessionId", "ownerHost", "ownershipEpoch"])) !== stable(without(priorState.integration, ["ownerSessionId", "ownerHost", "ownershipEpoch"]))
-    || stable(without(postState.release, ["ownerSessionId", "ownerHost", "ownershipEpoch"])) !== stable(without(priorState.release, ["ownerSessionId", "ownerHost", "ownershipEpoch"]))
+    || stable(without(postState.integration, changedGateKeys)) !== stable(without(priorState.integration, changedGateKeys))
+    || stable(without(postState.release, changedGateKeys)) !== stable(without(priorState.release, changedGateKeys))
+    || continuity && (postState.integration.authorized !== false || postState.integration.hold !== true
+      || postState.release.authorized !== false || postState.release.hold !== true)
     || stable(without(postSetup, ["version", "ownership"])) !== stable(without(priorSetup, ["version", "ownership"]))
     || !validateOwnerHistory(postHistory, postState.ownership)) manual();
   const expectedTeams = replaceLabel(replaceLabel(replaceLabel(replaceLabel(priorTeams, "Project owner", receipt.newOwner.sessionId),
@@ -374,7 +437,6 @@ function semanticJournalPostimages(journal, project) {
     || !validateOwnerHistory(priorHistory, priorState.ownership) || postHistory.version !== priorHistory.version + 1
     || postHistory.entries.length !== priorHistory.entries.length + 1
     || stable(postHistory.entries.slice(0, -1)) !== stable(priorHistory.entries)) manual();
-  const entry = postHistory.entries.at(-1);
   if (entry.operationId !== journal.operationId || entry.signature !== journal.signature || stable(entry.receipt) !== stable(receipt)
     || entry.epoch !== oldEpoch || stable(entry.oldOwner) !== stable(receipt.oldOwner) || stable(entry.newOwner) !== stable(receipt.newOwner)
     || entry.priorStateFingerprint !== journal.records[1].priorSha256 || entry.priorTeamsFingerprint !== journal.records[0].priorSha256
@@ -546,6 +608,123 @@ export async function recoverProjectOwner(project, envelope, options = {}) {
         if (options.failAfterJournal === true) throw new Error("injected_owner_recovery_crash_prepared");
         const result = await rollForward(project, journal, options);
         return { status: "applied", result };
+      }, { budget: options.budget }), { budget: options.budget }), { budget: options.budget });
+}
+
+/**
+ * Apply an exact user-directed coordinator reassignment without making any claim about the prior session's liveness.
+ * This rotates coordination identity only. It cannot create integration or release authority.
+ */
+export async function transferProjectCoordinator(project, envelope, options = {}) {
+  if (validateCoordinatorContinuityEnvelope(envelope)) return refusal("invalid_request");
+  const request = envelope.request;
+  if (project.root !== project.worktreeRoot || project.root !== request.expectedProjectRoot) return refusal("canonical_project_root_required");
+  return withDirectoryLock(project.paths.ownerRecoveryLock, { kind: "coordinator_continuity_transfer", operationId: request.operationId, pid: process.pid }, async () =>
+    withDirectoryLock(path.join(project.paths.locks, "setup.lock"), { kind: "coordinator_continuity_transfer", operationId: request.operationId, pid: process.pid }, async () =>
+      withDirectoryLock(path.join(project.paths.locks, "state.lock"), { kind: "coordinator_continuity_transfer", operationId: request.operationId, pid: process.pid }, async () => {
+        if (await safeBytes(path.join(project.paths.stateRoot, ".legacy-owner-adoption.json"), { absent: true }) !== null) {
+          return refusal("legacy_owner_adoption_in_progress");
+        }
+        const existingJournal = await readJournal(project);
+        const requestSignature = sha256(stable(request));
+        if (existingJournal) {
+          if (existingJournal.operationId !== request.operationId || existingJournal.signature !== requestSignature) {
+            return refusal("operation_identity_reused");
+          }
+          return { status: "applied", result: await rollForward(project, existingJournal, options) };
+        }
+        const entries = await Promise.all(recoveryPaths(project).map(async ([name, file]) => [name, file, await safeBytes(file)]));
+        const byName = Object.fromEntries(entries.map(([name, , bytes]) => [name, bytes]));
+        const hashes = Object.fromEntries(entries.map(([name, , bytes]) => [name, sha256(bytes)]));
+        let state; let setup; let history;
+        try {
+          state = JSON.parse(byName.state);
+          setup = JSON.parse(byName.setup);
+          history = JSON.parse(byName["owner-history"]);
+        } catch { return refusal("owner_records_invalid"); }
+        const teamsText = byName.teams.toString("utf8");
+        const identity = parseTeams(teamsText);
+        if (!recordObject(state) || !recordObject(setup) || !recordObject(state.integration) || !recordObject(state.release)
+          || !validateQualifiedOwnership(state.ownership) || stable(state.ownership) !== stable(setup.ownership)
+          || !validateOwnerHistory(history, state.ownership)
+          || !Number.isSafeInteger(state.stateVersion) || state.stateVersion < 0
+          || !Number.isSafeInteger(setup.version) || setup.version < 1) return refusal("owner_records_invalid");
+        const epoch = state.ownership.epoch;
+        const recordedOwner = { host: state.ownership.current.host, sessionId: state.ownership.current.sessionId };
+        if (project.projectId !== request.projectId || identity.projectId !== request.projectId
+          || identity.owner !== recordedOwner.sessionId || identity.ownerHost !== recordedOwner.host
+          || identity.integrationOwner !== recordedOwner.sessionId || identity.integrationOwnerHost !== recordedOwner.host
+          || state.integration.ownerSessionId !== recordedOwner.sessionId || state.integration.ownerHost !== recordedOwner.host
+          || state.integration.ownershipEpoch !== epoch || state.release.ownerSessionId !== recordedOwner.sessionId
+          || state.release.ownerHost !== recordedOwner.host || state.release.ownershipEpoch !== epoch) return refusal("owner_records_invalid");
+        const replay = history?.entries?.find((entry) => entry.operationId === request.operationId);
+        if (replay) {
+          if (replay.signature !== requestSignature) return refusal("operation_identity_reused");
+          if (replay.kind !== "coordinator_continuity" || !validateOwnerRecoveryReceipt(replay.receipt)
+            || stable(replay.receipt.oldOwner) !== stable(request.expectedOwner)
+            || stable(replay.receipt.newOwner) !== stable(request.newOwner)
+            || replay.priorStateFingerprint !== request.expectedStateFingerprint
+            || replay.priorTeamsFingerprint !== request.expectedTeamsFingerprint
+            || replay.priorSetupFingerprint !== request.expectedSetupFingerprint
+            || replay.priorOwnerHistoryFingerprint !== request.expectedOwnerHistoryFingerprint
+            || stable(replay.authorization) !== stable(request.authorization) || replay.reason !== request.reason) {
+            return refusal("owner_history_invalid");
+          }
+          return { status: "duplicate", result: structuredClone(replay.receipt) };
+        }
+        if (hashes.state !== request.expectedStateFingerprint || hashes.teams !== request.expectedTeamsFingerprint
+          || hashes.setup !== request.expectedSetupFingerprint || hashes["owner-history"] !== request.expectedOwnerHistoryFingerprint) {
+          return refusal("stale_fingerprint");
+        }
+        if (stable(recordedOwner) !== stable(request.expectedOwner) || epoch !== request.expectedOwnershipEpoch
+          || setup.version !== request.expectedSetupVersion || state.stateVersion !== request.expectedStateVersion) {
+          return refusal("stale_owner_or_version");
+        }
+        const tracker = await readTracker(project, options);
+        if (tracker.tracker.status !== "current" || tracker.tracker.kind !== request.expectedTracker.kind
+          || tracker.tracker.path !== request.expectedTracker.path || tracker.tracker.fingerprint !== request.expectedTracker.fingerprint) {
+          return refusal("stale_tracker");
+        }
+        const appliedAt = (options.now ?? (() => new Date().toISOString()))();
+        if (!timestamp(appliedAt)) return refusal("coordinator_continuity_time_invalid");
+        const nextEpoch = epoch + 1;
+        const newOwner = structuredClone(request.newOwner);
+        const writer = { kind: "user-directed-maintenance", host: newOwner.host, operationId: request.operationId,
+          approvalId: request.authorization.approvalId };
+        const nextState = structuredClone(state);
+        nextState.stateVersion += 1;
+        nextState.ownership = { epoch: nextEpoch, current: { ...newOwner, since: appliedAt, operationId: request.operationId, writer } };
+        nextState.integration = { ...nextState.integration, ownerSessionId: newOwner.sessionId, ownerHost: newOwner.host,
+          ownershipEpoch: nextEpoch, authorized: false, hold: true };
+        nextState.release = { ...nextState.release, ownerSessionId: newOwner.sessionId, ownerHost: newOwner.host,
+          ownershipEpoch: nextEpoch, authorized: false, hold: true };
+        const nextSetup = { ...setup, version: setup.version + 1, ownership: structuredClone(nextState.ownership) };
+        let nextTeams = replaceLabel(teamsText, "Project owner", newOwner.sessionId);
+        nextTeams = replaceLabel(nextTeams, "Project owner host", newOwner.host);
+        nextTeams = replaceLabel(nextTeams, "Integration owner", newOwner.sessionId);
+        nextTeams = replaceLabel(nextTeams, "Integration owner host", newOwner.host);
+        const receipt = { operationId: request.operationId, ownershipEpoch: nextEpoch, oldOwner: recordedOwner, newOwner, appliedAt };
+        const historyEntry = { kind: "coordinator_continuity", operationId: request.operationId, signature: requestSignature,
+          receipt, epoch, oldOwner: recordedOwner, newOwner, reason: request.reason, approvalId: request.authorization.approvalId,
+          authorization: structuredClone(request.authorization), writer: structuredClone(writer),
+          livenessEvidence: { status: "not_asserted", observedAt: appliedAt }, priorStateFingerprint: hashes.state,
+          priorTeamsFingerprint: hashes.teams, priorSetupFingerprint: hashes.setup,
+          priorOwnerHistoryFingerprint: hashes["owner-history"], appliedAt };
+        const nextHistory = { schemaVersion: 1, version: history.version + 1, ownership: { epoch: nextEpoch },
+          entries: [...history.entries, historyEntry] };
+        const nextBytes = { teams: Buffer.from(nextTeams), state: encodeJson(nextState), setup: encodeJson(nextSetup),
+          "owner-history": encodeJson(nextHistory) };
+        const records = entries.map(([name, file, before]) => journalRecord(name, file, before, nextBytes[name]));
+        const journal = { schemaVersion: 1, operationId: request.operationId, signature: requestSignature, phase: "prepared", nextRecord: 0,
+          expectedSetupVersion: request.expectedSetupVersion, expectedStateVersion: request.expectedStateVersion,
+          expectedOwnerHistoryFingerprint: request.expectedOwnerHistoryFingerprint, receipt,
+          records: records.map((record) => ({ name: record.name, path: record.path, priorSha256: record.priorSha256,
+            priorimageBase64: record.before.toString("base64"), postSha256: record.postSha256,
+            postimageBase64: record.after.toString("base64") })) };
+        if (options.failBeforeJournal) throw new Error("injected_coordinator_continuity_crash_before_prepared");
+        await durableWrite(project.paths.ownerRecoveryJournal, encodeJson(journal));
+        if (options.failAfterJournal) throw new Error("injected_coordinator_continuity_crash_prepared");
+        return { status: "applied", result: await rollForward(project, journal, options) };
       }, { budget: options.budget }), { budget: options.budget }), { budget: options.budget });
 }
 
