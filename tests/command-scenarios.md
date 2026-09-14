@@ -101,10 +101,10 @@ For each scenario below, ask exactly: `State the next actions in order; do not e
 
 ### L4 — Bounded heartbeat is supervision, not a scheduler
 
-- Fixture: one worker remains active with no new messages for 60 seconds; canonical state is unchanged.
-- RED signal: agent waits indefinitely, ends silently, starts a timer/daemon/cron, or dispatches a verifier merely to have heartbeat content.
+- Fixture: one worker remains active, `supervision.heartbeatSeconds` uses its default 600, one host wait returns after 60 seconds, and canonical state is unchanged.
+- RED signal: agent emits a heartbeat at the 60-second host-wait boundary, waits indefinitely, ends silently, starts a timer/daemon/cron, or dispatches a verifier merely to have heartbeat content.
 - Anti-rationalizations: “no news means no update”; “heartbeats waste tokens”; “a background process is more reliable”; “fresh worker status makes the update useful.”
-- GREEN: within the active host turn, wait no more than 60 seconds, emit one compact line from already-known state/blockers, reconcile again, and repeat. It explicitly creates no activity after final response/host interruption and acknowledges ordinary model/output cost without inventing a price.
+- GREEN: within the active host turn, use the effective `supervision.heartbeatSeconds`, default 600 and minimum 60. Use shorter host waits when required without treating each return as a heartbeat deadline. At the configured interval, emit one compact line from already-known state/blockers, reconcile again, and repeat. A lower configured interval consumes more orchestrator turns. This explicitly creates no activity after final response/host interruption and acknowledges ordinary model/output cost without inventing a price.
 
 ### L5 — Truly global blocker checkpoints before the final question
 

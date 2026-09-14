@@ -31,7 +31,7 @@ Orchestration is continuous while any team is active. Follow the active host-tur
 5. Route exact revisions to repair or independent review, and serially integrate only accepted work.
 6. Prove a writer stopped or ownership transferred before compute becomes free. Unknown liveness is occupied and must not create a free slot.
 7. Recompute actual capacity, reserve reviewer capacity, and admit the next authorized eligible disjoint task.
-8. While the host turn has active workers, wait no more than 60 seconds. If nothing changed, emit one compact heartbeat from known state/blocker facts, reconcile, and repeat.
+8. While the host turn has active workers, supervise with the effective `supervision.heartbeatSeconds`, default 600 and minimum 60. Use shorter host waits when required without treating each return as a heartbeat deadline. At the configured interval, emit one compact heartbeat from known state/blocker facts, reconcile, and repeat. A lower interval consumes more orchestrator turns.
 
 Thus commentary answer, reconcile, review/integrate/repair, refill, and bounded wait are one mandatory continuation. Completion does not wait for the original cohort, a release batch, deployment, or another `continue`. A scoped blocker is reported and retained while independent work continues; an unchanged blocker stays in the heartbeat without a novelty probe. No cron, daemon, timer, hosted monitor, nested scheduler, recurring job, or activity after the final response/host interruption implements this loop. Ordinary heartbeat model/output cost is real but its exact incremental amount is unknown.
 

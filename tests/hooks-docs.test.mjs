@@ -309,7 +309,7 @@ test("active orchestration follows one ordered question continuation loop", asyn
     /repair.*independent review.*serial.*integrat/is,
     /stopped.*ownership transferred.*compute.*free/is,
     /reserve.*review.*admit.*eligible/is,
-    /wait.*(?:at most|no more than).*60 seconds/is,
+    /supervision\.heartbeatSeconds.*default.*600.*minimum.*60/is,
     /heartbeat.*known.*reconcile.*repeat/is,
   ]) assert.match(loop, pattern);
   assert.match(actions, /question.*interrupt.*not.*pause.*cancel.*terminal/is);
@@ -318,11 +318,16 @@ test("active orchestration follows one ordered question continuation loop", asyn
 });
 
 test("heartbeats and blockers stay in-turn scoped and finite", async () => {
-  const [skill, runs, team, recovery, codex, claude] = await readMany([
+  const [skill, runs, team, recovery, codex, claude, help] = await readMany([
     "SKILL.md", "references/RUNS.md", "references/TEAM.md", "references/RECOVERY.md",
-    "references/PLATFORM-CODEX.md", "references/PLATFORM-CLAUDE.md",
+    "references/PLATFORM-CODEX.md", "references/PLATFORM-CLAUDE.md", "references/HELP.md",
   ]);
   const all = [skill, runs, team, recovery, codex, claude].join("\n");
+  for (const source of [skill, runs, team, codex, claude, help]) {
+    assert.match(source, /supervision\.heartbeatSeconds.*default.*600.*minimum.*60/is);
+    assert.match(source, /lower.*(?:interval|value).*consume.*turn/is);
+    assert.doesNotMatch(source, /wait no more than 60 seconds/i);
+  }
   for (const pattern of [
     /scoped blocker.*continue.*independent/is,
     /unchanged blocker.*heartbeat/is,

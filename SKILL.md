@@ -66,7 +66,7 @@ While an authorized run has live work, use this one ordered loop:
 5. Route exact revisions through repair or independent review, then serially integrate only accepted work.
 6. Prove the previous writer stopped or ownership transferred before treating compute as free; unknown liveness remains occupied.
 7. Recompute actual capacity, reserve reviewer capacity, and admit the next authorized eligible disjoint task. Only the project orchestrator refills.
-8. While active workers remain in the current host turn, wait no more than 60 seconds. If nothing changed, emit exactly one compact heartbeat from already-known state and blocker facts, then reconcile and repeat.
+8. While active workers remain in the current host turn, supervise with the effective `supervision.heartbeatSeconds`, default 600 and minimum 60. Use shorter host waits when required without treating each return as a heartbeat deadline. At the configured interval, emit exactly one compact heartbeat from already-known state and blocker facts, then reconcile and repeat. A lower interval consumes more orchestrator turns.
 
 A scoped blocker is recorded and reported immediately while independent implementation, review, integration, publication, recovery, and refill continue. Repeat an unchanged blocker in the heartbeat without probing for novelty. A blocker is global only when no authorized safe work remains or one irreversible/security decision governs everything left. Before one final blocking question, boundedly inspect uncertain operations without retrying them and durably record active workers, occupied/free/unknown slots, blockers, pending decision, operation identity/evidence, pending tail, and next eligible dispatch.
 

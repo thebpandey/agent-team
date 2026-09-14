@@ -42,7 +42,7 @@ Explain these rules below the table:
 
 Exact rules: [actions](ACTIONS.md), [settings](SETTINGS.md), [runs](RUNS.md), [release](RELEASE.md).
 
-During an active run, a status/question is answered briefly in commentary and supervision continues through reconciliation, review/serial integration, refill, and an in-turn wait of no more than 60 seconds. This is not a shell command, daemon, timer, nested scheduler, or automatic updater, and creates no activity after the host turn ends.
+During an active run, a status/question is answered briefly in commentary and supervision continues through reconciliation, review/serial integration, refill, and the effective `supervision.heartbeatSeconds`, default 600 and minimum 60. Use shorter host waits without treating each return as a heartbeat deadline. A lower interval consumes more orchestrator turns. This is not a shell command, daemon, timer, nested scheduler, or automatic updater, and creates no activity after the host turn ends.
 
 Workflow helpers use only the accepted names: `run-start`, `run-reconcile`, `run-scope-extend`, `completion-quarantine`, `completion-rebind`, `evidence-store-register`, `completion-history-reconcile`, and read-only `run-decision`. The sealed installer form is `install --archive ABSOLUTE_ZIP --checksums ABSOLUTE_SHA256SUMS --host codex|claude-code|both --scope user|project --home PATH [--project PATH]`; it is a package helper, not an invented native host command.
 
