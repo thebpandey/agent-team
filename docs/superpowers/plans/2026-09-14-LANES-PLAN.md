@@ -40,11 +40,13 @@ Files: hooks/lib/settings.mjs, hooks/lib/tracker.mjs, hooks/lib/initialization.m
 
 Interface: export resolveExecutionSettings(setup, host) returning lanes/supervision/limits objects with validated defaults; settings wizard and mutations use the same validator. Defaults are snapshotted for runs.
 
-- [ ] Test literal defaults, heartbeat 59 rejection and 60 acceptance, host profile independence, malformed values, cancellation, and a 501-to-1000 task initialization.
-- [ ] Run focused settings tests to observe RED.
-- [ ] Add shared defaults/validation and merge host-local execution changes without overwriting role routing or other hosts.
-- [ ] Replace tracker/initialization hard caps with configured limits, including fresh-project initialization and downstream read compatibility.
-- [ ] Run settings, initialization, tracker, and setup CLI tests; record exact counts.
+- [x] Test literal defaults, heartbeat 59 rejection and 60 acceptance, host profile independence, malformed values, cancellation, and a 501-to-1000 task initialization.
+- [x] Run focused settings tests to observe RED.
+- [x] Add shared defaults/validation and merge host-local execution changes without overwriting role routing or other hosts.
+- [x] Replace tracker/initialization hard caps with configured limits, including fresh-project initialization and downstream read compatibility.
+- [x] Run settings, initialization, tracker, and setup CLI tests; record exact counts.
+
+Checkpoint: accepted source commit 1371106, 216 focused tests passed with no failures or skips after explicit-host selection, bounded tracker reads, and nested-empty mutation defects were repaired. Full release acceptance remains pending. Evidence: /tmp/AGENT-TEAM-EXECUTION-SETTINGS-REPORT.md and /tmp/AGENT-TEAM-SETTINGS-INDEPENDENT-REVIEW.md.
 
 ## Task 3: Lane lifecycle and enforcement
 
@@ -63,6 +65,8 @@ Interface: lane-create/next/rotate/close use closed request schemaVersion 1 enve
 
 ## Task 4: Context reduction and shipped helpers
 
+Checkpoint: core lane repairs independently accepted with 29/29 fresh critical tests and exact frozen source hashes. Related author gate passed 291/291. The native five-task fixture uses two work lanes plus one reserved registered reviewer lane and closes all three. The broad final regression rerun is omitted under the owner's narrowed validation scope.
+
 Files: assets/helpers; hooks/lib/helpers.mjs and context-shrink.mjs; focused tests; setup/workflow CLI and health integration coordinated after Tasks 2/3.
 
 Interface: pure candidate proposal; explicit reviewed selection writes host-supported project configuration and setup receipts; revert detects conflicts. helpers CLI copies files with recorded hashes and preserves customized targets. Helpers validate actual result evidence, fresh request bindings, and dotenv child isolation.
@@ -73,6 +77,8 @@ Interface: pure candidate proposal; explicit reviewed selection writes host-supp
 - [ ] Observe RED; implement focused modules; run GREEN and relevant setup/health/CLI regression suites.
 
 ## Task 5: Canonical documentation and package migration
+
+Checkpoint: helper/context-reduction integration independently accepted with 113/113 affected tests and 5/5 native bridge checks. Reports are checkpoint evidence, not additive full-suite totals. No live host configuration was changed.
 
 Files: SKILL.md, references/*.md, assets/claude-agents/*.md, new assets/templates/lanes/*.md, GETTING_STARTED.md, README.md, code path consumers, hooks/manifest.json, package validator/docs tests.
 
@@ -96,6 +102,8 @@ Files: lane fixture/test under tests or assets, CHANGELOG.md, SKILL.md metadata 
 - [ ] Provide exact validation commands/results and retained worktree location. No publication or destructive replacement of live installations without applicable authority.
 
 ## Coordination and current state
+
+Validation scope update: the owner requested only the most important required tests to finish promptly. Final validation is limited to the lane lifecycle fixture, native identity and stale-state rejection, independent review and revision-bound completion/integration gates, cleanup/capacity safety, effective settings, helper/context-reduction happy paths and required safety checks, canonical documentation/package checks, and fresh-install health. Reuse independently accepted checkpoint evidence where the source is unchanged. Do not add exploratory edge-case suites or claim an unrun full regression suite passed. Report final commands, exact counts, and skipped coverage explicitly.
 
 Implementation worktree: /home/server/dev/skills/agent-team/.worktrees/lanes-730, branch feat/lanes-730, base 04fd2be6e0cf5f1c712bae13cbf3feb719ab5dc0. Design and plan are authored in canonical docs; implementation stays in the isolated worktree.
 
