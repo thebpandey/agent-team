@@ -129,10 +129,10 @@ if (process.argv[2] === "initialize-worker") {
     assert.equal((await loadCanonicalState(await resolveProject(value.root))).tasks.length, 101);
   });
 
-  test("standalone initialization and its receipt support 500 tasks", async () => {
+  test("standalone initialization and its receipt support the default 1000 tasks", async () => {
     const value = await fixture();
-    value.request.plan.tasks = Array.from({ length: 500 }, (_, index) => ({
-      id: `AT-${String(index + 1).padStart(3, "0")}`,
+    value.request.plan.tasks = Array.from({ length: 1000 }, (_, index) => ({
+      id: `AT-${String(index + 1).padStart(4, "0")}`,
       title: `Implement approved task ${index + 1}`,
       status: "ready",
       dependencies: [],
@@ -140,12 +140,29 @@ if (process.argv[2] === "initialize-worker") {
     }));
     const result = await initialize(value.root, value.request);
     assert.equal(result.status, "applied");
-    assert.equal(result.taskIds.length, 500);
+    assert.equal(result.taskIds.length, 1000);
     const project = await resolveProject(value.root);
     const canonical = await loadCanonicalState(project);
     const { initializationRecordProblem } = await import(modulePath);
-    assert.equal(canonical.tasks.length, 500);
+    assert.equal(canonical.tasks.length, 1000);
     assert.equal(initializationRecordProblem(project.setup, canonical, { projectRoot: project.root }), undefined);
+  });
+
+  test("existing initialization reads a valid tracker above the former 1 MiB cap", async () => {
+    const value = await fixture();
+    value.request.source = "existing";
+    value.request.tracker = { kind: "markdown", path: "TASKS.md" };
+    delete value.request.plan.tasks;
+    const rows = Array.from({ length: 1000 }, (_, index) =>
+      `| AT-${String(index + 1).padStart(4, "0")} | ${"x".repeat(1100)} | none | none | ready | none | Follow plan. |\n`).join("");
+    const source = `| ID | Requirement / acceptance | Owner | Depends on | Status | Revision / evidence | Next action |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n${rows}`;
+    assert.ok(Buffer.byteLength(source) > 1024 * 1024);
+    await writeFile(path.join(value.root, "TASKS.md"), source);
+
+    const result = await initialize(value.root, value.request);
+
+    assert.equal(result.status, "applied", JSON.stringify(result));
+    assert.equal(result.taskIds.length, 1000);
   });
 
   test("initialization stores immutable task tracker and consumed handoff provenance", async () => {
@@ -298,7 +315,7 @@ if (process.argv[2] === "initialize-worker") {
     });
   });
 
-  test("standalone initialization rejects 501 tasks without publishing setup", async () => {
+  test("standalone initialization applies an explicit host settings draft before its first receipt", async () => {
     const value = await fixture();
     value.request.plan.tasks = Array.from({ length: 501 }, (_, index) => ({
       id: `AT-${String(index + 1).padStart(3, "0")}`,
@@ -307,10 +324,20 @@ if (process.argv[2] === "initialize-worker") {
       dependencies: [],
       acceptance: ["Pass the task checks."],
     }));
+    value.request.settingsDraft = { host: "codex", execution: { limits: { maxPlanTasks: 600 } } };
     const result = await initialize(value.root, value.request);
-    assert.equal(result.status, "conflict");
-    assert.equal(result.reason, "invalid_task_identity");
-    await assert.rejects(access(path.join(value.root, ".agent-team/setup.json")), { code: "ENOENT" });
+    assert.equal(result.status, "applied", JSON.stringify(result));
+    assert.deepEqual(result.setup.settings.hosts.codex.execution, { limits: { maxPlanTasks: 600 } });
+    assert.equal(result.setup.initialization.status, "complete");
+    assert.equal((await loadCanonicalState(await resolveProject(value.root))).tasks.length, 501);
+  });
+
+  test("initialization settings draft host must match native host before mutation", async () => {
+    const value = await fixture();
+    value.request.settingsDraft = { host: "claude-code", execution: { limits: { maxPlanTasks: 1000 } } };
+    const result = await initialize(value.root, value.request);
+    assert.deepEqual({ status: result.status, reason: result.reason }, { status: "conflict", reason: "settings_host_mismatch" });
+    await assert.rejects(access(path.join(value.root, ".agent-team")), { code: "ENOENT" });
   });
 
   test("larger task capacity still rejects duplicate task IDs", async () => {

@@ -9,7 +9,8 @@ import { initializationRecordProblem } from "./initialization.mjs";
 import { validateNativeOwnerAuthority, validateQualifiedOwnership } from "./owner-recovery.mjs";
 import { resolveProject } from "./project.mjs";
 import { assessReadiness } from "./readiness.mjs";
-import { buildRoleMenu, buildSettingsWizard, inspectSettings, mutateSetup, saveSettingsDraft, updateSettings } from "./settings.mjs";
+import { buildRoleMenu, buildSettingsWizard, inspectSettings, mutateSetup, saveSettingsDraft, updateSettings,
+  validateExecutionSettings, validateExecutionSettingsChange } from "./settings.mjs";
 import { taskEligibility } from "./task-transitions.mjs";
 import { resolveTracker } from "./tracker.mjs";
 
@@ -92,13 +93,15 @@ function mutationIdentity(envelope) {
 
 function validateChange(change) {
   object(change, "change");
-  const allowed = { role: ["kind", "role", "model", "effort"], run: ["kind", "values"], fallback: ["kind", "role", "routes", "escalation"], cancel: ["kind"], back: ["kind"] };
+  const allowed = { role: ["kind", "role", "model", "effort"], run: ["kind", "values"], execution: ["kind", "values"],
+    fallback: ["kind", "role", "routes", "escalation"], cancel: ["kind"], back: ["kind"] };
   if (!allowed[change.kind]) throw new Error("Unknown settings change kind.");
   fields(change, allowed[change.kind], "change");
-  if (change.kind === "run") {
+  if (["run", "execution"].includes(change.kind)) {
     object(change.values, "change.values");
     if (!Object.keys(change.values).length) throw new Error("change.values must not be empty.");
   }
+  if (change.kind === "execution") validateExecutionSettingsChange(change.values, "execution settings change");
   if (change.kind === "role") for (const key of ["role", "model", "effort"]) string(change[key], `change.${key}`);
   if (change.kind === "fallback") {
     string(change.role, "change.role");
@@ -114,13 +117,15 @@ function validateChange(change) {
 }
 
 function validateDraft(draft) {
-  fields(draft, ["roles"], "draft");
-  if (draft.roles === undefined) return draft;
-  fields(draft.roles, ROLE_DEFINITIONS.map(({ id }) => id), "draft.roles");
-  for (const route of Object.values(draft.roles)) {
-    fields(route, ["model", "effort"], "draft role");
-    for (const [key, value] of Object.entries(route)) string(value, `draft.${key}`);
+  fields(draft, ["roles", "execution"], "draft");
+  if (draft.roles !== undefined) {
+    fields(draft.roles, ROLE_DEFINITIONS.map(({ id }) => id), "draft.roles");
+    for (const route of Object.values(draft.roles)) {
+      fields(route, ["model", "effort"], "draft role");
+      for (const [key, value] of Object.entries(route)) string(value, `draft.${key}`);
+    }
   }
+  if (draft.execution !== undefined) validateExecutionSettings(draft.execution, "settings draft execution");
   return draft;
 }
 

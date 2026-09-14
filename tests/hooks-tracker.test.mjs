@@ -201,7 +201,63 @@ test("Beads bounded read includes closed issues and pins canonical project autho
   assert.equal(call[2].cwd, value.root);
   assert.equal(call[2].env.BEADS_DIR, path.join(value.root, ".beads"));
   assert.ok(call[2].timeout > 1600 && call[2].timeout <= 5000);
-  assert.ok(call[2].maxBuffer <= 1024 * 1024);
+  assert.equal(call[2].maxBuffer, 2 * 1024 * 1024);
+});
+
+test("tracker reads use the current host configured subprocess buffer", async () => {
+  const value = await fixture({ kind: "beads" });
+  const project = await resolveProject(value.root);
+  const setup = JSON.parse(await readFile(project.paths.setup, "utf8"));
+  setup.settings = { hosts: { codex: { execution: { limits: { subprocessMaxBufferBytes: 3 * 1024 * 1024 } } } } };
+  await writeFile(project.paths.setup, JSON.stringify(setup));
+  let maxBuffer;
+
+  const canonical = await loadCanonicalState(await resolveProject(value.root), { host: "codex", runBeads: async (_binary, _args, options) => {
+    maxBuffer = options.maxBuffer;
+    return beads();
+  } });
+
+  assert.equal(canonical.tracker.status, "current");
+  assert.equal(maxBuffer, 3 * 1024 * 1024);
+});
+
+test("tracker buffer selection uses only an explicit actual host and never the project owner or harness", async () => {
+  const value = await fixture({ kind: "beads" });
+  const project = await resolveProject(value.root);
+  const setup = JSON.parse(await readFile(project.paths.setup, "utf8"));
+  setup.harness = "codex";
+  setup.settings = { hosts: {
+    codex: { execution: { limits: { subprocessMaxBufferBytes: 2 * 1024 * 1024 } } },
+    "claude-code": { execution: { limits: { subprocessMaxBufferBytes: 3 * 1024 * 1024 } } },
+  } };
+  await writeFile(project.paths.setup, JSON.stringify(setup));
+  const observed = [];
+  const loaded = await loadCanonicalState(await resolveProject(value.root), {
+    host: "claude-code",
+    runBeads: async (_binary, _args, options) => { observed.push(options.maxBuffer); return beads(); },
+  });
+  assert.equal(loaded.tracker.status, "current");
+  assert.deepEqual(observed, [3 * 1024 * 1024]);
+
+  observed.length = 0;
+  await loadCanonicalState(await resolveProject(value.root), {
+    runBeads: async (_binary, _args, options) => { observed.push(options.maxBuffer); return beads(); },
+  });
+  assert.deepEqual(observed, [2 * 1024 * 1024]);
+});
+
+test("Markdown tracker rejects a symlink instead of following it before the configured cap", async () => {
+  const value = await fixture({ kind: "markdown", path: ".agent-team/TASKS.md" });
+  const project = await resolveProject(value.root);
+  const outside = path.join(value.root, "outside-tasks.md");
+  const source = await readFile(project.paths.tasks);
+  await writeFile(outside, source);
+  await rm(project.paths.tasks);
+  await import("node:fs/promises").then(({ symlink }) => symlink(outside, project.paths.tasks));
+
+  const loaded = await loadCanonicalState(await resolveProject(value.root), { host: "codex" });
+  assert.equal(loaded.tracker.status, "unavailable");
+  assert.equal(loaded.tracker.reason, "invalid_response");
 });
 
 test("canonical Beads reads allow a healthy backend longer than 1.5 seconds", async () => {

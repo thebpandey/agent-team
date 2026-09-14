@@ -139,6 +139,17 @@ test("menus use programmatic native facts and refresh the selected model's effor
   assert.deepEqual(efforts.choices.filter(({ id }) => !["keep_existing", "back", "cancel"].includes(id)).map(({ id }) => id), ["low"]);
 });
 
+test("settings wizard request validates execution settings with the settings resolver", async (t) => {
+  const { runSetupCommand } = await import(modulePath);
+  const value = await fixture(t);
+  const valid = await envelope(value, { draft: { execution: { supervision: { heartbeatSeconds: 60 } } } });
+  const wizard = await runSetupCommand("settings-wizard", { ...value.options, request: valid }, { nativeChoices });
+  assert.equal(wizard.steps.find(({ setting }) => setting === "supervision.heartbeatSeconds").effective, 60);
+
+  const invalid = await envelope(value, { draft: { execution: { supervision: { heartbeatSeconds: 59 } } } });
+  await assert.rejects(runSetupCommand("settings-wizard", { ...value.options, request: invalid }, { nativeChoices }), /heartbeatSeconds/);
+});
+
 test("dependency inspection reports scope mismatch without presenting another scope's ready counts", async (t) => {
   const value = await fixture(t);
   for (const recordedScope of ["user", "project"]) {
@@ -171,6 +182,41 @@ test("settings changes use canonical owner/version and semantic operation identi
   const teamsPath = path.join(value.root, ".agent-team", "TEAMS.md");
   await writeFile(teamsPath, (await readFile(teamsPath, "utf8")).replace("Project owner: owner", "Project owner: replacement"));
   assert.equal((await runSetupCommand("settings-update", { ...value.options, request: stale }, { nativeChoices, nativeIdentity: value.nativeIdentity })).reason, "project_owner_required");
+});
+
+test("settings update request accepts only validated host-local execution changes", async (t) => {
+  const { runSetupCommand } = await import(modulePath);
+  const value = await fixture(t);
+  const before = await readFile(value.setupPath);
+  const empty = await envelope(value, { change: { kind: "execution", values: {} } }, { operationId: "execution-empty" });
+  await assert.rejects(runSetupCommand("settings-update", { ...value.options, request: empty }, {
+    nativeChoices, nativeIdentity: value.nativeIdentity,
+  }), /change.values must not be empty/);
+  assert.deepEqual(await readFile(value.setupPath), before);
+  for (const [index, values] of [{ lanes: {} }, { lanes: { rotation: {} } }, { supervision: {} }, { limits: {} }].entries()) {
+    const nestedEmpty = await envelope(value, { change: { kind: "execution", values } }, { operationId: `execution-nested-empty-${index}` });
+    await assert.rejects(runSetupCommand("settings-update", { ...value.options, request: nestedEmpty }, {
+      nativeChoices, nativeIdentity: value.nativeIdentity,
+    }), /change.values must include at least one setting/);
+    assert.deepEqual(await readFile(value.setupPath), before);
+  }
+  const invalid = await envelope(value, { change: { kind: "execution", values: { supervision: { heartbeatSeconds: 59 } } } }, { operationId: "execution-invalid" });
+  await assert.rejects(runSetupCommand("settings-update", { ...value.options, request: invalid }, {
+    nativeChoices, nativeIdentity: value.nativeIdentity,
+  }), /heartbeatSeconds/);
+  assert.deepEqual(await readFile(value.setupPath), before);
+
+  const valid = await envelope(value, { change: { kind: "execution", values: {
+    lanes: { rotation: { tasks: 3 } }, limits: { subprocessMaxBufferBytes: 3145728 },
+  } } }, { operationId: "execution-valid" });
+  const result = await runSetupCommand("settings-update", { ...value.options, request: valid }, {
+    nativeChoices, nativeIdentity: value.nativeIdentity,
+  });
+  assert.equal(result.status, "applied");
+  assert.deepEqual(result.setup.settings.hosts.codex.execution, {
+    lanes: { rotation: { tasks: 3 } }, limits: { subprocessMaxBufferBytes: 3145728 },
+  });
+  assert.deepEqual(result.setup.settings.hosts["claude-code"], value.setup.settings.hosts["claude-code"]);
 });
 
 test("settings remain editable while the selected Beads tracker is unavailable", async (t) => {
