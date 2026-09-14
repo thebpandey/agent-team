@@ -1,0 +1,34 @@
+# Lane engine implementation brief
+
+## Current state
+
+Implement Task 3 of 2026-09-14-LANES-PLAN.md against its approved design. Existing tracker transitions already serialize through mutateOperationalState, recover interrupted Beads writes using operation markers, and bind task-keyed completion/integration receipts. Preserve these contracts. Settings and session continuity are being implemented first by separate owners. The tracker is the sole authority; lanes add assignment sequencing, never competing task statuses.
+
+## Required behavior
+
+- Use a focused lanes module for schema validation, canonical fingerprints, brief/packet/handover validation, ownership/fact-sheet checks, rotation/occupancy, and lifecycle transitions. Keep pure schema helpers separate if needed to avoid circular imports with canonical-state.
+- Extend workflow CLI plus exact native shell parser and hook dispatch for all four lane routes. Public runCommand must refuse caller-supplied native identity for these routes, matching existing run-reconcile. Do not add --test or environment-based authority bypasses.
+- Use request schemaVersion 1, closed keys, operationId, observed revision/version, tracker fingerprint and lane fingerprint preconditions. Treat missing lanes in legacy state as empty; malformed present records must not silently normalize. Identity/path fields must reject traversal, duplicate IDs, noncanonical/symlink paths, ambiguous branch/worktree identity, and unsupported role/model/effort shape.
+- lane-create binds a prepared worktree, lane/<id> branch from the configured integration base, immutable BRIEF.md, admitted ordered task IDs, and registered team ownership. No future task claim. It must reconcile registration with existing TEAMS.md under shared locking rather than accepting an unrelated team or secretly adding another task tracker. Verify disjoint writable paths through delegated ownership evidence bound to the actual lane path set/revision. Graphify unavailability is not passed evidence.
+- lane-next can start only the first remaining queue item with satisfied tracker dependencies. Prior current task must have exact accepted completion and integration evidence. Reuse the existing supported tracker claim write and interruption marker. Extract the existing in-lock task transition implementation if needed; never call a locking transition recursively under state.lock. Persist enough intent before tracker write to recover both tracker and lane consequences after interruption. Duplicate calls return the same packet skeleton and never advance twice.
+- Persist immutable dispatch packet hashes and assignment IDs in the lane's evidence directory. A prepared packet is not a worker completion or confirmed host dispatch. Use lifecycle request phase fields only as needed to bind an actual worker or record actual host dispatch/result evidence; do not let packet existence impersonate it. Do not add new public lifecycle commands unless necessary and approved by parent.
+- Worker identity includes native host/session/generation separately from local process observation. A process hostname is not a Codex/Claude runtime name. Preserve unknown liveness. Role-specific native continuation is orchestration, not a process started by the CLI.
+- Rotation due at configured completed-task threshold or context pressure blocks further new-task dispatch until handover. Require authentic stopped-writer or explicit transfer evidence, matching current revision and note digest. Retain claim/current task/worktree. Replacement binding can resume current task without new claim or queue advance. Safe reattachment is distinct from a rotation. Do not infer stopped from completion, elapsed time, missing PID namespace, or absence of report.
+- Review lanes must never claim an author's tracker task. Their review assignments are task-linked evidence operations with independent agent identity and restricted evidence paths. No new agent hierarchy.
+- Fact sheets use one owning lane, exact content hash, checkedOn/sourceUrl per fact, default stale days, and bound consumer citation pointers. Reject stale data at dependent dispatch if declared required. No extra scheduler.
+- Review sequence is mechanically verifiable for lane tasks: verifier results precede independent review and both bind the same revision/assignment. A developer cannot certify their own independent review. Existing non-lane completion behavior is preserved.
+- Worker update cap applies only to designated update artifacts, never full logs. Validate final content after patches/edits/appends where visible, so chunking is not a bypass. Distinguish unavailable content from a passing size check and document unmapped shell/native message limits. Preserve source/evidence path ownership.
+- lane-close checks exhausted queue and current task integrated, all historical task boundaries validated, no unresolved assignment or active writer. Keep records and evidence; cleanup remains separate. Extend cleanup to recognize shared lane assignment only after every task is eligible, preserving all existing task cleanup checks. Normal task cleanup cannot delete a lane worktree early.
+- Status/dashboard/recovery show lane queue/current task/rotation and occupied/free/unknown slots. Do not count one lane once per historical task; reserve reviewer native capacity separately from logical parallel_teams. Retained idle workers occupy slots.
+
+## Integration boundaries
+
+Consume resolveExecutionSettings(setup, host) from settings.mjs. Run snapshot behavior belongs here; old runs must not suddenly migrate execution semantics because a default changed. Update subprocess buffer call sites in task-transitions/recovery to the new settings while preserving bounded displayed outputs. Coordinate any remaining canonical record cap with settings owner.
+
+No docs renames or version changes while code workers are active. No edits to live installed package or live .agent-team records. No commits until parent requests, since the feature worktree can contain another worker's disjoint changes.
+
+## Verification and handoff
+
+Use TDD: tests prove actual CLI/native adapter behavior, exact state effects, refusal cases and unchanged state on rejection. Add interrupted-write tests using real temporary Git/tracker fixtures and targeted filesystem/backend faults. Two-lane five-task end-to-end dry run must use normal gates with test-only native authority simulation; include three dispatches on one lane, rotation once, both closures, and revision-bound events. Do not fabricate passing project checks; fixture checks are real fixture checks.
+
+Record full test logs and RED/GREEN observations in /tmp/AGENT-TEAM-LANE-ENGINE-REPORT.md. Report exact counts, missing host verification, and remaining concerns, under 2000 characters to parent. Only parent spawns/reviews/integrates.

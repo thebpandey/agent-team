@@ -26,11 +26,13 @@ Files: hooks/lib/policy.mjs, hooks/lib/owner-recovery.mjs, relevant initializati
 
 Interface: replace permanent historical session locking with explicit project-scoped continuity; preserve existing registered worker path restrictions and consequential gate validity. Provide a genuine auditable owner transfer rather than rewriting historical evidence or pretending a user instruction is a native bootstrap token.
 
-- [ ] Write regression: a fresh session editing unclaimed project documentation is not denied solely for a different session UUID; a conflicting registered worker remains restricted.
-- [ ] Write transfer tests for preserving history, retaining claims/pending operations, and invalidating old gate authority without rewriting evidence provenance.
-- [ ] Run node --test tests/hooks-session-continuity.test.mjs and confirm expected missing-behavior failures.
-- [ ] Implement the narrow session continuity repair and supported transfer path; no new ability to approve a release through prose or synthetic identity.
-- [ ] Run focused policy/ownership suites. Independently review exact changes before applying transfer to the real project.
+- [x] Write regression: a fresh session editing unclaimed project documentation is not denied solely for a different session UUID; a conflicting registered worker remains restricted.
+- [x] Write transfer tests for preserving history, retaining claims/pending operations, and invalidating old gate authority without rewriting evidence provenance.
+- [x] Run node --test tests/hooks-session-continuity.test.mjs and confirm expected missing-behavior failures.
+- [x] Implement the narrow session continuity repair and supported transfer path; no new ability to approve a release through prose or synthetic identity.
+- [x] Run focused policy/ownership suites. Independently review exact changes before applying transfer to the real project.
+
+Checkpoint: accepted source commit efac7a0, 168 focused tests passed with no failures or skips after two independent-review findings were repaired. User-directed transfer user-continuity-20260914 applied at 2026-09-14T18:04:13.637Z, ownership epoch 2, and independently verified read-only. Tracker fingerprint, pending work, and prior evidence remained intact; integration and release are held and unauthorized. Installed package update is still pending the final release task. Evidence: /tmp/AGENT-TEAM-SESSION-CONTINUITY-REPORT.md and /tmp/AGENT-TEAM-SESSION-INDEPENDENT-REVIEW.md.
 
 ## Task 2: Host settings and operational limits
 
