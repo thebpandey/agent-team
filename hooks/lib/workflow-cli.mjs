@@ -16,6 +16,7 @@ import { quarantineCompletion, rebindCompletion, reconcileCompletionHistory, rec
 import { readUsageReport } from "./usage.mjs";
 import { createEventBudget } from './budget.mjs';
 import { extendRunScope, readRunDecision, reconcileRun, startRun } from "./run-state.mjs";
+import { advanceLane, closeLane, createLane, rotateLane } from "./lanes.mjs";
 
 const requestLimit = 256 * 1024;
 const actorPattern = /^[\w.:-]{1,128}$/;
@@ -56,6 +57,10 @@ export const workflowCommandFlags = Object.freeze({
   "run-start": new Set(["project", "request"]),
   "run-reconcile": new Set(["project", "request"]),
   "run-scope-extend": new Set(["project", "request"]),
+  "lane-create": new Set(["project", "request"]),
+  "lane-next": new Set(["project", "request"]),
+  "lane-rotate": new Set(["project", "request"]),
+  "lane-close": new Set(["project", "request"]),
   "completion-quarantine": new Set(["project", "request"]),
   "completion-rebind": new Set(["project", "request"]),
   "evidence-store-register": new Set(["project", "request"]),
@@ -327,6 +332,15 @@ export async function runWorkflowCommand(command, options, context = {}) {
       ? startRun(project, envelope.request, { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion })
       : command === "run-reconcile" ? reconcileRun(project, envelope.request, { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion })
         : extendRunScope(project, envelope.request, { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion });
+  }
+  if (["lane-create", "lane-next", "lane-rotate", "lane-close"].includes(command)) {
+    const envelope = await readRequestEnvelope(options.request);
+    if (!exactKeys(envelope, ["schemaVersion", "actorSessionId", "expectedVersion", "request"])) return { status: "conflict", reason: "invalid_request" };
+    const mutationOptions = { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion };
+    if (command === "lane-create") return createLane(project, envelope.request, mutationOptions);
+    if (command === "lane-next") return advanceLane(project, envelope.request, mutationOptions);
+    if (command === "lane-rotate") return rotateLane(project, envelope.request, mutationOptions);
+    return closeLane(project, envelope.request, mutationOptions);
   }
   if (["completion-quarantine", "completion-rebind", "evidence-store-register", "completion-history-reconcile"].includes(command)) {
     const envelope = await readRequestEnvelope(options.request);

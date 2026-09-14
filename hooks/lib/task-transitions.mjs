@@ -10,6 +10,7 @@ import { withDirectoryLock } from "./lock.mjs";
 import { inspectCheckpointEvidence } from "./recovery.mjs";
 import { beadsEnvironment } from "./tracker.mjs";
 import { assertNoOwnerRecoveryJournal, currentLegacyOwnerAdoption, repairOwnerRecovery, validateNativeOwnerAuthority } from "./owner-recovery.mjs";
+import { DEFAULT_EXECUTION_SETTINGS, resolveExecutionSettings, validateExecutionSettings } from "./settings.mjs";
 
 const digest = (value) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
 const operationSignature = ({ expectedVersion, expectedFingerprint, ...operation }) => digest(operation);
@@ -27,6 +28,21 @@ const ref = (value) => typeof value === "string" && (/^refs\/heads\/[\w./-]+$/.t
   || (/^refs\/tags\/[A-Za-z0-9][\w./-]*$/.test(value) && !/[./]$|\.\.|\/\//.test(value.slice("refs/tags/".length))));
 const configuredRemoteBaseRef = (value) => typeof value === "string" && /^[A-Za-z0-9][\w./-]*$/.test(value)
   && !value.startsWith("refs/") && !/[./]$|\.\.|\/\//.test(value) ? `refs/heads/${value}` : undefined;
+function subprocessMaxBufferBytes(project, state, options = {}) {
+  const effective = state?.run?.executionSettings ?? options.executionSettings;
+  if (effective !== undefined) {
+    const validated = validateExecutionSettings(effective, "transition execution settings");
+    return validated.limits?.subprocessMaxBufferBytes ?? DEFAULT_EXECUTION_SETTINGS.limits.subprocessMaxBufferBytes;
+  }
+  const nativeHost = options.nativeIdentity?.host === "claude" ? "claude-code" : options.nativeIdentity?.host;
+  return nativeHost ? resolveExecutionSettings(project.setup, nativeHost).limits.subprocessMaxBufferBytes
+    : DEFAULT_EXECUTION_SETTINGS.limits.subprocessMaxBufferBytes;
+}
+function gitCommand(project, state, options, cwd, args) {
+  const childOptions = { cwd, encoding: "utf8", timeout: options.budget?.timeout(1500) ?? 1500,
+    maxBuffer: subprocessMaxBufferBytes(project, state, options), ...(options.budget ? { signal: options.budget.signal } : {}) };
+  return options.runGit ? options.runGit(args, childOptions) : run("git", args, childOptions);
+}
 const provenance = (value, { ownerSessionId, revision, taskIds }) => value && typeof value === "object"
   && typeof value.source === "string" && value.source.trim() && value.source.length <= 256
   && value.scope === "integration" && value.ownerSessionId === ownerSessionId && value.revision === revision
@@ -46,12 +62,20 @@ const stable = (value) => JSON.stringify(value && typeof value === "object"
 const stateFingerprint = (value) => digest(stable(value));
 const runKeys = ["id", "ownerSessionId", "ownerHost", "ownershipEpoch", "mode", "taskIds", "teamLimit", "autoDeploy", "batchSize", "source",
   "settingSources", "paused", "operationalVersion", "blockers", "pendingDeliveryIds", "deployedTaskIds", "terminalClassification"];
+const currentRunKeys = [...runKeys, "executionSettings"];
 const runSources = new Set(["explicit_run", "saved_default", "compatibility_migration"]);
 const terminalKinds = new Set(["unknown", "paused", "unreconciled_completion", "progress_possible", "finite_exhausted", "continuous_scope_exhausted", "blocked_tail"]);
 export function requireAdmittedTaskIds(state, taskIds) {
   const run = state?.run;
   const unique = (values) => Array.isArray(values) && new Set(values).size === values.length;
-  const structurallyValid = exactKeys(run, runKeys) && validId(run.id) && validId(run.ownerSessionId)
+  let executionSettingsValid = run?.executionSettings === undefined;
+  if (!executionSettingsValid) {
+    try {
+      executionSettingsValid = exactKeys(run.executionSettings, ["lanes", "supervision", "limits"])
+        && Object.keys(validateExecutionSettings(run.executionSettings)).length === 3;
+    } catch { executionSettingsValid = false; }
+  }
+  const structurallyValid = (exactKeys(run, runKeys) || exactKeys(run, currentRunKeys)) && executionSettingsValid && validId(run.id) && validId(run.ownerSessionId)
     && ["codex", "claude-code"].includes(run.ownerHost) && Number.isSafeInteger(run.ownershipEpoch) && run.ownershipEpoch > 0
     && ["finite", "continuous"].includes(run.mode) && unique(run.taskIds) && run.taskIds.length > 0 && run.taskIds.every(validId)
     && Number.isSafeInteger(run.teamLimit) && run.teamLimit > 0 && run.teamLimit <= 64 && typeof run.autoDeploy === "boolean"
@@ -291,11 +315,10 @@ function replaceTask(source, taskId, changes) {
   return output;
 }
 
-/** Claim or transition one task through the registered project owner. */
-export async function transitionTask(project, request, options = {}) {
+/** Apply one task transition inside an existing operational-state transaction. */
+export async function transitionTaskInState(project, request, { state, canonical, persistIntent, options = {} }) {
   const bounded = (action) => options.budget ? options.budget.run(action) : action();
-  return mutateOperationalState(project, request, async (state, canonical, { persistIntent }) => {
-    Object.assign(canonical, await loadCanonicalTracker(project, options));
+  Object.assign(canonical, await loadCanonicalTracker(project, options));
     if (canonical.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable", tracker: canonical.tracker };
     const task = canonical.tasks.find(({ id }) => id === request.taskId);
     if (Object.entries(state.pendingOperations ?? {}).some(([id, entry]) => id !== request.operationId && entry.taskId === request.taskId
@@ -322,8 +345,8 @@ export async function transitionTask(project, request, options = {}) {
       if (state.pendingOperations) delete state.pendingOperations[request.operationId];
       return { state, result: { taskId: task.id, action: request.action, trackerFingerprint: canonical.tracker.fingerprint, reconciled: true } };
     }
-    if (!reconciled && request.expectedFingerprint !== canonical.tracker.fingerprint) return conflict("stale_tracker");
-    if (!reconciled && state.pendingOperations?.[request.operationId]?.phase === "uncertain") return { status: "unavailable", reason: "tracker_write_uncertain" };
+    if (!reconciled && request.expectedFingerprint !== canonical.tracker.fingerprint) return pendingIntent?.phase === "uncertain"
+      ? { status: "unavailable", reason: "tracker_write_uncertain" } : conflict("stale_tracker");
     if (!task || task.owner !== request.expectedOwner) return conflict("stale_owner");
     const runtime = state.taskRuntime?.[task.id] ?? {};
     const checkpointForTask = async (file) => {
@@ -397,6 +420,10 @@ export async function transitionTask(project, request, options = {}) {
       if (state.pendingOperations) delete state.pendingOperations[request.operationId];
       return { state, result: { taskId: task.id, action: request.action, trackerFingerprint: canonical.tracker.fingerprint, reconciled: true } };
     }
+    if (canonical.tracker.kind === "beads" || options.persistTrackerIntent === true) {
+      await persistIntent({ phase: "uncertain", kind: "tracker_transition", taskId: task.id, action: request.action, changes,
+        intendedRuntime: state.taskRuntime?.[task.id], worktree: canonical.registry.teams.find((team) => team["team id"] === task.owner)?.worktree });
+    }
     if (canonical.tracker.kind === "beads") {
       if (request.action !== "claim" && (project.setup.tracker.writerMode !== "single_owner" || project.setup.tracker.writerSessionId !== canonical.registry.projectOwner)) {
         return { status: "unavailable", reason: "verified_single_writer_required" };
@@ -406,11 +433,9 @@ export async function transitionTask(project, request, options = {}) {
         const args = request.action === "claim" ? ["update", task.id, "--claim", "--actor", request.owner]
           : ["update", task.id, "--status", nativeStatus, "--actor", request.actorSessionId];
         args.push("--append-notes", marker, "--json");
-        await persistIntent({ phase: "uncertain", kind: "tracker_transition", taskId: task.id, action: request.action, changes,
-          intendedRuntime: state.taskRuntime?.[task.id], worktree: canonical.registry.teams.find((team) => team["team id"] === task.owner)?.worktree });
         try {
           await (options.runBeads ?? run)(project.tracker.executable ?? "bd", args, { cwd: project.root, env: beadsEnvironment(project, options.environment),
-            encoding: "utf8", timeout: options.budget?.timeout(1500) ?? 1500, maxBuffer: 1024 * 1024,
+            encoding: "utf8", timeout: options.budget?.timeout(1500) ?? 1500, maxBuffer: subprocessMaxBufferBytes(project, state, options),
             ...(options.budget ? { signal: options.budget.signal } : {}) });
         } catch { return { status: "unavailable", reason: "tracker_write_uncertain" }; }
         const observed = await loadCanonicalTracker(project, options);
@@ -424,8 +449,14 @@ export async function transitionTask(project, request, options = {}) {
     const source = await readFile(canonical.tracker.path, "utf8");
     const changed = replaceTask(source, task.id, { ...changes, "revision / evidence": `${task["revision / evidence"] ?? ""} ${marker}`.trim() });
     if (!reconciled) await atomicWrite(canonical.tracker.path, changed, options);
-    return { state, result: { taskId: task.id, action: request.action, trackerFingerprint: (await loadCanonicalTracker(project, options)).tracker.fingerprint, ...(reconciled ? { reconciled: true } : {}) } };
-  }, options);
+    if (state.pendingOperations) delete state.pendingOperations[request.operationId];
+  return { state, result: { taskId: task.id, action: request.action, trackerFingerprint: (await loadCanonicalTracker(project, options)).tracker.fingerprint, ...(reconciled ? { reconciled: true } : {}) } };
+}
+
+/** Claim or transition one task through the registered project owner. */
+export async function transitionTask(project, request, options = {}) {
+  return mutateOperationalState(project, request, async (state, canonical, { persistIntent }) =>
+    transitionTaskInState(project, request, { state, canonical, persistIntent, options }), options);
 }
 
 /** Bind recorded verification artifacts to present Git/tracker facts; never grant a gate. */
@@ -440,8 +471,7 @@ export async function recordGateEvidence(project, request, options = {}) {
     if (canonical.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable" };
     if (canonical.tracker.fingerprint !== request.expectedFingerprint) return conflict("stale_tracker");
     if (!request.taskIds?.length || request.taskIds.some((id) => !canonical.tasks.some((task) => task.id === id))) return conflict("task_identity_mismatch");
-    const git = (args) => run("git", args, { cwd: project.worktreeRoot, encoding: "utf8", timeout: budget?.timeout(1500) ?? 1500,
-      maxBuffer: 1024 * 1024, ...(budget ? { signal: budget.signal } : {}) });
+    const git = (args) => gitCommand(project, state, options, project.worktreeRoot, args);
     const revision = (await git(["rev-parse", "HEAD"])).stdout.trim();
     if (revision !== request.expectedRevision) return conflict("stale_revision");
     if ((await git(["status", "--porcelain", "--untracked-files=all"])).stdout.trim()) return conflict("dirty_revision");
@@ -690,9 +720,8 @@ function completionEvidenceValid(evidence, taskId, revision) {
       && (check.revision === undefined || check.revision === revision));
 }
 
-async function gitObservation(project, options = {}) {
-  const git = options.runGit ?? ((args) => run("git", args, { cwd: project.root, encoding: "utf8", timeout: options.budget?.timeout(1500) ?? 1500,
-    maxBuffer: 1024 * 1024, ...(options.budget ? { signal: options.budget.signal } : {}) }));
+async function gitObservation(project, state, options = {}) {
+  const git = (args) => gitCommand(project, state, options, project.root, args);
   const output = (value) => typeof value === "string" ? value : value.stdout;
   const revision = output(await git(["rev-parse", "HEAD"])).trim();
   const clean = !output(await git(["status", "--porcelain", "--untracked-files=all"])).trim();
@@ -760,7 +789,7 @@ export async function rebindCompletion(project, request, options = {}) {
     const integration = state.deliveryReceipts?.integration?.[request.taskId];
     if (integration?.status !== "passed" || integration.sourceRevision !== request.expectedSourceRevision
       || integration.boundaryRevision !== request.expectedBoundaryRevision || integration.integratedRevision !== request.expectedBoundaryRevision) return conflict("integration_evidence_mismatch");
-    const repository = await gitObservation(project, options);
+    const repository = await gitObservation(project, state, options);
     if (!repository.clean || !await ancestor(repository.git, request.expectedSourceRevision, request.expectedBoundaryRevision)
       || !await ancestor(repository.git, request.expectedBoundaryRevision, repository.revision)) return conflict("invalid_completion_lineage");
     const observedAt = (options.now ?? (() => new Date().toISOString()))();
@@ -933,7 +962,7 @@ export async function reconcileCompletionHistory(project, request, options = {})
       || integrationEvidence.sourceRevisions?.[request.taskId] !== request.sourceRevision) return conflict("historical_evidence_mismatch");
     const task = tracker.tasks.find((entry) => entry.id === request.taskId);
     if (!task || !finished.has(String(task.status).toLowerCase())) return conflict("historical_task_not_complete");
-    const repository = await gitObservation(project, options);
+    const repository = await gitObservation(project, state, options);
     if (!repository.clean || !await ancestor(repository.git, request.sourceRevision, request.boundaryRevision)
       || !await ancestor(repository.git, request.boundaryRevision, repository.revision)) return conflict("invalid_completion_lineage");
     if (!options.observePublicationTarget) return { status: "unavailable", reason: "publication_observation_unavailable" };

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs";
 import { validateNativeOwnerAuthority } from "./owner-recovery.mjs";
+import { resolveExecutionSettings, validateExecutionSettings } from "./settings.mjs";
 import { mutateOperationalState } from "./task-transitions.mjs";
 
 const validId = (value) => typeof value === "string" && /^[\w.:-]{1,128}$/.test(value)
@@ -13,6 +14,7 @@ const exactKeys = (value, keys) => value && typeof value === "object" && !Array.
 const sources = new Set(["explicit_run", "saved_default", "compatibility_migration"]);
 const runKeys = ["id", "ownerSessionId", "ownerHost", "ownershipEpoch", "mode", "taskIds", "teamLimit", "autoDeploy", "batchSize", "source",
   "settingSources", "paused", "operationalVersion", "blockers", "pendingDeliveryIds", "deployedTaskIds", "terminalClassification"];
+const currentRunKeys = [...runKeys, "executionSettings"];
 const proposalKeys = ["id", "mode", "taskIds", "teamLimit", "autoDeploy", "batchSize", "source", "settingSources"];
 const sourceKeys = ["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"];
 const terminalKinds = new Set(["unknown", "paused", "unreconciled_completion", "progress_possible", "finite_exhausted", "continuous_scope_exhausted", "blocked_tail"]);
@@ -30,11 +32,21 @@ export function effectiveRunFingerprint(run) {
   return createHash("sha256").update(stable(run)).digest("hex");
 }
 
+function validExecutionSnapshot(value) {
+  if (!exactKeys(value, ["lanes", "supervision", "limits"])
+    || !exactKeys(value.lanes, ["enabled", "rotation", "factSheetStaleDays", "workerUpdateMaxChars", "briefMaxWords"])
+    || !exactKeys(value.lanes.rotation, ["tasks", "onPressure"])
+    || !exactKeys(value.supervision, ["heartbeatSeconds"])
+    || !exactKeys(value.limits, ["subprocessMaxBufferBytes", "maxPlanTasks", "canonicalRecordMaxBytes"])) return false;
+  try { validateExecutionSettings(value); return true; } catch { return false; }
+}
+
 function topLevel(task) { return task?.isTopLevelDelivery === true || task?.parentId === null && task?.taskType !== "epic" && task?.isEpic !== true; }
 function dependencies(task) { return Array.isArray(task?.dependencies) ? task.dependencies : String(task?.["depends on"] ?? "").split(/\s*,\s*/).filter((id) => id && !["none", "-"].includes(id)); }
 
 export function validateEffectiveRun(run, canonicalTasks) {
-  if (!exactKeys(run, runKeys) || !Array.isArray(canonicalTasks) || !validId(run.id) || !validId(run.ownerSessionId)
+  if (!(exactKeys(run, runKeys) || exactKeys(run, currentRunKeys) && validExecutionSnapshot(run.executionSettings))
+    || !Array.isArray(canonicalTasks) || !validId(run.id) || !validId(run.ownerSessionId)
     || !["codex", "claude-code"].includes(run.ownerHost) || !Number.isSafeInteger(run.ownershipEpoch) || run.ownershipEpoch < 1
     || !["finite", "continuous"].includes(run.mode) || !unique(run.taskIds) || !run.taskIds.length || run.taskIds.some((id) => !validId(id))
     || !Number.isSafeInteger(run.teamLimit) || run.teamLimit < 1 || run.teamLimit > 64 || typeof run.autoDeploy !== "boolean"
@@ -110,6 +122,7 @@ export async function startRun(project, request, options = {}) {
     const problem = proposalProblem(request.run, current.tasks);
     if (problem) return conflict(problem);
     const run = { ...structuredClone(request.run), ownerSessionId: actor.ownerSessionId, ownerHost: actor.ownerHost, ownershipEpoch: actor.ownershipEpoch,
+      executionSettings: resolveExecutionSettings(project.setup, actor.ownerHost),
       paused: false, operationalVersion: (canonical.state.stateVersion ?? 0) + 1, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
     return { state: { ...state, run }, result: { run: structuredClone(run), trackerFingerprint: current.tracker.fingerprint, authenticatedActor: effectiveRequest.authenticatedActor } };
   }, { ...options, nativeIdentity: actor.nativeIdentity });
@@ -185,7 +198,8 @@ export async function reconcileRun(project, request, options = {}) {
     if (problem) return conflict(problem);
     const provenance = qualified ? { ownerSessionId: previousRun.ownerSessionId, ownerHost: previousRun.ownerHost, ownershipEpoch: previousRun.ownershipEpoch }
       : { ownerSessionId: actor.ownerSessionId, ownerHost: actor.ownerHost, ownershipEpoch: actor.ownershipEpoch };
-    const run = { ...structuredClone(request.run), ...provenance, paused: previousRun.paused ?? false, operationalVersion: (canonical.state.stateVersion ?? 0) + 1,
+    const run = { ...structuredClone(request.run), ...provenance, executionSettings: resolveExecutionSettings(project.setup, actor.ownerHost),
+      paused: previousRun.paused ?? false, operationalVersion: (canonical.state.stateVersion ?? 0) + 1,
       blockers: structuredClone(previousRun.blockers ?? []), pendingDeliveryIds: [...(previousRun.pendingDeliveryIds ?? [])], deployedTaskIds: [...(previousRun.deployedTaskIds ?? [])],
       terminalClassification: previousRun.terminalClassification ?? "unknown" };
     const constructedProblem = validateEffectiveRun(run, current.tasks);

@@ -13,7 +13,7 @@ const defaults = {
     briefMaxWords: 6000,
   },
   supervision: { heartbeatSeconds: 600 },
-  limits: { subprocessMaxBufferBytes: 2097152, maxPlanTasks: 1000 },
+  limits: { subprocessMaxBufferBytes: 2097152, maxPlanTasks: 1000, canonicalRecordMaxBytes: 16 * 1024 * 1024 },
 };
 
 test("execution settings resolve literal operational defaults", async () => {
@@ -67,6 +67,8 @@ test("execution settings reject malformed and open-ended values", async (t) => {
     ["zero brief cap", { settings: { hosts: { codex: { execution: { lanes: { briefMaxWords: 0 } } } } } }, "codex", /briefMaxWords/],
     ["zero subprocess cap", { settings: { hosts: { codex: { execution: { limits: { subprocessMaxBufferBytes: 0 } } } } } }, "codex", /subprocessMaxBufferBytes/],
     ["zero plan cap", { settings: { hosts: { codex: { execution: { limits: { maxPlanTasks: 0 } } } } } }, "codex", /maxPlanTasks/],
+    ["zero canonical cap", { settings: { hosts: { codex: { execution: { limits: { canonicalRecordMaxBytes: 0 } } } } } }, "codex", /canonicalRecordMaxBytes/],
+    ["unbounded canonical cap", { settings: { hosts: { codex: { execution: { limits: { canonicalRecordMaxBytes: 16 * 1024 * 1024 + 1 } } } } } }, "codex", /canonicalRecordMaxBytes/],
   ];
   for (const [label, setup, host, message] of cases) await t.test(label, () => {
     assert.throws(() => resolveExecutionSettings(setup, host), message);
@@ -130,7 +132,7 @@ test("wizard execution steps show configured effective and draft sources through
   assert.deepEqual(steps.map(({ setting }) => setting), [
     "lanes.enabled", "lanes.rotation.tasks", "lanes.rotation.onPressure", "lanes.factSheetStaleDays",
     "lanes.workerUpdateMaxChars", "lanes.briefMaxWords", "supervision.heartbeatSeconds",
-    "limits.subprocessMaxBufferBytes", "limits.maxPlanTasks",
+    "limits.subprocessMaxBufferBytes", "limits.maxPlanTasks", "limits.canonicalRecordMaxBytes",
   ]);
   assert.deepEqual(steps.find(({ setting }) => setting === "supervision.heartbeatSeconds"), {
     kind: "execution", setting: "supervision.heartbeatSeconds", configured: 120, effective: 60, source: "draft",

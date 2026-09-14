@@ -192,7 +192,7 @@ test("status exposes the same qualified run occupancy and decision facts as reco
   assert.deepEqual(model.pendingDecisions, [{ id: "target", taskIds: ["AT-002"] }]);
   assert.deepEqual(model.uncertainOperations, [{ operationId: "uncertain", taskId: "AT-001", status: "unknown" }]);
   assert.deepEqual(model.tail, { classification: "progress_possible", selectedTaskIds: [] });
-  assert.deepEqual(model.nextAction, { kind: "dispatch_or_refill", taskIds: ["AT-002"] });
+  assert.deepEqual(model.nextAction, { kind: "capacity_full", taskIds: ["AT-002"] });
 });
 
 test("status never invents an unobserved operational version", () => {

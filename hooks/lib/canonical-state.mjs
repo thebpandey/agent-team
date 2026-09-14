@@ -7,17 +7,19 @@ import { promisify } from "node:util";
 import { withDirectoryLock } from "./lock.mjs";
 import { readTracker } from "./tracker.mjs";
 import { assertNoOwnerRecoveryJournal, repairOwnerRecovery, validateOwnerHistory, validateQualifiedOwnership } from "./owner-recovery.mjs";
+import { validateLaneCollection } from "./lane-schema.mjs";
+import { DEFAULT_EXECUTION_SETTINGS, resolveExecutionSettings, validateExecutionSettings } from "./settings.mjs";
 
 const criticalMappingKinds = new Set(["file_change", "integration", "release", "database_destructive", "completion"]);
 const exec = promisify(execFile);
 const revisionPattern = /^[a-f0-9]{40}$/;
 
-async function text(file, { missing = "" } = {}) {
+async function text(file, { missing = "", maxBytes = 1024 * 1024 } = {}) {
   let handle;
   try {
     handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error("unsafe_canonical_record");
+    if (!stat.isFile() || stat.size > maxBytes) throw new Error("unsafe_canonical_record");
     const bytes = Buffer.alloc(stat.size);
     let offset = 0;
     while (offset < bytes.length) {
@@ -66,7 +68,7 @@ export async function loadCanonicalState(project, options = {}) {
   const [teamsText, taskResult, stateText, setupText, ownerHistoryText] = await Promise.all([
     text(project.paths.teams),
     options.includeTasks === false ? null : loadCanonicalTracker(project, options),
-    text(project.paths.state),
+    text(project.paths.state, { maxBytes: DEFAULT_EXECUTION_SETTINGS.limits.canonicalRecordMaxBytes }),
     text(project.paths.setup),
     project.paths.ownerHistory ? text(project.paths.ownerHistory, { missing: null }) : null,
   ]);
@@ -78,6 +80,7 @@ export async function loadCanonicalState(project, options = {}) {
   }
   let state = {};
   if (stateText) state = JSON.parse(stateText);
+  if (state.lanes !== undefined && validateLaneCollection(state.lanes)) throw new Error("invalid_lanes");
   const setup = setupText ? JSON.parse(setupText) : {};
   let ownerHistory;
   if (ownerHistoryText !== null) {
@@ -101,6 +104,14 @@ export async function loadCanonicalState(project, options = {}) {
     || state.integration?.ownershipEpoch !== undefined || state.release?.ownerHost !== undefined || state.release?.ownershipEpoch !== undefined) {
     throw new Error("owner_history_missing");
   }
+  let executionSettings = DEFAULT_EXECUTION_SETTINGS;
+  if (options.executionSettings !== undefined) {
+    executionSettings = validateExecutionSettings(options.executionSettings, "canonical execution settings");
+    if (executionSettings.limits?.canonicalRecordMaxBytes === undefined) throw new Error("canonical execution settings limit missing");
+  } else if (options.host !== undefined) {
+    executionSettings = resolveExecutionSettings(setup, options.host);
+  }
+  if (Buffer.byteLength(stateText) > executionSettings.limits.canonicalRecordMaxBytes) throw new Error("unsafe_canonical_record");
   const canonical = {
     state,
     setup,

@@ -2,9 +2,13 @@ import { constants } from "node:fs";
 import { open, readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { identityFor, loadCanonicalState } from "./canonical-state.mjs";
+import { applyContextReduction, contextReceiptBinding, inspectContextReduction, proposeContextReduction,
+  recoverContextReductionTransaction, revertContextReduction } from "./context-shrink.mjs";
 import { createDependencyRunner, inspectDependencies, prepareDependencies } from "./dependencies.mjs";
 import { ROLE_DEFINITIONS } from "./dependency-profiles.mjs";
+import { inspectHelpers, installHelpers, recoverHelperTransaction } from "./helpers.mjs";
 import { initializationRecordProblem } from "./initialization.mjs";
 import { validateNativeOwnerAuthority, validateQualifiedOwnership } from "./owner-recovery.mjs";
 import { resolveProject } from "./project.mjs";
@@ -23,9 +27,17 @@ export const setupCommandFlags = Object.freeze({
   "settings-update": new Set([...selectors, "request"]),
   "dependencies-prepare": new Set([...selectors, "home", "request"]),
   "dashboard-configure": new Set([...selectors, "request"]),
+  helpers: new Set(selectors),
+  "helpers-install": new Set([...selectors, "request"]),
+  "helpers-recover": new Set([...selectors, "request"]),
+  "context-reduction": new Set([...selectors, "request"]),
+  "context-reduction-apply": new Set([...selectors, "request"]),
+  "context-reduction-revert": new Set([...selectors, "request"]),
+  "context-reduction-recover": new Set([...selectors, "request"]),
 });
 
-const mutations = new Set(["settings-update", "dependencies-prepare", "dashboard-configure"]);
+const mutations = new Set(["settings-update", "dependencies-prepare", "dashboard-configure", "helpers-install", "helpers-recover",
+  "context-reduction-apply", "context-reduction-revert", "context-reduction-recover"]);
 const requestLimit = 256 * 1024;
 const identityPattern = /^[\w.:-]{1,128}$/;
 
@@ -127,6 +139,67 @@ function validateDraft(draft) {
   }
   if (draft.execution !== undefined) validateExecutionSettings(draft.execution, "settings draft execution");
   return draft;
+}
+
+function capabilityInventory(value, host) {
+  if (value === undefined) return null;
+  fields(value, ["schemaVersion", "host", "observed", "profile", "capabilities"], "capability inventory");
+  if (value.schemaVersion !== 1 || value.host !== host || value.observed !== true) return null;
+  fields(value.profile, ["id", "required"], "capability inventory profile");
+  if (!(value.profile.id === null || typeof value.profile.id === "string" && value.profile.id.trim())) return null;
+  stringList(value.profile.required, "capability inventory profile.required");
+  if (!Array.isArray(value.capabilities)) throw new Error("capability inventory capabilities must be an array.");
+  const seen = new Set();
+  for (const entry of value.capabilities) {
+    fields(entry, ["kind", "id", "enabled", "visible", "label", "source"], "visible capability");
+    if (!["mcp", "plugin"].includes(entry.kind)) throw new Error("visible capability kind must be mcp or plugin.");
+    string(entry.id, "visible capability id");
+    if (typeof entry.enabled !== "boolean" || typeof entry.visible !== "boolean") throw new Error("visible capability state must be boolean.");
+    if (entry.label !== undefined) string(entry.label, "visible capability label");
+    if (entry.source !== undefined) string(entry.source, "visible capability source");
+    const key = `${entry.kind}:${entry.id}`;
+    if (seen.has(key)) throw new Error("visible capability identity must be unique.");
+    seen.add(key);
+  }
+  if (new Set(value.profile.required).size !== value.profile.required.length
+    || value.profile.required.some((key) => !/^(mcp|plugin):[^\s]+$/.test(key))) {
+    throw new Error("capability inventory profile.required is invalid.");
+  }
+  return structuredClone(value);
+}
+
+function ownerReportedCapabilities(value, host) {
+  if (value === undefined) return null;
+  fields(value, ["schemaVersion", "host", "capabilities"], "owner-reported capabilities");
+  if (value.schemaVersion !== 1 || value.host !== host) throw new Error("owner-reported capability host does not match the selected host.");
+  if (!Array.isArray(value.capabilities) || value.capabilities.length > 128) {
+    throw new Error("owner-reported capabilities must be a bounded array.");
+  }
+  const seen = new Set();
+  const capabilities = value.capabilities.map((entry) => {
+    fields(entry, ["kind", "id", "enabled", "visible", "label"], "owner-reported capability");
+    if (!["mcp", "plugin"].includes(entry.kind)) throw new Error("owner-reported capability kind must be mcp or plugin.");
+    string(entry.id, "owner-reported capability id");
+    if (typeof entry.enabled !== "boolean" || typeof entry.visible !== "boolean") {
+      throw new Error("owner-reported capability state must be boolean.");
+    }
+    if (entry.label !== undefined) string(entry.label, "owner-reported capability label");
+    const key = `${entry.kind}:${entry.id}`;
+    if (seen.has(key)) throw new Error("owner-reported capability identity must be unique.");
+    seen.add(key);
+    return { ...structuredClone(entry), source: "owner_reported_unverified" };
+  });
+  return { schemaVersion: 1, host, capabilities };
+}
+
+function canonicalCapabilityProfile(project, host, capabilities) {
+  const selected = project.setup.dependencies?.hosts?.[host]?.selected ?? [];
+  if (!Array.isArray(selected) || selected.some((id) => typeof id !== "string" || !id)) {
+    throw new Error("canonical dependency selection is invalid.");
+  }
+  const selectedIds = new Set(selected);
+  return { id: `dependencies:${host}`, required: capabilities
+    .filter(({ id }) => selectedIds.has(id)).map(({ kind, id }) => `${kind}:${id}`).sort() };
 }
 
 async function canonicalReadiness(project, host, scope, context) {
@@ -289,6 +362,24 @@ function normalizedInteraction(value) {
   return { kind: "keep_existing", interrupted: value.kind === "interrupted" };
 }
 
+function modelRoutingAdvisory(host, nativeChoices) {
+  if (nativeChoices?.observed !== true || nativeChoices.host !== host) {
+    return { status: "unknown", host, reason: "native_model_inventory_unobserved" };
+  }
+  const availableModels = [...new Set((Array.isArray(nativeChoices.models) ? nativeChoices.models : [])
+    .filter(({ id, available }) => typeof id === "string" && id.trim() && available === true)
+    .map(({ id }) => id))];
+  if (!availableModels.length) return { status: "unknown", host, reason: "no_available_models_observed" };
+  if (host === "codex") return { status: "observed", host, guidance: "explicit_available_model_selection", availableModels };
+  const recommendedModels = availableModels.filter((id) => {
+    const model = nativeChoices.models.find((candidate) => candidate.id === id);
+    return /(^|[-_\s])opus($|[-_\s])/i.test(`${model.id} ${model.label ?? ""}`);
+  });
+  return recommendedModels.length
+    ? { status: "observed", host, guidance: "prefer_opus_for_execution", availableModels, recommendedModels }
+    : { status: "unknown", host, reason: "available_opus_model_unobserved", availableModels };
+}
+
 /** Build the setup result without reading or mutating project state. */
 export function buildSetupSummary({ project, dependencies, readiness, settings, settingsOutcome, nativeIdentity }) {
   return {
@@ -331,7 +422,9 @@ export async function orchestrateSetup(input, context = {}) {
   qualified = await qualifySetupOwner(input.project, input.host, context.nativeIdentity, context.budget);
   if (!qualified) return { status: "conflict", reason: "project_owner_required" };
   const overview = inspectSettings({ setup: qualified.project.setup, host: input.host, nativeChoices: context.nativeChoices ?? {} });
-  const wizard = buildSettingsWizard({ setup: qualified.project.setup, host: input.host, nativeChoices: context.nativeChoices ?? {} });
+  const modelRouting = modelRoutingAdvisory(input.host, context.nativeChoices ?? {});
+  const wizard = { ...buildSettingsWizard({ setup: qualified.project.setup, host: input.host, nativeChoices: context.nativeChoices ?? {} }),
+    modelRouting };
   const settingsCheckpoint = await readFile(qualified.project.paths.setup);
   let interaction;
   try {
@@ -357,8 +450,50 @@ export async function orchestrateSetup(input, context = {}) {
   if (!qualified) return { status: "conflict", reason: "project_owner_required" };
   const readiness = await canonicalReadiness(qualified.project, input.host, input.scope, context);
   const settings = inspectSettings({ setup: qualified.project.setup, host: input.host, nativeChoices: context.nativeChoices ?? {} });
-  const summary = buildSetupSummary({ project: qualified.project, dependencies, readiness, settings, settingsOutcome, nativeIdentity: qualified.identity });
+  const summary = { ...buildSetupSummary({ project: qualified.project, dependencies, readiness, settings, settingsOutcome,
+    nativeIdentity: qualified.identity }), modelRouting };
   return interaction.interrupted ? { ...summary, interrupted: true } : summary;
+}
+
+async function contextOffer(project, host, context, request = {}) {
+  fields(request, ["ownerReportedCapabilities"], "request");
+  const reported = ownerReportedCapabilities(request.ownerReportedCapabilities, host);
+  const inventory = capabilityInventory(context.capabilityInventory, host);
+  const inspection = await inspectContextReduction({ projectRoot: project.root, home: context.contextHome, host });
+  if (reported) {
+    const proposal = proposeContextReduction({ host,
+      selectedProfile: canonicalCapabilityProfile(project, host, reported.capabilities), visible: reported.capabilities });
+    return { status: "offered_unverified", visibility: "unknown", automaticDetection: "unavailable", inspection, proposal };
+  }
+  if (!inventory) return { status: "visibility_unknown", inspection, proposal: null };
+  const proposal = proposeContextReduction({ host,
+    selectedProfile: canonicalCapabilityProfile(project, host, inventory.capabilities), visible: inventory.capabilities });
+  return { status: "offered", visibility: "host_observed", inspection, proposal };
+}
+
+function setupReceiptRecorder(common, slot) {
+  return async (receipt) => {
+    const result = await mutateSetup({ ...common, operation: { kind: `${slot}-receipt`, receipt }, mutate: async (setup) => {
+      if (isDeepStrictEqual(setup[slot], receipt)) return { write: false, result: { status: "already_recorded" } };
+      setup[slot] = structuredClone(receipt);
+      return { setup };
+    } });
+    if (result.status === "already_recorded") return { status: "committed", receiptDigest: receipt.digest };
+    if (["applied", "duplicate"].includes(result.status)) {
+      const recorded = result.setup ?? JSON.parse(await readFile(common.setupPath, "utf8"));
+      if (!isDeepStrictEqual(recorded[slot], receipt)) throw new Error("canonical setup receipt changed after commit");
+      return { status: "committed", receiptDigest: receipt.digest };
+    }
+    if (result.status === "conflict") return { status: "not_committed", receiptDigest: receipt.digest };
+    throw new Error(`canonical setup receipt result is unknown: ${result.status ?? "missing"}`);
+  };
+}
+
+function absoluteOptional(value, label) {
+  if (value === undefined) return undefined;
+  const checked = string(value, label);
+  if (!path.isAbsolute(checked) || path.normalize(checked) !== checked) throw new Error(`${label} must be absolute.`);
+  return checked;
 }
 
 /** JSON is user intent; native choices, runners, and worker discovery enter only through trusted caller context. */
@@ -386,7 +521,8 @@ export async function runSetupCommand(command, options = {}, context = {}) {
   }
   if (command === "settings-wizard") {
     const request = fields(envelope?.request ?? {}, ["draft"], "request");
-    return buildSettingsWizard({ setup: project.setup, host: options.host, nativeChoices, draft: validateDraft(request.draft ?? {}) });
+    return { ...buildSettingsWizard({ setup: project.setup, host: options.host, nativeChoices, draft: validateDraft(request.draft ?? {}) }),
+      modelRouting: modelRoutingAdvisory(options.host, nativeChoices) };
   }
   if (command === "dependencies") {
     const result = inspectDependencies({ setup: project.setup, host: options.host });
@@ -396,6 +532,8 @@ export async function runSetupCommand(command, options = {}, context = {}) {
     };
     return result;
   }
+  if (command === "helpers") return inspectHelpers({ projectRoot: project.root });
+  if (command === "context-reduction") return contextOffer(project, options.host, context, envelope?.request ?? {});
   if (command === "readiness") {
     if (project.active) {
       if (envelope) throw new Error("Active project readiness uses canonical records; --request is ineffective.");
@@ -428,6 +566,77 @@ export async function runSetupCommand(command, options = {}, context = {}) {
       }) ? { projectOwner: null } : canonical.registry;
     },
   };
+  if (command === "helpers-install") {
+    fields(envelope.request, [], "request");
+    const recordSetupReceipt = setupReceiptRecorder(common, "helpers");
+    const result = await installHelpers({ projectRoot: project.root, recordSetupReceipt });
+    if (!result.changed && result.setupReceipt && !isDeepStrictEqual(project.setup.helpers, result.setupReceipt)) {
+      const outcome = await recordSetupReceipt(result.setupReceipt);
+      if (outcome.status !== "committed") throw new Error("canonical helper receipt was not committed");
+    }
+    return result;
+  }
+  if (command === "helpers-recover") {
+    fields(envelope.request, ["expectedJournalDigest"], "request");
+    string(envelope.request.expectedJournalDigest, "request.expectedJournalDigest");
+    return recoverHelperTransaction({ projectRoot: project.root, expectedJournalDigest: envelope.request.expectedJournalDigest,
+      recordSetupReceipt: setupReceiptRecorder(common, "helpers") });
+  }
+  if (command === "context-reduction-apply") {
+    fields(envelope.request, ["proposal", "decision", "ownerReportedCapabilities"], "request");
+    const decision = fields(envelope.request.decision, envelope.request.decision?.action === "apply"
+      ? ["action", "reviewed", "proposalId", "selected", "visibilityAcknowledged"] : ["action"], "request.decision");
+    if (["no_answer", "cancel"].includes(decision.action)) {
+      return applyContextReduction({ decision });
+    }
+    const reported = ownerReportedCapabilities(envelope.request.ownerReportedCapabilities, options.host);
+    const inventory = capabilityInventory(context.capabilityInventory, options.host);
+    if (reported && decision.visibilityAcknowledged !== true) {
+      return { status: "conflict", reason: "visibility_acknowledgement_required", changed: false };
+    }
+    if (!reported && !inventory) return { status: "conflict", reason: "visibility_unknown", changed: false };
+    const capabilities = reported?.capabilities ?? inventory.capabilities;
+    const currentProposal = proposeContextReduction({ host: options.host,
+      selectedProfile: canonicalCapabilityProfile(project, options.host, capabilities), visible: capabilities });
+    if (!isDeepStrictEqual(envelope.request.proposal, currentProposal)) {
+      return { status: "conflict", reason: "proposal_stale", changed: false };
+    }
+    const home = absoluteOptional(context.contextHome, "trusted context home");
+    if (options.host === "claude-code" && home === undefined) return { status: "conflict", reason: "trusted_home_unavailable", changed: false };
+    const inspection = await inspectContextReduction({ projectRoot: project.root, home, host: options.host });
+    const binding = contextReceiptBinding({ canonicalReceipt: project.setup.contextReduction,
+      localReceipt: inspection.receipt, projectRoot: project.root, home, host: options.host });
+    if (binding.status === "mismatch") return { status: "conflict", reason: "canonical_receipt_mismatch", changed: false };
+    if (binding.appliedReceipt) return { status: "conflict", reason: "context_reduction_already_applied", changed: false };
+    const applyDecision = { action: decision.action, reviewed: decision.reviewed,
+      proposalId: decision.proposalId, selected: decision.selected };
+    return applyContextReduction({ projectRoot: project.root, home, proposal: currentProposal, decision: applyDecision,
+      recordSetupReceipt: setupReceiptRecorder(common, "contextReduction") });
+  }
+  if (command === "context-reduction-revert") {
+    fields(envelope.request, ["expectedReceiptDigest"], "request");
+    string(envelope.request.expectedReceiptDigest, "request.expectedReceiptDigest");
+    const home = absoluteOptional(context.contextHome, "trusted context home");
+    const inspection = await inspectContextReduction({ projectRoot: project.root, home, host: options.host });
+    const binding = contextReceiptBinding({ canonicalReceipt: project.setup.contextReduction,
+      localReceipt: inspection.receipt, projectRoot: project.root, home, host: options.host });
+    if (binding.status === "empty") return { status: "not_applied", changed: false };
+    if (binding.status !== "linked" || !binding.appliedReceipt
+      || binding.appliedReceipt.digest !== envelope.request.expectedReceiptDigest) {
+      return { status: "conflict", reason: "canonical_receipt_mismatch", changed: false };
+    }
+    return revertContextReduction({ projectRoot: project.root, home, host: options.host,
+      expectedReceiptDigest: envelope.request.expectedReceiptDigest,
+      recordSetupReceipt: setupReceiptRecorder(common, "contextReduction") });
+  }
+  if (command === "context-reduction-recover") {
+    fields(envelope.request, ["expectedJournalDigest"], "request");
+    string(envelope.request.expectedJournalDigest, "request.expectedJournalDigest");
+    const home = absoluteOptional(context.contextHome, "trusted context home");
+    return recoverContextReductionTransaction({ projectRoot: project.root, home, host: options.host,
+      expectedJournalDigest: envelope.request.expectedJournalDigest,
+      recordSetupReceipt: setupReceiptRecorder(common, "contextReduction") });
+  }
   if (command === "settings-update") {
     fields(envelope.request, ["change"], "request");
     return updateSettings({ ...common, host: options.host, change: validateChange(envelope.request.change), nativeChoices });

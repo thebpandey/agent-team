@@ -284,6 +284,9 @@ if (process.argv[2] === "initialize-worker") {
       ["0.4.2", "7.2.4", "applied"],
       ["0.4.2", "7.2.5", "applied"],
       ["0.4.2", "7.2.6", "applied"],
+      ["0.4.2", "7.3.0", "applied"],
+      ["0.5.0", "7.3.0", "applied"],
+      ["0.5.0", "7.2.6", "conflict"],
       ["0.4.2", "7.2.2", "conflict"],
       ["0.4.1", "7.2.3", "conflict"],
       ["0.4.1", "7.2.4", "conflict"],
@@ -324,10 +327,11 @@ if (process.argv[2] === "initialize-worker") {
       dependencies: [],
       acceptance: ["Pass the task checks."],
     }));
-    value.request.settingsDraft = { host: "codex", execution: { limits: { maxPlanTasks: 600 } } };
+    value.request.settingsDraft = { host: "codex", execution: { limits: { maxPlanTasks: 600, canonicalRecordMaxBytes: 8 * 1024 * 1024 } } };
     const result = await initialize(value.root, value.request);
     assert.equal(result.status, "applied", JSON.stringify(result));
-    assert.deepEqual(result.setup.settings.hosts.codex.execution, { limits: { maxPlanTasks: 600 } });
+    assert.deepEqual(result.setup.settings.hosts.codex.execution,
+      { limits: { maxPlanTasks: 600, canonicalRecordMaxBytes: 8 * 1024 * 1024 } });
     assert.equal(result.setup.initialization.status, "complete");
     assert.equal((await loadCanonicalState(await resolveProject(value.root))).tasks.length, 501);
   });

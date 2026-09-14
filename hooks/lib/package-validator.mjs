@@ -39,6 +39,11 @@ async function validatePackage(root, { source }) {
     if (!manifest.registrationTargets?.[runtime]?.user || !manifest.registrationTargets?.[runtime]?.project) errors.push(`Universal package manifest is missing ${runtime} user/project registration targets.`);
   }
 
+  for (const file of manifest.files.filter((entry) => entry.endsWith(".md"))) {
+    const basename = path.basename(file, ".md");
+    if (basename !== basename.toUpperCase()) errors.push(`Markdown basename must be uppercase: ${file}`);
+  }
+
   for (const file of manifest.files) if (!(await present(path.join(root, file)))) errors.push(`Missing manifest file: ${file}`);
   if (source) {
     if (!(await present(path.join(root, manifest.legacy.marker)))) errors.push(`Missing legacy archive marker: ${manifest.legacy.marker}`);

@@ -14,6 +14,7 @@ import { createEventBudget } from "../hooks/lib/budget.mjs";
 import { evaluatePolicy } from "../hooks/lib/policy.mjs";
 import { runWorkflowCommand } from "../hooks/lib/workflow-cli.mjs";
 import { classifyRun, selectReleaseBatch } from "../hooks/lib/run-state.mjs";
+import { resolveExecutionSettings } from "../hooks/lib/settings.mjs";
 import { hookEvent, policyFixture } from "./hook-test-helpers.mjs";
 
 const modulePath = new URL("../hooks/lib/task-transitions.mjs", import.meta.url);
@@ -516,8 +517,15 @@ if (process.argv[2] === "writer") {
     }));
     const wanted = { actorSessionId: "owner-session", operationId: "gate-evidence", expectedVersion: 0, expectedFingerprint: value.canonical.tracker.fingerprint,
       gate: "completion", taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath };
-    const result = await module.recordGateEvidence(value.project, wanted);
+    const executionSettings = resolveExecutionSettings({}, "codex");
+    executionSettings.limits.subprocessMaxBufferBytes = 3 * 1024 * 1024;
+    const observedBuffers = [];
+    const result = await module.recordGateEvidence(value.project, wanted, { executionSettings, runGit: async (args, options) => {
+      observedBuffers.push(options?.maxBuffer);
+      return { stdout: execFileSync("git", args, { cwd: options?.cwd ?? value.project.worktreeRoot, encoding: "utf8" }) };
+    } });
     assert.equal(result.status, "applied");
+    assert.deepEqual(observedBuffers, [3 * 1024 * 1024, 3 * 1024 * 1024]);
     const current = await loadCanonicalState(value.project);
     assert.equal(current.state.completion.trackerFingerprint, current.tracker.fingerprint);
     assert.equal(current.state.completion.taskId, "AT-001");
@@ -999,6 +1007,8 @@ if (process.argv[2] === "writer") {
     const row = { id: "AT-001", title: "Native task", status: "open", assignee: "", dependency_count: 0, priority: 1 };
     let writes = 0;
     const environment = { ...process.env, BEADS_DB: "/wrong/db", BD_DB: "/wrong/db2", BEADS_DOLT_SERVER_PORT: "7777", BEADS_DOLT_SERVER_PASSWORD: "fixture-auth" };
+    const executionSettings = resolveExecutionSettings({}, "codex");
+    executionSettings.limits.subprocessMaxBufferBytes = 3 * 1024 * 1024;
     const runBeads = async (binary, args, options) => {
       assert.equal(binary, "/selected/bin/bd");
       assert.equal(options.env.BEADS_DB, undefined);
@@ -1006,18 +1016,19 @@ if (process.argv[2] === "writer") {
       assert.equal(options.env.BEADS_DOLT_SERVER_PORT, undefined);
       assert.equal(options.env.BEADS_DOLT_SERVER_PASSWORD, "fixture-auth");
       if (args[0] === "list") return { stdout: JSON.stringify([row]) };
+      assert.equal(options.maxBuffer, 3 * 1024 * 1024);
       assert.deepEqual(args.slice(0, 5), ["update", "AT-001", "--claim", "--actor", "TEAM-001"]);
       row.assignee = "TEAM-001"; row.status = "in_progress"; row.notes = args[args.indexOf("--append-notes") + 1]; writes += 1;
       throw Object.assign(new Error("connection lost after commit"), { killed: true });
     };
-    const canonical = await loadCanonicalState(project, { runBeads, environment });
+    const canonical = await loadCanonicalState(project, { runBeads, environment, executionSettings });
     const wanted = { ...request(value, "native-claim"), expectedOwner: "", expectedFingerprint: canonical.tracker.fingerprint };
-    const unknown = await transitionTask(project, wanted, { runBeads, environment });
+    const unknown = await transitionTask(project, wanted, { runBeads, environment, executionSettings });
     assert.equal(unknown.status, "unavailable");
     assert.equal(unknown.reason, "tracker_write_uncertain");
     const state = JSON.parse(await readFile(project.paths.state, "utf8"));
     assert.equal(state.pendingOperations["native-claim"].phase, "uncertain");
-    const recovered = await transitionTask(project, { ...wanted, expectedVersion: state.stateVersion }, { runBeads, environment });
+    const recovered = await transitionTask(project, { ...wanted, expectedVersion: state.stateVersion }, { runBeads, environment, executionSettings });
     assert.equal(recovered.result.reconciled, true);
     assert.equal(writes, 1);
   });
@@ -1439,10 +1450,19 @@ if (process.argv[2] === "writer") {
       boundaryRevision, integratedRevision: boundaryRevision } } };
     await writeFile(value.project.paths.state, JSON.stringify(value.canonical.state, null, 2));
     const tracker = await loadCanonicalState(value.project);
+    const executionSettings = resolveExecutionSettings({}, "codex");
+    executionSettings.limits.subprocessMaxBufferBytes = 3 * 1024 * 1024;
+    const observedBuffers = [];
     const result = await rebindCompletion(value.project, { operationId: "rebind-at-001", taskId: "AT-001", quarantineId,
       expectedTrackerFingerprint: tracker.tracker.fingerprint, evidencePath, expectedEvidenceFingerprint: evidenceFingerprint,
-      expectedSourceRevision: sourceRevision, expectedBoundaryRevision: boundaryRevision }, nativeOptions(value));
+      expectedSourceRevision: sourceRevision, expectedBoundaryRevision: boundaryRevision }, { ...nativeOptions(value), executionSettings,
+      runGit: async (args, options) => {
+        observedBuffers.push(options?.maxBuffer);
+        return { stdout: execFileSync("git", args, { cwd: options?.cwd ?? value.root, encoding: "utf8" }) };
+      } });
     assert.equal(result.status, "applied", JSON.stringify(result));
+    assert.equal(observedBuffers.length >= 4, true);
+    assert.equal(observedBuffers.every((value) => value === 3 * 1024 * 1024), true);
     const state = (await loadCanonicalState(value.project)).state;
     assert.equal(state.quarantinedEvidence[0].reboundByOperationId, "rebind-at-001");
     assert.equal(state.deliveryReceipts.completion["AT-001"].sourceRevision, sourceRevision);

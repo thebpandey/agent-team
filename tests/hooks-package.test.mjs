@@ -80,8 +80,8 @@ test("verified release maps agree with the structurally valid extracted package"
   assert.equal((await validators.checkInstalledPackage(path.join(extracted, "agent-team"))).status, "passed");
   assert.equal(artifact.archiveContentDigest, fileMapDigest(artifact.archiveFileMap));
   assert.deepEqual(Object.keys(artifact.packageFileMap).sort(), JSON.parse(await readFile(path.join(sourceRoot, "hooks", "manifest.json"))).files.sort());
-  assert.equal(Object.keys(artifact.packageFileMap).length, 96);
-  assert.equal(Object.keys(artifact.archiveFileMap).length, 97);
+  assert.equal(Object.keys(artifact.packageFileMap).length, 107);
+  assert.equal(Object.keys(artifact.archiveFileMap).length, 108);
   assert.ok(artifact.packageFileMap["hooks/lib/owner-recovery.mjs"]);
   assert.ok(artifact.packageFileMap["hooks/lib/run-state.mjs"]);
   for (const excluded of ["index.html", "tests/hooks-package.test.mjs", ".github/workflows/release.yml"]) {
@@ -128,7 +128,7 @@ test("package validator detects missing files, version drift, broken links, miss
     ["manifest omission", async (root) => {
       const file = path.join(root, "hooks", "manifest.json");
       const manifest = JSON.parse(await readFile(file, "utf8"));
-      manifest.files = manifest.files.filter((entry) => entry !== "references/state.md");
+      manifest.files = manifest.files.filter((entry) => entry !== "references/STATE.md");
       await writeFile(file, JSON.stringify(manifest));
     }],
     ["parity", async (root) => {

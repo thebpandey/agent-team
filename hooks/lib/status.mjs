@@ -208,7 +208,9 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     updatedAt: value(team, "last update", "updated at", "updated") || null,
   }));
   const unavailable = freshness.status === "unavailable" || freshness.status === "unknown";
-  const operational = projectRunState(canonical, undefined, now);
+  const revision = freshness.status === "current" && /^[0-9a-f]{40,64}$/.test(canonical.git?.headRevision ?? "")
+    ? canonical.git.headRevision : null;
+  const operational = projectRunState(canonical, undefined, now, options);
   const runDecision = { status: operational.run.status, effectiveRun: operational.run, effectiveRunFingerprint: operational.run.fingerprint,
     classification: { kind: operational.tail.classification, eligibleTaskIds: operational.run.eligibleTaskIds, blockedTaskIds: operational.run.blockedTaskIds },
     selectedBatchTaskIds: operational.run.selectedBatchTaskIds ?? [], deploymentHeld: operational.run.deploymentHeld,
@@ -225,6 +227,7 @@ export function createStatusModel(project, canonical = {}, options = {}) {
   };
   return deepFreeze({
     stateVersion: freshness.status === "current" ? version(state.stateVersion) : null,
+    revision,
     project: { id: canonical.registry?.projectId || project?.projectId || "unknown", root: project?.root || null,
       ownerSessionId: canonical.registry?.projectOwner ?? null, ownerHost: canonical.registry?.projectOwnerHost ?? null,
       ownershipEpoch: version(canonical.registry?.ownershipEpoch) },
@@ -266,6 +269,7 @@ export function createStatusModel(project, canonical = {}, options = {}) {
     },
     targets: targetsFor(project, canonical, runDecision, now),
     workers: operational.workers,
+    lanes: operational.lanes,
     slots: operational.slots,
     pendingDecisions: operational.pendingDecisions,
     uncertainOperations: operational.pendingOperations,

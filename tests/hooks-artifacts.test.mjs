@@ -104,7 +104,7 @@ test("source and extracted universal CLIs complete every host and scope lifecycl
   temporary.push(extracted, updated);
 
   assert.equal(built.archives.length, 1);
-  assert.equal(path.basename(built.archives[0]), "agent-team-7.2.6.zip");
+  assert.equal(path.basename(built.archives[0]), "agent-team-7.3.0.zip");
   await run("unzip", ["-q", built.archives[0], "-d", extracted]);
   const packageRoot = path.join(extracted, "agent-team");
   const updatedRoot = path.join(updated, "agent-team");
@@ -304,14 +304,14 @@ test("archives identify the canonical repository and pinned release source", asy
     assert.equal(source.repository, "https://github.com/thebpandey/agent-team");
     assert.deepEqual(Object.keys(source).sort(), ["hosts", "name", "packageContentDigest", "packageFileMap", "releaseTag", "releaseUrl", "repository", "sourceRevision", "updateUrl", "version"]);
     assert.equal(source.name, "agent-team");
-    assert.equal(source.version, "7.2.6");
-    assert.equal(source.releaseTag, "v7.2.6");
-    assert.equal(source.releaseUrl, "https://github.com/thebpandey/agent-team/releases/tag/v7.2.6");
+    assert.equal(source.version, "7.3.0");
+    assert.equal(source.releaseTag, "v7.3.0");
+    assert.equal(source.releaseUrl, "https://github.com/thebpandey/agent-team/releases/tag/v7.3.0");
     assert.equal(source.updateUrl, "https://github.com/thebpandey/agent-team/releases/latest");
     assert.equal(source.sourceRevision, releaseRevision);
     assert.match(source.sourceRevision, /^[a-f0-9]{40}$/);
-    assert.equal(Object.keys(source.packageFileMap).length, 96);
-    assert.equal(entries.length, 97);
+    assert.equal(Object.keys(source.packageFileMap).length, 107);
+    assert.equal(entries.length, 108);
   }
 });
 

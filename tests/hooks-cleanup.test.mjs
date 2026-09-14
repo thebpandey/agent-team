@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -40,6 +41,65 @@ async function cleanup(...args) {
   const module = await import("../hooks/lib/cleanup.mjs").catch(() => ({}));
   assert.equal(typeof module.cleanupDevelopmentWorktree, "function", "development cleanup implementation is required");
   return module.cleanupDevelopmentWorktree(...args);
+}
+
+const laneWorker = { host: "codex", sessionId: "lane-worker", generation: 1 };
+const laneEvidenceWorker = { host: "codex", sessionId: "lane-verifier", generation: 1 };
+const laneReviewer = { host: "claude-code", sessionId: "lane-reviewer", generation: 1 };
+
+function laneAssignment(taskId, revision, attempt, briefSha256) {
+  return {
+    id: `assignment-${attempt}`, taskId, attempt,
+    packet: { path: `.agent-team/lanes/build-a/packets/${taskId}-${attempt}.md`, sha256: String(attempt).repeat(64) },
+    briefSha256, revision, worker: laneWorker, decisions: [], factSheets: [], status: "resolved",
+    createdAt: "2026-09-14T10:00:00Z", dispatchedAt: "2026-09-14T10:01:00Z",
+    dispatch: { status: "observed", source: "codex", eventId: `dispatch-${attempt}`, observedAt: "2026-09-14T10:01:00Z" },
+  };
+}
+
+function laneResult(assignment, kind, workerIdentity, revision) {
+  const digest = { worker: "2", verification: "3", independent_review: "4", integration: "5" }[kind];
+  return {
+    assignmentId: assignment.id, taskId: assignment.taskId, kind, status: "passed", revision, worker: workerIdentity,
+    evidence: { path: `.agent-team/lanes/build-a/evidence/${assignment.taskId}-${kind}.json`, sha256: digest.repeat(64) },
+    recordedAt: "2026-09-14T10:02:00Z",
+  };
+}
+
+async function installLane(value, { status = "closed", integrated = true } = {}) {
+  await writeFile(value.project.paths.tasks, `${await readFile(value.project.paths.tasks, "utf8")}| AT-002 | Complete second lane task | TEAM-001 | none | verified | ${value.revision} | Done. |\n`);
+  await writeFile(value.project.paths.teams, (await readFile(value.project.paths.teams, "utf8")).replace("| AT-001 | in_progress |", "| AT-001, AT-002 | in_progress |"));
+  value.state.run = activeRun(["AT-001", "AT-002"]);
+  const writeArtifact = async (relative, contents) => {
+    const bytes = Buffer.from(contents);
+    await mkdir(path.dirname(path.join(value.root, relative)), { recursive: true });
+    await writeFile(path.join(value.root, relative), bytes);
+    return createHash("sha256").update(bytes).digest("hex");
+  };
+  const brief = { path: ".agent-team/lanes/build-a/BRIEF.md" };
+  brief.sha256 = await writeArtifact(brief.path, "immutable lane brief\n");
+  const ownershipEvidence = { path: ".agent-team/lanes/build-a/evidence/ownership.json", revision: value.revision, pathSetHash: "f".repeat(64) };
+  ownershipEvidence.sha256 = await writeArtifact(ownershipEvidence.path, JSON.stringify({ revision: value.revision, paths: ["src/"] }));
+  const assignments = [laneAssignment("AT-001", value.revision, 1, brief.sha256), laneAssignment("AT-002", value.revision, 2, brief.sha256)];
+  for (const assignment of assignments) assignment.packet.sha256 = await writeArtifact(assignment.packet.path, JSON.stringify({ assignment: assignment.id }));
+  const results = assignments.flatMap((assignment) => [
+    laneResult(assignment, "worker", laneWorker, value.revision),
+    laneResult(assignment, "verification", laneEvidenceWorker, value.revision),
+    laneResult(assignment, "independent_review", laneReviewer, value.revision),
+    ...(integrated ? [laneResult(assignment, "integration", laneEvidenceWorker, value.revision)] : []),
+  ]);
+  for (const result of results) result.evidence.sha256 = await writeArtifact(result.evidence.path,
+    JSON.stringify({ assignmentId: result.assignmentId, taskId: result.taskId, kind: result.kind, revision: result.revision }));
+  value.state.lanes = { schemaVersion: 1, records: [{
+    schemaVersion: 1, id: "build-a", teamId: "TEAM-001", status, role: "developer", model: "gpt-6-astra", effort: "high",
+    queue: ["AT-001", "AT-002"], currentTaskId: status === "closed" ? null : "AT-001", worker: status === "closed" ? null : laneWorker,
+    worktree: value.feature, branch: "lane/build-a", brief, ownershipEvidence,
+    rotationCount: 1, handover: null, factSheets: [], assignments, results,
+  }] };
+  value.laneDeliveryEvidence = Object.fromEntries(assignments.map(({ taskId, revision }) => [taskId, {
+    taskId, sourceRevision: revision, integratedRevision: revision,
+  }]));
+  await writeFile(value.project.paths.state, JSON.stringify(value.state));
 }
 
 test("verified integrated clean worktree is removed normally with deployment disabled and evidence retained", async () => {
@@ -106,6 +166,52 @@ test("in-scope cleanup still uses one locked tracker snapshot", async () => {
   await writeFile(value.project.paths.state, JSON.stringify(state));
   assert.equal((await cleanup(value.project, value.request)).status, "applied");
   await assert.rejects(access(value.feature), { code: "ENOENT" });
+});
+
+test("lane worktree cleanup refuses an open queue before probes or removal", async () => {
+  const value = await fixture();
+  await installLane(value, { status: "active" });
+  let probes = 0;
+  const result = await cleanup(value.project, value.request, { runGit: async () => { probes += 1; throw new Error("must not probe"); } });
+  assert.deepEqual(result, { status: "conflict", reason: "lane_open" });
+  assert.equal(probes, 0);
+  await access(value.feature);
+});
+
+test("lane worktree cleanup refuses an unintegrated historical task before probes", async () => {
+  const value = await fixture();
+  await installLane(value, { integrated: false });
+  let probes = 0;
+  const result = await cleanup(value.project, value.request, { runGit: async () => { probes += 1; throw new Error("must not probe"); } });
+  assert.deepEqual(result, { status: "conflict", reason: "lane_tasks_not_integrated" });
+  assert.equal(probes, 0);
+  await access(value.feature);
+});
+
+test("fully closed integrated lane permits existing safe cleanup checks for its shared worktree", async () => {
+  const value = await fixture();
+  await installLane(value);
+  const result = await cleanup(value.project, value.request, {
+    loadCanonicalForCleanup: async () => ({ state: value.state, deliveryEvidence: value.laneDeliveryEvidence }),
+  });
+  assert.equal(result.status, "applied", result.reason);
+  await assert.rejects(access(value.feature), { code: "ENOENT" });
+  await access(value.evidencePath);
+});
+
+test("closed lane cleanup retains a worktree when immutable lane evidence changed", async () => {
+  const value = await fixture();
+  await installLane(value);
+  const pointer = value.state.lanes.records[0].results[0].evidence.path;
+  await writeFile(path.join(value.root, pointer), "changed evidence\n");
+  let probes = 0;
+  const result = await cleanup(value.project, value.request, {
+    loadCanonicalForCleanup: async () => ({ state: value.state, deliveryEvidence: value.laneDeliveryEvidence }),
+    runGit: async () => { probes += 1; throw new Error("must not probe"); },
+  });
+  assert.deepEqual(result, { status: "conflict", reason: "retain_lane_evidence_changed" });
+  assert.equal(probes, 0);
+  await access(value.feature);
 });
 
 for (const kind of ["tracked", "untracked", "ignored", "user_owned", "unknown_writer", "different_pid_namespace", "missing_pid_namespace", "preview"]) {

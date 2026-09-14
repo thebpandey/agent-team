@@ -16,7 +16,7 @@ import { resolveExecutionSettings, validateExecutionSettings } from "./settings.
 const run = promisify(execFile);
 const MAX_INITIALIZATION_REQUEST_BYTES = 256 * 1024;
 const MAX_HANDOFF_BYTES = 250 * 1024;
-const SUPPORTED_HANDOFFS = new Set(["0.3.1/7.0.2", "0.4.0/7.0.2", "0.4.1/7.1.0", "0.4.1/7.2.0", "0.4.1/7.2.1", "0.4.2/7.2.3", "0.4.2/7.2.4", "0.4.2/7.2.5", "0.4.2/7.2.6"]);
+const SUPPORTED_HANDOFFS = new Set(["0.3.1/7.0.2", "0.4.0/7.0.2", "0.4.1/7.1.0", "0.4.1/7.2.0", "0.4.1/7.2.1", "0.4.2/7.2.3", "0.4.2/7.2.4", "0.4.2/7.2.5", "0.4.2/7.2.6", "0.4.2/7.3.0", "0.5.0/7.3.0"]);
 const hash = (source) => createHash("sha256").update(source).digest("hex");
 const stable = (value) => JSON.stringify(value && typeof value === "object"
   ? Array.isArray(value) ? value.map((entry) => JSON.parse(stable(entry))) : Object.fromEntries(Object.keys(value).sort().map((key) => [key, JSON.parse(stable(value[key]))])) : value);

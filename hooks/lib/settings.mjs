@@ -7,7 +7,7 @@ import { assertNoOwnerRecoveryJournal, repairOwnerRecovery } from "./owner-recov
 
 const HOSTS = new Set(["codex", "claude-code"]);
 
-const EXECUTION_DEFAULTS = Object.freeze({
+export const DEFAULT_EXECUTION_SETTINGS = Object.freeze({
   lanes: Object.freeze({
     enabled: true,
     rotation: Object.freeze({ tasks: 2, onPressure: true }),
@@ -16,7 +16,11 @@ const EXECUTION_DEFAULTS = Object.freeze({
     briefMaxWords: 6000,
   }),
   supervision: Object.freeze({ heartbeatSeconds: 600 }),
-  limits: Object.freeze({ subprocessMaxBufferBytes: 2 * 1024 * 1024, maxPlanTasks: 1000 }),
+  limits: Object.freeze({
+    subprocessMaxBufferBytes: 2 * 1024 * 1024,
+    maxPlanTasks: 1000,
+    canonicalRecordMaxBytes: 16 * 1024 * 1024,
+  }),
 });
 
 function positiveInteger(value, label, minimum = 1) {
@@ -45,9 +49,12 @@ export function validateExecutionSettings(value, label = "execution settings") {
     if (value.supervision.heartbeatSeconds !== undefined) positiveInteger(value.supervision.heartbeatSeconds, `${label} supervision.heartbeatSeconds`, 60);
   }
   if (value.limits !== undefined) {
-    exactObject(value.limits, ["subprocessMaxBufferBytes", "maxPlanTasks"], `${label} limits`);
-    for (const field of ["subprocessMaxBufferBytes", "maxPlanTasks"]) {
+    exactObject(value.limits, ["subprocessMaxBufferBytes", "maxPlanTasks", "canonicalRecordMaxBytes"], `${label} limits`);
+    for (const field of ["subprocessMaxBufferBytes", "maxPlanTasks", "canonicalRecordMaxBytes"]) {
       if (value.limits[field] !== undefined) positiveInteger(value.limits[field], `${label} limits.${field}`);
+    }
+    if (value.limits.canonicalRecordMaxBytes > DEFAULT_EXECUTION_SETTINGS.limits.canonicalRecordMaxBytes) {
+      throw new Error(`${label} limits.canonicalRecordMaxBytes exceeds the supported maximum.`);
     }
   }
   return structuredClone(value);
@@ -85,13 +92,13 @@ function mergeExecutionSettings(base = {}, patch = {}) {
 export function resolveExecutionSettings(setup = {}, host) {
   if (!HOSTS.has(host)) throw new Error(`Unknown settings host: ${host ?? "missing"}.`);
   const configured = validateExecutionSettings(setup?.settings?.hosts?.[host]?.execution ?? {});
-  return mergeExecutionSettings(EXECUTION_DEFAULTS, configured);
+  return mergeExecutionSettings(DEFAULT_EXECUTION_SETTINGS, configured);
 }
 
 const EXECUTION_PATHS = Object.freeze([
   "lanes.enabled", "lanes.rotation.tasks", "lanes.rotation.onPressure", "lanes.factSheetStaleDays",
   "lanes.workerUpdateMaxChars", "lanes.briefMaxWords", "supervision.heartbeatSeconds",
-  "limits.subprocessMaxBufferBytes", "limits.maxPlanTasks",
+  "limits.subprocessMaxBufferBytes", "limits.maxPlanTasks", "limits.canonicalRecordMaxBytes",
 ]);
 
 function nestedValue(value, dotted) {

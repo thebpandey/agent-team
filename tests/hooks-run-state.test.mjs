@@ -7,6 +7,8 @@ import test from "node:test";
 
 import { loadCanonicalState } from "../hooks/lib/canonical-state.mjs";
 import { resolveProject } from "../hooks/lib/project.mjs";
+import { resolveExecutionSettings } from "../hooks/lib/settings.mjs";
+import { requireAdmittedTaskIds } from "../hooks/lib/task-transitions.mjs";
 import {
   classifyRun, effectiveRunFingerprint, readRunDecision, reconcileRun,
   selectReleaseBatch, startRun, validateEffectiveRun,
@@ -39,6 +41,7 @@ test("effective run validation is closed complete and fingerprint stable", () =>
   ]) assert.equal(validateEffectiveRun(invalid, [task("AT-001")]), "invalid_effective_run");
   assert.equal(validateEffectiveRun(valid, [task("AT-001", "ready", { dependencyEvidence: "unavailable" })]), "unresolved_scope_dependency");
   assert.notEqual(effectiveRunFingerprint(valid), effectiveRunFingerprint({ ...valid, taskIds: ["AT-001", "AT-002"] }));
+  assert.equal(requireAdmittedTaskIds({ run: { ...valid, executionSettings: resolveExecutionSettings({}, "codex") } }, ["AT-001"]), undefined);
 });
 
 test("tracker hierarchy excludes epics subtasks and unknown parents", () => {
@@ -89,6 +92,7 @@ test("start persists immutable effective choices and authenticated owner generat
   const result = await startRun(value.project, request, { actorSessionId: "owner-session", expectedVersion: value.current.state.stateVersion ?? 0, nativeIdentity: value.nativeIdentity });
   assert.equal(result.status, "applied");
   assert.deepEqual({ host: result.result.run.ownerHost, session: result.result.run.ownerSessionId, epoch: result.result.run.ownershipEpoch }, { host: "codex", session: "owner-session", epoch: 1 });
+  assert.deepEqual(result.result.run.executionSettings, resolveExecutionSettings(value.project.setup, "codex"));
   assert.equal((await startRun(value.project, request, { actorSessionId: "owner-session", expectedVersion: value.current.state.stateVersion ?? 0, nativeIdentity: value.nativeIdentity })).status, "duplicate");
 });
 
@@ -112,6 +116,7 @@ test("legacy reconciliation fills provenance once and preserves runtime facts", 
   assert.equal(result.result.deploymentHeld, true);
   assert.deepEqual(result.result.previousRun, legacy);
   assert.equal(result.result.run.ownerHost, "codex");
+  assert.deepEqual(result.result.run.executionSettings, resolveExecutionSettings(value.project.setup, "codex"));
 });
 
 test("legacy reconciliation rejects malformed preserved runtime before write", async () => {

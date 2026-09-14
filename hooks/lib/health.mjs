@@ -3,6 +3,8 @@ import { access, lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } 
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { operationMappingHealth } from "./canonical-state.mjs";
+import { contextReceiptBinding, inspectContextReduction } from "./context-shrink.mjs";
+import { helperReceiptBinding, inspectHelpers } from "./helpers.mjs";
 import { resolveProject } from "./project.mjs";
 import { activationCapability, readActivationLogs } from "./telemetry.mjs";
 import { withDirectoryLock } from "./lock.mjs";
@@ -80,6 +82,29 @@ function eventHealth(runtime, config, records) {
       ...(record ? { source: record.source ?? "recorded_transport", observedAt: record.observedAt } : {}),
     }];
   }));
+}
+
+async function projectExtensionHealth(project, home) {
+  const unavailable = (error) => ({ status: "unavailable", reason: error.message, canonicalReceipt: "unknown",
+    pendingTransaction: "unknown", pendingTransactionDigest: null });
+  let helpers;
+  let contextReduction;
+  try { helpers = await inspectHelpers({ projectRoot: project.root }); }
+  catch (error) { helpers = unavailable(error); }
+  try { contextReduction = await inspectContextReduction({ projectRoot: project.root, home }); }
+  catch (error) { contextReduction = unavailable(error); }
+  const helperBinding = helpers.status === "unavailable" ? { status: "mismatch" }
+    : helperReceiptBinding({ canonicalReceipt: project.setup?.helpers, localReceipt: helpers.receipt,
+      receiptStatus: helpers.receiptStatus, projectRoot: project.root });
+  const contextBinding = contextReceiptBinding({ canonicalReceipt: project.setup?.contextReduction,
+    localReceipt: contextReduction.receipt, projectRoot: project.root, home,
+    host: contextReduction.receipt?.host ?? project.setup?.contextReduction?.host });
+  return {
+    helpers: { ...helpers, canonicalReceipt: helperBinding.status === "linked" ? "linked" : project.setup?.helpers ? "mismatch" : "missing" },
+    contextReduction: { ...contextReduction,
+      canonicalReceipt: !project.setup?.contextReduction ? "missing"
+        : contextBinding.status === "linked" ? "linked" : "mismatch" },
+  };
 }
 
 async function observedPackage(root) {
@@ -267,6 +292,7 @@ export async function getHealth({ home, projectPath, scope = 'user' }) {
     health.operationMappings = project.active
       ? await operationMappingHealth(project)
       : { status: "inactive", fallbackProtection: "unavailable" };
+    Object.assign(health, await projectExtensionHealth(project, home));
   }
   return health;
 }

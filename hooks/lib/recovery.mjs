@@ -4,10 +4,45 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { identityFor, loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs";
+import { readLaneCollection, summarizeLanes } from "./lanes.mjs";
 import { readRunDecision } from "./run-state.mjs";
 import { releaseAuthorityReady } from "./policy.mjs";
+import { resolveExecutionSettings } from "./settings.mjs";
 
 const run = promisify(execFile);
+const defaultExecutionSettings = resolveExecutionSettings({}, "codex");
+
+function recoveryExecutionSettings(project, host, supplied) {
+  if (supplied) return supplied;
+  const observedHost = host ?? project?.setup?.harness;
+  if (["codex", "claude-code"].includes(observedHost)) return resolveExecutionSettings(project?.setup ?? {}, observedHost);
+  return defaultExecutionSettings;
+}
+
+function observedCapacity(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && [value.limit, value.active, value.reservedReview].every((entry) => Number.isSafeInteger(entry) && entry >= 0)
+    ? { limit: value.limit, active: value.active, reservedReview: value.reservedReview }
+    : undefined;
+}
+
+function resumePointer(row, retainedContext, revision) {
+  if (row.status === "closed") return { kind: "closed", laneId: row.id };
+  const context = retainedContext?.[row.id];
+  if (row.liveness === "active" && row.worker && context?.briefSha256 === row.brief.sha256 && context?.revision === revision) {
+    return {
+      kind: "reattach", laneId: row.id, ...row.worker, currentTaskId: row.currentTaskId,
+      worktree: row.worktree, branch: row.branch, briefSha256: row.brief.sha256, revision,
+    };
+  }
+  if (row.liveness === "stopped") {
+    return { kind: "rotate_or_replace", laneId: row.id, currentTaskId: row.currentTaskId, worktree: row.worktree, evidence: "stopped_writer" };
+  }
+  return {
+    kind: "context_refresh_or_rotation_evidence_required", laneId: row.id, currentTaskId: row.currentTaskId,
+    worktree: row.worktree, acceptedEvidence: ["stopped_writer", "ownership_transfer"],
+  };
+}
 
 async function checkpointSources(project, checkpoint, budget) {
   const result = [];
@@ -24,11 +59,14 @@ async function checkpointSources(project, checkpoint, budget) {
 }
 
 /** Current original records and revision binding, also enforced by consequential resume. */
-export async function inspectCheckpointEvidence(project, checkpoint, { budget, probe = runBoundedProbe } = {}) {
+export async function inspectCheckpointEvidence(project, checkpoint, { budget, probe = runBoundedProbe, host, effectiveSettings } = {}) {
+  const executionSettings = recoveryExecutionSettings(project, host, effectiveSettings);
   const sourceEvidence = await checkpointSources(project, checkpoint, budget);
   const [head, dirty] = await Promise.all([
-    probe("git", ["rev-parse", "HEAD"], { cwd: checkpoint.worktree, budget, timeoutMs: 500, maxOutputBytes: 256 }),
-    probe("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: checkpoint.worktree, budget, timeoutMs: 500, maxOutputBytes: 2048 }),
+    probe("git", ["rev-parse", "HEAD"], { cwd: checkpoint.worktree, budget, timeoutMs: 500, maxOutputBytes: 256,
+      subprocessMaxBufferBytes: executionSettings.limits.subprocessMaxBufferBytes }),
+    probe("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: checkpoint.worktree, budget, timeoutMs: 500, maxOutputBytes: 2048,
+      subprocessMaxBufferBytes: executionSettings.limits.subprocessMaxBufferBytes }),
   ]);
   const unavailable = !checkpoint.evidenceRevision || head.status !== "available" || dirty.status !== "available"
     || sourceEvidence.some(({ status }) => status === "unavailable");
@@ -37,10 +75,13 @@ export async function inspectCheckpointEvidence(project, checkpoint, { budget, p
   return { status: unavailable ? "unavailable" : stale ? "stale" : "current", evidenceRevision: checkpoint.evidenceRevision, sourceEvidence };
 }
 
-export async function runBoundedProbe(executable, args, { cwd, timeoutMs = 1000, maxOutputBytes = 4096, budget } = {}) {
+export async function runBoundedProbe(executable, args, {
+  cwd, timeoutMs = 1000, maxOutputBytes = 4096,
+  subprocessMaxBufferBytes = defaultExecutionSettings.limits.subprocessMaxBufferBytes, budget,
+} = {}) {
   try {
     const { stdout, stderr } = await run(executable, args, { cwd, timeout: budget?.timeout(timeoutMs) ?? timeoutMs,
-      ...(budget ? { signal: budget.signal } : {}), maxBuffer: 1024 * 1024, encoding: "utf8" });
+      ...(budget ? { signal: budget.signal } : {}), maxBuffer: subprocessMaxBufferBytes, encoding: "utf8" });
     return { status: "available", output: `${stdout}${stderr}`.slice(0, maxOutputBytes) };
   } catch (error) {
     const output = `${error.stdout ?? ""}${error.stderr ?? ""}`.slice(0, maxOutputBytes);
@@ -93,12 +134,25 @@ function operationPointers(state) {
   };
 }
 
-export function projectRunState(canonical, checkpoint, now = new Date()) {
+export function projectRunState(canonical, checkpoint, now = new Date(), options = {}) {
   const rawRun = canonical.state?.run;
+  const laneRecords = readLaneCollection(canonical.state ?? {});
+  const laneTaskIds = new Set(laneRecords.flatMap(({ queue }) => queue));
+  const effectiveSettings = options.effectiveSettings ?? rawRun?.executionSettings ?? defaultExecutionSettings;
+  const laneSummary = laneRecords.length ? summarizeLanes(canonical, {
+    writerLiveness: options.writerLiveness,
+    effectiveSettings,
+    nativeCapacity: options.nativeCapacity ?? observedCapacity(canonical.state?.capacity),
+  }) : { rows: [], logical: null, native: null };
+  const lanes = laneSummary.rows.map((row) => ({
+    ...row,
+    resume: resumePointer(row, options.retainedContext, canonical.git?.headRevision ?? null),
+  }));
   const groups = { active: [], parked: [], paused: [], stopped: [], unknown: [] };
   const writerLiveness = {};
   const taskById = new Map((canonical.tasks ?? []).map((task) => [task.id, task]));
   for (const taskId of rawRun?.taskIds ?? []) {
+    if (laneTaskIds.has(taskId)) continue;
     const runtime = canonical.state?.taskRuntime?.[taskId];
     const qualified = ["codex", "claude-code"].includes(runtime?.writer?.host)
       && typeof runtime?.writer?.sessionId === "string" && /^[\w.:-]{1,128}$/.test(runtime.writer.sessionId);
@@ -118,14 +172,18 @@ export function projectRunState(canonical, checkpoint, now = new Date()) {
   const pendingDeliveryIds = Array.isArray(run?.pendingDeliveryIds) ? run.pendingDeliveryIds : [];
   const deployedTaskIds = Array.isArray(run?.deployedTaskIds) ? run.deployedTaskIds : [];
   const runBlockers = Array.isArray(run?.blockers) ? run.blockers : [];
-  const occupied = groups.active.length + groups.parked.length + groups.paused.length + groups.unknown.length;
+  const legacyOccupied = groups.active.length + groups.parked.length + groups.paused.length + groups.unknown.length;
+  const occupied = legacyOccupied + (laneSummary.logical?.occupied ?? 0);
   const reviewReservation = Number.isSafeInteger(canonical.state?.capacity?.reservedReview) ? canonical.state.capacity.reservedReview : 1;
   const teamLimit = run?.teamLimit ?? null;
   const safelyFree = teamLimit === null ? null : Math.max(0, teamLimit - occupied - reviewReservation);
-  const pendingOperations = [...(checkpoint?.pendingOperations ?? []),
-    ...Object.entries(canonical.state?.pendingOperations ?? {}).map(([operationId, value]) => ({ operationId, ...value }))].slice(0, 20);
+  const allPendingOperations = [...(checkpoint?.pendingOperations ?? []),
+    ...Object.entries(canonical.state?.pendingOperations ?? {}).map(([operationId, value]) => ({ operationId, ...value }))];
+  const isLaneOperation = ({ laneId, taskId }) => Boolean(laneId) || laneTaskIds.has(taskId);
+  const lanePendingOperations = allPendingOperations.filter(isLaneOperation).slice(0, 20);
+  const pendingOperations = [...lanePendingOperations, ...allPendingOperations.filter((entry) => !isLaneOperation(entry))].slice(0, 20);
   const occupiedIds = new Set([...groups.active, ...groups.parked, ...groups.paused, ...groups.unknown].map(({ taskId }) => taskId));
-  const eligibleTaskIds = (decision.classification?.eligibleTaskIds ?? []).filter((id) => !occupiedIds.has(id));
+  const eligibleTaskIds = (decision.classification?.eligibleTaskIds ?? []).filter((id) => !occupiedIds.has(id) && !laneTaskIds.has(id));
   const complete = new Set(["verified", "integrated", "deployed", "closed", "done", "completed", "complete"]);
   const unreconciled = runTaskIds.filter((id) => complete.has(String(taskById.get(id)?.status).toLowerCase())
     && !pendingDeliveryIds.includes(id) && !deployedTaskIds.includes(id));
@@ -135,10 +193,24 @@ export function projectRunState(canonical, checkpoint, now = new Date()) {
   });
   const pendingDecisions = Array.isArray(canonical.state?.pendingDecisions) ? structuredClone(canonical.state.pendingDecisions)
     : Object.entries(canonical.state?.pendingDecisions ?? {}).map(([id, value]) => ({ id, ...value }));
+  const unresolvedDispatches = laneRecords.flatMap((lane) => {
+    const failedOrUnresolvedAssignments = new Set(lane.results
+      .filter(({ status }) => status === "failed" || status === "unresolved")
+      .map(({ assignmentId }) => assignmentId));
+    return lane.assignments
+      .filter(({ status, id }) => status === "dispatched" || failedOrUnresolvedAssignments.has(id))
+      .map(({ id: assignmentId, taskId, worker }) => ({ laneId: lane.id, assignmentId, taskId, worker: structuredClone(worker) }));
+  }).slice(0, 20);
+  const laneCapacityAvailable = safelyFree !== null && safelyFree > 0
+    && (laneSummary.native === null || laneSummary.native.free > 0);
+  const dispatchTaskIds = laneCapacityAvailable ? eligibleTaskIds : [];
   let nextAction;
   if (!run || decision.status !== "available") nextAction = { kind: "start_or_reconcile_run", taskIds: [] };
   else if (run.paused) nextAction = { kind: "paused", taskIds: [] };
-  else if (eligibleTaskIds.length) nextAction = { kind: "dispatch_or_refill", taskIds: [...eligibleTaskIds] };
+  else if (lanePendingOperations.length) nextAction = { kind: "reconcile_pending_operation", taskIds: [...new Set(lanePendingOperations.map(({ taskId }) => taskId).filter(Boolean))] };
+  else if (unresolvedDispatches.length) nextAction = { kind: "reconcile_lane_dispatch", taskIds: [...new Set(unresolvedDispatches.map(({ taskId }) => taskId))] };
+  else if (eligibleTaskIds.length && !laneCapacityAvailable) nextAction = { kind: "capacity_full", taskIds: [...eligibleTaskIds] };
+  else if (dispatchTaskIds.length) nextAction = { kind: "dispatch_or_refill", taskIds: [...dispatchTaskIds] };
   else if (groups.active.length) nextAction = { kind: "continue_or_supervise", taskIds: groups.active.map(({ taskId }) => taskId) };
   else if (groups.unknown.length) nextAction = { kind: "reconcile_writer_liveness", taskIds: groups.unknown.map(({ taskId }) => taskId) };
   else if (unreconciled.length) nextAction = { kind: "reconcile_completion", taskIds: unreconciled };
@@ -165,17 +237,21 @@ export function projectRunState(canonical, checkpoint, now = new Date()) {
       : { status: "unavailable", taskIds: [], eligibleTaskIds: [], blockedTaskIds: [], fingerprint: null, classification: "unknown",
         selectedBatchTaskIds: [], provenance: null, deploymentHeld: true, holdReasons: ["effective_run_unavailable"] },
     workers: groups,
-    slots: { teamLimit, occupied, reviewReservation, safelyFree, unknownOccupancy: groups.unknown.length },
+    lanes,
+    slots: { teamLimit, occupied, reviewReservation, safelyFree, unknownOccupancy: groups.unknown.length + lanes.filter(({ liveness }) => liveness === "unknown").length,
+      ...(laneRecords.length ? { logical: laneSummary.logical, native: laneSummary.native } : {}) },
     blockers: structuredClone(runBlockers), pendingDecisions, pendingOperations,
+    unresolvedDispatches,
     tail: { classification: decision.classification.kind, selectedTaskIds: [...decision.selectedBatchTaskIds] },
-    nextDispatch: { taskIds: [...eligibleTaskIds] }, nextAction,
+    nextDispatch: { taskIds: [...dispatchTaskIds] }, nextAction,
     checkpoint: checkpoint ?? { status: "unavailable", reason: "checkpoint_missing" },
     recurring: { frequency: "none", scheduledExecutions: 0 },
   };
 }
 
-async function factualSnapshot(project, sessionId, probe, { worktree, includeProbes, budget, canonical: suppliedCanonical, host }) {
-  const boundedProbe = (executable, args, options) => probe(executable, args, { ...options, budget });
+async function factualSnapshot(project, sessionId, probe, { worktree, includeProbes, budget, canonical: suppliedCanonical, host, effectiveSettings }) {
+  const boundedProbe = (executable, args, options) => probe(executable, args, { ...options, budget,
+    subprocessMaxBufferBytes: effectiveSettings.limits.subprocessMaxBufferBytes });
   const [branchProbe, revisionProbe, dirtyProbe, githubProbe] = await Promise.all([
     boundedProbe("git", ["branch", "--show-current"], { cwd: worktree, timeoutMs: 500, maxOutputBytes: 256 }),
     boundedProbe("git", ["rev-parse", "HEAD"], { cwd: worktree, timeoutMs: 500, maxOutputBytes: 256 }),
@@ -242,6 +318,10 @@ export async function inspectRecovery(project, {
   canonical,
   loadCanonicalState: load = loadCanonicalState,
   host,
+  effectiveSettings,
+  nativeCapacity,
+  writerLiveness,
+  retainedContext,
 } = {}) {
   if (!project.active) return { status: "unavailable", reason: project.reason };
   try {
@@ -249,11 +329,12 @@ export async function inspectRecovery(project, {
   } catch (error) {
     return { status: "unavailable", reason: String(error.message || error), recurring: { frequency: "none", scheduledExecutions: 0 } };
   }
+  effectiveSettings ??= canonical.state?.run?.executionSettings ?? recoveryExecutionSettings(project, host);
   worktree = path.resolve(project.root, worktree);
   const bounded = (action) => budget ? budget.run(action) : action();
   const finish = async (snapshot, factualWorktree = project.worktreeRoot) => {
     if (!includeProbes && !includeGit) return snapshot;
-    const facts = await factualSnapshot(project, sessionId, probe, { worktree: factualWorktree, includeProbes, budget, canonical, host });
+    const facts = await factualSnapshot(project, sessionId, probe, { worktree: factualWorktree, includeProbes, budget, canonical, host, effectiveSettings });
     const binding = snapshot.evidenceRevision ?? snapshot.revision;
     const stale = binding && (facts.git.revision.value !== binding || facts.git.dirty.entries.length > 0);
     return { ...snapshot, ...facts, ...(stale ? { status: "stale", evidenceStatus: "stale" } : {}) };
@@ -263,7 +344,8 @@ export async function inspectRecovery(project, {
     names = await bounded(() => readdir(project.paths.checkpoints));
   } catch (error) {
     if (error.code === "ENOENT") names = [];
-    else return finish({ status: "unavailable", reason: "checkpoint_unreadable", ...projectRunState(canonical, undefined, now) });
+    else return finish({ status: "unavailable", reason: "checkpoint_unreadable", ...projectRunState(canonical, undefined, now,
+      { effectiveSettings, nativeCapacity, writerLiveness, retainedContext }) });
   }
 
   const records = [];
@@ -284,7 +366,8 @@ export async function inspectRecovery(project, {
   }
   records.sort((left, right) => right.timestamp - left.timestamp);
   const latest = records[0];
-  if (!latest) return finish({ status: "unavailable", reason: names.length ? "checkpoint_invalid" : "checkpoint_missing", ...projectRunState(canonical, undefined, now) });
+  if (!latest) return finish({ status: "unavailable", reason: names.length ? "checkpoint_invalid" : "checkpoint_missing", ...projectRunState(canonical, undefined, now,
+    { effectiveSettings, nativeCapacity, writerLiveness, retainedContext }) });
   const sourceEvidence = await checkpointSources(project, latest, budget);
   let task;
   let currentPending = [];
@@ -322,6 +405,6 @@ export async function inspectRecovery(project, {
     uncertainty: latest.uncertainty ?? [],
     scope: latest.scope,
     restoreIndex: { tracker: project.paths.tasks, checkpoint: latest.path, sources: latest.sourcePointers ?? [] },
-    ...projectRunState(canonical, checkpoint, now),
+    ...projectRunState(canonical, checkpoint, now, { effectiveSettings, nativeCapacity, writerLiveness, retainedContext }),
   }, latest.worktree ? path.resolve(project.root, latest.worktree) : project.worktreeRoot);
 }

@@ -156,11 +156,21 @@ export function classifyOperation(event, mappings = {}, { tracker } = {}) {
   if (rawTokens.length === 7 && ["node", "node.exe"].includes(executable(rawTokens[0]))
     && path.isAbsolute(rawTokens[1]) && executable(rawTokens[1]) === "agent-team-cli.mjs"
     && ["legacy-owner-adopt", "coordinator-continuity-transfer", "gate-evidence", "run-reconcile", "run-scope-extend", "evidence-store-register",
-      "completion-history-reconcile"].includes(rawTokens[2])
+      "completion-history-reconcile", "lane-create", "lane-next", "lane-rotate", "lane-close"].includes(rawTokens[2])
     && rawTokens[3] === "--project" && path.isAbsolute(rawTokens[4]) && path.normalize(rawTokens[4]) === rawTokens[4]
     && rawTokens[5] === "--request" && path.isAbsolute(rawTokens[6]) && path.normalize(rawTokens[6]) === rawTokens[6]) {
     return { kind: "agent_team_native_command", command: rawTokens[2], cliPath: rawTokens[1],
       project: rawTokens[4], request: rawTokens[6], valid: true };
+  }
+  if (rawTokens.length === 11 && ["node", "node.exe"].includes(executable(rawTokens[0]))
+    && path.isAbsolute(rawTokens[1]) && executable(rawTokens[1]) === "agent-team-cli.mjs"
+    && ["helpers-install", "helpers-recover", "context-reduction-apply", "context-reduction-revert", "context-reduction-recover"].includes(rawTokens[2])
+    && rawTokens[3] === "--project" && path.isAbsolute(rawTokens[4]) && path.normalize(rawTokens[4]) === rawTokens[4]
+    && rawTokens[5] === "--host" && ["codex", "claude-code"].includes(rawTokens[6])
+    && rawTokens[7] === "--scope" && rawTokens[8] === "project"
+    && rawTokens[9] === "--request" && path.isAbsolute(rawTokens[10]) && path.normalize(rawTokens[10]) === rawTokens[10]) {
+    return { kind: "agent_team_native_command", command: rawTokens[2], cliPath: rawTokens[1], project: rawTokens[4],
+      host: rawTokens[6], scope: rawTokens[8], request: rawTokens[10], valid: true };
   }
   const tokens = unwrapLeanCtx(rawTokens);
   const bd = tokens.findIndex((token) => ["bd", "bd.exe"].includes(executable(token)));

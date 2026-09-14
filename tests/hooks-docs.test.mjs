@@ -91,16 +91,16 @@ test("landing-page banner alt text does not misidentify retained artwork as the 
 
 // Text contracts catch instruction drift; behavioral/consumer/native tests remain separate gates.
 test("release version and public guidance stay consistent", async () => {
-  const [raw, skill, readme, changelog, guide, gettingStarted, index] = await readMany(["hooks/manifest.json", "SKILL.md", "README.md", "CHANGELOG.md", "references/hooks.md", "GETTING_STARTED.md", "index.html"]);
+  const [raw, skill, readme, changelog, guide, gettingStarted, index] = await readMany(["hooks/manifest.json", "SKILL.md", "README.md", "CHANGELOG.md", "references/HOOKS.md", "GETTING_STARTED.md", "index.html"]);
   const manifest = JSON.parse(raw);
-  assert.equal(manifest.version, "7.2.6");
+  assert.equal(manifest.version, "7.3.0");
   assert.equal(manifest.repository, "https://github.com/thebpandey/agent-team");
   assert.ok(skill.includes('version: "' + manifest.version + '"'));
   assert.ok(readme.includes("current skill version is **" + manifest.version + "**"));
   assert.ok(changelog.includes("## " + manifest.version + " - "));
   assert.match(index, /Version 7\.2\.6/);
   for (const publicDoc of [readme, gettingStarted]) {
-    assert.match(publicDoc, /agent-team-7\.2\.6\.zip/);
+    assert.match(publicDoc, /agent-team-7\.3\.0\.zip/);
     assert.match(publicDoc, /SHA256SUMS/);
     assert.match(publicDoc, /releases\/latest/);
     assert.match(publicDoc, /Linux.*WSL.*\/proc\/self\/fd/is);
@@ -110,12 +110,12 @@ test("release version and public guidance stay consistent", async () => {
     assert.doesNotMatch(publicDoc, /project-kickoff\/releases\/tag\/v0\.4\.1/i);
     assert.match(publicDoc, /project-kickoff\/releases\/latest/i);
   }
-  for (const source of [skill, readme]) assert.match(source, /\(references\/hooks\.md\)/);
+  for (const source of [skill, readme]) assert.match(source, /\(references\/HOOKS\.md\)/);
   assert.match(guide, /Requirements 1.?15/i);
 });
 
 test("Graphify guidance accepts AST-origin inferred structural leads only", async () => {
-  const [guide, readme] = await readMany(["references/graphify.md", "README.md"]);
+  const [guide, readme] = await readMany(["references/GRAPHIFY.md", "README.md"]);
   for (const required of [
     "`_origin` distinguishes AST from semantic extraction",
     "confidence describes resolution strength",
@@ -154,8 +154,8 @@ test("installation docs keep canonical release provenance and complete checksum 
 
 test("prepared capabilities load selectively in each fresh worker context", async () => {
   const [skill, dependencies, team, projects, state, ...roles] = await readMany([
-    "SKILL.md", "references/dependencies.md", "references/team.md", "references/projects.md", "references/state.md",
-    ...["complex", "developer", "reviewer", "routine", "text", "visual-tester"].map(role => "assets/claude-agents/agent-team-" + role + ".md"),
+    "SKILL.md", "references/DEPENDENCIES.md", "references/TEAM.md", "references/PROJECTS.md", "references/STATE.md",
+    ...["complex", "developer", "reviewer", "routine", "text", "visual-tester"].map(role => `assets/claude-agents/AGENT-TEAM-${role.toUpperCase()}.md`),
   ]);
   assert.match(skill, /Do not fork the full conversation or load every prepared skill/i);
   assert.match(dependencies, /complete SKILL\.md/i);
@@ -179,7 +179,7 @@ test("prepared capabilities load selectively in each fresh worker context", asyn
 });
 
 test("LeanCTX retains exact recovery without broad initialization or permission bypass", async () => {
-  const [leanctx, codex, claude] = await readMany(["references/lean-ctx.md", "references/platform-codex.md", "references/platform-claude.md"]);
+  const [leanctx, codex, claude] = await readMany(["references/LEAN-CTX.md", "references/PLATFORM-CODEX.md", "references/PLATFORM-CLAUDE.md"]);
   for (const required of [
     'tool_profile = "standard"', "shadow_mode = false", 'prompt_reinject = "off"',
     "prefer_native_editor = true", "proxy_enabled = false", 'tee_mode = "always"',
@@ -195,7 +195,7 @@ test("LeanCTX retains exact recovery without broad initialization or permission 
 });
 
 test("hook guide documents runtime, safety, ownership and universal archive contracts", async () => {
-  const guide = await read("references/hooks.md");
+  const guide = await read("references/HOOKS.md");
   for (const required of [
     "PreToolUse", "PostToolBatch", "TaskCompleted", "UserPromptExpansion",
     ".agents/skills/agent-team", ".claude/skills/agent-team", ".claude/agents",
@@ -219,7 +219,7 @@ test("Claude batches post-tool checks without duplicate per-edit hooks", async (
 });
 
 test("feature requests and named starts retain distinct task-creation rules", async () => {
-  const actions = await read("references/actions.md");
+  const actions = await read("references/ACTIONS.md");
   assert.match(actions, /full natural-language.*feature request.*create.*canonical.*task/i);
   assert.match(actions, /start <name>.*already-defined.*tracker/i);
   assert.match(actions, /bare .start..*existing ready/i);
@@ -228,7 +228,7 @@ test("feature requests and named starts retain distinct task-creation rules", as
 });
 
 test("mapping cache and hook identities never become authority", async () => {
-  const guide = await read("references/hooks.md");
+  const guide = await read("references/HOOKS.md");
   assert.doesNotMatch(guide, /migrate-mappings|health[^\n]*--session|mapping[^\n]*--session/i);
   assert.match(guide, /recovery[^\n]*--session/i);
   for (const pattern of [
@@ -240,7 +240,7 @@ test("mapping cache and hook identities never become authority", async () => {
 });
 
 test("settings preserve independent host routes and distinguish configured from enforced", async () => {
-  const [settings, codex, claude] = await readMany(["references/settings.md", "references/platform-codex.md", "references/platform-claude.md"]);
+  const [settings, codex, claude] = await readMany(["references/SETTINGS.md", "references/PLATFORM-CODEX.md", "references/PLATFORM-CLAUDE.md"]);
   assert.match(settings, /trusted host metadata/);
   assert.match(settings, /Persist independent routing per host/);
   assert.match(settings, /without deleting the other profile/);
@@ -252,8 +252,43 @@ test("settings preserve independent host routes and distinguish configured from 
   assert.doesNotMatch(settings, /remove.*role_routing.*adapter defaults/i);
 });
 
+test("setup docs distinguish bounded records from output and unverified native context", async () => {
+  const [settings, setup, codex, claude, hooks, gettingStarted] = await readMany([
+    "references/SETTINGS.md", "references/SETUP.md", "references/PLATFORM-CODEX.md", "references/PLATFORM-CLAUDE.md",
+    "references/HOOKS.md", "GETTING_STARTED.md",
+  ]);
+  assert.match(settings, /canonicalRecordMaxBytes.*16777216/s);
+  assert.match(settings, /subprocessMaxBufferBytes.*2097152/s);
+  assert.match(settings, /workerUpdateMaxChars.*2000/s);
+  assert.match(setup, /offered_unverified/);
+  assert.match(setup, /owner_reported_unverified/);
+  assert.match(setup, /automatic.*visibility.*unavailable/i);
+  assert.match(setup, /parent-model comparison.*unknown/i);
+  assert.match(codex, /owner_reported_unverified/);
+  assert.match(claude, /trusted.*home.*process/i);
+  assert.match(hooks, /helpers-install/);
+  assert.match(hooks, /context-reduction-apply/);
+  assert.match(gettingStarted, /canonical records at 16777216 bytes/);
+});
+
+test("workflow guides route lane state and evidence through the single lane protocol", async () => {
+  const names = ["TEAM", "RUNS", "STATE", "RECOVERY", "RELEASE", "OUTPUT", "ACTIONS", "STATUS"];
+  const guides = await readMany(names.map((name) => `references/${name}.md`));
+  for (const [index, guide] of guides.entries()) {
+    assert.match(guide, /\[lanes?\]\(LANES\.md(?:#[^)]+)?\)/i, names[index]);
+  }
+  assert.match(guides[0], /brief.*packet.*handover/is);
+  assert.match(guides[1], /open lane.*reserve.*capacity/is);
+  assert.match(guides[2], /tracker remains.*task authority/i);
+  assert.match(guides[3], /unknown liveness.*occupied/i);
+  assert.match(guides[4], /queue.*empty.*integrated/is);
+  assert.match(guides[5], /2000-character.*worker update/i);
+  assert.match(guides[6], /lane-(?:create|next|rotate|close)/);
+  assert.match(guides[7], /logical.*native.*capacity/is);
+});
+
 test("settings keep targeted edits distinct from the mandatory setup wizard", async () => {
-  const [settings, setup, actions] = await readMany(["references/settings.md", "references/setup.md", "references/actions.md"]);
+  const [settings, setup, actions] = await readMany(["references/SETTINGS.md", "references/SETUP.md", "references/ACTIONS.md"]);
   for (const pattern of [/every available role/i, /numbered choices/i, /model.*compatible effort/i,
     /Quality-first is the default/i, /Back and Cancel/i, /Cancelled\/invalid drafts cause no settings write/i,
     /detect concurrent changes/i, /bare.*settings.*targeted/i, /future dispatches use them/i]) assert.match(settings, pattern);
@@ -264,7 +299,7 @@ test("settings keep targeted edits distinct from the mandatory setup wizard", as
 });
 
 test("active orchestration follows one ordered question continuation loop", async () => {
-  const [skill, runs, actions, team] = await readMany(["SKILL.md", "references/runs.md", "references/actions.md", "references/team.md"]);
+  const [skill, runs, actions, team] = await readMany(["SKILL.md", "references/RUNS.md", "references/ACTIONS.md", "references/TEAM.md"]);
   const loop = skill + runs;
   for (const pattern of [
     /consume.*user.*worker.*completion.*handoff.*review.*provider/is,
@@ -284,8 +319,8 @@ test("active orchestration follows one ordered question continuation loop", asyn
 
 test("heartbeats and blockers stay in-turn scoped and finite", async () => {
   const [skill, runs, team, recovery, codex, claude] = await readMany([
-    "SKILL.md", "references/runs.md", "references/team.md", "references/recovery.md",
-    "references/platform-codex.md", "references/platform-claude.md",
+    "SKILL.md", "references/RUNS.md", "references/TEAM.md", "references/RECOVERY.md",
+    "references/PLATFORM-CODEX.md", "references/PLATFORM-CLAUDE.md",
   ]);
   const all = [skill, runs, team, recovery, codex, claude].join("\n");
   for (const pattern of [
@@ -303,7 +338,7 @@ test("heartbeats and blockers stay in-turn scoped and finite", async () => {
 });
 
 test("run decisions and underfilled release batches use exact canonical evidence", async () => {
-  const [runs, release, status] = await readMany(["references/runs.md", "references/release.md", "references/status.md"]);
+  const [runs, release, status] = await readMany(["references/RUNS.md", "references/RELEASE.md", "references/STATUS.md"]);
   const all = runs + release;
   for (const value of ["unknown", "paused", "unreconciled_completion", "progress_possible",
     "finite_exhausted", "continuous_scope_exhausted", "blocked_tail"]) assert.ok(all.includes(value), value);
@@ -320,7 +355,7 @@ test("run decisions and underfilled release batches use exact canonical evidence
 
 test("accepted integration queues only complete top-level nondeployed deliveries", async () => {
   const [skill, hooks, readme, gettingStarted] = await readMany([
-    "SKILL.md", "references/hooks.md", "README.md", "GETTING_STARTED.md",
+    "SKILL.md", "references/HOOKS.md", "README.md", "GETTING_STARTED.md",
   ]);
   const all = [skill, hooks, readme, gettingStarted].join("\n");
   for (const pattern of [
@@ -332,7 +367,7 @@ test("accepted integration queues only complete top-level nondeployed deliveries
 });
 
 test("dependency instructions separate compatibility ownership and prerequisite edges", async () => {
-  const [dependencies, leanctx, graphify] = await readMany(["references/dependencies.md", "references/lean-ctx.md", "references/graphify.md"]);
+  const [dependencies, leanctx, graphify] = await readMany(["references/DEPENDENCIES.md", "references/LEAN-CTX.md", "references/GRAPHIFY.md"]);
   const all = dependencies + leanctx + graphify;
   for (const pattern of [
     /reused_unowned/i, /lifecycleOwnership.*unowned/is, /no.*sidecar.*copy.*overwrite/is,
@@ -345,7 +380,7 @@ test("dependency instructions separate compatibility ownership and prerequisite 
 });
 
 test("native project and migration instructions expose only accepted authority", async () => {
-  const [projects, state, hooks] = await readMany(["references/projects.md", "references/state.md", "references/hooks.md"]);
+  const [projects, state, hooks] = await readMany(["references/PROJECTS.md", "references/STATE.md", "references/HOOKS.md"]);
   const all = projects + state + hooks;
   for (const required of ["project-owner-recover", "evidence-store-register", "completion-history-reconcile",
     "run-reconcile", "run-scope-extend", "completion-quarantine", "completion-rebind", "run-decision"]) assert.ok(all.includes(required), required);
@@ -360,7 +395,7 @@ test("native project and migration instructions expose only accepted authority",
 });
 
 test("artifact instructions match the accepted Linux descriptor-root installer", async () => {
-  const hooks = await read("references/hooks.md");
+  const hooks = await read("references/HOOKS.md");
   for (const pattern of [
     /install --archive.*--checksums.*--host.*--scope/is,
     /reject.*install --source/is,
@@ -372,12 +407,14 @@ test("artifact instructions match the accepted Linux descriptor-root installer",
     /update_requires_manual_replacement.*changed.*false/is,
     /descriptor.*reserved.*never.*canonical/is,
     /quiesc.*rollback.*move.*fresh/is,
+    /lowercase.*uppercase.*role/is,
+    /schema.?4.*receipt.*byte.*mode.*size/is,
     /current.*drifted.*unverified_legacy.*missing_receipt.*not_installed/is,
   ]) assert.match(hooks, pattern);
 });
 
 test("setup automatically prepares defaults while keeping optional and manual authority boundaries", async () => {
-  const [setup, actions, release] = await readMany(["references/setup.md", "references/actions.md", "references/release.md"]);
+  const [setup, actions, release] = await readMany(["references/SETUP.md", "references/ACTIONS.md", "references/RELEASE.md"]);
   for (const pattern of [/automatically install missing mandatory and selected default/i,
     /optional choices remain user decisions/i, /gh auth status/, /gh auth login/,
     /Never ask for a token in chat/i, /administrator approval/i, /never activate a temporary Markdown tracker/i,
@@ -390,7 +427,7 @@ test("setup automatically prepares defaults while keeping optional and manual au
 });
 
 test("continuity instructions preserve facts and native compaction as fallback", async () => {
-  const [skill, state, recovery] = await readMany(["SKILL.md", "references/state.md", "references/recovery.md"]);
+  const [skill, state, recovery] = await readMany(["SKILL.md", "references/STATE.md", "references/RECOVERY.md"]);
   assert.match(skill, /Ordinary lint, test and review failures trigger automatic in-scope repair/);
   assert.match(state, /Required in-scope repair: assign, fix and verify automatically/);
   assert.match(state, /Out-of-scope improvement: record proposed\/deferred, not authorized implementation/);
