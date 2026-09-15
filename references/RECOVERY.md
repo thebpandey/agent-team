@@ -6,6 +6,12 @@ Recover [lanes](LANES.md) by their exact lane, worker generation, worktree, curr
 
 Restore [run scheduling and batches](RUNS.md) along with team state. Preserve effective run choices, explicit run overrides, fixed membership or continuous scope, occupied slots, integration boundaries, pending/in-flight batches, and deployment-failure holds. Saved defaults changed after start do not change the resumed run. Reconcile the current harness before replacement dispatch, but do not replace recorded run choices. The project owner alone restarts admission or release; a replacement team cannot do either.
 
+## Retire a historical run for release maintenance
+
+Use `run-retire --project ABSOLUTE_ROOT --request ABSOLUTE_JSON` only through the exact, non-chained native hook route and only after an explicit user instruction names the release-maintenance target and one successor run/task intent. The schema-version-1 envelope uses the current owner session and state version. Its exact request body contains `operationId`, `expectedStateFingerprint`, `expectedRunFingerprint`, `expectedTrackerFingerprint`, `expectedRevision`, `reason`, `authorization`, and `successorIntent`. Authorization is exactly `{source:"explicit_user_instruction",scope:"release_maintenance"}`; successor intent is exactly `{kind:"maintenance_release",runId,taskId,target}`.
+
+Retirement requires current state, run, tracker, Git revision, and owner generation with no other pending operation. It archives the historical run and gate snapshots, clears only the active-run pointer, and holds integration and release authority. It does not close tasks, release claims, alter worktrees, treat writers as stopped, or discard evidence. The next `run-start` must also use the native owner route and exactly match the pending successor run ID and sole task ID with explicit settings and auto-deploy off; ordinary gates must establish fresh integration and release authority afterward.
+
 ## Checkpoint during normal work
 
 Each agent refreshes its assigned CONTEXT.md at meaningful progress, before handoff or intentional pause, and before compaction when possible. Keep it normally below 600 words. Write updates atomically where supported and preserve the last complete checkpoint if an update fails. Store project and team IDs, attempt/session identity, skill revision and instruction paths, worktree/branch/base/current revision, saved uncommitted changes, tracker and MISTAKES.md pointers, task IDs, valid evidence, and the next action.

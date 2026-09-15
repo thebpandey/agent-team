@@ -163,7 +163,7 @@ async function runEvent(event, budget, runBeads, evidencePackageRoot, trustedCon
         }
         const mutationKinds = { "legacy-owner-adopt": "legacy_owner_adoption", "coordinator-continuity-transfer": "coordinator_continuity_transfer",
           "gate-evidence": "gate_evidence",
-          "run-reconcile": "run_reconciliation", "run-scope-extend": "run_scope_extension",
+          "run-start": "run_start", "run-retire": "run_retirement", "run-reconcile": "run_reconciliation", "run-scope-extend": "run_scope_extension",
           "lane-create": "lane_create", "lane-next": "lane_next", "lane-rotate": "lane_rotate", "lane-close": "lane_close",
           "helpers-install": "helpers_install", "helpers-recover": "helpers_recover",
           "context-reduction-apply": "context_reduction_apply", "context-reduction-revert": "context_reduction_revert",

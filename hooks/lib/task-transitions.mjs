@@ -459,6 +459,38 @@ export async function transitionTask(project, request, options = {}) {
     transitionTaskInState(project, request, { state, canonical, persistIntent, options }), options);
 }
 
+const pendingRetirementHoldKeys = ["schemaVersion", "status", "retirementOperationId", "runId", "taskId", "target"];
+const startedSuccessorKeys = ["schemaVersion", "status", "retirementOperationId", "runId", "taskId", "target", "startOperationId", "startedAt"];
+
+function runRetirementHoldCanClear(state, gateName, request, canonical, revision, target) {
+  const gate = state[gateName];
+  const hold = gate?.runRetirementHold;
+  const successor = state.runStartConstraint;
+  if (gate?.hold !== true || !exactKeys(hold, pendingRetirementHoldKeys) || hold.schemaVersion !== 1
+    || hold.status !== "pending_fresh_evidence" || !validId(hold.retirementOperationId) || !validId(hold.runId) || !validId(hold.taskId)
+    || !boundedString(hold.target, 4096) || !exactKeys(successor, startedSuccessorKeys) || successor.schemaVersion !== 1
+    || successor.status !== "started" || !validId(successor.startOperationId) || !Number.isFinite(Date.parse(successor.startedAt))
+    || stable({ retirementOperationId: successor.retirementOperationId, runId: successor.runId, taskId: successor.taskId, target: successor.target })
+      !== stable({ retirementOperationId: hold.retirementOperationId, runId: hold.runId, taskId: hold.taskId, target: hold.target })
+    || state.run?.id !== hold.runId || !sameIds(state.run?.taskIds, [hold.taskId]) || state.run?.ownerHost !== canonical.registry.projectOwnerHost
+    || state.run?.ownerSessionId !== canonical.registry.projectOwner || state.run?.ownershipEpoch !== canonical.registry.ownershipEpoch
+    || gate.ownerHost !== canonical.registry.projectOwnerHost || gate.ownerSessionId !== canonical.registry.projectOwner
+    || gate.ownershipEpoch !== canonical.registry.ownershipEpoch || request.actorSessionId !== canonical.registry.projectOwner
+    || !sameIds(request.taskIds, [hold.taskId]) || !hex(revision, 40) || target !== undefined && target !== hold.target) return false;
+  const retirement = state.runRetirements?.find((entry) => entry?.operationId === hold.retirementOperationId);
+  const startReceipt = state.operationReceipts?.[successor.startOperationId];
+  return retirement?.runFingerprint === stateFingerprint(retirement.run)
+    && stable(retirement.successorIntent) === stable({ kind: "maintenance_release", runId: hold.runId, taskId: hold.taskId, target: hold.target })
+    && retirement.authenticatedActor?.ownerHost === canonical.registry.projectOwnerHost
+    && retirement.authenticatedActor?.ownerSessionId === canonical.registry.projectOwner
+    && retirement.authenticatedActor?.ownershipEpoch === canonical.registry.ownershipEpoch
+    && startReceipt?.result?.run?.id === hold.runId && sameIds(startReceipt?.result?.run?.taskIds, [hold.taskId]);
+}
+
+function clearedRetirementHold(hold, operationId, revision, clearedAt) {
+  return { ...hold, status: "cleared", clearedByOperationId: operationId, revision, clearedAt };
+}
+
 /** Bind recorded verification artifacts to present Git/tracker facts; never grant a gate. */
 export async function recordGateEvidence(project, request, options = {}) {
   const { budget } = options;
@@ -525,11 +557,14 @@ export async function recordGateEvidence(project, request, options = {}) {
           || authority.ownershipEpoch !== state.release?.ownershipEpoch || !boundedString(evidence.recovery.artifactId, 4096)
           || !boundedString(evidence.recovery.action, 4096)) return conflict("integration_delivery_evidence_mismatch");
       }
-      const clearAdoptionHold = state.integration?.hold === true && await currentLegacyOwnerAdoption(project, canonicalState);
       const observedAt = new Date().toISOString();
+      const clearAdoptionHold = state.integration?.hold === true && await currentLegacyOwnerAdoption(project, canonicalState);
+      const clearRetirementHold = runRetirementHoldCanClear(state, "integration", request, canonicalState, revision);
       const authorization = { source: evidence.authorization.source, scope: "integration", ownerSessionId, revision,
         taskIds: [...request.taskIds].sort(), observedAt };
-      state.integration = { ...state.integration, authorized: true, ...(clearAdoptionHold ? { hold: false } : {}), expectedRevision: revision, baseRevision: remote.revision,
+      state.integration = { ...state.integration, authorized: true, ...(clearAdoptionHold || clearRetirementHold ? { hold: false } : {}),
+        ...(clearRetirementHold ? { runRetirementHold: clearedRetirementHold(state.integration.runRetirementHold, request.operationId, revision, observedAt) } : {}),
+        expectedRevision: revision, baseRevision: remote.revision,
         remoteName: remote.name, baseRemoteRef: remote.baseRef, remoteRef: remote.targetRef,
         ...(remote.targetAbsent === true ? { targetAbsent: true, remoteRevision: undefined } : { remoteRevision: remote.targetRevision, targetAbsent: false }),
         taskIds: [...request.taskIds].sort(), authorization, evidenceAt: observedAt, deltaClean: true, recoveryReconciled: true,
@@ -656,6 +691,11 @@ export async function recordGateEvidence(project, request, options = {}) {
       }
       const observedAt = new Date().toISOString();
       const taskIds = [...request.taskIds].sort();
+      const clearRetirementHold = runRetirementHoldCanClear(state, "release", request, canonicalState, revision, evidence.target);
+      const preserveRetirementHold = state.release?.hold === true && state.release?.runRetirementHold && !clearRetirementHold;
+      const retirementHold = clearRetirementHold
+        ? clearedRetirementHold(state.release.runRetirementHold, request.operationId, revision, observedAt)
+        : preserveRetirementHold ? structuredClone(state.release.runRetirementHold) : undefined;
       const copy = (record, keys) => Object.fromEntries(keys.filter((key) => record[key] !== undefined).map((key) => [key, structuredClone(record[key])]));
       state.release = {
         ownerSessionId,
@@ -684,7 +724,8 @@ export async function recordGateEvidence(project, request, options = {}) {
         remoteMainDeploys: integration.remoteMainDeploys,
         autoDeploy: evidence.autoDeploy,
         projectPaused: false,
-        hold: false,
+        hold: Boolean(preserveRetirementHold),
+        ...(retirementHold ? { runRetirementHold: retirementHold } : {}),
       };
     }
     const observedAt = new Date().toISOString();

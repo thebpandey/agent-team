@@ -15,7 +15,7 @@ import { readStatus } from "./status.mjs";
 import { quarantineCompletion, rebindCompletion, reconcileCompletionHistory, recordGateEvidence, registerEvidenceStore, taskEligibility, transitionTask } from "./task-transitions.mjs";
 import { readUsageReport } from "./usage.mjs";
 import { createEventBudget } from './budget.mjs';
-import { extendRunScope, readRunDecision, reconcileRun, startRun } from "./run-state.mjs";
+import { extendRunScope, readRunDecision, reconcileRun, retireRun, startRun } from "./run-state.mjs";
 import { advanceLane, closeLane, createLane, rotateLane } from "./lanes.mjs";
 
 const requestLimit = 256 * 1024;
@@ -55,6 +55,7 @@ export const workflowCommandFlags = Object.freeze({
   "dashboard-snapshot": new Set(["project"]),
   "dashboard-start": new Set(["project", "port"]),
   "run-start": new Set(["project", "request"]),
+  "run-retire": new Set(["project", "request"]),
   "run-reconcile": new Set(["project", "request"]),
   "run-scope-extend": new Set(["project", "request"]),
   "lane-create": new Set(["project", "request"]),
@@ -325,11 +326,12 @@ export async function runWorkflowCommand(command, options, context = {}) {
     const canonical = await loadCanonicalState(project);
     return { status: "completed", ...taskEligibility(canonical, { scopeTaskIds: canonical.state.run?.taskIds, capacity: canonical.state.capacity }) };
   }
-  if (["run-start", "run-reconcile", "run-scope-extend"].includes(command)) {
+  if (["run-start", "run-retire", "run-reconcile", "run-scope-extend"].includes(command)) {
     const envelope = await readRequestEnvelope(options.request);
     if (!exactKeys(envelope, ["schemaVersion", "actorSessionId", "expectedVersion", "request"])) return { status: "conflict", reason: "invalid_request" };
     return command === "run-start"
       ? startRun(project, envelope.request, { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion })
+      : command === "run-retire" ? retireRun(project, envelope.request, { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion })
       : command === "run-reconcile" ? reconcileRun(project, envelope.request, { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion })
         : extendRunScope(project, envelope.request, { ...context, actorSessionId: envelope.actorSessionId, expectedVersion: envelope.expectedVersion });
   }

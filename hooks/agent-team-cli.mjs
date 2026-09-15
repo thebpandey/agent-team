@@ -138,7 +138,7 @@ export async function runCommand(command, options, context = {}) {
     // This local maintenance envelope is exact auditable intent, not native authentication or release authority.
     return transferProjectCoordinator(project, envelope, context);
   }
-  if (["run-reconcile", "run-scope-extend", "lane-create", "lane-next", "lane-rotate", "lane-close"].includes(command)) {
+  if (["run-start", "run-retire", "run-reconcile", "run-scope-extend", "lane-create", "lane-next", "lane-rotate", "lane-close"].includes(command)) {
     return { status: "conflict", reason: "native_hook_identity_required" };
   }
   if (workflowCommandFlags[command]) return runWorkflowCommand(command, options, context);

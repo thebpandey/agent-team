@@ -155,7 +155,7 @@ export function classifyOperation(event, mappings = {}, { tracker } = {}) {
   const rawTokens = tokenizeShell(command);
   if (rawTokens.length === 7 && ["node", "node.exe"].includes(executable(rawTokens[0]))
     && path.isAbsolute(rawTokens[1]) && executable(rawTokens[1]) === "agent-team-cli.mjs"
-    && ["legacy-owner-adopt", "coordinator-continuity-transfer", "gate-evidence", "run-reconcile", "run-scope-extend", "evidence-store-register",
+    && ["legacy-owner-adopt", "coordinator-continuity-transfer", "gate-evidence", "run-start", "run-retire", "run-reconcile", "run-scope-extend", "evidence-store-register",
       "completion-history-reconcile", "lane-create", "lane-next", "lane-rotate", "lane-close"].includes(rawTokens[2])
     && rawTokens[3] === "--project" && path.isAbsolute(rawTokens[4]) && path.normalize(rawTokens[4]) === rawTokens[4]
     && rawTokens[5] === "--request" && path.isAbsolute(rawTokens[6]) && path.normalize(rawTokens[6]) === rawTokens[6]) {
