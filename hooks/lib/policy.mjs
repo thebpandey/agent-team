@@ -233,8 +233,8 @@ function nonForcePushMatches(operation, gate) {
     && operation.push.targetRef === gate.remoteRef);
 }
 
-function manualMainReleaseMatches(release, gate) {
-  return release.runMode === "manual" && release.autoDeploy === false && release.process === "git-push"
+function manualMainReleaseMatches(release, gate, operation) {
+  return operation.method === "push" && release.runMode === "manual" && release.autoDeploy === false && release.process === "git-push"
     && release.target === `${gate.remoteName}:${gate.remoteRef}` && release.expectedRevision === gate.expectedRevision
     && sameIds(release.taskIds, gate.taskIds) && release.integration?.remoteName === gate.remoteName
     && release.integration?.targetRef === gate.remoteRef && release.integration?.targetRevision === gate.expectedRevision;
@@ -268,7 +268,7 @@ async function integrationGate(event, project, canonical, operation, now, budget
   if (gate.updatesRemoteMain && gate.remoteMainDeploys) {
     const release = canonical.state.release ?? {};
     const authorization = release.authorization ?? {};
-    const manualMainRelease = manualMainReleaseMatches(release, gate);
+    const manualMainRelease = manualMainReleaseMatches(release, gate, operation);
     if (!release.autoDeploy && !manualMainRelease) {
       return deny("Updating remote main is a deployment trigger, but automatic deployment is off and no exact manual release authority covers it.");
     }

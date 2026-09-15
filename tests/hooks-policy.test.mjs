@@ -430,7 +430,7 @@ test("deployment-triggering main integration consumes only the current release b
   });
 });
 
-test("exact manual release authority permits its named deployment-triggering main push", async () => {
+async function manualMainReleaseFixture() {
   const value = await fixture();
   await writeFile(path.join(value.root, "manual-main.txt"), "manual main release\n");
   execFileSync("git", ["add", "manual-main.txt"], { cwd: value.root });
@@ -464,10 +464,23 @@ test("exact manual release authority permits its named deployment-triggering mai
     recordedEvidence: { path: ".agent-team/release.json", fingerprint: "e".repeat(64), revision,
       taskIds: ["AT-001"], selectedTaskIds: ["AT-001"], operationId: "manual-release", observedAt: "2026-09-06T12:00:00.000Z" },
   });
+  return { value, project, canonical };
+}
+
+test("exact manual release authority permits its named deployment-triggering main push", async () => {
+  const { value, project, canonical } = await manualMainReleaseFixture();
   const result = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session",
     operation: { kind: "shell", command: `git -C ${value.root} push origin HEAD:main` } }), project,
   { canonical, now: new Date("2026-09-06T12:01:00.000Z") });
   assert.equal(result.allow, true, result.messages.join("\n"));
+});
+
+test("manual git-push release authority cannot authorize a pull-request integration", async () => {
+  const { value, project, canonical } = await manualMainReleaseFixture();
+  const result = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session",
+    operation: { kind: "integration", method: "pull_request" } }), project,
+  { canonical, now: new Date("2026-09-06T12:01:00.000Z") });
+  assert.equal(result.allow, false, result.messages.join("\n"));
 });
 
 test("integration permits only an evidenced non-force remote-main advance", async () => {
