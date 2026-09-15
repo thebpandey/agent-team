@@ -22,6 +22,8 @@ const temporary = [];
 test.afterEach(async () => Promise.all(temporary.splice(0).map((item) => rm(item, { recursive: true, force: true }))));
 const digest = (source) => createHash("sha256").update(source).digest("hex");
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
+const fixtureSkillPath = ".agent-team/fixture-skills/test-driven-development/SKILL.md";
+const fixtureSkillSource = "# Test fixture skill\n\nExercise the lane lifecycle test protocol.\n";
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-lane-lifecycle-"));
@@ -31,8 +33,10 @@ async function fixture() {
   execFileSync("git", ["worktree", "add", "-q", "-b", "lane/build-a", laneWorktree, "main"], { cwd: root });
   const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
   const readmeHash = digest(await readFile(path.join(root, "README.md")));
-  const skillPath = "/home/server/.agents/skills/test-driven-development/SKILL.md";
-  const skillHash = digest(await readFile(skillPath));
+  await mkdir(path.dirname(path.join(root, fixtureSkillPath)), { recursive: true });
+  await writeFile(path.join(root, fixtureSkillPath), fixtureSkillSource);
+  const skillPath = fixtureSkillPath;
+  const skillHash = digest(fixtureSkillSource);
   const briefSource = `# Build lane A
 
 ## Role / model / effort
@@ -186,8 +190,8 @@ async function registerReviewerLane(value, taskIds = ["AT-101"]) {
   const canonical = await loadCanonicalState(value.project);
   const revision = canonical.git.headRevision;
   const readmeHash = digest(await readFile(path.join(root, "README.md")));
-  const skillPath = "/home/server/.agents/skills/test-driven-development/SKILL.md";
-  const skillHash = digest(await readFile(skillPath));
+  const skillPath = fixtureSkillPath;
+  const skillHash = digest(await readFile(path.join(root, skillPath)));
   const briefSource = `# Reserved review lane
 
 ## Role / model / effort
@@ -1047,8 +1051,8 @@ test("two retained work lanes and one reserved reviewer lane process five tasks 
   const worktreeB = `${value.project.root}-lane-build-b`;
   execFileSync("git", ["worktree", "add", "-q", "-b", "lane/build-b", worktreeB, "main"], { cwd: value.project.root });
   const readmeHash = digest(await readFile(path.join(value.project.root, "README.md")));
-  const skillPath = "/home/server/.agents/skills/test-driven-development/SKILL.md";
-  const skillHash = digest(await readFile(skillPath));
+  const skillPath = fixtureSkillPath;
+  const skillHash = digest(await readFile(path.join(value.project.root, skillPath)));
   const briefB = `# Build lane B
 
 ## Role / model / effort
