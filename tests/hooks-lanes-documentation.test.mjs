@@ -102,9 +102,9 @@ test("instantiated next-task packets retain a project-root-relative protocol poi
   assert.match(await readFile(path.resolve(project, protocolPath), "utf8"), /^# Lane protocol/m);
 });
 
-test("new lane documents use resolvable local links and retain the 7.3.0 release boundary", async () => {
+test("new lane documents use resolvable local links and retain the 7.3.1 release boundary", async () => {
   const manifest = JSON.parse(await read("hooks/manifest.json"));
-  assert.equal(manifest.version, "7.3.0");
+  assert.equal(manifest.version, "7.3.1");
   for (const relative of files) {
     const source = await read(relative);
     assert.doesNotMatch(source, /\u2014/);

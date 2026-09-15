@@ -1,5 +1,12 @@
 # Changelog
 
+## 7.3.1 - 2026-09-14
+
+Version 7.3.1 permits an exact owner-authorized manual release record to cover its named deployment-triggering main push without weakening any other integration or release gate.
+
+- Accept only a clean non-force `origin` push to `refs/heads/main` when current manual release authority binds process `git-push`, the exact target, revision, tasks, owner generation, and ordinary gate evidence.
+- Continue to deny absent, stale, held, mismatched, forced, multi-ref, or chained publication attempts.
+
 ## 7.3.0 - 2026-09-14
 
 Version 7.3.0 adds durable multi-task lanes and bounded setup helpers while preserving tracker, ownership, review, integration, and release authority.

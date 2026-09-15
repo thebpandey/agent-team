@@ -91,16 +91,16 @@ test("landing-page banner alt text does not misidentify retained artwork as the 
 
 // Text contracts catch instruction drift; behavioral/consumer/native tests remain separate gates.
 test("release version and public guidance stay consistent", async () => {
-  const [raw, skill, readme, changelog, guide, gettingStarted, index] = await readMany(["hooks/manifest.json", "SKILL.md", "README.md", "CHANGELOG.md", "references/HOOKS.md", "GETTING_STARTED.md", "index.html"]);
+  const [raw, skill, readme, changelog, guide, release, gettingStarted, index] = await readMany(["hooks/manifest.json", "SKILL.md", "README.md", "CHANGELOG.md", "references/HOOKS.md", "references/RELEASE.md", "GETTING_STARTED.md", "index.html"]);
   const manifest = JSON.parse(raw);
-  assert.equal(manifest.version, "7.3.0");
+  assert.equal(manifest.version, "7.3.1");
   assert.equal(manifest.repository, "https://github.com/thebpandey/agent-team");
   assert.ok(skill.includes('version: "' + manifest.version + '"'));
   assert.ok(readme.includes("current skill version is **" + manifest.version + "**"));
   assert.ok(changelog.includes("## " + manifest.version + " - "));
   assert.match(index, /Version 7\.2\.6/);
   for (const publicDoc of [readme, gettingStarted]) {
-    assert.match(publicDoc, /agent-team-7\.3\.0\.zip/);
+    assert.match(publicDoc, /agent-team-7\.3\.1\.zip/);
     assert.match(publicDoc, /SHA256SUMS/);
     assert.match(publicDoc, /releases\/latest/);
     assert.match(publicDoc, /Linux.*WSL.*\/proc\/self\/fd/is);
@@ -110,6 +110,7 @@ test("release version and public guidance stay consistent", async () => {
     assert.doesNotMatch(publicDoc, /project-kickoff\/releases\/tag\/v0\.4\.1/i);
     assert.match(publicDoc, /project-kickoff\/releases\/latest/i);
   }
+  assert.match(release, /manual.*origin:refs\/heads\/main.*git-push.*exact revision.*task/i);
   for (const source of [skill, readme]) assert.match(source, /\(references\/HOOKS\.md\)/);
   assert.match(guide, /Requirements 1.?15/i);
 });

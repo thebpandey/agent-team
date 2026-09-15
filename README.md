@@ -2,7 +2,7 @@
 
 Created by [thebpandey](https://github.com/thebpandey). An orchestrator-led development skill for Codex and Claude Code: small parallel assignments, independent review, automatic repair of ordinary findings, and verified integration.
 
-> **Version 7.3.0.** This release adds durable multi-task lanes, bounded per-host execution settings, auditable coordinator continuity, shipped helpers, reversible context reduction, and uppercase canonical Pro Markdown paths. Existing tracker, ownership, review, integration, release, and customization boundaries remain in force.
+> **Version 7.3.1.** This patch permits an exact owner-authorized manual release record to cover its named deployment-triggering main push. Existing tracker, ownership, review, integration, release, and customization boundaries remain in force.
 
 New here? Open the [hosted Agent-Team 7.1.0 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.1.0.html) in your browser, or read the [short Markdown guide](GETTING_STARTED.md). The [7.0.2 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.0.2.html) remains reachable as historical documentation. Both start with GitHub authentication and optional Project Kickoff.
 
@@ -101,12 +101,12 @@ Confirm discovery with `$agent-team help` or `/agent-team help`. Installation, r
 
 ### Official artifact installer reference
 
-Download `agent-team-7.3.0.zip` and its matching one-entry `SHA256SUMS` from the [Agent-Team v7.3.0 release](https://github.com/thebpandey/agent-team/releases/tag/v7.3.0), or find updates through [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify the exact downloaded pair, then run the CLI from the extracted archive:
+Download `agent-team-7.3.1.zip` and its matching one-entry `SHA256SUMS` from the [Agent-Team v7.3.1 release](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1), or find updates through [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify the exact downloaded pair, then run the CLI from the extracted archive:
 
 ```bash
 (cd /absolute/download && sha256sum -c SHA256SUMS)
 node /absolute/extracted/agent-team/hooks/agent-team-cli.mjs install \
-  --archive /absolute/download/agent-team-7.3.0.zip \
+  --archive /absolute/download/agent-team-7.3.1.zip \
   --checksums /absolute/download/SHA256SUMS \
   --host codex \
   --scope user
@@ -266,7 +266,7 @@ See [recovery](references/RECOVERY.md), [canonical state](references/STATE.md), 
 
 ## Source, versions and updates
 
-The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.3.0**; `metadata.version` in `SKILL.md` is authoritative. Release identity is [v7.3.0](https://github.com/thebpandey/agent-team/releases/tag/v7.3.0). Version [7.2.6](https://github.com/thebpandey/agent-team/releases/tag/v7.2.6) repaired sequential delivery-batch evidence. Version [7.2.5](https://github.com/thebpandey/agent-team/releases/tag/v7.2.5) restored trusted native published-history reconciliation. Version [7.2.4](https://github.com/thebpandey/agent-team/releases/tag/v7.2.4) corrected deployment-queue admission for recovered, already-scoped deliveries. Version [7.2.3](https://github.com/thebpandey/agent-team/releases/tag/v7.2.3) added the exact Project Kickoff 0.4.2 compatibility pair. Version [7.2.2](https://github.com/thebpandey/agent-team/releases/tag/v7.2.2) added native owner routing for run reconciliation and scope extension. Version [7.2.1](https://github.com/thebpandey/agent-team/releases/tag/v7.2.1) stabilized owner-adoption receipt ordering and accepted Project Kickoff 0.4.1 handoffs tested against that release. Version [7.2.0](https://github.com/thebpandey/agent-team/releases/tag/v7.2.0) introduced the reliability, ownership, installation, and active-turn safeguards summarized in the changelog. Version [7.1.1](https://github.com/thebpandey/agent-team/releases/tag/v7.1.1) accepts AST-origin `INFERRED` Graphify relationships as offline structural leads while rejecting semantic or missing provenance for readiness evidence. Version [7.1.0](https://github.com/thebpandey/agent-team/releases/tag/v7.1.0) makes the orchestrator a pure orchestrator and routes verification to a delegated verifier. Version [7.0.2](https://github.com/thebpandey/agent-team/releases/tag/v7.0.2) supports larger projects and includes the illustrated field guide. Find published packages and checksums in the [latest official release](https://github.com/thebpandey/agent-team/releases/latest). See the [changelog](CHANGELOG.md).
+The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.3.1**; `metadata.version` in `SKILL.md` is authoritative. Release identity is [v7.3.1](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1). Version [7.3.0](https://github.com/thebpandey/agent-team/releases/tag/v7.3.0) added durable lanes, bounded setup helpers, and uppercase canonical Pro Markdown paths. Version [7.2.6](https://github.com/thebpandey/agent-team/releases/tag/v7.2.6) repaired sequential delivery-batch evidence. Version [7.2.5](https://github.com/thebpandey/agent-team/releases/tag/v7.2.5) restored trusted native published-history reconciliation. Version [7.2.4](https://github.com/thebpandey/agent-team/releases/tag/v7.2.4) corrected deployment-queue admission for recovered, already-scoped deliveries. Version [7.2.3](https://github.com/thebpandey/agent-team/releases/tag/v7.2.3) added the exact Project Kickoff 0.4.2 compatibility pair. Version [7.2.2](https://github.com/thebpandey/agent-team/releases/tag/v7.2.2) added native owner routing for run reconciliation and scope extension. Version [7.2.1](https://github.com/thebpandey/agent-team/releases/tag/v7.2.1) stabilized owner-adoption receipt ordering and accepted Project Kickoff 0.4.1 handoffs tested against that release. Version [7.2.0](https://github.com/thebpandey/agent-team/releases/tag/v7.2.0) introduced the reliability, ownership, installation, and active-turn safeguards summarized in the changelog. Version [7.1.1](https://github.com/thebpandey/agent-team/releases/tag/v7.1.1) accepts AST-origin `INFERRED` Graphify relationships as offline structural leads while rejecting semantic or missing provenance for readiness evidence. Version [7.1.0](https://github.com/thebpandey/agent-team/releases/tag/v7.1.0) makes the orchestrator a pure orchestrator and routes verification to a delegated verifier. Version [7.0.2](https://github.com/thebpandey/agent-team/releases/tag/v7.0.2) supports larger projects and includes the illustrated field guide. Find published packages and checksums in the [latest official release](https://github.com/thebpandey/agent-team/releases/latest). See the [changelog](CHANGELOG.md).
 
 Use an identified authorized revision and the complete package. Universal archives have an `agent-team/` prefix and include `SKILL.md`, `README.md`, `LICENSE`, `CHANGELOG.md`, `agents/`, `references/`, `assets/` and `hooks/`. External dependencies and model access are not bundled. Inactive `legacy/` and maintenance tests are excluded. Provenance lives in `.agent-team-source.json`; verify the exact revision and checksum.
 
@@ -275,8 +275,8 @@ Maintainer reference, from a qualified committed source revision:
 ```bash
 node hooks/agent-team-cli.mjs check-package
 node hooks/agent-team-cli.mjs build-artifacts --revision <full-commit-id> --output ../agent-team-artifacts
-node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --archive ../agent-team-artifacts/agent-team-7.3.0.zip
-sha256sum ../agent-team-artifacts/agent-team-7.3.0.zip
+node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --archive ../agent-team-artifacts/agent-team-7.3.1.zip
+sha256sum ../agent-team-artifacts/agent-team-7.3.1.zip
 ```
 
 On macOS, use `shasum -a 256` on the same exact archive. These commands reproduce and validate the versioned artifact from an identified revision; verify any published checksum against the exact GitHub release asset. Change the version consistently before releasing altered contents; never replace an existing released version with different files.
