@@ -286,6 +286,7 @@ if (process.argv[2] === "initialize-worker") {
       ["0.4.2", "7.2.6", "applied"],
       ["0.4.2", "7.3.0", "applied"],
       ["0.5.0", "7.3.0", "applied"],
+      ["0.5.0", "7.3.1", "applied"],
       ["0.5.0", "7.2.6", "conflict"],
       ["0.4.2", "7.2.2", "conflict"],
       ["0.4.1", "7.2.3", "conflict"],
