@@ -8,6 +8,8 @@ The project orchestrator owns integration and production release under [project 
 
 Before updating remote main, inspect whether that push itself triggers production deployment. Honor the run's off/batch choice through the established gated process, or report the conflict before pushing. Do not change deployment configuration or silently publish to satisfy integration.
 
+An accepted manual release authority for `origin:refs/heads/main` with process `git-push` covers only its named deployment-triggering main update at the exact revision and task set. It does not enable automatic deployment, authorize another target or process, or bypass current owner, tracker, integration, clean-tree, recovery, preview, pause, hold, and exact-command gates.
+
 ## Standing authorization
 
 Resolve deployment mode through [settings](SETTINGS.md) and the [run record](RUNS.md). Explicit `auto-deploy` authorizes automatic batches for this run using the established target/process. When auto-deploy is inherited from saved defaults, show it in the effective-run summary and continue without a run-specific confirmation. With auto-deploy off, report the integrated result and leave deployment pending; continue authorized development and eligible cleanup without asking a generic deployment or continuation question. Earlier general standing authority does not silently enable this mode. A one-time approval covers the reported release, not future automatic batches.

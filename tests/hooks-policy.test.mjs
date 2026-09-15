@@ -430,6 +430,46 @@ test("deployment-triggering main integration consumes only the current release b
   });
 });
 
+test("exact manual release authority permits its named deployment-triggering main push", async () => {
+  const value = await fixture();
+  await writeFile(path.join(value.root, "manual-main.txt"), "manual main release\n");
+  execFileSync("git", ["add", "manual-main.txt"], { cwd: value.root });
+  execFileSync("git", ["commit", "-q", "-m", "manual main release"], { cwd: value.root });
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: value.root, encoding: "utf8" }).trim();
+  const remoteBase = execFileSync("git", ["ls-remote", "--exit-code", "origin", "refs/heads/main"],
+    { cwd: value.root, encoding: "utf8" }).trim().split(/\s+/)[0];
+  const project = await resolveProject(value.root);
+  const canonical = modernReleaseCanonical({ ...value, revision }, await loadCanonicalState(project));
+  canonical.state.run.autoDeploy = false;
+  Object.assign(canonical.state.integration, {
+    authorized: true, expectedRevision: revision, baseRevision: remoteBase, remoteRevision: remoteBase,
+    remoteName: "origin", baseRef: "main", baseRemoteRef: "refs/heads/main", remoteRef: "refs/heads/main",
+    taskIds: ["AT-001"], updatesRemoteMain: true, remoteMainDeploys: true,
+    authorization: { source: "accepted integration", scope: "integration", ownerSessionId: "owner-session",
+      revision, taskIds: ["AT-001"], observedAt: "2026-09-06T12:00:00.000Z" },
+  });
+  Object.assign(canonical.state.release, {
+    expectedRevision: revision, target: "origin:refs/heads/main", process: "git-push",
+    run: { id: "release-1", mode: "manual", taskIds: ["AT-001"], paused: false },
+    runMode: "manual", autoDeploy: false, remoteMainDeploys: true,
+    authorization: { source: "explicit owner-authorized manual release", target: "origin:refs/heads/main", process: "git-push",
+      scope: "batch-1", ownerSessionId: "owner-session", ownerHost: "codex", ownershipEpoch: 1,
+      grantedAt: "2026-09-06T12:00:00.000Z", revision, taskIds: ["AT-001"], observedAt: "2026-09-06T12:00:00.000Z" },
+    artifact: { id: "manual-main-artifact", revision, taskIds: ["AT-001"], sha256: "a".repeat(64) },
+    integration: { status: "passed", revision, taskIds: ["AT-001"], remoteName: "origin", baseRef: "refs/heads/main",
+      baseRevision: remoteBase, targetRef: "refs/heads/main", targetRevision: revision, remoteMainDeploys: true },
+    verification: { status: "passed", revision, taskIds: ["AT-001"] },
+    preview: { required: false, status: "not_required", revision },
+    delta: { status: "clean", revision, taskIds: ["AT-001"] },
+    recordedEvidence: { path: ".agent-team/release.json", fingerprint: "e".repeat(64), revision,
+      taskIds: ["AT-001"], selectedTaskIds: ["AT-001"], operationId: "manual-release", observedAt: "2026-09-06T12:00:00.000Z" },
+  });
+  const result = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session",
+    operation: { kind: "shell", command: `git -C ${value.root} push origin HEAD:main` } }), project,
+  { canonical, now: new Date("2026-09-06T12:01:00.000Z") });
+  assert.equal(result.allow, true, result.messages.join("\n"));
+});
+
 test("integration permits only an evidenced non-force remote-main advance", async () => {
   const value = await fixture();
   await writeFile(path.join(value.root, "advance.txt"), "advance\n");
