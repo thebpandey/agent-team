@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs";
 import { validateNativeOwnerAuthority } from "./owner-recovery.mjs";
+import { resolveExecutionSettings, validateExecutionSettings } from "./settings.mjs";
 import { mutateOperationalState } from "./task-transitions.mjs";
 
 const validId = (value) => typeof value === "string" && /^[\w.:-]{1,128}$/.test(value)
@@ -13,6 +16,7 @@ const exactKeys = (value, keys) => value && typeof value === "object" && !Array.
 const sources = new Set(["explicit_run", "saved_default", "compatibility_migration"]);
 const runKeys = ["id", "ownerSessionId", "ownerHost", "ownershipEpoch", "mode", "taskIds", "teamLimit", "autoDeploy", "batchSize", "source",
   "settingSources", "paused", "operationalVersion", "blockers", "pendingDeliveryIds", "deployedTaskIds", "terminalClassification"];
+const currentRunKeys = [...runKeys, "executionSettings"];
 const proposalKeys = ["id", "mode", "taskIds", "teamLimit", "autoDeploy", "batchSize", "source", "settingSources"];
 const sourceKeys = ["mode", "taskIds", "teamLimit", "autoDeploy", "batchSize"];
 const terminalKinds = new Set(["unknown", "paused", "unreconciled_completion", "progress_possible", "finite_exhausted", "continuous_scope_exhausted", "blocked_tail"]);
@@ -25,16 +29,94 @@ const unclaimed = new Set(["", "none", "unassigned", "-"]);
 const conflict = (reason) => ({ status: "conflict", reason });
 const unique = (items) => Array.isArray(items) && new Set(items).size === items.length;
 const dependencyEvidenceUnavailable = (task) => ["unavailable", "unknown"].includes(String(task?.dependencyEvidence ?? "").toLowerCase());
+const runGit = promisify(execFile);
 
 export function effectiveRunFingerprint(run) {
   return createHash("sha256").update(stable(run)).digest("hex");
+}
+
+export function operationalStateFingerprint(state) {
+  return createHash("sha256").update(stable(state)).digest("hex");
+}
+
+const retirementAuthorizationKeys = ["source", "scope"];
+const successorIntentKeys = ["kind", "runId", "taskId", "target"];
+const pendingConstraintKeys = ["schemaVersion", "status", "retirementOperationId", "runId", "taskId", "target"];
+const startedConstraintKeys = [...pendingConstraintKeys, "startOperationId", "startedAt"];
+
+function retirementAuthorizationValid(value) {
+  return exactKeys(value, retirementAuthorizationKeys) && value.source === "explicit_user_instruction"
+    && value.scope === "release_maintenance";
+}
+
+function successorIntentValid(value) {
+  return exactKeys(value, successorIntentKeys) && value.kind === "maintenance_release" && validId(value.runId)
+    && validId(value.taskId) && typeof value.target === "string" && value.target.trim() === value.target
+    && value.target.length > 0 && Buffer.byteLength(value.target) <= 4096;
+}
+
+function runStartConstraintValid(value) {
+  if (!(exactKeys(value, pendingConstraintKeys) || exactKeys(value, startedConstraintKeys)) || value.schemaVersion !== 1
+    || !["pending", "started"].includes(value.status) || !validId(value.retirementOperationId)
+    || !validId(value.runId) || !validId(value.taskId) || typeof value.target !== "string" || value.target.trim() !== value.target
+    || !value.target || Buffer.byteLength(value.target) > 4096) return false;
+  return value.status === "pending" ? exactKeys(value, pendingConstraintKeys)
+    : exactKeys(value, startedConstraintKeys) && validId(value.startOperationId) && Number.isFinite(Date.parse(value.startedAt));
+}
+
+function retirementHistoryValid(entries) {
+  if (entries === undefined) return true;
+  if (!Array.isArray(entries)) return false;
+  const ids = new Set();
+  for (const entry of entries) {
+    if (!exactKeys(entry, ["schemaVersion", "operationId", "run", "runFingerprint", "stateFingerprint", "trackerFingerprint", "revision",
+      "reason", "authorization", "successorIntent", "authenticatedActor", "priorAuthority", "retiredAt"])
+      || entry.schemaVersion !== 1 || !validId(entry.operationId) || ids.has(entry.operationId)
+      || !entry.run || typeof entry.run !== "object" || Array.isArray(entry.run)
+      || effectiveRunFingerprint(entry.run) !== entry.runFingerprint
+      || ![entry.stateFingerprint, entry.trackerFingerprint].every((value) => /^[a-f0-9]{64}$/.test(value ?? ""))
+      || !/^[a-f0-9]{40}$/.test(entry.revision ?? "") || !validReason(entry.reason)
+      || !retirementAuthorizationValid(entry.authorization) || !successorIntentValid(entry.successorIntent)
+      || !exactKeys(entry.authenticatedActor, ["ownerHost", "ownerSessionId", "ownershipEpoch"])
+      || !["codex", "claude-code"].includes(entry.authenticatedActor.ownerHost) || !validId(entry.authenticatedActor.ownerSessionId)
+      || !Number.isSafeInteger(entry.authenticatedActor.ownershipEpoch) || entry.authenticatedActor.ownershipEpoch < 1
+      || !exactKeys(entry.priorAuthority, ["integration", "release"])
+      || !entry.priorAuthority.integration || typeof entry.priorAuthority.integration !== "object" || Array.isArray(entry.priorAuthority.integration)
+      || !entry.priorAuthority.release || typeof entry.priorAuthority.release !== "object" || Array.isArray(entry.priorAuthority.release)
+      || !Number.isFinite(Date.parse(entry.retiredAt))) return false;
+    ids.add(entry.operationId);
+  }
+  return true;
+}
+
+async function currentRevision(project, options) {
+  try {
+    const result = options.runGit
+      ? await options.runGit(["-C", project.root, "rev-parse", "HEAD"], { cwd: project.root })
+      : await runGit("git", ["-C", project.root, "rev-parse", "HEAD"], {
+        cwd: project.root, encoding: "utf8", timeout: options.budget?.timeout(1500) ?? 1500,
+        maxBuffer: 16 * 1024, ...(options.budget ? { signal: options.budget.signal } : {}),
+      });
+    const revision = String(result?.stdout ?? result ?? "").trim();
+    return /^[a-f0-9]{40}$/.test(revision) ? revision : null;
+  } catch { return null; }
+}
+
+function validExecutionSnapshot(value) {
+  if (!exactKeys(value, ["lanes", "supervision", "limits"])
+    || !exactKeys(value.lanes, ["enabled", "rotation", "factSheetStaleDays", "workerUpdateMaxChars", "briefMaxWords"])
+    || !exactKeys(value.lanes.rotation, ["tasks", "onPressure"])
+    || !exactKeys(value.supervision, ["heartbeatSeconds"])
+    || !exactKeys(value.limits, ["subprocessMaxBufferBytes", "maxPlanTasks", "canonicalRecordMaxBytes"])) return false;
+  try { validateExecutionSettings(value); return true; } catch { return false; }
 }
 
 function topLevel(task) { return task?.isTopLevelDelivery === true || task?.parentId === null && task?.taskType !== "epic" && task?.isEpic !== true; }
 function dependencies(task) { return Array.isArray(task?.dependencies) ? task.dependencies : String(task?.["depends on"] ?? "").split(/\s*,\s*/).filter((id) => id && !["none", "-"].includes(id)); }
 
 export function validateEffectiveRun(run, canonicalTasks) {
-  if (!exactKeys(run, runKeys) || !Array.isArray(canonicalTasks) || !validId(run.id) || !validId(run.ownerSessionId)
+  if (!(exactKeys(run, runKeys) || exactKeys(run, currentRunKeys) && validExecutionSnapshot(run.executionSettings))
+    || !Array.isArray(canonicalTasks) || !validId(run.id) || !validId(run.ownerSessionId)
     || !["codex", "claude-code"].includes(run.ownerHost) || !Number.isSafeInteger(run.ownershipEpoch) || run.ownershipEpoch < 1
     || !["finite", "continuous"].includes(run.mode) || !unique(run.taskIds) || !run.taskIds.length || run.taskIds.some((id) => !validId(id))
     || !Number.isSafeInteger(run.teamLimit) || run.teamLimit < 1 || run.teamLimit > 64 || typeof run.autoDeploy !== "boolean"
@@ -103,6 +185,14 @@ export async function startRun(project, request, options = {}) {
     authenticatedActor: { ownerHost: actor.ownerHost, ownerSessionId: actor.ownerSessionId, ownershipEpoch: actor.ownershipEpoch } };
   return mutateOperationalState(project, effectiveRequest, async (state, canonical) => {
     if (state.run !== undefined) return conflict("run_already_active");
+    const successor = state.runStartConstraint;
+    if (successor !== undefined && !runStartConstraintValid(successor)) return conflict("invalid_run_successor_intent");
+    if (successor?.status === "started") return conflict("invalid_run_successor_intent");
+    if (successor?.status === "pending" && (request.run.id !== successor.runId
+      || stable(request.run.taskIds) !== stable([successor.taskId]) || request.run.source !== "explicit_run"
+      || Object.values(request.run.settingSources ?? {}).some((source) => source !== "explicit_run") || request.run.autoDeploy !== false)) {
+      return conflict("run_successor_mismatch");
+    }
     const current = await loadCanonicalTracker(project, { budget: options.budget });
     if (current.tracker.status !== "current") return conflict("tracker_unavailable");
     if (current.tracker.fingerprint !== request.expectedTrackerFingerprint) return conflict("stale_tracker");
@@ -110,8 +200,72 @@ export async function startRun(project, request, options = {}) {
     const problem = proposalProblem(request.run, current.tasks);
     if (problem) return conflict(problem);
     const run = { ...structuredClone(request.run), ownerSessionId: actor.ownerSessionId, ownerHost: actor.ownerHost, ownershipEpoch: actor.ownershipEpoch,
+      executionSettings: resolveExecutionSettings(project.setup, actor.ownerHost),
       paused: false, operationalVersion: (canonical.state.stateVersion ?? 0) + 1, blockers: [], pendingDeliveryIds: [], deployedTaskIds: [], terminalClassification: "progress_possible" };
-    return { state: { ...state, run }, result: { run: structuredClone(run), trackerFingerprint: current.tracker.fingerprint, authenticatedActor: effectiveRequest.authenticatedActor } };
+    const next = { ...state, run };
+    if (successor?.status === "pending") next.runStartConstraint = { ...successor, status: "started", startOperationId: request.operationId,
+      startedAt: (options.now ?? (() => new Date().toISOString()))() };
+    return { state: next, result: { run: structuredClone(run), trackerFingerprint: current.tracker.fingerprint,
+      authenticatedActor: effectiveRequest.authenticatedActor } };
+  }, { ...options, nativeIdentity: actor.nativeIdentity });
+}
+
+/** Retire one historical active run while preserving all work and evidence records. */
+export async function retireRun(project, request, options = {}) {
+  const keys = ["operationId", "expectedStateFingerprint", "expectedRunFingerprint", "expectedTrackerFingerprint", "expectedRevision",
+    "reason", "authorization", "successorIntent"];
+  if (!exactKeys(request, keys) || !validId(request?.operationId)
+    || ![request?.expectedStateFingerprint, request?.expectedRunFingerprint, request?.expectedTrackerFingerprint]
+      .every((value) => /^[a-f0-9]{64}$/.test(value ?? ""))
+    || !/^[a-f0-9]{40}$/.test(request?.expectedRevision ?? "") || !validReason(request?.reason)
+    || !retirementAuthorizationValid(request?.authorization) || !successorIntentValid(request?.successorIntent)) return conflict("invalid_request");
+  const actor = await authenticatedActor(project, options);
+  if (!actor) return conflict("project_owner_required");
+  const authenticated = { ownerHost: actor.ownerHost, ownerSessionId: actor.ownerSessionId, ownershipEpoch: actor.ownershipEpoch };
+  const effectiveRequest = { ...request, actorSessionId: options.actorSessionId, expectedVersion: options.expectedVersion, authenticatedActor: authenticated };
+  return mutateOperationalState(project, effectiveRequest, async (state, canonical) => {
+    const previousRun = structuredClone(state.run);
+    if (!previousRun || typeof previousRun !== "object" || Array.isArray(previousRun)) return conflict("run_not_active");
+    if (previousRun.ownerHost === actor.ownerHost && previousRun.ownerSessionId === actor.ownerSessionId
+      && previousRun.ownershipEpoch === actor.ownershipEpoch) return conflict("run_not_historical");
+    if (!retirementHistoryValid(state.runRetirements)) return conflict("invalid_run_retirement_history");
+    if (state.runStartConstraint !== undefined && (!runStartConstraintValid(state.runStartConstraint)
+      || state.runStartConstraint.status === "pending")) return conflict("invalid_run_successor_intent");
+    if (operationalStateFingerprint(canonical.state) !== request.expectedStateFingerprint) return conflict("stale_state");
+    if (effectiveRunFingerprint(previousRun) !== request.expectedRunFingerprint) return conflict("stale_run");
+    if (Object.entries(state.pendingOperations ?? {}).some(([operationId]) => operationId !== request.operationId)) {
+      return { status: "unavailable", reason: "pending_operation_unresolved" };
+    }
+    const tracker = await loadCanonicalTracker(project, { budget: options.budget });
+    if (tracker.tracker.status !== "current") return { status: "unavailable", reason: "tracker_unavailable" };
+    if (tracker.tracker.fingerprint !== request.expectedTrackerFingerprint) return conflict("stale_tracker");
+    const revision = await currentRevision(project, options);
+    if (!revision) return { status: "unavailable", reason: "revision_unavailable" };
+    if (revision !== request.expectedRevision) return conflict("stale_revision");
+    if (canonical.registry.projectOwnerHost !== actor.ownerHost || canonical.registry.projectOwner !== actor.ownerSessionId
+      || canonical.registry.ownershipEpoch !== actor.ownershipEpoch) return conflict("project_owner_required");
+    if (!state.integration || typeof state.integration !== "object" || Array.isArray(state.integration)
+      || !state.release || typeof state.release !== "object" || Array.isArray(state.release)) return conflict("authority_state_invalid");
+    const retiredAt = (options.now ?? (() => new Date().toISOString()))();
+    if (!Number.isFinite(Date.parse(retiredAt))) return conflict("invalid_retirement_time");
+    const retirement = { schemaVersion: 1, operationId: request.operationId, run: previousRun,
+      runFingerprint: request.expectedRunFingerprint, stateFingerprint: request.expectedStateFingerprint,
+      trackerFingerprint: request.expectedTrackerFingerprint, revision, reason: request.reason,
+      authorization: structuredClone(request.authorization), successorIntent: structuredClone(request.successorIntent),
+      authenticatedActor: authenticated, priorAuthority: { integration: structuredClone(state.integration), release: structuredClone(state.release) }, retiredAt };
+    const retirementHold = { schemaVersion: 1, status: "pending_fresh_evidence", retirementOperationId: request.operationId,
+      runId: request.successorIntent.runId, taskId: request.successorIntent.taskId, target: request.successorIntent.target };
+    const { run: _retiredRun, ...withoutActiveRun } = state;
+    const next = {
+      ...withoutActiveRun,
+      integration: { ...state.integration, authorized: false, hold: true, runRetirementHold: structuredClone(retirementHold) },
+      release: { ...state.release, authorized: false, hold: true, runRetirementHold: structuredClone(retirementHold) },
+      runRetirements: [...(state.runRetirements ?? []), retirement],
+      runStartConstraint: { schemaVersion: 1, status: "pending", retirementOperationId: request.operationId,
+        runId: request.successorIntent.runId, taskId: request.successorIntent.taskId, target: request.successorIntent.target },
+    };
+    return { state: next, result: { retirement: structuredClone(retirement), successorConstraint: structuredClone(next.runStartConstraint),
+      integrationHeld: true, releaseHeld: true } };
   }, { ...options, nativeIdentity: actor.nativeIdentity });
 }
 
@@ -185,7 +339,8 @@ export async function reconcileRun(project, request, options = {}) {
     if (problem) return conflict(problem);
     const provenance = qualified ? { ownerSessionId: previousRun.ownerSessionId, ownerHost: previousRun.ownerHost, ownershipEpoch: previousRun.ownershipEpoch }
       : { ownerSessionId: actor.ownerSessionId, ownerHost: actor.ownerHost, ownershipEpoch: actor.ownershipEpoch };
-    const run = { ...structuredClone(request.run), ...provenance, paused: previousRun.paused ?? false, operationalVersion: (canonical.state.stateVersion ?? 0) + 1,
+    const run = { ...structuredClone(request.run), ...provenance, executionSettings: resolveExecutionSettings(project.setup, actor.ownerHost),
+      paused: previousRun.paused ?? false, operationalVersion: (canonical.state.stateVersion ?? 0) + 1,
       blockers: structuredClone(previousRun.blockers ?? []), pendingDeliveryIds: [...(previousRun.pendingDeliveryIds ?? [])], deployedTaskIds: [...(previousRun.deployedTaskIds ?? [])],
       terminalClassification: previousRun.terminalClassification ?? "unknown" };
     const constructedProblem = validateEffectiveRun(run, current.tasks);

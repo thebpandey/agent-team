@@ -1,5 +1,17 @@
 # Changelog
 
+## 7.3.0 - 2026-09-14
+
+Version 7.3.0 adds durable multi-task lanes and bounded setup helpers while preserving tracker, ownership, review, integration, and release authority.
+
+- Add lane create/next/rotate/close records, immutable packets and handovers, reserved independent review, capacity projections, recovery, and cleanup gates.
+- Add independent per-host execution settings, including bounded task, subprocess, canonical-record, heartbeat, brief, rotation, and worker-update defaults.
+- Permit fresh sessions to edit unclaimed project files and add auditable coordinator continuity without weakening registered-worker paths or consequential gates.
+- Ship self-checking evidence, gate-rebinding, and dotenv helpers plus reversible, receipt-linked context reduction with honest unknown visibility and owner-reported provenance.
+- Rename current Pro Markdown basenames to uppercase, keep native role IDs unchanged, and require explicit rollback-backed replacement for differing installed packages.
+- Keep model availability, parent-model comparison, native trust, MCP/plugin visibility, and worker discovery unknown unless the actual host exposes trustworthy evidence.
+- Accept Project Kickoff 0.4.2 handoffs tested against Agent-Team 7.3.0 while preserving every prior explicit compatibility pair.
+
 ## 7.2.6 - 2026-09-13
 
 Version 7.2.6 keeps multi-task delivery batches releasable after sequential completion and integration gates.

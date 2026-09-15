@@ -7,6 +7,104 @@ import { assertNoOwnerRecoveryJournal, repairOwnerRecovery } from "./owner-recov
 
 const HOSTS = new Set(["codex", "claude-code"]);
 
+export const DEFAULT_EXECUTION_SETTINGS = Object.freeze({
+  lanes: Object.freeze({
+    enabled: true,
+    rotation: Object.freeze({ tasks: 2, onPressure: true }),
+    factSheetStaleDays: 7,
+    workerUpdateMaxChars: 2000,
+    briefMaxWords: 6000,
+  }),
+  supervision: Object.freeze({ heartbeatSeconds: 600 }),
+  limits: Object.freeze({
+    subprocessMaxBufferBytes: 2 * 1024 * 1024,
+    maxPlanTasks: 1000,
+    canonicalRecordMaxBytes: 16 * 1024 * 1024,
+  }),
+});
+
+function positiveInteger(value, label, minimum = 1) {
+  if (!Number.isSafeInteger(value) || value < minimum) throw new Error(`${label} must be an integer of at least ${minimum}.`);
+}
+
+/** Validate a partial closed execution settings object shared by every settings route. */
+export function validateExecutionSettings(value, label = "execution settings") {
+  exactObject(value, ["lanes", "supervision", "limits"], label);
+  if (value.lanes !== undefined) {
+    exactObject(value.lanes, ["enabled", "rotation", "factSheetStaleDays", "workerUpdateMaxChars", "briefMaxWords"], `${label} lanes`);
+    if (value.lanes.enabled !== undefined && typeof value.lanes.enabled !== "boolean") throw new Error(`${label} lanes.enabled must be boolean.`);
+    if (value.lanes.rotation !== undefined) {
+      exactObject(value.lanes.rotation, ["tasks", "onPressure"], `${label} lanes.rotation`);
+      if (value.lanes.rotation.tasks !== undefined) positiveInteger(value.lanes.rotation.tasks, `${label} lanes.rotation.tasks`);
+      if (value.lanes.rotation.onPressure !== undefined && typeof value.lanes.rotation.onPressure !== "boolean") {
+        throw new Error(`${label} lanes.rotation.onPressure must be boolean.`);
+      }
+    }
+    for (const field of ["factSheetStaleDays", "workerUpdateMaxChars", "briefMaxWords"]) {
+      if (value.lanes[field] !== undefined) positiveInteger(value.lanes[field], `${label} lanes.${field}`);
+    }
+  }
+  if (value.supervision !== undefined) {
+    exactObject(value.supervision, ["heartbeatSeconds"], `${label} supervision`);
+    if (value.supervision.heartbeatSeconds !== undefined) positiveInteger(value.supervision.heartbeatSeconds, `${label} supervision.heartbeatSeconds`, 60);
+  }
+  if (value.limits !== undefined) {
+    exactObject(value.limits, ["subprocessMaxBufferBytes", "maxPlanTasks", "canonicalRecordMaxBytes"], `${label} limits`);
+    for (const field of ["subprocessMaxBufferBytes", "maxPlanTasks", "canonicalRecordMaxBytes"]) {
+      if (value.limits[field] !== undefined) positiveInteger(value.limits[field], `${label} limits.${field}`);
+    }
+    if (value.limits.canonicalRecordMaxBytes > DEFAULT_EXECUTION_SETTINGS.limits.canonicalRecordMaxBytes) {
+      throw new Error(`${label} limits.canonicalRecordMaxBytes exceeds the supported maximum.`);
+    }
+  }
+  return structuredClone(value);
+}
+
+function hasExecutionLeaf(value) {
+  return Object.values(value).some((entry) => entry && typeof entry === "object" && !Array.isArray(entry)
+    ? hasExecutionLeaf(entry) : entry !== undefined);
+}
+
+/** Validate a mutation patch and reject nested object shells that configure nothing. */
+export function validateExecutionSettingsChange(value, label = "execution settings change") {
+  const validated = validateExecutionSettings(value, label);
+  if (!hasExecutionLeaf(validated)) throw new Error("change.values must include at least one setting.");
+  return validated;
+}
+
+function mergeExecutionSettings(base = {}, patch = {}) {
+  return {
+    ...structuredClone(base),
+    ...structuredClone(patch),
+    ...(base.lanes !== undefined || patch.lanes !== undefined ? { lanes: {
+      ...structuredClone(base.lanes ?? {}), ...structuredClone(patch.lanes ?? {}),
+      ...(base.lanes?.rotation !== undefined || patch.lanes?.rotation !== undefined
+        ? { rotation: { ...structuredClone(base.lanes?.rotation ?? {}), ...structuredClone(patch.lanes?.rotation ?? {}) } } : {}),
+    } } : {}),
+    ...(base.supervision !== undefined || patch.supervision !== undefined
+      ? { supervision: { ...structuredClone(base.supervision ?? {}), ...structuredClone(patch.supervision ?? {}) } } : {}),
+    ...(base.limits !== undefined || patch.limits !== undefined
+      ? { limits: { ...structuredClone(base.limits ?? {}), ...structuredClone(patch.limits ?? {}) } } : {}),
+  };
+}
+
+/** Return a fresh validated effective settings snapshot for one actual host. */
+export function resolveExecutionSettings(setup = {}, host) {
+  if (!HOSTS.has(host)) throw new Error(`Unknown settings host: ${host ?? "missing"}.`);
+  const configured = validateExecutionSettings(setup?.settings?.hosts?.[host]?.execution ?? {});
+  return mergeExecutionSettings(DEFAULT_EXECUTION_SETTINGS, configured);
+}
+
+const EXECUTION_PATHS = Object.freeze([
+  "lanes.enabled", "lanes.rotation.tasks", "lanes.rotation.onPressure", "lanes.factSheetStaleDays",
+  "lanes.workerUpdateMaxChars", "lanes.briefMaxWords", "supervision.heartbeatSeconds",
+  "limits.subprocessMaxBufferBytes", "limits.maxPlanTasks", "limits.canonicalRecordMaxBytes",
+]);
+
+function nestedValue(value, dotted) {
+  return dotted.split(".").reduce((current, key) => current?.[key], value);
+}
+
 function configuredRole(setup, host, id) {
   const override = setup?.settings?.hosts?.[host]?.roles?.[id];
   if (override) return { value: override, source: override.source ?? "override" };
@@ -53,6 +151,10 @@ export function inspectSettings({ setup = {}, host, nativeChoices = {} }) {
     profile: setup?.settings?.profile ?? "quality",
     control: nativeChoices.control ?? "numbered",
     runDefaults: structuredClone(setup?.settings?.runDefaults ?? {}),
+    execution: {
+      configured: validateExecutionSettings(setup?.settings?.hosts?.[host]?.execution ?? {}),
+      effective: resolveExecutionSettings(setup, host),
+    },
     roles,
   };
 }
@@ -112,6 +214,18 @@ export function buildSettingsWizard({ setup = {}, host, nativeChoices = {}, draf
     current: overview.runDefaults[setting] ?? null,
     choices: navigationChoices([{ id: "set", label: "Set value" }], index > 0),
   }));
+  const executionDraft = validateExecutionSettings(draft.execution ?? {}, "settings draft execution");
+  const combinedExecution = mergeExecutionSettings(overview.execution.configured, executionDraft);
+  const effectiveExecution = resolveExecutionSettings({ settings: { hosts: { [host]: { execution: combinedExecution } } } }, host);
+  for (const setting of EXECUTION_PATHS) {
+    const draftValue = nestedValue(executionDraft, setting);
+    const configured = nestedValue(overview.execution.configured, setting);
+    steps.push({
+      kind: "execution", setting, configured: configured ?? null,
+      effective: nestedValue(effectiveExecution, setting), source: draftValue !== undefined ? "draft" : configured !== undefined ? "override" : "default",
+      choices: navigationChoices([{ id: "set", label: "Set value" }]),
+    });
+  }
   for (const role of ROLE_DEFINITIONS) {
     const menu = buildRoleMenu({ overview, role: role.id, nativeChoices });
     const current = overview.roles.find(({ id }) => id === role.id);
@@ -229,7 +343,7 @@ function exactObject(value, allowed, label) {
 }
 
 function validateSettingsDraft(draft, nativeChoices) {
-  exactObject(draft, ["runDefaults", "roles"], "settings draft");
+  exactObject(draft, ["runDefaults", "roles", "execution"], "settings draft");
   if (draft.runDefaults !== undefined) {
     exactObject(draft.runDefaults, Object.keys(DRAFT_RUN_SETTINGS), "settings draft runDefaults");
     for (const [key, value] of Object.entries(draft.runDefaults)) {
@@ -247,6 +361,7 @@ function validateSettingsDraft(draft, nativeChoices) {
       if (!model.efforts?.includes(route.effort)) throw new Error(`Unsupported effort for ${route.model}: ${route.effort}.`);
     }
   }
+  if (draft.execution !== undefined) validateExecutionSettings(draft.execution, "settings draft execution");
   return structuredClone(draft);
 }
 
@@ -280,6 +395,18 @@ export async function saveSettingsDraft({ setupPath, host, expectedVersion, writ
         next.settings.hosts[host].roles[role] = { ...(current ?? {}), ...route, source: "override" };
         changed = true;
       }
+      if (reviewed.execution !== undefined) {
+        const currentEffective = resolveExecutionSettings(setup, host);
+        const pending = validateExecutionSettings(reviewed.execution, "settings draft execution");
+        const changedPaths = EXECUTION_PATHS.filter((setting) => nestedValue(pending, setting) !== undefined
+          && nestedValue(pending, setting) !== nestedValue(currentEffective, setting));
+        if (changedPaths.length) {
+          next.settings.hosts ??= {};
+          next.settings.hosts[host] ??= {};
+          next.settings.hosts[host].execution = mergeExecutionSettings(next.settings.hosts[host].execution, pending);
+          changed = true;
+        }
+      }
       return changed
         ? { setup: next }
         : { write: false, result: { status: "kept_existing", settingsOutcome: "kept_existing" } };
@@ -303,6 +430,13 @@ function applyChange(setup, host, change, nativeChoices) {
       if (!validators[setting] || !validators[setting](value)) throw new Error(`Invalid run setting ${setting}.`);
     }
     next.settings.runDefaults = { ...(next.settings.runDefaults ?? {}), ...(change.values ?? {}) };
+    return next;
+  }
+  if (change.kind === "execution") {
+    const values = validateExecutionSettingsChange(change.values, "execution settings change");
+    next.settings.hosts ??= {};
+    next.settings.hosts[host] ??= {};
+    next.settings.hosts[host].execution = mergeExecutionSettings(next.settings.hosts[host].execution, values);
     return next;
   }
   if (change.kind === "fallback") {

@@ -8,7 +8,7 @@ import test from "node:test";
 import { classifyOperation } from "../hooks/lib/operation.mjs";
 import { loadCanonicalState } from "../hooks/lib/canonical-state.mjs";
 import { resolveProject } from "../hooks/lib/project.mjs";
-import { evaluatePolicy, releaseAuthorityReady } from "../hooks/lib/policy.mjs";
+import { evaluatePolicy, releaseAuthorityReady, validateWorkerUpdate } from "../hooks/lib/policy.mjs";
 import { projectRunState } from "../hooks/lib/recovery.mjs";
 import { createStatusModel } from "../hooks/lib/status.mjs";
 import { hookEvent, policyFixture, saveState } from "./hook-test-helpers.mjs";
@@ -183,6 +183,33 @@ test("canonical ownership allows assigned files and blocks unowned, shared, main
     assert.equal(result.allow, false);
     assert.equal(result.mode, "enforce");
   }
+});
+
+test("worker update receipts bind task revision checks and cap final write/edit content", async () => {
+  const value = await fixture();
+  const project = await resolveProject(value.root);
+  const canonical = await loadCanonicalState(project);
+  canonical.state.run.executionSettings = { lanes: { workerUpdateMaxChars: 400 } };
+  canonical.state.lanes = { schemaVersion: 1, records: [{ id: "build-a", queue: ["AT-001"] }] };
+  const source = `Task: AT-001\nRevision: ${canonical.git.headRevision}\nEvidence: .agent-team/lanes/build-a/evidence/worker.json\nChecks:\n- unit: passed\nNext action: Send to verifier.\n`;
+  assert.equal(validateWorkerUpdate(source, { maximumChars: 400, taskId: "AT-001", revision: canonical.git.headRevision }), undefined);
+  assert.equal(validateWorkerUpdate(`${source}${"x".repeat(400)}`, { maximumChars: 400, taskId: "AT-001", revision: canonical.git.headRevision }), "worker_update_too_large");
+  const updatePath = ".agent-team/lanes/build-a/updates/AT-001-1.md";
+  await mkdir(path.join(value.root, ".agent-team/lanes/build-a/updates"), { recursive: true });
+  const write = hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation: { kind: "file_change", tool: "Write",
+    files: [{ action: "add_or_edit", path: updatePath, changedContent: source }] } });
+  assert.equal((await evaluatePolicy(write, project, { canonical })).allow, true);
+  assert.equal((await evaluatePolicy({ ...write, operation: { ...write.operation,
+    files: [{ ...write.operation.files[0], changedContent: `${source}${"x".repeat(400)}` }] } }, project, { canonical })).allow, false);
+  await writeFile(path.join(value.root, updatePath), source);
+  const edit = hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation: { kind: "file_change", tool: "Edit",
+    files: [{ action: "edit", path: updatePath, previousContent: "Send to verifier.", changedContent: `Send to verifier.${"x".repeat(400)}` }] } });
+  assert.equal((await evaluatePolicy(edit, project, { canonical })).allow, false);
+  const opaque = hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation: { kind: "file_change", tool: "apply_patch",
+    files: [{ action: "edit", path: updatePath, changedContent: "small chunk" }] } });
+  const unavailable = await evaluatePolicy(opaque, project, { canonical });
+  assert.equal(unavailable.allow, false);
+  assert.match(unavailable.messages.join("\n"), /final worker update content is unavailable/i);
 });
 
 test("relative registered worktrees resolve from the canonical project without relaxing ownership", async () => {

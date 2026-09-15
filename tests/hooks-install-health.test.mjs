@@ -67,6 +67,26 @@ async function installPackage(input) {
   return installReleasePackage({ ...await artifact, ...options });
 }
 
+async function lowercaseMarkdownReleaseFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-lowercase-release-"));
+  temporary.push(root);
+  await copyTrackedSource(sourceRoot, root);
+  const manifestPath = path.join(root, "hooks", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.version = "7.2.6";
+  const renamed = new Map();
+  for (const file of manifest.files) {
+    if (!file.endsWith(".md") || !(file.startsWith("references/") || file.startsWith("assets/claude-agents/"))) continue;
+    const lowercase = path.posix.join(path.posix.dirname(file), path.posix.basename(file).toLowerCase());
+    if (lowercase === file) continue;
+    await rename(path.join(root, file), path.join(root, lowercase));
+    renamed.set(file, lowercase);
+  }
+  manifest.files = manifest.files.map((file) => renamed.get(file) ?? file);
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  return root;
+}
+
 test("artifact install writes schema 4 provenance and remains verifiable after temporary inputs disappear", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-sealed-install-"));
   temporary.push(home);
@@ -110,6 +130,32 @@ test("artifact install writes schema 4 provenance and remains verifiable after t
   await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", ".agent-team-source.json")), { code: "ENOENT" });
 });
 
+test("a managed lowercase 7.2.6 install requires explicit replacement and never creates duplicate Claude role IDs", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-lowercase-upgrade-"));
+  temporary.push(home);
+  const oldSource = await lowercaseMarkdownReleaseFixture();
+  await installPackage({ sourceRoot: oldSource, home, host: "both", scope: "user",
+    now: new Date("2026-09-14T12:00:00.000Z") });
+  const receiptPath = path.join(home, ".agent-team-hooks", "install.json");
+  const beforeReceipt = await readFile(receiptPath);
+  const lowercaseRole = path.join(home, ".claude", "agents", "agent-team-developer.md");
+  const uppercaseRole = path.join(home, ".claude", "agents", "AGENT-TEAM-DEVELOPER.md");
+  const custom = `${await readFile(lowercaseRole, "utf8")}\nUser customization.\n`;
+  await writeFile(lowercaseRole, custom);
+
+  const result = await installPackage({ sourceRoot, home, host: "both", scope: "user",
+    now: new Date("2026-09-14T12:01:00.000Z") });
+
+  assert.equal(result.status, "update_requires_manual_replacement");
+  assert.equal(result.changed, false);
+  assert.equal(result.conflicts.every(({ kind, reason }) => kind === "skill" && reason === "differing_present_target"), true);
+  assert.deepEqual(await readFile(receiptPath), beforeReceipt);
+  assert.equal(await readFile(lowercaseRole, "utf8"), custom);
+  await assert.rejects(readFile(uppercaseRole), { code: "ENOENT" });
+  await readFile(path.join(home, ".agents", "skills", "agent-team", "references", "settings.md"));
+  await assert.rejects(readFile(path.join(home, ".agents", "skills", "agent-team", "references", "SETTINGS.md")), { code: "ENOENT" });
+});
+
 test("present-target preflight rejects root and nested links and special entries before both-host mutation", async (context) => {
   const cases = [
     ["root symlink", async (target, outside) => {
@@ -148,7 +194,7 @@ test("present-target preflight rejects root and nested links and special entries
     assert.deepEqual(await readFile(configPath), priorConfig);
     assert.deepEqual(await readdir(path.join(home, ".agent-team-hooks", "backups"), { recursive: true }).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error)), priorBackups);
     await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
-    await assert.rejects(readFile(path.join(home, ".claude", "agents", "agent-team-developer.md")), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(home, ".claude", "agents", "AGENT-TEAM-DEVELOPER.md")), { code: "ENOENT" });
     if (label === "root symlink") {
       assert.equal((await lstat(target)).isSymbolicLink(), true);
       assert.equal(await readFile(path.join(target, "SKILL.md"), "utf8").then(Boolean), true);
@@ -322,7 +368,7 @@ test("a differing present owned target requires manual replacement before any mu
   assert.deepEqual(await readFile(receiptPath), priorReceipt);
   assert.deepEqual(await readdir(backupRoot, { recursive: true }).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error)), priorBackups);
   await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
-  await assert.rejects(readFile(path.join(home, ".claude", "agents", "agent-team-developer.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".claude", "agents", "AGENT-TEAM-DEVELOPER.md")), { code: "ENOENT" });
 });
 
 test("a differing schema 3 target requires manual replacement without fabricating an update", async () => {
@@ -610,8 +656,8 @@ test("installer never claims an identical pre-existing Claude role", async () =>
   // An identical role file that predates installation must survive uninstall.
   const home = await mkdtemp(path.join(os.tmpdir(), "agent-team-identical-role-"));
   temporary.push(home);
-  const source = path.join(sourceRoot, "assets", "claude-agents", "agent-team-developer.md");
-  const target = path.join(home, ".claude", "agents", "agent-team-developer.md");
+  const source = path.join(sourceRoot, "assets", "claude-agents", "AGENT-TEAM-DEVELOPER.md");
+  const target = path.join(home, ".claude", "agents", "AGENT-TEAM-DEVELOPER.md");
   await mkdir(path.dirname(target), { recursive: true });
   const original = await readFile(source, "utf8");
   await writeFile(target, original);
@@ -622,7 +668,7 @@ test("installer never claims an identical pre-existing Claude role", async () =>
 
   await uninstallPackage({ home, host: "claude-code", scope: "user" });
   assert.equal(await readFile(target, "utf8"), original);
-  await assert.rejects(readFile(path.join(home, ".claude", "agents", "agent-team-reviewer.md")), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(home, ".claude", "agents", "AGENT-TEAM-REVIEWER.md")), { code: "ENOENT" });
   await assert.rejects(readFile(path.join(home, ".claude", "skills", "agent-team", "SKILL.md")), { code: "ENOENT" });
   const remaining = JSON.parse(await readFile(path.join(home, ".agent-team-hooks", "install.json"), "utf8"));
   assert.deepEqual(remaining.claudeAgents.map(({ path: name }) => name), [target]);
@@ -634,12 +680,12 @@ test("a changed release leaves a pre-existing Claude role untouched pending manu
   const changedSource = await mkdtemp(path.join(os.tmpdir(), "agent-team-preexisting-role-source-"));
   temporary.push(home, changedSource);
   await copyTrackedSource(sourceRoot, changedSource);
-  const target = path.join(home, ".claude", "agents", "agent-team-developer.md");
+  const target = path.join(home, ".claude", "agents", "AGENT-TEAM-DEVELOPER.md");
   await mkdir(path.dirname(target), { recursive: true });
-  const original = await readFile(path.join(sourceRoot, "assets", "claude-agents", "agent-team-developer.md"), "utf8");
+  const original = await readFile(path.join(sourceRoot, "assets", "claude-agents", "AGENT-TEAM-DEVELOPER.md"), "utf8");
   await writeFile(target, original);
   await installPackage({ sourceRoot, home, host: "claude-code", scope: "user" });
-  const changedRole = path.join(changedSource, "assets", "claude-agents", "agent-team-developer.md");
+  const changedRole = path.join(changedSource, "assets", "claude-agents", "AGENT-TEAM-DEVELOPER.md");
   await writeFile(changedRole, `${original}\nchanged release\n`);
 
   const result = await installPackage({ sourceRoot: changedSource, home, host: "claude-code", scope: "user" });
@@ -1453,11 +1499,11 @@ test("installer manages current Claude roles, leaves unchanged roles, and report
   temporary.push(home);
   const agents = path.join(home, ".claude", "agents");
   await mkdir(agents, { recursive: true });
-  const custom = path.join(agents, "agent-team-reviewer.md");
+  const custom = path.join(agents, "AGENT-TEAM-REVIEWER.md");
   await writeFile(custom, "custom reviewer\n");
 
   const first = await installPackage({ sourceRoot, home, host: "both", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
-  const developer = path.join(agents, "agent-team-developer.md");
+  const developer = path.join(agents, "AGENT-TEAM-DEVELOPER.md");
   const original = await readFile(developer, "utf8");
   const second = await installPackage({ sourceRoot, home, host: "both", scope: "user", now: new Date("2026-09-06T12:01:00.000Z") });
 
@@ -1474,8 +1520,8 @@ test("installer leaves a managed Claude role unchanged when package replacement 
   temporary.push(home, changedSource);
   await copyTrackedSource(sourceRoot, changedSource);
   await installPackage({ sourceRoot, home, host: "both", scope: "user", now: new Date("2026-09-06T12:00:00.000Z") });
-  const roleSource = path.join(changedSource, "assets", "claude-agents", "agent-team-developer.md");
-  const installedRole = path.join(home, ".claude", "agents", "agent-team-developer.md");
+  const roleSource = path.join(changedSource, "assets", "claude-agents", "AGENT-TEAM-DEVELOPER.md");
+  const installedRole = path.join(home, ".claude", "agents", "AGENT-TEAM-DEVELOPER.md");
   const before = await readFile(installedRole, "utf8");
   await writeFile(roleSource, `${await readFile(roleSource, "utf8")}\nManaged update marker.\n`);
 

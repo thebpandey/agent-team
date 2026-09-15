@@ -544,7 +544,7 @@ function permittedRecoveryPath(stateRoot, candidate) {
     ".codex/hooks.json",
     ".claude/settings.json",
     ".claude/settings.local.json",
-  ].includes(normalized) || /^\.claude\/agents\/agent-team-[^/]+\.md$/.test(normalized);
+  ].includes(normalized) || /^\.claude\/agents\/(?:agent-team-[^/]+|AGENT-TEAM-[^/]+)\.md$/.test(normalized);
 }
 
 function internalRecoveryPath(stateRoot, candidate) {

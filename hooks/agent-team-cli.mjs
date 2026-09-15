@@ -11,7 +11,8 @@ import { buildArtifacts, checkArtifacts } from "./lib/artifacts.mjs";
 import { getHealth } from "./lib/health.mjs";
 import { initializeProject, validateInitializationEnvelope } from "./lib/initialization.mjs";
 import { resolveProject } from "./lib/project.mjs";
-import { inspectLegacyOwnerAdoption, readOwnerRecoveryEnvelope, validateLegacyOwnerAdoptionEnvelope, validateOwnerRecoveryEnvelope } from "./lib/owner-recovery.mjs";
+import { inspectLegacyOwnerAdoption, readOwnerRecoveryEnvelope, transferProjectCoordinator, validateCoordinatorContinuityEnvelope,
+  validateLegacyOwnerAdoptionEnvelope, validateOwnerRecoveryEnvelope } from "./lib/owner-recovery.mjs";
 import { installPackage, rollbackPackage, uninstallPackage } from "./lib/install.mjs";
 import { checkInstalledPackage, checkPackage } from "./lib/package-validator.mjs";
 import { runSetupCommand, setupCommandFlags } from "./lib/setup-cli.mjs";
@@ -32,6 +33,7 @@ const commandFlags = {
   "project-initialize": new Set(["project", "request"]),
   "project-owner-recover": new Set(["project", "request"]),
   "legacy-owner-adopt": new Set(["project", "request"]),
+  "coordinator-continuity-transfer": new Set(["project", "request"]),
   ...workflowCommandFlags,
   ...setupCommandFlags,
 };
@@ -126,7 +128,17 @@ export async function runCommand(command, options, context = {}) {
     if (!project.active) return { status: "conflict", ready: false, reason: "inactive" };
     return inspectLegacyOwnerAdoption(project, envelope);
   }
-  if (["run-reconcile", "run-scope-extend"].includes(command)) {
+  if (command === "coordinator-continuity-transfer") {
+    if (typeof options.project !== "string" || !options.project.trim()) throw new Error("--project is required.");
+    const envelope = await readOwnerRecoveryEnvelope(options.request);
+    const invalid = validateCoordinatorContinuityEnvelope(envelope);
+    if (invalid) return { status: "conflict", ready: false, reason: invalid };
+    const project = await resolveProject(path.resolve(options.project));
+    if (!project.active) return { status: "conflict", ready: false, reason: "inactive" };
+    // This local maintenance envelope is exact auditable intent, not native authentication or release authority.
+    return transferProjectCoordinator(project, envelope, context);
+  }
+  if (["run-start", "run-retire", "run-reconcile", "run-scope-extend", "lane-create", "lane-next", "lane-rotate", "lane-close"].includes(command)) {
     return { status: "conflict", reason: "native_hook_identity_required" };
   }
   if (workflowCommandFlags[command]) return runWorkflowCommand(command, options, context);

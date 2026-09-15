@@ -1,6 +1,6 @@
 # Project Kickoff + Agent-Team: first-time guide
 
-Agent-Team 7.2.6 uses one complete package for Codex and Claude Code. Installation lets you choose the host and whether to install for one project or your user account. The [standalone dark-green HTML guide](Getting_Started_with_Agent-Team.html) remains a historical guide; the [README](README.md) is the current release and workflow reference.
+Agent-Team 7.3.0 uses one complete package for Codex and Claude Code. Installation lets you choose the host and whether to install for one project or your user account. The [standalone dark-green HTML guide](Getting_Started_with_Agent-Team.html) remains a historical guide; the [README](README.md) is the current release and workflow reference.
 
 These are prompts to paste into Codex or Claude Code—not Bash commands.
 
@@ -60,12 +60,12 @@ Use this actual host only: codex or claude-code. Use user scope unless I request
 
 Project hook configuration is `.codex/hooks.json` or `.claude/settings.local.json`. Node.js 24 must be ready before running package helpers and hooks.
 
-Download `agent-team-7.2.6.zip` and its matching one-entry `SHA256SUMS` from [v7.2.6](https://github.com/thebpandey/agent-team/releases/tag/v7.2.6), with update discovery at [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify and install the sealed bytes:
+Download `agent-team-7.3.0.zip` and its matching one-entry `SHA256SUMS` from [v7.3.0](https://github.com/thebpandey/agent-team/releases/tag/v7.3.0), with update discovery at [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify and install the sealed bytes:
 
 ```sh
 (cd /absolute/download && sha256sum -c SHA256SUMS)
 node /absolute/extracted/agent-team/hooks/agent-team-cli.mjs install \
-  --archive /absolute/download/agent-team-7.2.6.zip \
+  --archive /absolute/download/agent-team-7.3.0.zip \
   --checksums /absolute/download/SHA256SUMS \
   --host codex \
   --scope user
@@ -74,6 +74,8 @@ node /absolute/extracted/agent-team/hooks/agent-team-cli.mjs install \
 Use `--host claude-code` for Claude Code or explicit `--host both` for both hosts. Project scope requires `--scope project --project /absolute/project/root`. `install --source` is rejected; source validation or a local build is not official installation evidence.
 
 Automatic artifact installation is qualified only on Linux and WSL where `/proc/self/fd` directory traversal functions. Missing or nonfunctional descriptor-root support returns `unsupported_platform`, `changed: false` before the lock or any mutation. Exact byte/mode/size-identical reinstall returns `installed`, `changed: false` with no target mutation. Every differing present target, owned and schema-3 targets included, returns `update_requires_manual_replacement`, `changed: false`, with zero target, configuration, role, backup, or receipt mutation. A changed release requires separately authorized quiescence and an explicit rollback-backed move of the old target, followed by a normal fresh absent-target install and restoration on failure.
+
+This includes the 7.2.6 lowercase-to-uppercase Markdown migration. Verify every installed package and lowercase Claude role against its schema-4 receipt before a separately authorized replacement, retain rollback backups, and never leave lowercase and uppercase files for the same native role ID active together. Customized or ambiguous files remain in place as conflicts. The normal installer will not infer permission to replace them from the release version.
 
 The embedded `.agent-team-source.json` records the ten-field package source identity and package map. Verified artifact authority and schema-4 receipts separately bind archive/checksum identity, complete archive and installed maps, selected hosts/scope, transaction, recovery, targets, and time. They do not prove publication, host reload/trust, dependency readiness, or live owner recovery.
 
@@ -113,6 +115,8 @@ Default-selected profiles: [ast-grep CLI](https://github.com/ast-grep/ast-grep),
 
 Setup shows grouped progress, not a separate approval question for each already-selected tool. Required missing capabilities remain pending until useful functional checks pass. Optional [Context7](https://github.com/upstash/context7) supplies library docs; the dashboard is also opt-in.
 
+The current executable adapters cannot automatically list every visible MCP/plugin capability. If you ask to reduce context, Agent-Team may show an `offered_unverified` proposal based on your reviewed report. Visibility remains unknown, required selected dependencies stay excluded, and applying requires your explicit acknowledgement plus the native project owner. Cancel or no answer changes nothing. Claude Code derives its configuration home from the running adapter, not from request text.
+
 Preparation is not universal instruction loading. Each role reads only the complete instructions needed for its assignment. No second tracker, proxy, blanket plugin hook set or paid JetBrains dependency is introduced by these profiles.
 
 ## 6. Inspect and change settings
@@ -133,6 +137,8 @@ Show Agent-Team's role/model/effort overview and effective setting sources. Help
 | Deployment batch | Completed top-level delivery tasks per release | Effective team limit unless explicitly set |
 | Model/effort | Per-host role choices, friendly menus, availability/enforcement shown | Quality-first supported defaults |
 | Usage budget | Soft strategy advice; explicit hard limit requests safe checkpointing | No hard limit by default |
+
+Execution limits are separate: subprocess output is bounded at 2097152 bytes, canonical records at 16777216 bytes, plans at 1000 tasks, and lane worker updates at 2000 characters. Raising the canonical-record allowance does not raise the other limits. Parent-model comparison is unknown unless the host provides trustworthy comparable metadata.
 
 Use the full wizard only if you want to review everything. Settings apply to future starts, not silently to active agents.
 

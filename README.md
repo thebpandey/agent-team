@@ -2,7 +2,7 @@
 
 Created by [thebpandey](https://github.com/thebpandey). An orchestrator-led development skill for Codex and Claude Code: small parallel assignments, independent review, automatic repair of ordinary findings, and verified integration.
 
-> **Version 7.2.6.** This hotfix keeps sequentially completed and integrated deliveries releasable as one authorized batch. Live evidence is anchored per task, legacy singleton evidence migrates only after strict validation, and selection and release use the same current-HEAD integration group. The 7.2.5 published-history repair and explicit Project Kickoff compatibility allowlist are preserved.
+> **Version 7.3.0.** This release adds durable multi-task lanes, bounded per-host execution settings, auditable coordinator continuity, shipped helpers, reversible context reduction, and uppercase canonical Pro Markdown paths. Existing tracker, ownership, review, integration, release, and customization boundaries remain in force.
 
 New here? Open the [hosted Agent-Team 7.1.0 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.1.0.html) in your browser, or read the [short Markdown guide](GETTING_STARTED.md). The [7.0.2 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.0.2.html) remains reachable as historical documentation. Both start with GitHub authentication and optional Project Kickoff.
 
@@ -97,16 +97,16 @@ Project hooks use `.codex/hooks.json` or `.claude/settings.local.json`; user hoo
 
 Restart/reload Codex or Claude Code after installation. Open native `/hooks` where supported and inspect the intended registrations. Approve “Trust all” only after reviewing every affected entry. Asking the agent to trust hooks does not bypass native consent or organization policy.
 
-Confirm discovery with `$agent-team help` or `/agent-team help`. Installation, registration, adapter support, native support, trust and observed event execution are separate facts. Unknown stays unknown. See the [lifecycle hook guide](references/hooks.md).
+Confirm discovery with `$agent-team help` or `/agent-team help`. Installation, registration, adapter support, native support, trust and observed event execution are separate facts. Unknown stays unknown. See the [lifecycle hook guide](references/HOOKS.md).
 
 ### Official artifact installer reference
 
-Download `agent-team-7.2.6.zip` and its matching one-entry `SHA256SUMS` from the [Agent-Team v7.2.6 release](https://github.com/thebpandey/agent-team/releases/tag/v7.2.6), or find updates through [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify the exact downloaded pair, then run the CLI from the extracted archive:
+Download `agent-team-7.3.0.zip` and its matching one-entry `SHA256SUMS` from the [Agent-Team v7.3.0 release](https://github.com/thebpandey/agent-team/releases/tag/v7.3.0), or find updates through [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify the exact downloaded pair, then run the CLI from the extracted archive:
 
 ```bash
 (cd /absolute/download && sha256sum -c SHA256SUMS)
 node /absolute/extracted/agent-team/hooks/agent-team-cli.mjs install \
-  --archive /absolute/download/agent-team-7.2.6.zip \
+  --archive /absolute/download/agent-team-7.3.0.zip \
   --checksums /absolute/download/SHA256SUMS \
   --host codex \
   --scope user
@@ -136,7 +136,7 @@ Mandatory capabilities and selected defaults are prepared automatically on first
 
 A file existing on disk is not proof that a tool works or that a fresh worker can access it. Setup reports **installed → detected → functional → available to worker** separately. Ordinary failures are diagnosed and repaired; an unavailable required gate remains pending.
 
-Canonical initialization records the approved owner, full task IDs, selected tracker and branch before any dispatch. It does not certify native capabilities. The agent then uses scoped preparation/readiness and targeted settings helpers; user-level dependency readiness is distinct from project-owned settings. See the [agent-run setup examples and request contracts](references/setup.md#bundled-setup-helpers). Users do not need to compose these JSON requests themselves.
+Canonical initialization records the approved owner, full task IDs, selected tracker and branch before any dispatch. It does not certify native capabilities. The agent then uses scoped preparation/readiness and targeted settings helpers; user-level dependency readiness is distinct from project-owned settings. See the [agent-run setup examples and request contracts](references/SETUP.md#bundled-setup-helpers). Users do not need to compose these JSON requests themselves.
 
 ### Prepared tools and official repositories
 
@@ -157,7 +157,7 @@ Canonical initialization records the approved owner, full task IDs, selected tra
 
 Preparation is not context loading. Each fresh worker reads the complete applicable skill instructions and only the required references for its assignment. It does not inherit proof of reading from the parent or load every installed plugin. Relevant source and test output remain available uncompressed.
 
-See [dependency profiles](references/dependencies.md), [setup](references/setup.md), and [LeanCTX boundaries](references/lean-ctx.md). No RTK, agent-browser, Backlog.md, GSD, Ralph, Caveman runtime stack, or beads_rust is added.
+See [dependency profiles](references/DEPENDENCIES.md), [setup](references/SETUP.md), and [LeanCTX boundaries](references/LEAN-CTX.md). No RTK, agent-browser, Backlog.md, GSD, Ralph, Caveman runtime stack, or beads_rust is added.
 
 ## 5. See and change role settings
 
@@ -183,7 +183,7 @@ The overview shows each role's saved/effective model, effort, source, availabili
 | Model/effort | Quality-first profile | Per-host routes and approved fallback/escalation choices. |
 | Usage budget | No hard limit | Soft limits guide efficiency; an explicit hard limit requests a safe checkpoint, not waived tests. |
 
-Back/Cancel leaves settings unchanged. The full wizard is opt-in. Saved changes affect future dispatches; active run choices are not silently rewritten. See [settings](references/settings.md).
+Back/Cancel leaves settings unchanged. The full wizard is opt-in. Saved changes affect future dispatches; active run choices are not silently rewritten. See [settings](references/SETTINGS.md).
 
 When integration evidence is accepted, completed top-level deliveries that have not been deployed enter the deployment queue in integration order. This includes recovered completions already scoped into the run. An incomplete top-level delivery makes that integration fail closed; subtasks and epics never become deployment-queue entries.
 
@@ -202,7 +202,7 @@ These are skill requests, **not terminal subcommands**:
 | `$agent-team pause all` | Checkpoint and safely stop the project's affected activity. |
 | `$agent-team resume all` | Reconcile evidence and surviving writers before resuming unfinished work. |
 
-Replace `$agent-team` with `/agent-team` in Claude Code. Natural language also works. See [full command help](references/help.md), [runs](references/runs.md) and [release rules](references/release.md).
+Replace `$agent-team` with `/agent-team` in Claude Code. Natural language also works. See [full command help](references/HELP.md), [runs](references/RUNS.md) and [release rules](references/RELEASE.md).
 
 The orchestrator gives each developer a bounded task packet, acceptance criteria, owned paths, exact references and a return contract. Independent work uses isolated worktrees. Even small implementation goes to a developer, and every pre-dispatch check and post-completion verification goes to the delegated verifier (GPT-5.6-Sol at medium effort; Opus 5 fallback in Claude Code); the orchestrator plans, assigns, decides, supervises and integrates. Reviews cover requirements and code quality; ordinary findings feed the same automatic repair loop.
 
@@ -262,11 +262,11 @@ Usage reports distinguish observed per-agent receipts from estimates and missing
 
 After verified integration, eligible development worktrees can be cleaned even with auto-deploy off. Cleanup requires a stopped identified writer, clean/integrated work, retained evidence and no required preview. Preserve unfinished/user/shared files and uncertain resources. Deployment is a separate gate.
 
-See [recovery](references/recovery.md), [canonical state](references/state.md), [status](references/status.md) and [team coordination](references/team.md).
+See [recovery](references/RECOVERY.md), [canonical state](references/STATE.md), [status](references/STATUS.md) and [team coordination](references/TEAM.md).
 
 ## Source, versions and updates
 
-The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.2.6**; `metadata.version` in `SKILL.md` is authoritative. Release identity is [v7.2.6](https://github.com/thebpandey/agent-team/releases/tag/v7.2.6). Version [7.2.5](https://github.com/thebpandey/agent-team/releases/tag/v7.2.5) restored trusted native published-history reconciliation. Version [7.2.4](https://github.com/thebpandey/agent-team/releases/tag/v7.2.4) corrected deployment-queue admission for recovered, already-scoped deliveries. Version [7.2.3](https://github.com/thebpandey/agent-team/releases/tag/v7.2.3) added the exact Project Kickoff 0.4.2 compatibility pair. Version [7.2.2](https://github.com/thebpandey/agent-team/releases/tag/v7.2.2) added native owner routing for run reconciliation and scope extension. Version [7.2.1](https://github.com/thebpandey/agent-team/releases/tag/v7.2.1) stabilized owner-adoption receipt ordering and accepted Project Kickoff 0.4.1 handoffs tested against that release. Version [7.2.0](https://github.com/thebpandey/agent-team/releases/tag/v7.2.0) introduced the reliability, ownership, installation, and active-turn safeguards summarized in the changelog. Version [7.1.1](https://github.com/thebpandey/agent-team/releases/tag/v7.1.1) accepts AST-origin `INFERRED` Graphify relationships as offline structural leads while rejecting semantic or missing provenance for readiness evidence. Version [7.1.0](https://github.com/thebpandey/agent-team/releases/tag/v7.1.0) makes the orchestrator a pure orchestrator and routes verification to a delegated verifier. Version [7.0.2](https://github.com/thebpandey/agent-team/releases/tag/v7.0.2) supports larger projects and includes the illustrated field guide. Find published packages and checksums in the [latest official release](https://github.com/thebpandey/agent-team/releases/latest). See the [changelog](CHANGELOG.md).
+The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.3.0**; `metadata.version` in `SKILL.md` is authoritative. Release identity is [v7.3.0](https://github.com/thebpandey/agent-team/releases/tag/v7.3.0). Version [7.2.6](https://github.com/thebpandey/agent-team/releases/tag/v7.2.6) repaired sequential delivery-batch evidence. Version [7.2.5](https://github.com/thebpandey/agent-team/releases/tag/v7.2.5) restored trusted native published-history reconciliation. Version [7.2.4](https://github.com/thebpandey/agent-team/releases/tag/v7.2.4) corrected deployment-queue admission for recovered, already-scoped deliveries. Version [7.2.3](https://github.com/thebpandey/agent-team/releases/tag/v7.2.3) added the exact Project Kickoff 0.4.2 compatibility pair. Version [7.2.2](https://github.com/thebpandey/agent-team/releases/tag/v7.2.2) added native owner routing for run reconciliation and scope extension. Version [7.2.1](https://github.com/thebpandey/agent-team/releases/tag/v7.2.1) stabilized owner-adoption receipt ordering and accepted Project Kickoff 0.4.1 handoffs tested against that release. Version [7.2.0](https://github.com/thebpandey/agent-team/releases/tag/v7.2.0) introduced the reliability, ownership, installation, and active-turn safeguards summarized in the changelog. Version [7.1.1](https://github.com/thebpandey/agent-team/releases/tag/v7.1.1) accepts AST-origin `INFERRED` Graphify relationships as offline structural leads while rejecting semantic or missing provenance for readiness evidence. Version [7.1.0](https://github.com/thebpandey/agent-team/releases/tag/v7.1.0) makes the orchestrator a pure orchestrator and routes verification to a delegated verifier. Version [7.0.2](https://github.com/thebpandey/agent-team/releases/tag/v7.0.2) supports larger projects and includes the illustrated field guide. Find published packages and checksums in the [latest official release](https://github.com/thebpandey/agent-team/releases/latest). See the [changelog](CHANGELOG.md).
 
 Use an identified authorized revision and the complete package. Universal archives have an `agent-team/` prefix and include `SKILL.md`, `README.md`, `LICENSE`, `CHANGELOG.md`, `agents/`, `references/`, `assets/` and `hooks/`. External dependencies and model access are not bundled. Inactive `legacy/` and maintenance tests are excluded. Provenance lives in `.agent-team-source.json`; verify the exact revision and checksum.
 
@@ -275,8 +275,8 @@ Maintainer reference, from a qualified committed source revision:
 ```bash
 node hooks/agent-team-cli.mjs check-package
 node hooks/agent-team-cli.mjs build-artifacts --revision <full-commit-id> --output ../agent-team-artifacts
-node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --archive ../agent-team-artifacts/agent-team-7.2.6.zip
-sha256sum ../agent-team-artifacts/agent-team-7.2.6.zip
+node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --archive ../agent-team-artifacts/agent-team-7.3.0.zip
+sha256sum ../agent-team-artifacts/agent-team-7.3.0.zip
 ```
 
 On macOS, use `shasum -a 256` on the same exact archive. These commands reproduce and validate the versioned artifact from an identified revision; verify any published checksum against the exact GitHub release asset. Change the version consistently before releasing altered contents; never replace an existing released version with different files.

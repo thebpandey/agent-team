@@ -13,7 +13,7 @@ import { writeCheckpoint } from "./lib/checkpoint.mjs";
 import { adaptOutput, adaptTransport } from "./lib/output.mjs";
 import { evaluatePolicy, unavailableDecision } from "./lib/policy.mjs";
 import { classifyOperation } from "./lib/operation.mjs";
-import { adoptLegacyProjectOwner, readOwnerRecoveryEnvelope } from "./lib/owner-recovery.mjs";
+import { adoptLegacyProjectOwner, readOwnerRecoveryEnvelope, transferProjectCoordinator } from "./lib/owner-recovery.mjs";
 import { activationRecordFor, appendActivationLog } from "./lib/telemetry.mjs";
 import { createEventBudget } from "./lib/budget.mjs";
 import { lintMessages } from "./lib/lint.mjs";
@@ -66,11 +66,25 @@ function shouldRefreshOperationMappings(event, project) {
   return event.operation.files.some((file) => path.resolve(event.cwd, file.path) === project.paths.state);
 }
 
+function nativeMutationSucceeded(command, status) {
+  if (["applied", "duplicate"].includes(status)) return true;
+  const accepted = {
+    "helpers-install": ["installed", "current"],
+    "helpers-recover": ["finalized", "rolled_back", "not_pending"],
+    "context-reduction-apply": ["no_selection", "cancel", "no_answer"],
+    "context-reduction-revert": ["reverted", "not_applied"],
+    "context-reduction-recover": ["finalized", "rolled_back", "not_pending"],
+  };
+  return accepted[command]?.includes(status) === true;
+}
+
 /** Run one normalized event through shared policy and bounded factual mutations. */
-export async function runNormalizedHook(event, { timeoutMs = 5000, runBeads, evidencePackageRoot } = {}) {
+export async function runNormalizedHook(event, { timeoutMs = 5000, runBeads, evidencePackageRoot, capabilityInventory, contextHome,
+  inspectLaneSession } = {}) {
   const budget = createEventBudget(timeoutMs);
   try {
-    const { evidenceRoot, ...result } = await runEvent(event, budget, runBeads, evidencePackageRoot);
+    const { evidenceRoot, ...result } = await runEvent(event, budget, runBeads, evidencePackageRoot,
+      { capabilityInventory, contextHome, inspectLaneSession });
     if (evidenceRoot) {
       try {
         const evidence = await budget.run(() => recordHookEvidence(evidenceRoot, {
@@ -94,7 +108,7 @@ export async function runNormalizedHook(event, { timeoutMs = 5000, runBeads, evi
   }
 }
 
-async function runEvent(event, budget, runBeads, evidencePackageRoot) {
+async function runEvent(event, budget, runBeads, evidencePackageRoot, trustedContext = {}) {
   const project = await budget.run(() => resolveProject(event.cwd, { budget }));
   const progress = {};
   let decision;
@@ -129,23 +143,36 @@ async function runEvent(event, budget, runBeads, evidencePackageRoot) {
             result = await budget.run(() => adoptLegacyProjectOwner(target, envelope, { nativeIdentity: {
               host, sessionId: event.sessionId, observed: true, cwd: eventCwd, invocationId: event.eventId,
             } }, { budget }));
+          } else if (operation.command === "coordinator-continuity-transfer") {
+            const envelope = await budget.run(() => readOwnerRecoveryEnvelope(operation.request));
+            result = await budget.run(() => transferProjectCoordinator(target, envelope, { budget }));
           } else {
-            const { runWorkflowCommand } = await budget.run(() => import("./lib/workflow-cli.mjs"));
-            result = await budget.run(() => runWorkflowCommand(operation.command, { project: target.root, request: operation.request }, {
-              nativeIdentity: { host, sessionId: event.sessionId, observed: true, cwd: eventCwd,
-                ownershipEpoch: target.setup.ownership?.epoch }, budget,
-            }));
+            const nativeContext = { nativeIdentity: { host, sessionId: event.sessionId, observed: true, cwd: eventCwd,
+              ownershipEpoch: target.setup.ownership?.epoch }, budget, ...trustedContext };
+            if (["helpers-install", "helpers-recover", "context-reduction-apply", "context-reduction-revert", "context-reduction-recover"].includes(operation.command)) {
+              const { runSetupCommand } = await budget.run(() => import("./lib/setup-cli.mjs"));
+              result = await budget.run(() => runSetupCommand(operation.command, { project: target.root, host: operation.host,
+                scope: operation.scope, request: operation.request }, nativeContext));
+            } else {
+              const { runWorkflowCommand } = await budget.run(() => import("./lib/workflow-cli.mjs"));
+              result = await budget.run(() => runWorkflowCommand(operation.command, { project: target.root, request: operation.request }, nativeContext));
+            }
           }
         } catch (error) {
           result = { status: "conflict", reason: error.message };
         }
-        const mutationKinds = { "legacy-owner-adopt": "legacy_owner_adoption", "gate-evidence": "gate_evidence",
-          "run-reconcile": "run_reconciliation", "run-scope-extend": "run_scope_extension",
+        const mutationKinds = { "legacy-owner-adopt": "legacy_owner_adoption", "coordinator-continuity-transfer": "coordinator_continuity_transfer",
+          "gate-evidence": "gate_evidence",
+          "run-start": "run_start", "run-retire": "run_retirement", "run-reconcile": "run_reconciliation", "run-scope-extend": "run_scope_extension",
+          "lane-create": "lane_create", "lane-next": "lane_next", "lane-rotate": "lane_rotate", "lane-close": "lane_close",
+          "helpers-install": "helpers_install", "helpers-recover": "helpers_recover",
+          "context-reduction-apply": "context_reduction_apply", "context-reduction-revert": "context_reduction_revert",
+          "context-reduction-recover": "context_reduction_recover",
           "evidence-store-register": "evidence_store_registration",
           "completion-history-reconcile": "completion_history_reconciliation" };
         decision.mutations.push({ kind: mutationKinds[operation.command], command: operation.command,
           status: result.status, ...(result.reason ? { reason: result.reason } : {}) });
-        if (!["applied", "duplicate"].includes(result.status)) {
+        if (!nativeMutationSucceeded(operation.command, result.status)) {
           decision.allow = false;
           decision.mode = "enforce";
           decision.messages.push(`Agent-Team native ${operation.command} refused: ${result.reason ?? result.status}.`);
@@ -257,7 +284,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     const eventName = argument("event");
     const payload = await stdin();
     event = normalizeEvent(runtime, eventName, payload);
-    const { decision } = await runNormalizedHook(event, { evidencePackageRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..') });
+    const { decision } = await runNormalizedHook(event, {
+      evidencePackageRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
+      ...(event.runtime === "claude" ? { contextHome: os.homedir() } : {}),
+    });
     const transport = adaptTransport(event.runtime, event.event, decision);
     if (transport.stdout) process.stdout.write(transport.stdout);
     if (transport.stderr) process.stderr.write(transport.stderr);

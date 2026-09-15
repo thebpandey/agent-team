@@ -70,9 +70,81 @@ function owns(patterns, relative) {
     || (pattern.endsWith("/**") && (relative === pattern.slice(0, -3) || relative.startsWith(pattern.slice(0, -2)))));
 }
 
+export function validateWorkerUpdate(source, { maximumChars, taskId, revision } = {}) {
+  if (typeof source !== "string" || !Number.isSafeInteger(maximumChars) || maximumChars < 1
+    || [...source].length > maximumChars) return "worker_update_too_large";
+  if (typeof taskId !== "string" || !taskId || !/^[a-f0-9]{40}$/.test(revision ?? "")) return "invalid_worker_update";
+  const labels = (name) => [...source.matchAll(new RegExp(`^${name}:\\s*(.+)$`, "gmi"))].map((match) => match[1].trim());
+  const [task] = labels("Task"); const [boundRevision] = labels("Revision"); const [evidence] = labels("Evidence"); const [next] = labels("Next action");
+  const checks = source.match(/^\s*-\s+[^:\r\n]+:\s*(passed|failed|unresolved)\s*$/gmi) ?? [];
+  if (labels("Task").length !== 1 || task !== taskId || labels("Revision").length !== 1 || boundRevision !== revision
+    || labels("Evidence").length !== 1 || !evidence || labels("Next action").length !== 1 || !next || !checks.length) return "invalid_worker_update";
+  return undefined;
+}
+
+async function workerUpdateGate(event, project, canonical, operation) {
+  if (operation.kind !== "file_change") return undefined;
+  for (const file of operation.files) {
+    const target = await canonicalTarget(event.cwd, file.path);
+    if (!inside(project.root, target)) continue;
+    const relative = path.relative(project.root, target).replaceAll("\\", "/");
+    const match = relative.match(/^\.agent-team\/lanes\/([a-z0-9][a-z0-9._-]{0,63})\/updates\/([A-Za-z0-9][\w.:-]{0,127})-[1-9]\d*\.md$/);
+    if (!match) continue;
+    const lane = canonical.state?.lanes?.records?.find(({ id }) => id === match[1]);
+    if (!lane || !lane.queue?.includes(match[2])) return deny("The worker update is not bound to an admitted lane task.");
+    const maximumChars = canonical.state?.run?.executionSettings?.lanes?.workerUpdateMaxChars;
+    if (!Number.isSafeInteger(maximumChars) || maximumChars < 1) return deny("The effective worker update cap is unavailable.");
+    if (file.action === "delete" || file.action === "move") return deny("Worker update receipts are immutable.");
+    let finalContent;
+    if (String(operation.tool ?? "").toLowerCase() === "write") finalContent = file.changedContent;
+    else if (String(operation.tool ?? "").toLowerCase() === "edit" && typeof file.previousContent === "string" && file.previousContent) {
+      let current;
+      try { current = await readFile(target, "utf8"); } catch { return deny("The final worker update content is unavailable."); }
+      const first = current.indexOf(file.previousContent);
+      if (first === -1 || current.indexOf(file.previousContent, first + file.previousContent.length) !== -1) {
+        return deny("The final worker update content is ambiguous.");
+      }
+      finalContent = `${current.slice(0, first)}${file.changedContent}${current.slice(first + file.previousContent.length)}`;
+    } else if (["PostToolUse", "PostToolBatch"].includes(event.event)) {
+      try { finalContent = await readFile(target, "utf8"); } catch { return deny("The final worker update content is unavailable."); }
+    } else return deny("The final worker update content is unavailable for this write path.");
+    const problem = validateWorkerUpdate(finalContent, { maximumChars, taskId: match[2], revision: canonical.git?.headRevision });
+    if (problem) return deny(problem === "worker_update_too_large"
+      ? `The worker update exceeds the effective ${maximumChars}-character cap.`
+      : "The worker update receipt is malformed or stale.");
+  }
+  return undefined;
+}
+
 async function ownership(event, project, canonical, identity) {
   if (event.event !== "PreToolUse" || event.operation.kind !== "file_change") return undefined;
-  if (identity.role === "unknown") return deny("Registered Agent-Team ownership is missing for this session.");
+  for (const file of event.operation.files) {
+    for (const changedPath of [file.previousPath, file.path].filter(Boolean)) {
+      const target = await canonicalTarget(event.cwd, changedPath);
+      if (inside(project.commonDirectory, target)) {
+        return deny(`Git metadata must be changed through a supported native Git route, not the file path ${changedPath}.`);
+      }
+    }
+  }
+  if (identity.role === "unknown") {
+    if (!["codex", "claude-code"].includes(identity.host) || typeof identity.sessionId !== "string" || !identity.sessionId
+      || identity.sessionId === canonical.registry.projectOwner
+      || project.root !== project.worktreeRoot) return deny("Registered Agent-Team ownership is missing for this session.");
+    for (const file of event.operation.files) {
+      for (const changedPath of [file.previousPath, file.path].filter(Boolean)) {
+        const target = await canonicalTarget(event.cwd, changedPath);
+        if (target === project.tracker?.path) return deny("A registered project coordinator must change the selected canonical tracker.");
+        if (!inside(project.root, target)) return deny(`The changed path ${changedPath} resolves outside the canonical project checkout.`);
+        const relative = path.relative(project.root, target).replaceAll("\\", "/");
+        if (relative === "MISTAKES.md" || relative === ".agent-team" || relative.startsWith(".agent-team/")) {
+          return deny(`A registered project coordinator must change the shared path ${changedPath}.`);
+        }
+        const claimed = canonical.registry.teams.find((team) => owns(team["owned paths"].split(/\s*,\s*/).filter(Boolean), relative));
+        if (claimed) return deny(`The registered team ${claimed["team id"]} owns ${changedPath}.`);
+      }
+    }
+    return undefined;
+  }
   if (identity.role === "project_owner") return undefined;
   if (typeof identity.team.worktree !== "string" || !identity.team.worktree.trim()) return deny("The registered team worktree is missing.");
   const registeredWorktree = await realpath(path.resolve(project.root, identity.team.worktree));
@@ -513,6 +585,10 @@ export async function evaluatePolicy(event, project, { now = new Date(), canonic
   }
   const policyEvent = operation.files ? { ...event, operation: { ...operation, kind: "file_change" } } : event;
   if (operation.kind === "file_change" && operation.parserFailed) return deny("The recognized file operation could not be resolved to a path.");
+  let updateDecision;
+  try { updateDecision = await bounded(() => workerUpdateGate(policyEvent, project, canonical, operation)); }
+  catch { return unavailableDecision({ ...event, operation }, inventory, { inventoryStatus }); }
+  if (updateDecision) return updateDecision;
   let ownershipDecision;
   try {
     ownershipDecision = await bounded(() => ownership(policyEvent, project, canonical, identity));
