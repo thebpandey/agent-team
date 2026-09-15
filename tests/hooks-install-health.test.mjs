@@ -539,7 +539,7 @@ test("artifact installer denies semantic downgrade without changing the current 
   await copyTrackedSource(sourceRoot, newer);
   const manifestPath = path.join(newer, "hooks", "manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath));
-  manifest.version = "7.3.0";
+  manifest.version = `${Number(manifest.version.split(".")[0]) + 1}.0.0`;
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   await installPackage({ sourceRoot: newer, home, host: "codex", scope: "user" });
   const receiptPath = path.join(home, ".agent-team-hooks", "install.json");

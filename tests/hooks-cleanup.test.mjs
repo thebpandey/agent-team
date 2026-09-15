@@ -49,7 +49,7 @@ const laneReviewer = { host: "claude-code", sessionId: "lane-reviewer", generati
 
 function laneAssignment(taskId, revision, attempt, briefSha256) {
   return {
-    id: `assignment-${attempt}`, taskId, attempt,
+    id: `assignment-${taskId}-${attempt}`, taskId, attempt,
     packet: { path: `.agent-team/lanes/build-a/packets/${taskId}-${attempt}.md`, sha256: String(attempt).repeat(64) },
     briefSha256, revision, worker: laneWorker, decisions: [], factSheets: [], status: "resolved",
     createdAt: "2026-09-14T10:00:00Z", dispatchedAt: "2026-09-14T10:01:00Z",
@@ -59,9 +59,10 @@ function laneAssignment(taskId, revision, attempt, briefSha256) {
 
 function laneResult(assignment, kind, workerIdentity, revision) {
   const digest = { worker: "2", verification: "3", independent_review: "4", integration: "5" }[kind];
+  const evidenceLaneId = kind === "independent_review" ? "review-a" : "build-a";
   return {
     assignmentId: assignment.id, taskId: assignment.taskId, kind, status: "passed", revision, worker: workerIdentity,
-    evidence: { path: `.agent-team/lanes/build-a/evidence/${assignment.taskId}-${kind}.json`, sha256: digest.repeat(64) },
+    evidence: { path: `.agent-team/lanes/${evidenceLaneId}/evidence/${assignment.taskId}-${kind}.json`, sha256: digest.repeat(64) },
     recordedAt: "2026-09-14T10:02:00Z",
   };
 }
@@ -80,7 +81,7 @@ async function installLane(value, { status = "closed", integrated = true } = {})
   brief.sha256 = await writeArtifact(brief.path, "immutable lane brief\n");
   const ownershipEvidence = { path: ".agent-team/lanes/build-a/evidence/ownership.json", revision: value.revision, pathSetHash: "f".repeat(64) };
   ownershipEvidence.sha256 = await writeArtifact(ownershipEvidence.path, JSON.stringify({ revision: value.revision, paths: ["src/"] }));
-  const assignments = [laneAssignment("AT-001", value.revision, 1, brief.sha256), laneAssignment("AT-002", value.revision, 2, brief.sha256)];
+  const assignments = [laneAssignment("AT-001", value.revision, 1, brief.sha256), laneAssignment("AT-002", value.revision, 1, brief.sha256)];
   for (const assignment of assignments) assignment.packet.sha256 = await writeArtifact(assignment.packet.path, JSON.stringify({ assignment: assignment.id }));
   const results = assignments.flatMap((assignment) => [
     laneResult(assignment, "worker", laneWorker, value.revision),
@@ -90,11 +91,39 @@ async function installLane(value, { status = "closed", integrated = true } = {})
   ]);
   for (const result of results) result.evidence.sha256 = await writeArtifact(result.evidence.path,
     JSON.stringify({ assignmentId: result.assignmentId, taskId: result.taskId, kind: result.kind, revision: result.revision }));
+  const reviewBrief = { path: ".agent-team/lanes/review-a/BRIEF.md" };
+  reviewBrief.sha256 = await writeArtifact(reviewBrief.path, "immutable review lane brief\n");
+  const reviewOwnershipEvidence = { path: ".agent-team/lanes/review-a/evidence/ownership.json", revision: value.revision,
+    pathSetHash: "e".repeat(64) };
+  reviewOwnershipEvidence.sha256 = await writeArtifact(reviewOwnershipEvidence.path,
+    JSON.stringify({ revision: value.revision, paths: [] }));
+  const reviewAssignments = [];
+  for (const source of assignments) {
+    const assignment = {
+      id: `review-${source.id}`, taskId: source.taskId, attempt: 1,
+      packet: { path: `.agent-team/lanes/review-a/packets/${source.taskId}-1.md` },
+      briefSha256: reviewBrief.sha256, revision: value.revision, worker: laneReviewer, decisions: [], factSheets: [], status: "resolved",
+      createdAt: "2026-09-14T10:00:00Z", dispatchedAt: "2026-09-14T10:01:00Z",
+      dispatch: { status: "observed", source: "claude-code", eventId: `review-dispatch-${source.taskId}`, observedAt: "2026-09-14T10:01:00Z" },
+      sourceAssignment: { laneId: "build-a", assignmentId: source.id, packetSha256: source.packet.sha256, revision: value.revision },
+    };
+    assignment.packet.sha256 = await writeArtifact(assignment.packet.path, JSON.stringify({ assignment: assignment.id }));
+    reviewAssignments.push(assignment);
+  }
+  const reviewResults = reviewAssignments.map((assignment, index) => ({
+    ...structuredClone(results.find((result) => result.assignmentId === assignments[index].id && result.kind === "independent_review")),
+    assignmentId: assignment.id,
+  }));
   value.state.lanes = { schemaVersion: 1, records: [{
     schemaVersion: 1, id: "build-a", teamId: "TEAM-001", status, role: "developer", model: "gpt-6-astra", effort: "high",
     queue: ["AT-001", "AT-002"], currentTaskId: status === "closed" ? null : "AT-001", worker: status === "closed" ? null : laneWorker,
     worktree: value.feature, branch: "lane/build-a", brief, ownershipEvidence,
     rotationCount: 1, handover: null, factSheets: [], assignments, results,
+  }, {
+    schemaVersion: 1, id: "review-a", teamId: "TEAM-REVIEW", status: "closed", role: "reviewer", model: "gpt-5.6-sol", effort: "medium",
+    queue: ["AT-001", "AT-002"], currentTaskId: null, worker: null,
+    worktree: `${value.feature}-review`, branch: "lane/review-a", brief: reviewBrief, ownershipEvidence: reviewOwnershipEvidence,
+    rotationCount: 0, handover: null, factSheets: [], assignments: reviewAssignments, results: reviewResults,
   }] };
   value.laneDeliveryEvidence = Object.fromEntries(assignments.map(({ taskId, revision }) => [taskId, {
     taskId, sourceRevision: revision, integratedRevision: revision,
