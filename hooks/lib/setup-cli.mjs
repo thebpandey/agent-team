@@ -3,14 +3,14 @@ import { open, readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { identityFor, loadCanonicalState } from "./canonical-state.mjs";
+import { loadCanonicalState } from "./canonical-state.mjs";
 import { applyContextReduction, contextReceiptBinding, inspectContextReduction, proposeContextReduction,
   recoverContextReductionTransaction, revertContextReduction } from "./context-shrink.mjs";
 import { createDependencyRunner, inspectDependencies, prepareDependencies } from "./dependencies.mjs";
 import { ROLE_DEFINITIONS } from "./dependency-profiles.mjs";
 import { inspectHelpers, installHelpers, recoverHelperTransaction } from "./helpers.mjs";
 import { initializationRecordProblem } from "./initialization.mjs";
-import { validateNativeOwnerAuthority, validateQualifiedOwnership } from "./owner-recovery.mjs";
+import { validateNativeOwnerAuthority } from "./owner-recovery.mjs";
 import { resolveProject } from "./project.mjs";
 import { assessReadiness } from "./readiness.mjs";
 import { buildRoleMenu, buildSettingsWizard, inspectSettings, mutateSetup, saveSettingsDraft, updateSettings,
@@ -312,38 +312,32 @@ async function qualifySetupOwner(projectPath, host, nativeIdentity, budget) {
     return null;
   }
   if (initializationRecordProblem(project.setup, canonical, { projectRoot: project.root, validateTracker: false, allowLegacy: true })) return null;
-  if (!validateQualifiedOwnership(canonical.setup.ownership) || !Number.isSafeInteger(canonical.registry.ownershipEpoch)
-    || canonical.registry.ownershipEpoch < 1) return null;
   const nativeHost = nativeIdentity?.host === "claude" ? "claude-code" : nativeIdentity?.host;
   if (nativeIdentity?.observed !== true || nativeHost !== host || typeof nativeIdentity?.sessionId !== "string"
     || !nativeIdentity.sessionId || typeof nativeIdentity?.cwd !== "string") return null;
-  const qualified = identityFor(canonical.registry, nativeHost, nativeIdentity.sessionId);
-  if (qualified.role !== "project_owner" || qualified.host !== nativeHost
-    || canonical.registry.projectOwnerHost && canonical.registry.projectOwnerHost !== nativeHost
-    || qualified.ownershipEpoch !== canonical.registry.ownershipEpoch) return null;
-  const derivedNativeIdentity = { host: nativeHost, sessionId: qualified.sessionId, observed: true,
-    cwd: nativeIdentity.cwd, ownershipEpoch: qualified.ownershipEpoch };
-  if (!await validateNativeOwnerAuthority(project, derivedNativeIdentity, canonical.setup.ownership, qualified.sessionId)) return null;
+  const epoch = Number.isSafeInteger(canonical.registry.ownershipEpoch) && canonical.registry.ownershipEpoch > 0
+    ? canonical.registry.ownershipEpoch : 1;
+  const derivedNativeIdentity = { host: nativeHost, sessionId: nativeIdentity.sessionId, observed: true,
+    cwd: nativeIdentity.cwd, ownershipEpoch: epoch };
+  if (!await validateNativeOwnerAuthority(project, derivedNativeIdentity, canonical.setup.ownership, nativeIdentity.sessionId)) return null;
   return {
     project, canonical,
-    identity: { role: "project_owner", host: nativeHost, sessionId: qualified.sessionId, ownershipEpoch: qualified.ownershipEpoch },
-    writer: { id: qualified.sessionId, role: "project_orchestrator", host: nativeHost,
-      ...(qualified.ownershipEpoch !== undefined ? { ownershipEpoch: qualified.ownershipEpoch } : {}) },
+    identity: { role: "project_coordinator", host: nativeHost, sessionId: nativeIdentity.sessionId, ownershipEpoch: epoch },
+    writer: { id: nativeIdentity.sessionId, role: "project_orchestrator", host: nativeHost, ownershipEpoch: epoch },
   };
 }
 
 function orchestrationRegistryLoader(projectRoot, budget) {
   return async () => {
     const qualifiedProject = await resolveProject(projectRoot, { budget });
-    if (!qualifiedProject.active || qualifiedProject.root !== projectRoot) return { projectOwner: null };
+    if (!qualifiedProject.active || qualifiedProject.root !== projectRoot) return null;
     let canonical;
     try { canonical = await loadCanonicalState(qualifiedProject, { includeTasks: false, budget }); }
-    catch { return { projectOwner: null }; }
+    catch { return null; }
     if (initializationRecordProblem(qualifiedProject.setup, canonical, {
       projectRoot: qualifiedProject.root, validateTracker: false, allowLegacy: true,
-    }) || !validateQualifiedOwnership(canonical.setup.ownership)
-      || !Number.isSafeInteger(canonical.registry.ownershipEpoch) || canonical.registry.ownershipEpoch < 1) {
-      return { projectOwner: null };
+    })) {
+      return null;
     }
     return canonical.registry;
   };
@@ -400,7 +394,7 @@ export function buildSetupSummary({ project, dependencies, readiness, settings, 
 export async function orchestrateSetup(input, context = {}) {
   validateOrchestrationInput(input);
   let qualified = await qualifySetupOwner(input.project, input.host, context.nativeIdentity, context.budget);
-  if (!qualified) return { status: "conflict", reason: "project_owner_required" };
+  if (!qualified) return { status: "conflict", reason: "native_project_context_required" };
   if (typeof context.interactSettings !== "function") throw new Error("A native settings interaction is required.");
   let dependencies = inspectDependencies({ setup: qualified.project.setup, host: input.host });
   if (dependencies.scope !== "unknown" && dependencies.scope !== input.scope) dependencies = {
@@ -420,7 +414,7 @@ export async function orchestrateSetup(input, context = {}) {
     if (["conflict", "failed"].includes(dependencies.status)) return dependencies;
   }
   qualified = await qualifySetupOwner(input.project, input.host, context.nativeIdentity, context.budget);
-  if (!qualified) return { status: "conflict", reason: "project_owner_required" };
+  if (!qualified) return { status: "conflict", reason: "native_project_context_required" };
   const overview = inspectSettings({ setup: qualified.project.setup, host: input.host, nativeChoices: context.nativeChoices ?? {} });
   const modelRouting = modelRoutingAdvisory(input.host, context.nativeChoices ?? {});
   const wizard = { ...buildSettingsWizard({ setup: qualified.project.setup, host: input.host, nativeChoices: context.nativeChoices ?? {} }),
@@ -447,7 +441,7 @@ export async function orchestrateSetup(input, context = {}) {
     throw new Error("setup changed during non-consenting settings interaction");
   }
   qualified = await qualifySetupOwner(input.project, input.host, context.nativeIdentity, context.budget);
-  if (!qualified) return { status: "conflict", reason: "project_owner_required" };
+  if (!qualified) return { status: "conflict", reason: "native_project_context_required" };
   const readiness = await canonicalReadiness(qualified.project, input.host, input.scope, context);
   const settings = inspectSettings({ setup: qualified.project.setup, host: input.host, nativeChoices: context.nativeChoices ?? {} });
   const summary = { ...buildSetupSummary({ project: qualified.project, dependencies, readiness, settings, settingsOutcome,
@@ -545,25 +539,25 @@ export async function runSetupCommand(command, options = {}, context = {}) {
   }
   const identity = mutationIdentity(envelope);
   const nativeHost = context.nativeIdentity?.host === "claude" ? "claude-code" : context.nativeIdentity?.host;
-  if (!await validateNativeOwnerAuthority(project, context.nativeIdentity, project.setup.ownership, identity.writer.id)
-    || project.setup.ownership && nativeHost !== options.host) return { status: "conflict", reason: "project_owner_required" };
-  identity.writer = { ...identity.writer, host: options.host, ...(project.setup.ownership?.epoch !== undefined
-    ? { ownershipEpoch: context.nativeIdentity.ownershipEpoch } : {}) };
+  if (nativeHost !== options.host || !await validateNativeOwnerAuthority(project, context.nativeIdentity,
+    project.setup.ownership, context.nativeIdentity?.sessionId)) return { status: "conflict", reason: "native_project_context_required" };
+  identity.writer = { id: context.nativeIdentity.sessionId, role: "project_orchestrator", host: options.host,
+    ...(project.setup.ownership?.epoch !== undefined ? { ownershipEpoch: project.setup.ownership.epoch } : {}) };
   const common = {
     setupPath: project.paths.setup, ...identity, budget: context.budget,
     loadRegistry: async () => {
       const fresh = await resolveProject(project.cwd ?? project.root, { budget: context.budget });
       if (!fresh.active || fresh.root !== project.root || fresh.paths.setup !== project.paths.setup || fresh.projectId !== project.projectId) {
-        return { projectOwner: null };
+        return null;
       }
       let canonical;
       try { canonical = await loadCanonicalState(fresh, { includeTasks: false, budget: context.budget }); }
-      catch { return { projectOwner: null }; }
+      catch { return null; }
       return initializationRecordProblem(fresh.setup, canonical, {
         projectRoot: fresh.root,
         validateTracker: false,
         allowLegacy: true,
-      }) ? { projectOwner: null } : canonical.registry;
+      }) ? null : canonical.registry;
     },
   };
   if (command === "helpers-install") {

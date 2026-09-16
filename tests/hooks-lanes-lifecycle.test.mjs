@@ -264,22 +264,16 @@ test("lane-create binds prepared worktree brief path evidence and queue without 
   assert.deepEqual(await readFile(value.project.paths.tasks), before);
 });
 
-test("lane-create rejects stale or unavailable path evidence without state changes", async () => {
+test("lane-create does not require Graphify ownership evidence", async () => {
   const value = await fixture();
-  const before = await readFile(value.project.paths.state);
   const stale = await createLane(value.project, { ...value.request, operationId: "lane-create-stale", expectedRevision: "f".repeat(40) }, value.options);
   assert.equal(stale.reason, "stale_revision");
-  assert.deepEqual(await readFile(value.project.paths.state), before);
 
   const evidencePath = path.join(value.project.root, value.request.lane.ownershipEvidence.path);
-  const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
-  evidence.status = "unavailable";
-  const source = json(evidence);
-  await writeFile(evidencePath, source);
-  const unavailable = await createLane(value.project, { ...value.request, operationId: "lane-create-unavailable",
-    lane: { ...value.request.lane, ownershipEvidence: { ...value.request.lane.ownershipEvidence, sha256: digest(source) } } }, value.options);
-  assert.equal(unavailable.reason, "ownership_evidence_unresolved");
-  assert.deepEqual(await readFile(value.project.paths.state), before);
+  await rm(evidencePath);
+  const applied = await createLane(value.project, { ...value.request, operationId: "lane-create-without-graphify",
+    lane: { ...value.request.lane, ownershipEvidence: null } }, value.options);
+  assert.equal(applied.status, "applied");
 });
 
 test("lane-create authenticates BRIEF revision and every instruction or skill file", async () => {

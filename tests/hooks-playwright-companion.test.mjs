@@ -92,7 +92,7 @@ test('compatible executable reuse prepares the missing companion before function
   const phases = [];
   const result = await prepareDependencies({
     setupPath, expectedVersion: 1, operationId: 'reuse', writer: { id: 'owner', role: 'project_orchestrator' },
-    loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: [] },
+    loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: ['playwright-cli'] },
     runner: async ({ dependency, phase }) => {
       if (dependency.id !== 'playwright-cli') return { status: 'passed', version: dependency.version };
       phases.push(phase);
@@ -136,7 +136,7 @@ test('failed or customized companion gates block functional and fresh-worker che
     const phases = [];
     const result = await prepareDependencies({
       setupPath, expectedVersion: 1, operationId: 'blocked-companion', writer: { id: 'owner', role: 'project_orchestrator' },
-      loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: [] },
+      loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: ['playwright-cli'] },
       runner: async ({ dependency, phase }) => {
         if (dependency.id === 'playwright-cli') {
           phases.push(phase);
@@ -209,7 +209,7 @@ test('shared browser deadline kills the fake child and never commits a late rece
   try {
     await assert.rejects(prepareDependencies({
       setupPath, expectedVersion: 1, operationId: 'browser-deadline', writer: { id: 'owner', role: 'project_orchestrator' },
-      loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: [] }, budget,
+      loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: ['playwright-cli'] }, budget,
       runner: async (request) => request.dependency.id === 'playwright-cli'
         ? f.runner({ ...request, dependency: f.dependency }) : { status: 'passed', version: request.dependency.version },
     }), { code: 'EVENT_DEADLINE' });
@@ -304,7 +304,7 @@ test('Playwright npm installation deadline kills the labelled fake installer and
   try {
     await assert.rejects(prepareDependencies({
       setupPath, expectedVersion: 1, operationId: 'npm-deadline', writer: { id: 'owner', role: 'project_orchestrator' },
-      loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: [] }, budget,
+      loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: ['playwright-cli'] }, budget,
       runner: async (request) => {
         if (request.dependency.id !== 'playwright-cli') return { status: 'passed', version: request.dependency.version };
         if (request.phase === 'probe') return { status: 'not_found' };
@@ -371,7 +371,7 @@ for (const interruptedAction of ['open', 'click', 'eval', 'cancel', 'cleanup-fai
     try {
       const operation = interruptedAction === 'click' ? prepareDependencies({
         setupPath, expectedVersion: 1, operationId: 'persistent-cleanup', writer: { id: 'owner', role: 'project_orchestrator' },
-        loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: [] }, budget,
+        loadRegistry: async () => ({ projectOwner: 'owner' }), host: 'codex', scope: 'user', paths: f.paths, selections: { defaults: ['playwright-cli'] }, budget,
         runner: async request => request.dependency.id === 'playwright-cli' && request.phase === 'functional'
           ? f.runner({ ...request, dependency: f.dependency }) : { status: 'passed', version: request.dependency.version },
       }) : f.runner({ dependency: f.dependency, phase: 'functional', check: 'browser-interaction', budget });

@@ -68,7 +68,7 @@ test("native helper install route accepts committed terminal status and links ca
   const value = await fixture();
   const request = await envelope(value, "native-helper-install", {});
   assert.deepEqual(await runCommand("helpers-install", { project: value.root, host: "codex", scope: "project", request }),
-    { status: "conflict", reason: "project_owner_required" });
+    { status: "conflict", reason: "native_project_context_required" });
   const hooked = await invoke(value, "helpers-install", request);
   assert.equal(hooked.decision.allow, true);
   assert.deepEqual(hooked.decision.mutations.find(({ kind }) => kind === "helpers_install"), {

@@ -31,7 +31,7 @@ test("Serena probes separate its documented Git display suffix from the pinned p
   }
 });
 
-test("catalog selects mandatory, defaults, tracker dependency, and explicit optionals while excluding rejected tools", async () => {
+test("catalog selects defaults, tracker dependency, and explicit optionals while excluding rejected tools", async () => {
   const { resolveCatalogSelection } = await import("../hooks/lib/dependencies.mjs").catch(() => ({}));
   const result = resolveCatalogSelection?.({ tracker: { kind: "beads" }, optionals: ["context7"] });
 
@@ -44,6 +44,16 @@ test("catalog selects mandatory, defaults, tracker dependency, and explicit opti
   ]);
   assert.equal(new Set(result.selected.map(({ id }) => id)).size, result.selected.length);
   assert.deepEqual(result.optional.find(({ id }) => id === "project-kickoff").install.paths, ["."]);
+  assert.deepEqual(result.selected.find(({ id }) => id === "impeccable").guidance, {
+    repository: "https://github.com/pbakaus/impeccable.git",
+    source: "https://github.com/pbakaus/impeccable/tree/f64da20b07271b760e4e3133eef3b87942860f11",
+    revision: "f64da20b07271b760e4e3133eef3b87942860f11",
+    selectedPaths: { codex: ".agents/skills/impeccable", "claude-code": ".claude/skills/impeccable" },
+    gitBlobs: {
+      codex: "f1c533c274cb0f410dfdd78c383c6250becf48d0",
+      "claude-code": "90b3e280755c57557cc32ceb5909ea4af28d3476",
+    },
+  });
 });
 
 test("persisted required Graphify survives omitted defaults and an explicit decline remains unresolved", async () => {
@@ -63,7 +73,7 @@ test("persisted required Graphify survives omitted defaults and an explicit decl
   };
 
   const selected = await prepare("required");
-  assert.deepEqual(selected.saved.dependencies.hosts.codex.selected, ["uv", "serena", "playwright-cli", "graphify"]);
+  assert.deepEqual(selected.saved.dependencies.hosts.codex.selected, ["uv", "graphify"]);
   assert.equal(selected.calls.filter((call) => call === "graphify:probe").length, 1);
   assert.ok(selected.calls.indexOf("uv:worker") < selected.calls.indexOf("graphify:probe"));
   const declined = await prepare("declined", ["graphify"]);
@@ -236,6 +246,58 @@ test("only Impeccable receives the closed 256-entry guidance allowance", async (
       assert.equal((await runner({ dependency, phase: "probe" })).status, "manual_action");
     }
   });
+});
+
+test("only Impeccable accepts its pinned font index within closed companion byte bounds", async (t) => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const skill = Buffer.from("---\nname: bounded\n---\n");
+  const run = async (name, id, populate) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), `agent-team-${name}-`));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const skillRoot = path.join(root, "skills");
+    const destination = path.join(skillRoot, id);
+    await mkdir(path.join(destination, "scripts", "data"), { recursive: true });
+    await writeFile(path.join(destination, "SKILL.md"), skill);
+    await populate(destination);
+    const selectedPath = `skills/${id}`;
+    const dependency = { id, version: "pinned", install: { kind: "git-skill", source: "fixture", revision: "pinned", paths: [selectedPath] },
+      compatibility: { kind: "required-files", entrypoint: "SKILL.md", allowUnrelatedRegularFiles: true, selectedPaths: [{ selectedPath,
+        requiredFiles: [{ path: "SKILL.md", digest: { algorithm: "sha256", value: createHash("sha256").update(skill).digest("hex") } }] }] } };
+    const runner = createDependencyRunner({ host: "codex", scope: "project",
+      paths: { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot } });
+    return runner({ dependency, phase: "probe" });
+  };
+
+  const current = await run("impeccable-current-font-index", "impeccable", async (destination) => {
+    await writeFile(path.join(destination, "scripts", "data", "font-index.json"), Buffer.alloc(1_100_013));
+  });
+  assert.equal(current.status, "passed", current.evidence);
+
+  const ordinary = await run("ordinary-current-font-index", "ordinary", async (destination) => {
+    await writeFile(path.join(destination, "scripts", "data", "font-index.json"), Buffer.alloc(1_100_013));
+  });
+  assert.equal(ordinary.status, "manual_action");
+  assert.match(ordinary.evidence, /file byte\/type limit/i);
+
+  const oversized = await run("impeccable-oversized-file", "impeccable", async (destination) => {
+    await writeFile(path.join(destination, "scripts", "data", "font-index.json"), Buffer.alloc(2 * 1024 * 1024 + 1));
+  });
+  assert.equal(oversized.status, "manual_action");
+  assert.match(oversized.evidence, /file byte\/type limit/i);
+
+  const aggregate = await run("impeccable-oversized-tree", "impeccable", async (destination) => {
+    for (let index = 0; index < 4; index += 1) {
+      await writeFile(path.join(destination, `resource-${index}.bin`), Buffer.alloc(2 * 1024 * 1024));
+    }
+  });
+  assert.equal(aggregate.status, "manual_action");
+  assert.match(aggregate.evidence, /total byte limit/i);
+
+  const linked = await run("impeccable-linked-font-index", "impeccable", async (destination) => {
+    await symlink(path.join(destination, "SKILL.md"), path.join(destination, "scripts", "data", "font-index.json"));
+  });
+  assert.equal(linked.status, "manual_action");
+  assert.match(linked.evidence, /non-regular skill path/i);
 });
 
 test("multi-path manual classification retains every selected conservative component", async () => {
@@ -587,7 +649,7 @@ test("preparation follows prerequisite order and saves truthful component receip
     loadRegistry: async () => ({ projectOwner: "setup-owner" }),
     host: "codex",
     scope: "project",
-    selections: { defaults: ["ast-grep"], optionals: [], declined: ["context7"] },
+    selections: { defaults: ["serena", "playwright-cli", "ast-grep"], optionals: [], declined: ["context7"] },
     paths: { projectRoot: directory, toolRoot: path.join(directory, ".agent-team", "tools"), skillRoot: path.join(directory, ".agents", "skills") },
     runner,
   });
@@ -631,7 +693,7 @@ test("compatible installs are reused only after fresh functional and worker disc
     loadRegistry: async () => ({ projectOwner: "setup-owner" }),
     host: "claude-code",
     scope: "user",
-    selections: { defaults: [], optionals: [] },
+    selections: { defaults: ["serena", "playwright-cli"], optionals: [] },
     paths: { projectRoot: directory, toolRoot: path.join(directory, "tools"), skillRoot: path.join(directory, "skills") },
     runner,
   });
@@ -660,7 +722,7 @@ test("a version probe or install cannot hide a failed functional gate", async ()
     loadRegistry: async () => ({ projectOwner: "setup-owner" }),
     host: "codex",
     scope: "project",
-    selections: { defaults: [], optionals: [] },
+    selections: { defaults: ["serena"], optionals: [] },
     paths: { projectRoot: directory, toolRoot: path.join(directory, "tools"), skillRoot: path.join(directory, "skills") },
     runner,
   });
@@ -779,7 +841,7 @@ test("dependency inspection groups recorded evidence without writing or running 
   assert.deepEqual(overview.groups.map(({ id, ready, failed }) => ({ id, ready, failed })), [
     { id: "runtimes_tools", ready: 2, failed: 1 },
     { id: "skills", ready: 1, failed: 0 },
-    { id: "project_readiness", ready: 0, failed: 1 },
+    { id: "selected_components", ready: 3, failed: 1 },
   ]);
   assert.deepEqual(overview.unresolved, [{ id: "playwright-cli", boundary: "browser launch failed" }]);
 });
@@ -984,7 +1046,7 @@ test("successful installer output is not ready until a post-install version prob
   const result = await prepareDependencies({
     setupPath, expectedVersion: 1, operationId: "post-probe",
     writer: { id: "owner", role: "project_orchestrator" }, loadRegistry: async () => ({ projectOwner: "owner" }),
-    host: "codex", scope: "project", selections: { defaults: [], optionals: [] },
+    host: "codex", scope: "project", selections: { defaults: ["serena"], optionals: [] },
     paths: { projectRoot: directory, toolRoot: path.join(directory, "tools"), skillRoot: path.join(directory, "skills") }, runner,
   });
   const serena = result.receipts.find(({ id }) => id === "serena");
@@ -1270,7 +1332,9 @@ test("default LeanCTX gate overrides inherited directory pins for its narrow rea
   const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
   const { CATALOG_BY_ID } = await import("../hooks/lib/dependency-catalog.mjs");
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-leanctx-"));
-  const keys = ["LEAN_CTX_CONFIG_DIR", "LEAN_CTX_DATA_DIR", "LEAN_CTX_STATE_DIR", "LEAN_CTX_CACHE_DIR", "XDG_RUNTIME_DIR"];
+  const keys = ["LEAN_CTX_CONFIG_DIR", "LEAN_CTX_DATA_DIR", "LEAN_CTX_STATE_DIR", "LEAN_CTX_CACHE_DIR", "XDG_RUNTIME_DIR",
+    "LEAN_CTX_EXTRA_ROOTS", "LEAN_CTX_ALLOW_PATH", "LCTX_ALLOW_PATH", "LEAN_CTX_ALLOW_REROOT", "LEAN_CTX_PROJECT_ROOT", "LEAN_CTX_READ_ONLY_ROOTS"];
+  const clearedKeys = keys.slice(5);
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) process.env[key] = path.join(directory, "unrelated", key);
   t.after(() => {
@@ -1287,6 +1351,7 @@ for (const key of ${JSON.stringify(["LEAN_CTX_CONFIG_DIR", "LEAN_CTX_DATA_DIR", 
   const relative = path.relative(process.cwd(), process.env[key] ?? '/');
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) process.exit(8);
 }
+for (const key of ${JSON.stringify(clearedKeys)}) if (process.env[key] !== undefined) process.exit(7);
 process.stdout.write("readinessLeanCtxMarker\\n");
 `);
   await chmod(executable, 0o755);
@@ -1301,6 +1366,56 @@ process.stdout.write("readinessLeanCtxMarker\\n");
   assert.equal(result.status, "passed");
   assert.match(result.evidence, /narrow read.*readinessLeanCtxMarker/i);
   for (const key of keys) assert.equal(process.env[key], path.join(directory, "unrelated", key));
+});
+
+test("LeanCTX fresh-worker qualification is jailed to its assigned worktree", async (t) => {
+  const { createDependencyRunner } = await import("../hooks/lib/dependencies.mjs");
+  const { CATALOG_BY_ID } = await import("../hooks/lib/dependency-catalog.mjs");
+  const worktree = await mkdtemp(path.join(os.tmpdir(), "agent-team-leanctx-worker-"));
+  t.after(() => rm(worktree, { recursive: true, force: true }));
+  const paths = { projectRoot: worktree, toolRoot: path.join(worktree, "tools"), skillRoot: path.join(worktree, "skills") };
+  const observations = [];
+  const runner = createDependencyRunner({ host: "codex", scope: "project", paths,
+    workerDiscovery: async (request) => {
+      assert.equal(await readFile(request.qualification.marker.path, "utf8"), request.qualification.marker.content);
+      for (const directory of [...new Set(Object.values(request.qualification.environment.set)
+        .filter((value) => typeof value === "string" && path.isAbsolute(value)))]) {
+        assert.equal((await lstat(directory)).isDirectory(), true, directory);
+      }
+      observations.push(request);
+      return { status: "passed", evidence: "bounded worker fixture" };
+    } });
+
+  const result = await runner({ dependency: CATALOG_BY_ID.get("lean-ctx"), phase: "worker", check: "fresh-worker-discovery" });
+  await runner({ dependency: CATALOG_BY_ID.get("lean-ctx"), phase: "worker", check: "fresh-worker-discovery" });
+  const [observed, repeated] = observations;
+
+  assert.equal(result.status, "passed");
+  assert.equal(observed.qualification.kind, "lean-ctx-narrow-read");
+  assert.equal(observed.qualification.cwd, worktree);
+  assert.equal(observed.qualification.boundary.root, worktree);
+  assert.deepEqual(observed.qualification.boundary.extraRoots, []);
+  assert.match(observed.qualification.marker.path,
+    new RegExp(`^${path.join(worktree, ".agent-team", "qualification", "lean-ctx-").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[0-9a-f-]+[/\\\\]fixture\\.txt$`));
+  assert.notEqual(observed.qualification.marker.path, repeated.qualification.marker.path);
+  assert.equal(observed.qualification.marker.content, "readinessLeanCtxMarker: exact source remains recoverable.\n");
+  assert.equal(observed.qualification.marker.access, "read-only");
+  assert.equal(path.relative(worktree, observed.qualification.marker.path).startsWith(".."), false);
+  for (const kind of ["CONFIG", "DATA", "STATE", "CACHE"]) {
+    assert.equal(observed.qualification.environment.set[`LEAN_CTX_${kind}_DIR`],
+      path.join(observed.qualification.environment.set[`XDG_${kind}_HOME`], "lean-ctx"));
+  }
+  assert.equal(path.relative(path.join(paths.toolRoot, "verification"),
+    observed.qualification.environment.set.XDG_RUNTIME_DIR).startsWith(".."), false);
+  assert.equal(observed.qualification.environment.set.LEAN_CTX_NO_DAEMON, "1");
+  assert.deepEqual(observed.qualification.environment.unset, [
+    "LEAN_CTX_DISABLED", "LEAN_CTX_RAW", "LEAN_CTX_EXTRA_ROOTS", "LEAN_CTX_ALLOW_PATH", "LCTX_ALLOW_PATH",
+    "LEAN_CTX_ALLOW_REROOT", "LEAN_CTX_PROJECT_ROOT", "LEAN_CTX_READ_ONLY_ROOTS",
+  ]);
+  for (const request of observations) {
+    await assert.rejects(lstat(path.dirname(request.qualification.marker.path)), { code: "ENOENT" });
+    await assert.rejects(lstat(request.qualification.isolationRoot), { code: "ENOENT" });
+  }
 });
 
 test("default Impeccable gate verifies all three documented detector exits", async () => {
@@ -1378,7 +1493,7 @@ test("malformed external runner results become failed receipts instead of aborti
     loadRegistry: async () => ({ projectOwner: "owner" }),
     host: "codex",
     scope: "project",
-    selections: { defaults: [], optionals: [] },
+    selections: { defaults: ["serena", "playwright-cli"], optionals: [] },
     paths: { projectRoot: directory, toolRoot: path.join(directory, "tools"), skillRoot: path.join(directory, "skills") },
     runner: async () => undefined,
   });
@@ -1390,7 +1505,7 @@ test("malformed external runner results become failed receipts instead of aborti
   assert.match(result.receipts[0].boundary, /malformed/i);
 });
 
-test("Serena preparation returns an exact owned host-registration contract", async () => {
+test("Serena preparation returns an exact scoped host-registration contract", async () => {
   const { buildPreparationPlan } = await import("../hooks/lib/dependencies.mjs");
   const paths = { projectRoot: "/workspace/project", toolRoot: "/workspace/project/.agent-team/tools", skillRoot: "/workspace/project/.agents/skills" };
 
@@ -1403,9 +1518,9 @@ test("Serena preparation returns an exact owned host-registration contract", asy
     command: "/workspace/project/.agent-team/tools/bin/serena",
     args: ["start-mcp-server", "--context", "codex", "--project", "/workspace/project"],
     scope: "project",
-    ownership: "agent-team-entry-only",
-    status: "host-approval-required",
-    boundary: "Merge only the owned Serena entry, complete host trust/reload, then verify it from a fresh worker.",
+    management: "scoped-entry",
+    status: "host-registration-required",
+    boundary: "Register only this Serena entry, reload the host, then observe fresh-worker availability when a task requires it.",
   });
   assert.equal(claude.registration.args[2], "claude-code");
 });
@@ -1473,11 +1588,11 @@ test("saved default and optional declines survive preparation until explicitly c
   assert.deepEqual(changedSetup.dependencies.hosts.codex.declined, ["context7"]);
 });
 
-test("declined mandatory dependencies get unavailable receipts while other preparation continues", async () => {
+test("declined task-required dependencies remain unavailable without promoting other defaults", async () => {
   const { prepareDependencies } = await import("../hooks/lib/dependencies.mjs");
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-required-decline-"));
   const setupPath = path.join(directory, "setup.json");
-  await writeFile(setupPath, '{"skill":"agent-team","projectId":"p","version":1,"tracker":{"kind":"markdown","path":"TASKS.md"}}\n');
+  await writeFile(setupPath, '{"skill":"agent-team","projectId":"p","version":1,"tracker":{"kind":"markdown","path":"TASKS.md"},"plan":{"requiredCapabilities":["serena"]}}\n');
   const called = [];
   const runner = async ({ dependency, phase }) => {
     called.push(`${dependency.id}:${phase}`);
@@ -1495,9 +1610,9 @@ test("declined mandatory dependencies get unavailable receipts while other prepa
   assert.equal(result.status, "incomplete");
   assert.equal(serena.status, "required_unavailable");
   assert.equal(serena.availableToWorker, "failed");
-  assert.match(serena.boundary, /mandatory.*declined/i);
+  assert.match(serena.boundary, /required capability.*declined/i);
   assert.ok(!called.some((entry) => entry.startsWith("serena:")));
-  assert.ok(called.some((entry) => entry.startsWith("playwright-cli:")));
+  assert.ok(!called.some((entry) => entry.startsWith("playwright-cli:")));
 });
 
 test("Serena functional verification isolates user state and inherited Git routing", async (t) => {

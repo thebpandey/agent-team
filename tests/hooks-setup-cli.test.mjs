@@ -165,7 +165,7 @@ test("dependency inspection reports scope mismatch without presenting another sc
   }
 });
 
-test("settings changes use canonical owner/version and semantic operation identity", async (t) => {
+test("settings changes use canonical project/version and semantic operation identity", async (t) => {
   const { runSetupCommand } = await import(modulePath);
   const value = await fixture(t);
   const request = await envelope(value, { change: { kind: "role", role: "developer", model: "quality", effort: "high" } });
@@ -181,7 +181,21 @@ test("settings changes use canonical owner/version and semantic operation identi
   assert.equal((await runSetupCommand("settings-update", { ...value.options, request: stale }, { nativeChoices, nativeIdentity: value.nativeIdentity })).reason, "version_changed");
   const teamsPath = path.join(value.root, ".agent-team", "TEAMS.md");
   await writeFile(teamsPath, (await readFile(teamsPath, "utf8")).replace("Project owner: owner", "Project owner: replacement"));
-  assert.equal((await runSetupCommand("settings-update", { ...value.options, request: stale }, { nativeChoices, nativeIdentity: value.nativeIdentity })).reason, "project_owner_required");
+  assert.equal((await runSetupCommand("settings-update", { ...value.options, request: stale }, { nativeChoices, nativeIdentity: value.nativeIdentity })).reason, "version_changed");
+});
+
+test("a fresh Claude or Codex session can update setup without ownership transfer", async (t) => {
+  const { runSetupCommand } = await import(modulePath);
+  const value = await fixture(t);
+  const request = path.join(value.root, "successor-settings.json");
+  await writeFile(request, JSON.stringify({ schemaVersion: 1, expectedVersion: 3, operationId: "successor-settings",
+    writer: { id: "successor-session", role: "project_orchestrator" },
+    request: { change: { kind: "run", values: { continuous: true } } } }));
+  const result = await runSetupCommand("settings-update", { ...value.options, host: "claude-code", request }, {
+    nativeIdentity: { host: "claude-code", sessionId: "successor-session", observed: true, cwd: value.root },
+  });
+  assert.equal(result.status, "applied");
+  assert.equal(result.setup.settings.runDefaults.continuous, true);
 });
 
 test("settings update request accepts only validated host-local execution changes", async (t) => {
@@ -239,16 +253,16 @@ test("settings reject a tracker selection rewritten after initialization", async
 
   const result = await runSetupCommand("settings-update", { ...value.options, request }, { nativeIdentity: value.nativeIdentity });
 
-  assert.deepEqual(result, { status: "conflict", reason: "project_owner_required" });
+  assert.deepEqual(result, { status: "conflict", reason: "project_context_required" });
   assert.equal(JSON.parse(await readFile(value.setupPath, "utf8")).settings.runDefaults?.continuous, undefined);
 });
 
 test("Node consumer cannot mutate qualified settings or submit native capability claims", async (t) => {
   const value = await fixture(t);
   const request = await envelope(value, { change: { kind: "run", values: { continuous: true } } });
-  assert.deepEqual(await value.invoke("settings-update", { request }), { status: "conflict", reason: "project_owner_required" });
+  assert.deepEqual(await value.invoke("settings-update", { request }), { status: "conflict", reason: "native_project_context_required" });
   const forged = await envelope(value, { change: { kind: "role", role: "developer", model: "made-up", effort: "high" }, nativeChoices }, { expectedVersion: 4, operationId: "forged" });
-  assert.deepEqual(await value.invoke("settings-update", { request: forged }), { status: "conflict", reason: "project_owner_required" });
+  assert.deepEqual(await value.invoke("settings-update", { request: forged }), { status: "conflict", reason: "native_project_context_required" });
 });
 
 test("canonical readiness uses actual tasks and tracker and requires initialization identity", async (t) => {
@@ -278,11 +292,11 @@ test("inactive approved handoff preserves choices but cannot manufacture initial
   assert.equal(result.tracker.kind, "beads");
   assert.equal(result.readyForDispatch, false);
   assert.equal(result.projectInitialization.required, true);
-  assert.ok(result.missing.some(({ id }) => id === "capability:serena"));
+  assert.ok(!result.missing.some(({ id }) => id.startsWith("capability:")));
   await assert.rejects(readFile(value.setupPath), { code: "ENOENT" });
 });
 
-test("dependency preparation fixes selected managed paths and keeps worker discovery unverified", async (t) => {
+test("dependency preparation fixes selected managed paths without making worker discovery a setup lock", async (t) => {
   const { runSetupCommand } = await import(modulePath);
   const value = await fixture(t);
   const request = await envelope(value, { selections: { defaults: [] } });
@@ -294,15 +308,34 @@ test("dependency preparation fixes selected managed paths and keeps worker disco
       : { status: "passed", version: dependency.version, evidence: "Fixture functional evidence" };
   };
   const result = await runSetupCommand("dependencies-prepare", { ...value.options, request }, { createDependencyRunner: createRunner, nativeIdentity: value.nativeIdentity });
-  assert.equal(result.status, "incomplete");
+  assert.equal(result.status, "ready");
   assert.equal(observedPaths.toolRoot, path.join(value.root, ".agent-team", "tools"));
   assert.equal(observedPaths.skillRoot, path.join(value.root, ".agents", "skills"));
-  assert.ok(result.receipts.every(({ availableToWorker }) => availableToWorker === "unknown"));
+  assert.ok(result.receipts.every(({ availableToWorker, status }) => availableToWorker === "unknown" && status === "ready"));
   const home = path.join(value.root, "isolated-home");
   const second = await envelope(value, { selections: { defaults: [] } }, { expectedVersion: 4, operationId: "user-prepare" });
   await runSetupCommand("dependencies-prepare", { ...value.options, scope: "user", home, request: second }, { createDependencyRunner: createRunner, nativeIdentity: value.nativeIdentity });
   assert.equal(observedPaths.toolRoot, path.join(home, ".agent-team", "tools"));
   assert.equal(observedPaths.skillRoot, path.join(home, ".agents", "skills"));
+});
+
+test("an observed fresh-worker capability failure is recorded without becoming a global setup lock", async (t) => {
+  const { runSetupCommand } = await import(modulePath);
+  const value = await fixture(t);
+  const request = await envelope(value, { selections: { defaults: [] } });
+  const createRunner = () => async ({ dependency, phase }) => phase === "worker"
+    ? { status: "failed", evidence: `Fresh worker could not load ${dependency.id}` }
+    : { status: "passed", version: dependency.version, evidence: "Fixture functional evidence" };
+
+  const result = await runSetupCommand("dependencies-prepare", { ...value.options, request }, {
+    createDependencyRunner: createRunner,
+    nativeIdentity: value.nativeIdentity,
+  });
+
+  assert.equal(result.status, "ready");
+  assert.ok(result.receipts.every(({ functional, availableToWorker, status }) =>
+    functional === "passed" && availableToWorker === "failed" && status === "failed"));
+  assert.ok(result.receipts.every(({ boundary }) => /Fresh worker could not load/.test(boundary)));
 });
 
 test("user-scope dependency receipts can satisfy project readiness", async (t) => {
@@ -421,17 +454,22 @@ test("BrainVault-shaped pre-7.2 initialization remains readable without fabricat
   });
   const intruderResult = await runSetupCommand("settings-update", { ...value.options, request: intruderRequest });
   assert.equal(intruderResult.status, "conflict");
-  assert.equal(intruderResult.reason, "project_owner_required");
+  assert.equal(intruderResult.reason, "native_project_context_required");
   assert.deepEqual(await Promise.all(paths.map((file) => readFile(file, "utf8"))), before);
 
   const settingsRequest = await envelope(value, { change: { kind: "run", values: { continuous: true } } }, { operationId: "legacy-settings-write" });
-  const settingsResult = await runSetupCommand("settings-update", { ...value.options, request: settingsRequest });
+  const settingsResult = await runSetupCommand("settings-update", { ...value.options, host: "claude-code", request: settingsRequest }, {
+    nativeIdentity: { host: "claude-code", sessionId: "successor-session", observed: true, cwd: value.root },
+  });
   assert.equal(settingsResult.status, "applied");
   assert.equal(JSON.stringify(settingsResult.setup.initialization), value.legacyInitialization);
 
   const dependencyRequest = await envelope(value, { selections: { defaults: [] } }, { expectedVersion: 4, operationId: "legacy-dependency-write" });
   const createRunner = () => async ({ dependency }) => ({ status: "passed", version: dependency.version, evidence: "Legacy fixture evidence" });
-  const dependencyResult = await runSetupCommand("dependencies-prepare", { ...value.options, request: dependencyRequest }, { createDependencyRunner: createRunner });
+  const dependencyResult = await runSetupCommand("dependencies-prepare", { ...value.options, host: "claude-code", request: dependencyRequest }, {
+    nativeIdentity: { host: "claude-code", sessionId: "successor-session", observed: true, cwd: value.root },
+    createDependencyRunner: createRunner,
+  });
   assert.equal(dependencyResult.status, "ready");
   assert.equal(JSON.stringify(dependencyResult.setup.initialization), value.legacyInitialization);
 
@@ -457,10 +495,11 @@ test("setup mutations reject tampered legacy initialization receipts without wri
     const requestPath = await envelope(value, request, { operationId: `tampered-${command}` });
     const { runSetupCommand } = await import(modulePath);
     const result = await runSetupCommand(command, { ...value.options, request: requestPath }, {
+      nativeIdentity: value.nativeIdentity,
       createDependencyRunner: () => async () => { throw new Error("tampered receipt reached dependency runner"); },
     });
     assert.equal(result.status, "conflict");
-    assert.equal(result.reason, "project_owner_required");
+    assert.equal(result.reason, "project_context_required");
     assert.deepEqual(await Promise.all(paths.map((file) => readFile(file, "utf8"))), before);
   });
 });
@@ -488,7 +527,7 @@ test("setup mutations recheck the initialization record after waiting for the se
   await rm(lock, { recursive: true });
 
   const result = await pending;
-  assert.deepEqual(result, { status: "conflict", reason: "project_owner_required" });
+  assert.deepEqual(result, { status: "conflict", reason: "project_context_required" });
   assert.equal(JSON.parse(await readFile(value.setupPath, "utf8")).settings.runDefaults?.continuous, undefined);
 });
 
@@ -508,7 +547,7 @@ test("setup mutations cannot switch to a different project while waiting for the
 
   const result = await pending;
 
-  assert.deepEqual(result, { status: "conflict", reason: "project_owner_required" });
+  assert.deepEqual(result, { status: "conflict", reason: "project_context_required" });
   assert.equal(JSON.parse(await readFile(original.setupPath, "utf8")).settings.runDefaults?.continuous, undefined);
 });
 
@@ -528,7 +567,7 @@ test("state-changing setup enters dependencies settings readiness and summary in
   const value = await fixture(t);
   const events = [];
   const result = await orchestrateSetup(orchestrationInput(value, { dependencies: {
-    action: "prepare", expectedVersion: 3, operationId: "orchestrated-dependencies-1", selections: { defaults: [] },
+    action: "prepare", expectedVersion: 3, operationId: "orchestrated-dependencies-1", selections: { defaults: ["serena", "playwright-cli"] },
   } }), {
     nativeIdentity: value.nativeIdentity, nativeChoices,
     createDependencyRunner: () => async ({ dependency, phase }) => {
@@ -547,7 +586,7 @@ test("state-changing setup enters dependencies settings readiness and summary in
   assert.equal(events.at(-1), "summary");
   assert.equal(result.settingsOutcome, "saved");
   assert.equal(result.settings.runDefaults.continuous, true);
-  assert.deepEqual(result.nativeIdentity, { role: "project_owner", host: "codex", sessionId: "owner", ownershipEpoch: 1 });
+  assert.deepEqual(result.nativeIdentity, { role: "project_coordinator", host: "codex", sessionId: "owner", ownershipEpoch: 1 });
   const setup = JSON.parse(await readFile(value.setupPath, "utf8"));
   assert.equal(setup.version, 5);
   assert.equal(setup.setupOperations.filter(({ id }) => id === "orchestrated-settings-1").length, 1);
@@ -584,7 +623,7 @@ test("non-consent outcomes preserve post-dependency bytes and continue to summar
     let checkpoint;
     let interactions = 0;
     const result = await orchestrateSetup(orchestrationInput(value, { dependencies: {
-      action: "prepare", expectedVersion: 3, operationId: `dependencies-${label}`, selections: { defaults: [] },
+      action: "prepare", expectedVersion: 3, operationId: `dependencies-${label}`, selections: { defaults: ["serena", "playwright-cli"] },
     }, settings: { operationId: `settings-${label}` } }), {
       nativeIdentity: value.nativeIdentity, nativeChoices,
       createDependencyRunner: () => async ({ dependency }) => ({ status: "passed", version: dependency.version, evidence: "non-consent fixture" }),
@@ -605,13 +644,12 @@ test("non-consent outcomes preserve post-dependency bytes and continue to summar
   });
 });
 
-test("native setup authority cannot come from flags requests or caller epochs", async (t) => {
+test("native setup authority comes from same-project runtime facts, not flags or epochs", async (t) => {
   const { orchestrateSetup } = await import(modulePath);
   const cases = [
     ["missing", undefined],
     ["unobserved", { host: "codex", sessionId: "owner", observed: false, cwd: null }],
     ["wrong host", { host: "claude-code", sessionId: "owner", observed: true }],
-    ["wrong session", { host: "codex", sessionId: "other", observed: true }],
     ["wrong cwd", { host: "codex", sessionId: "owner", observed: true, cwd: os.tmpdir() }],
   ];
   for (const [label, native] of cases) {
@@ -621,17 +659,23 @@ test("native setup authority cannot come from flags requests or caller epochs", 
       nativeIdentity: native && { ...native, cwd: native.cwd ?? value.root }, nativeChoices,
       interactSettings: async () => { interacted = true; return { kind: "keep_existing" }; },
     });
-    assert.deepEqual(result, { status: "conflict", reason: "project_owner_required" }, label);
+    assert.deepEqual(result, { status: "conflict", reason: "native_project_context_required" }, label);
     assert.equal(interacted, false);
   }
+  const successor = await fixture(t);
+  const successorResult = await orchestrateSetup(orchestrationInput(successor), {
+    nativeIdentity: { host: "codex", sessionId: "other", observed: true, cwd: successor.root }, nativeChoices,
+    interactSettings: async () => ({ kind: "keep_existing" }),
+  });
+  assert.equal(successorResult.status, "ready");
   const value = await fixture(t);
   await assert.rejects(orchestrateSetup({ ...orchestrationInput(value), writer: { id: "owner" }, ownershipEpoch: 1 }, {
     nativeIdentity: value.nativeIdentity, interactSettings: async () => ({ kind: "keep_existing" }),
   }), /Unsupported setup input field/);
-  assert.deepEqual(await orchestrateSetup(orchestrationInput(value), {}), { status: "conflict", reason: "project_owner_required" });
+  assert.deepEqual(await orchestrateSetup(orchestrationInput(value), {}), { status: "conflict", reason: "native_project_context_required" });
 });
 
-test("legacy unqualified ownership cannot authorize native setup across host cwd or missing epoch", async (t) => {
+test("legacy owner records do not block same-project native setup across hosts", async (t) => {
   const { orchestrateSetup } = await import(modulePath);
   const cases = [
     ["same host and cwd without qualified epoch", (value) => ({ host: "codex", sessionId: "owner", observed: true, cwd: value.root })],
@@ -642,17 +686,23 @@ test("legacy unqualified ownership cannot authorize native setup across host cwd
     const value = await legacyBrainVaultFixture(t);
     const before = await readFile(value.setupPath);
     let interacted = false;
-    const result = await orchestrateSetup(orchestrationInput(value), {
-      nativeIdentity: identityValue(value), nativeChoices,
+    const identity = identityValue(value);
+    const result = await orchestrateSetup({ ...orchestrationInput(value), host: identity.host }, {
+      nativeIdentity: identity, nativeChoices,
       interactSettings: async () => { interacted = true; return { kind: "keep_existing" }; },
     });
-    assert.deepEqual(result, { status: "conflict", reason: "project_owner_required" }, label);
-    assert.equal(interacted, false);
+    if (label === "wrong cwd") {
+      assert.deepEqual(result, { status: "conflict", reason: "native_project_context_required" }, label);
+      assert.equal(interacted, false);
+    } else {
+      assert.equal(result.status, "ready", label);
+      assert.equal(interacted, true);
+    }
     assert.deepEqual(await readFile(value.setupPath), before);
   }
 });
 
-test("legacy ownership lock wait cannot downgrade settings save or dependency preparation authority", async (t) => {
+test("legacy owner-record changes during a lock wait do not revoke native project authority", async (t) => {
   const { orchestrateSetup } = await import(modulePath);
   for (const operation of ["settings", "dependencies"]) await t.test(operation, async () => {
     const value = await fixture(t);
@@ -661,13 +711,13 @@ test("legacy ownership lock wait cannot downgrade settings save or dependency pr
     let interacted = false;
     let dependencyRuns = 0;
     const input = orchestrationInput(value, operation === "dependencies" ? { dependencies: {
-      action: "prepare", expectedVersion: 3, operationId: "lock-wait-dependencies", selections: { defaults: [] },
+      action: "prepare", expectedVersion: 3, operationId: "lock-wait-dependencies", selections: { defaults: ["serena"] },
     } } : {});
     const pending = orchestrateSetup(input, {
       nativeIdentity: value.nativeIdentity, nativeChoices,
       createDependencyRunner: () => async ({ dependency }) => {
         dependencyRuns += 1;
-        return { status: "passed", version: dependency.version, evidence: "must not run after ownership downgrade" };
+        return { status: "passed", version: dependency.version, evidence: "native project session remained valid" };
       },
       interactSettings: async () => {
         interacted = true;
@@ -685,10 +735,10 @@ test("legacy ownership lock wait cannot downgrade settings save or dependency pr
     const downgraded = await ownershipRecords(value);
     await rm(lock, { recursive: true });
     const result = await pending;
-    assert.equal(result.status, "conflict");
-    assert.equal(result.reason, "project_owner_required");
-    assert.deepEqual(await ownershipRecords(value), downgraded);
-    if (operation === "dependencies") assert.equal(dependencyRuns, 0);
+    assert.equal(result.status, "ready");
+    if (operation === "dependencies") assert.ok(dependencyRuns > 0);
+    if (operation === "settings") assert.equal(result.settingsOutcome, "saved");
+    assert.notDeepEqual(await ownershipRecords(value), downgraded);
   });
 });
 

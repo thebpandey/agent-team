@@ -66,8 +66,8 @@ test("actual project CLI connects initialization, settings, claims, checkpoints 
   assert.ok(settings.roles.length > 0);
   const readiness = await invoke("readiness", root, ...selectors);
   assert.equal(readiness.projectInitialization.required, false);
-  assert.equal(readiness.readyForDispatch, false);
-  assert.ok(readiness.missing.some(({ id }) => id === "capability:playwright-cli"));
+  assert.equal(readiness.readyForDispatch, true);
+  assert.deepEqual(readiness.missing, []);
   const dependencies = await invoke("dependencies", root, ...selectors);
   assert.equal(dependencies.host, "codex");
 
@@ -214,7 +214,7 @@ test("initialized Project Kickoff capabilities flow unchanged into readiness", a
   const setupPath = path.join(root, ".agent-team/setup.json");
   const before = await readFile(setupPath);
   const readiness = await invoke("readiness", root, "--host", "codex", "--scope", "project");
-  assert.deepEqual(readiness.requiredCapabilities, ["serena", "playwright-cli", "graphify"]);
+  assert.deepEqual(readiness.requiredCapabilities, ["graphify"]);
   assert.ok(readiness.missing.some(({ id }) => id === "capability:graphify"));
   assert.deepEqual(await readFile(setupPath), before);
 });
@@ -239,7 +239,7 @@ test("native setup prepares dependencies saves settings and returns readiness su
   const events = [];
   const result = await orchestrateSetup({
     project: value.root, host: "codex", scope: "project",
-    dependencies: { action: "prepare", expectedVersion: 1, operationId: "journey-dependencies", selections: { defaults: [] } },
+    dependencies: { action: "prepare", expectedVersion: 1, operationId: "journey-dependencies", selections: { defaults: ["serena"] } },
     settings: { operationId: "journey-settings" },
   }, {
     nativeIdentity: value.nativeIdentity, nativeChoices: journeyChoices,

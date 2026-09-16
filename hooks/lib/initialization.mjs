@@ -10,7 +10,6 @@ import { withDirectoryLock } from "./lock.mjs";
 import { resolveProject } from "./project.mjs";
 import { captureWriterIdentity, inspectWriterIdentity, taskEligibility } from "./task-transitions.mjs";
 import { resolveTracker, trackerFingerprint as fingerprintTracker } from "./tracker.mjs";
-import { assertNoOwnerRecoveryJournal, repairOwnerRecovery } from "./owner-recovery.mjs";
 import { resolveExecutionSettings, validateExecutionSettings } from "./settings.mjs";
 
 const run = promisify(execFile);
@@ -35,7 +34,7 @@ const trackerSelection = (tracker) => tracker?.kind === "beads"
 const legacyTrackerSelection = (tracker) => tracker?.kind === "beads"
   ? { kind: "beads", executable: tracker.executable ?? "bd" }
   : trackerSelection(tracker);
-function completeState(state, { taskIds, integrationOwner, branch }) {
+function completeState(state, { taskIds, branch }) {
   const booleanFields = (record, fields) => record && fields.every((field) => typeof record[field] === "boolean");
   const admittedLater = new Set([...(state?.scopeExtensions ?? []).flatMap((entry) => entry?.addedTaskIds ?? []),
     ...(state?.completionHistory ?? []).filter((entry) => entry?.intent === "admit_and_record").map((entry) => entry.taskId)]);
@@ -44,19 +43,13 @@ function completeState(state, { taskIds, integrationOwner, branch }) {
     || !Array.isArray(state.run.taskIds) || new Set(state.run.taskIds).size !== state.run.taskIds.length
     || state.run.taskIds.some((id) => !validId(id) || !taskIds.includes(id) && !admittedLater.has(id))
     || (state.stateVersion === 0 && state.run.taskIds.length !== taskIds.length)
-    || !booleanFields(state.integration, ["authorized", "paused", "hold"])
-    || !validId(integrationOwner) || state.integration.ownerSessionId !== integrationOwner || state.integration.baseRef !== branch
-    || !booleanFields(state.release, ["authorized", "autoDeploy", "hold"]) || state.release.ownerSessionId !== integrationOwner
+    || !booleanFields(state.integration, ["authorized", "paused", "hold"]) || state.integration.baseRef !== branch
+    || !booleanFields(state.release, ["authorized", "autoDeploy", "hold"])
     || !booleanFields(state.completion, ["requirementsReconciled"]) || !Array.isArray(state.completion.checks)
     || state.completion.checks.some((check) => !check || typeof check.name !== "string" || !check.name.trim()
       || !["pending", "passed", "failed", "skipped", "blocked", "unavailable"].includes(check.status)
       || (check.status === "passed" && (typeof check.revision !== "string" || !check.revision)))) return false;
   if (!Object.hasOwn(state, "operationMappings")) return false;
-  if (state.ownership !== undefined && (!Number.isSafeInteger(state.ownership.epoch) || state.ownership.epoch < 1
-    || !validId(state.ownership.current?.sessionId) || !["codex", "claude-code"].includes(state.ownership.current?.host)
-    || state.ownership.current.sessionId !== integrationOwner
-    || state.integration.ownerHost !== state.ownership.current.host || state.integration.ownershipEpoch !== state.ownership.epoch
-    || state.release.ownerHost !== state.ownership.current.host || state.release.ownershipEpoch !== state.ownership.epoch)) return false;
   try { validateOperationMappings(state.operationMappings); return true; } catch { return false; }
 }
 
@@ -176,12 +169,12 @@ function validReceiptHandoff(handoff, operationId) {
     && SUPPORTED_HANDOFFS.has(`${handoff.generatedBy.version}/${handoff.testedAgainst.version}`);
 }
 
-function validLegacyInitializationReceipt(setup, receipt, ids, owner) {
+function validLegacyInitializationReceipt(setup, receipt, ids) {
   const plan = setup?.plan;
   return exactKeys(receipt, ["status", "operationId", "signature", "source", "trackerSelection"])
     && receipt.status === "complete" && validId(receipt.operationId) && /^[a-f0-9]{64}$/.test(receipt.signature ?? "")
     && ["standalone", "existing"].includes(receipt.source) && Array.isArray(ids) && new Set(ids).size === ids.length
-    && ids.every(validId) && validId(setup?.projectId) && validId(owner)
+    && ids.every(validId) && validId(setup?.projectId)
     && setup?.tracker && ["markdown", "beads"].includes(setup.tracker.kind)
     && (setup.tracker.kind !== "beads" || setup.tracker.root === undefined || setup.tracker.root === ".")
     && stable(receipt.trackerSelection) === stable(legacyTrackerSelection(setup.tracker))
@@ -209,8 +202,7 @@ export function initializationRecordProblem(setup, canonical, { projectRoot, val
   const receipt = setup?.initialization;
   const ids = setup?.plan?.taskIds;
   const { taskIds: _taskIds, ...receiptPlan } = setup?.plan ?? {};
-  const owner = canonical?.registry?.projectOwner;
-  const legacy = validLegacyInitializationReceipt(setup, receipt, ids, owner);
+  const legacy = validLegacyInitializationReceipt(setup, receipt, ids);
   const current = exactKeys(receipt, ["status", "operationId", "signature", "source", "trackerSelection", "initialTaskIds", "trackerFingerprint"], ["handoff", "settingsDraft"])
     && receipt.status === "complete" && validId(receipt.operationId) && /^[a-f0-9]{64}$/.test(receipt.signature ?? "")
     && ["standalone", "existing"].includes(receipt.source) && Array.isArray(ids) && new Set(ids).size === ids.length
@@ -218,10 +210,10 @@ export function initializationRecordProblem(setup, canonical, { projectRoot, val
     && validReceiptHandoff(receipt.handoff, receipt.operationId)
     && !validateRequest({ projectId: setup?.projectId, operationId: receipt.operationId,
       source: receipt.source, tracker: setup?.tracker, plan: { ...receiptPlan, tasks: ids?.map((id) => ({ id })) },
-      ...(receipt.settingsDraft ? { settingsDraft: receipt.settingsDraft } : {}) }, owner);
+      ...(receipt.settingsDraft ? { settingsDraft: receipt.settingsDraft } : {}) }, "project-session");
   if (setup?.schemaVersion !== 1 || setup.skill !== "agent-team" || !Number.isSafeInteger(setup.version) || setup.version < 1
     || !current && !(allowLegacy && legacy)) return "invalid_initialization_receipt";
-  if (canonical.registry.projectId !== setup.projectId) return "existing_owner_conflict";
+  if (canonical.registry.projectId !== setup.projectId) return "existing_project_conflict";
   if (typeof projectRoot !== "string" || !path.isAbsolute(projectRoot)) return "invalid_tracker_selection";
   const selected = resolveTracker(projectRoot, setup.tracker);
   if (selected.reason || !canonical.tracker || canonical.tracker.reason === "invalid_selection"
@@ -300,11 +292,6 @@ export async function initializeProject(projectPath, request, options = {}) {
       await directory(stateRoot);
       const locks = path.join(stateRoot, ".locks");
       await directory(locks);
-      const recoveryProject = { ...found, paths: { ...(found.paths ?? {}), stateRoot, setup: path.join(stateRoot, "setup.json"),
-        teams: path.join(stateRoot, "TEAMS.md"), state: path.join(stateRoot, "state.json"), locks,
-        ownerHistory: path.join(stateRoot, "owner-history.json"), ownerRecoveryJournal: path.join(stateRoot, ".owner-recovery.json"),
-        ownerRecoveryLock: path.join(locks, "owner-recovery.lock") } };
-      await repairOwnerRecovery(recoveryProject, { budget });
       const lockPath = path.join(locks, "setup.lock");
       const writer = await (options.captureWriterIdentity ?? captureWriterIdentity)().catch(() => undefined);
       if (!writer) return decision("unavailable", "owner_writer_identity_unavailable");
@@ -327,7 +314,6 @@ export async function initializeProject(projectPath, request, options = {}) {
       }, { budget });
       return withDirectoryLock(lockPath, { kind: "project_initialization", projectId: request.projectId, ownerSessionId: actorSessionId, operationId: request.operationId, pid: process.pid, writer }, async () => {
         return withDirectoryLock(path.join(locks, "state.lock"), { kind: "project_initialization", operationId: request.operationId, pid: process.pid, writer }, async () => {
-        await assertNoOwnerRecoveryJournal(recoveryProject);
         const current = await resolveProject(projectPath, { budget });
         if (current.root !== root || current.commonDirectory !== found.commonDirectory) return decision("conflict", "project_identity_changed");
         const tracker = resolveTracker(root, request.tracker);
@@ -345,9 +331,8 @@ export async function initializeProject(projectPath, request, options = {}) {
         const setup = setupSource ? JSON.parse(setupSource) : undefined;
         const teamsSource = await read(paths.teams);
         const identity = registryIdentity(teamsSource);
-        const { projectOwner: recordedOwner, projectId: recordedProject } = identity;
-        if ((setup || teamsSource !== undefined) && (!validId(recordedOwner) || recordedProject !== request.projectId)) return decision("conflict", "existing_owner_unavailable");
-        if (recordedOwner && recordedOwner !== actorSessionId) return decision("conflict", "existing_owner_conflict");
+        const { projectId: recordedProject } = identity;
+        if ((setup || teamsSource !== undefined) && recordedProject !== request.projectId) return decision("conflict", "existing_project_conflict");
         if (setup && (setup.skill !== "agent-team" || setup.projectId !== request.projectId)) return decision("conflict", "existing_project_conflict");
         if (setup && stable(resolveTracker(root, setup.tracker)) !== stable(tracker)) return decision("conflict", "existing_tracker_conflict");
         const priorBranch = setup?.plan?.branch ?? setup?.branch;
@@ -371,7 +356,7 @@ export async function initializeProject(projectPath, request, options = {}) {
           if (problem) return decision("unavailable", problem);
           if (canonical.tracker.status !== "current") return decision("unavailable", "tracker_unavailable", { tracker: canonical.tracker });
           const observedIdentity = registryIdentity(await read(paths.teams));
-          if (observedIdentity.projectOwner !== actorSessionId || observedIdentity.projectId !== request.projectId) return decision("conflict", "existing_owner_conflict");
+          if (observedIdentity.projectId !== request.projectId) return decision("conflict", "existing_project_conflict");
           const taskIds = canonical.tasks.map(({ id }) => id);
           const eligible = taskEligibility(canonical, { scopeTaskIds: canonical.state.run.taskIds }).eligible;
           return { status, ready: eligible.length > 0, ...(eligible.length ? {} : { reason: "no_eligible_task" }), projectRoot: root,

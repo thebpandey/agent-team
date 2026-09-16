@@ -96,6 +96,19 @@ test("start persists immutable effective choices and authenticated owner generat
   assert.equal((await startRun(value.project, request, { actorSessionId: "owner-session", expectedVersion: value.current.state.stateVersion ?? 0, nativeIdentity: value.nativeIdentity })).status, "duplicate");
 });
 
+test("a fresh native session can start the run without taking ownership", async () => {
+  const value = await fixture();
+  const request = { operationId: "run-start-successor", expectedTrackerFingerprint: value.current.tracker.fingerprint,
+    reason: "Continue the approved run from a new session.", run: proposed() };
+  const nativeIdentity = { host: "claude-code", sessionId: "successor-session", observed: true, cwd: value.root };
+  const result = await startRun(value.project, request, {
+    actorSessionId: "successor-session", expectedVersion: value.current.state.stateVersion ?? 0, nativeIdentity,
+  });
+  assert.equal(result.status, "applied");
+  assert.equal(result.result.run.ownerSessionId, "successor-session");
+  assert.equal(result.result.run.ownerHost, "claude-code");
+});
+
 test("start and reconcile reject stale authority fingerprints and scope without writes", async () => {
   const value = await fixture();
   const before = await readFile(value.project.paths.state);
@@ -356,11 +369,11 @@ test("run decision is a pure held projection of one canonical snapshot", () => {
   assert.deepEqual(input, before);
 });
 
-test("historical run provenance is held only without current generation batch authority", () => {
+test("historical run provenance never creates a session-ownership hold", () => {
   const historical = run({ ownerSessionId: "former-owner", pendingDeliveryIds: ["AT-001"], batchSize: 2 });
   const terminal = { kind: "finite_exhausted", eligibleTaskIds: [], blockedTaskIds: [] };
   const withoutEvidence = canonical(historical, [task("AT-001", "done")]);
-  assert.ok(readRunDecision(withoutEvidence).holdReasons.includes("historical_run_provenance"));
+  assert.equal(readRunDecision(withoutEvidence).holdReasons.includes("historical_run_provenance"), false);
   const authorized = canonical(historical, [task("AT-001", "done")], { deliveryEvidence: { "AT-001": joinedEvidence("AT-001") } });
   const decision = readRunDecision(authorized);
   assert.deepEqual(decision.classification, terminal);

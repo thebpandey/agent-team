@@ -71,6 +71,11 @@ test("legacy state has no lanes while malformed present lane state fails closed"
   for (const value of invalid) assert.equal(validateLaneCollection(value), "invalid_lanes");
 });
 
+test("lane metadata accepts missing Graphify evidence for compatibility", async () => {
+  const { validateLaneCollection } = await lanesModule();
+  assert.equal(validateLaneCollection(collection([lane({ ownershipEvidence: null })])), undefined);
+});
+
 test("fact sheets have one owning lane and assignments bind exact cited facts", async () => {
   const { validateLaneCollection } = await lanesModule();
   const sheet = {

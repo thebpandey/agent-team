@@ -1,107 +1,150 @@
-# Agent-Team
+# Agent-Team 7.3.1
 
-Created by [thebpandey](https://github.com/thebpandey). An orchestrator-led development skill for Codex and Claude Code: small parallel assignments, independent review, automatic repair of ordinary findings, and verified integration.
+Created by [thebpandey](https://github.com/thebpandey). Agent-Team coordinates bounded development in Codex and Claude Code with isolated writers, independent review, verified integration, durable recovery, and explicit release authority.
 
-> **Version 7.3.1.** This patch permits an exact owner-authorized manual release record to cover its named deployment-triggering main push. Existing tracker, ownership, review, integration, release, and customization boundaries remain in force.
+The current skill version is **7.3.1**. This README documents the current package only. For release history, see the [changelog](CHANGELOG.md); for the compact operator walkthrough, see [Getting Started](GETTING_STARTED.md).
 
-New here? Open the [hosted Agent-Team 7.1.0 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.1.0.html) in your browser, or read the [short Markdown guide](GETTING_STARTED.md). The [7.0.2 field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.0.2.html) remains reachable as historical documentation. Both start with GitHub authentication and optional Project Kickoff.
+![Agent-Team overview: one orchestrator coordinates bounded implementation, independent review, integration, and release.](assets/guide/agent-team-essence-16x9.webp)
 
-[![Agent-Team overview: Morpheus coordinates bounded work by Neo, Trinity, and Tank, followed by independent review from Agent Smith and the Oracle.](assets/guide/agent-team-essence-16x9.webp)](https://thebpandey.github.io/agent-team/agent-team-guide-v7.1.0.html)
+## What Agent-Team does
 
-The field guide explains Agent-Team in plain language and includes installation, dependencies, setup, settings, launch examples, memory and context management, and the optional Project Kickoff handoff.
+Agent-Team keeps one project orchestrator responsible for scope, task admission, coordination, integration, and release. Developers work on bounded assignments in separate worktrees. Independent reviewers verify exact revisions. Ordinary in-scope failures return to the owning developer for repair; they do not become repeated permission prompts.
 
-## The workflow at a glance
+One selected Beads tracker or one root/designated `TASKS.md` owns task state. Checkpoints, dashboards, setup receipts, plugins, and LeanCTX never become competing task stores. Unknown readiness, liveness, trust, or model availability stays unknown.
 
 ```mermaid
 flowchart LR
-  A["Optional Project Kickoff<br/>Approve the project plan"] --> C["Agent-Team setup<br/>Reuse plan and selected tracker"]
-  B["Existing plan or standalone task<br/>No Kickoff required"] --> C
-  C --> D["Prepare capabilities<br/>Reload and verify discovery"]
-  D --> E["Show roles and settings<br/>Quality-first defaults"]
-  E --> F["Orchestrator admits ready work"]
-  F --> G["Developers in isolated worktrees"]
-  G --> H["Independent review and tests"]
-  H -->|Required repairs| G
-  H -->|Accepted| I["Serial integration and verification"]
-  I --> J["Record evidence and update status"]
-  J -->|Continuous and eligible work| F
-  J --> K["Clean eligible worktrees"]
-  J --> L["Release only with authority and passed gates"]
-  classDef green fill:#063b2c,stroke:#34d399,color:#ffffff;
-  classDef bright fill:#0b573a,stroke:#a3ff64,color:#ffffff;
-  class A,B,C,D,E,G,H,K,L green;
-  class F,I,J bright;
+  A["Approved scope and tracker"] --> B["Setup and readiness"]
+  B --> C["Admit safe tasks"]
+  C --> D["Isolated developers"]
+  D --> E["Independent review"]
+  E -->|repair| D
+  E -->|accepted| F["Serial integration"]
+  F --> G["Evidence and task state"]
+  G -->|eligible work| C
+  G --> H["Authorized release"]
 ```
 
-One selected Beads tracker **or** one local `TASKS.md` owns task state. A dashboard, checkpoint, setup receipt, or plugin never becomes a competing tracker. If the selected Beads backend is unavailable, Agent-Team diagnoses it; it does not quietly start a Markdown replacement.
+## Quick start
 
-Canonical initialization accepts up to **500 tasks**. Beads reads have a **5-second default timeout**, while an explicit shorter caller deadline still takes precedence.
+### 1. Install the package
 
-Ordinary lint, test, and review findings trigger bounded in-scope repair without waiting for “please continue.” A real external blocker can be parked safely while independent work continues. New authority, credentials, a changed product decision, an explicit pause, or a required user preview approval still needs the user.
-
-## 1. Prepare access and prerequisites
-
-Paste this into your chosen host; it is an **agent prompt**, not a shell command:
+Ask the active host to install the complete package from the official repository. Choose the actual host and scope explicitly; installing for both hosts is never inferred.
 
 ```text
-Prepare this environment for Agent-Team from https://github.com/thebpandey/agent-team.
-Check this host and account access, Git, GitHub CLI (gh), Node.js 24 and npm.
-Show the official source and intended installation scope before installing missing prerequisites.
-Preserve existing accounts and configuration.
-
-Check gh auth status and repository access. Guide me through browser/device login and any organization SSO approval. Never ask for a token, password or secret in chat.
+Install Agent-Team 7.3.1 from https://github.com/thebpandey/agent-team.
+Use the managed installer for this host and user scope unless I explicitly choose project scope.
+Inspect the source, license, existing installation, and affected hook configuration first.
+Preserve custom files, role definitions, hooks, MCP servers, and unrelated settings.
+Verify the installation receipt and tell me which reload or native trust step remains.
 ```
 
-Host login and GitHub login are separate. Install [Git](https://git-scm.com/downloads), [GitHub CLI](https://cli.github.com/) and [Node.js 24](https://nodejs.org/) if missing. The agent can prepare supported tools within the authorized scope; you complete browser sign-in, model/account access, administrator approval and native trust steps. [GitHub's authentication guide](https://cli.github.com/manual/gh_auth_login) explains browser/device login.
-
-The source repositories are publicly visible, but visibility is **not** a license grant. Agent-Team and Project Kickoff retain their own proprietary terms. Keep licensed skill packages out of application commits.
-
-## 2. Optional: plan with Project Kickoff first
-
-[Project Kickoff](https://github.com/thebpandey/project-kickoff), also by thebpandey, defines a new project, audits an existing one, or replans a major revision. It produces approved planning records and an Agent-Team handoff; it does not implement the product or automatically launch Agent-Team.
-
-Agent-Team 7.2.3 accepts Project Kickoff 0.4.2 handoffs tested against 7.2.3. It also retains every previously qualified pair: 0.3.1/7.0.2, 0.4.0/7.0.2, 0.4.1/7.1.0, 0.4.1/7.2.0, and 0.4.1/7.2.1. Compatibility is exact rather than inferred from version ordering.
-
-```text
-Install the complete Project Kickoff package from its [latest release discovery page](https://github.com/thebpandey/project-kickoff/releases/latest) under its applicable license. Do not infer that an unpublished future version is available.
-Use this confirmed project's .agents/skills/project-kickoff for Codex or .claude/skills/project-kickoff for Claude Code.
-Preserve customizations, references, assets, scripts and metadata.
-Exclude the licensed package from application commits using the project's local Git exclude.
-Do not change global settings or enable optional hooks. Verify discovery and explain any reload step.
-```
-
-Then invoke `$project-kickoff start <idea>` in Codex or `/project-kickoff start <idea>` in Claude Code. Answer and approve the planning stages. For existing work, use `audit <path>`, `audit-only <path>`, or `resume <path>`.
-
-Kickoff's own dependency installation and optional hooks have separate approval steps; its optional hook runtime requires Python 3.9+ on supported Linux/macOS/WSL systems. Python is not needed merely to read the skill.
-
-Already have an approved plan or a clearly defined task? Skip Kickoff. Agent-Team works independently and preserves the existing branch, tracker and authority boundaries.
-
-## 3. Install Agent-Team, then reload
-
-```text
-Install the complete Agent-Team package from https://github.com/thebpandey/agent-team using the managed installer and my authorized access.
-Inspect the exact source revision, license and existing installation first.
-Select only my actual host: codex or claude-code. Use user scope unless I explicitly select project scope.
-Preserve customized and unowned packages, hooks, role definitions and unrelated settings.
-Verify the installed package, report the installation receipt, and tell me which reload, trust and discovery checks remain.
-```
-
-One complete universal package serves both hosts. Installing both is an explicit choice, never an inferred default.
-
-| Installation scope | Codex skill | Claude Code skill |
+| Scope | Codex | Claude Code |
 | --- | --- | --- |
-| User: available across projects | `~/.agents/skills/agent-team` | `~/.claude/skills/agent-team` |
-| Project: only the selected repository | `.agents/skills/agent-team` | `.claude/skills/agent-team` |
+| User | `~/.agents/skills/agent-team` | `~/.claude/skills/agent-team` |
+| Project | `.agents/skills/agent-team` | `.claude/skills/agent-team` |
 
-Project hooks use `.codex/hooks.json` or `.claude/settings.local.json`; user hooks use `~/.codex/hooks.json` or `~/.claude/settings.json`. Managed Claude roles use the matching `.claude/agents` scope. Installation receipts support ownership-aware updates and rollback; customized resources are retained and reported.
+Project hooks use `.codex/hooks.json` or `.claude/settings.local.json`; user hooks use `~/.codex/hooks.json` or `~/.claude/settings.json`. Restart or reload the selected host after installation and review its native hook-trust UI. A skill cannot grant native trust to itself.
 
-Restart/reload Codex or Claude Code after installation. Open native `/hooks` where supported and inspect the intended registrations. Approve “Trust all” only after reviewing every affected entry. Asking the agent to trust hooks does not bypass native consent or organization policy.
+### 2. Run setup
 
-Confirm discovery with `$agent-team help` or `/agent-team help`. Installation, registration, adapter support, native support, trust and observed event execution are separate facts. Unknown stays unknown. See the [lifecycle hook guide](references/HOOKS.md).
+Invoke `$agent-team setup` in Codex or `/agent-team setup` in Claude Code. Setup:
 
-### Official artifact installer reference
+1. resolves the canonical project and selected tracker;
+2. reuses an approved Project Kickoff handoff, an existing plan, or a bounded standalone task;
+3. prepares selected companion capabilities;
+4. reports installed, detected, functional, and fresh-worker observations separately;
+5. shows the current-effective settings wizard; and
+6. reports dispatch readiness without starting development.
 
-Download `agent-team-7.3.1.zip` and its matching one-entry `SHA256SUMS` from the [Agent-Team v7.3.1 release](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1), or find updates through [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify the exact downloaded pair, then run the CLI from the extracted archive:
+Project Kickoff is optional. If you use it, install its current supported package from the [latest release discovery page](https://github.com/thebpandey/project-kickoff/releases/latest). Compatibility is an exact recorded handoff contract, not a guess based on version ordering.
+
+### 3. Start work
+
+```text
+$agent-team start
+$agent-team start 2
+$agent-team start 2 continuous
+$agent-team start 2 continuous auto-deploy 8
+$agent-team start email-preferences with-preview
+```
+
+Use `/agent-team ...` for the same actions in Claude Code. A named start selects an already-defined tracker item. A full natural-language feature request may create one deduplicated canonical task only after scope and acceptance are sufficient.
+
+## Switch between Codex and Claude Code
+
+Host and session switching is deliberately uneventful:
+
+```text
+$agent-team setup
+/agent-team setup
+```
+
+Open the same Git checkout in the other native host or a new session and continue. Re-running setup is safe and preserves the tracker, task IDs, settings, active run, claims, checkpoints, pending operations, and evidence. No release command, request file, epoch migration, owner recovery, or prior-session cooperation is required. Recorded host/session/epoch fields are audit provenance only.
+
+The current session must still be genuine runtime metadata for Codex or Claude Code and must resolve to the same Git project. This prevents request JSON from impersonating a host; it is not a coordinator lock. Existing writers with unknown liveness remain occupied so a new session cannot create concurrent writes accidentally.
+
+`takeover` remains a compatibility alias for older instructions but performs no ownership transfer. Legacy owner history or a stale recovery journal does not block ordinary setup, task, run, checkpoint, integration, or release operations. Model routing is independent: if a requested model is unavailable, Agent-Team reports the actual host/account constraint without rewriting role choices.
+
+See [actions](references/ACTIONS.md), [project continuity](references/PROJECTS.md), [recovery](references/RECOVERY.md), and the [hook contract](references/HOOKS.md).
+
+## Commands
+
+| Action | Result |
+| --- | --- |
+| `help` | Show the current command card without setup or mutation. |
+| `setup` | Prepare capabilities, review settings, and report readiness. |
+| `takeover` | Compatibility alias: verify this native session is in the same project, then continue. |
+| `settings` | Show or change targeted future-run defaults. |
+| `start [N] [continuous]` | Admit existing eligible tasks within safe capacity. |
+| `start <name> [with-preview]` | Start one resolved tracker item. |
+| `auto-deploy [B or off]` | Change release batching for the active run only. |
+| `status [name-or-ID or all]` | Read recorded state without checks or mutation. |
+| `pause [name-or-ID or all]` | Checkpoint and hold selected work without discarding it. |
+| `resume [name-or-ID or all]` | Recover selected work from durable evidence. |
+| `pause and deploy` | Pause first, then release only eligible verified work. |
+| `approve <name-or-ID>` | Approve the exact submitted preview revision. |
+
+Settings persist for future runs. Explicit start modifiers affect the current run. Team count is development capacity, not raw agent slots; reviewer capacity and host limits may reduce concurrency. Deployment batch size counts completed top-level tasks, not commits or subtasks.
+
+## Readiness and bundled capabilities
+
+A path or version string is not readiness. Setup records each stage independently:
+
+| Stage | Meaning |
+| --- | --- |
+| Installed | Expected files or executable are present. |
+| Detected | The selected host can resolve the exact capability. |
+| Functional | A useful bounded operation passed. |
+| Available to worker | A fresh assigned worker used the actual scoped path successfully. |
+
+Serena and Microsoft Playwright CLI are selected defaults, not universal dispatch gates. Other selected defaults include ast-grep, Graphify, LeanCTX, focused Superpowers procedures, Ponytail, Impeccable, and React Best Practices where applicable. Beads is prepared only when it is the selected tracker. Context7 and the optional external graph remain opt-in. Only capabilities explicitly listed by the active plan in `requiredCapabilities` can block that plan.
+
+Serena can pass its direct MCP symbol probe while a just-created worker still needs a host reload to inherit the tool; that observation is reported as `unknown`, not treated as global failure. Browser qualification runs the exact selected `playwright-cli`; a bare `import("playwright")` inside a Node REPL is a different adapter and does not qualify or disqualify the CLI. Graphify evidence is optional: deterministic writable-path overlap checks remain authoritative when no graph evidence exists.
+
+LeanCTX qualification uses process-local state and a target inside the assigned worktree. It does not widen the read jail with temporary roots. Impeccable uses an exact pinned guidance tree and bounded companion-file checks. Dependency preparation preserves compatible unowned installations and refuses to overwrite customized or ambiguous files.
+
+Fresh workers load the complete applicable skill instructions and only the references needed for their assignment. A parent receipt is not proof that a child read them.
+
+## Coordination and recovery
+
+![Agent-Team execution flow across the host, worktrees, evidence, and release gates.](assets/guide/agent-team-harness-flow-3x4.webp)
+
+The canonical project keeps stable team IDs, exact worktree/branch assignments, task claims, checkpoints, and evidence pointers. Feature writers never share a writable path. Feature changes occur in worktrees and verified revisions integrate serially.
+
+Continuous mode refills only proven-free capacity with eligible in-scope tasks. Unknown writers remain occupied. A scoped blocker parks only affected work while safe independent work continues. Status and help are read-only and do not silently resume a run.
+
+Accepted integration evidence queues completed top-level, nondeployed deliveries in integration order, including recovered completions already scoped into the run. An incomplete top-level delivery fails closed; subtasks and epics never enter the deployment queue.
+
+## Release safety
+
+Integration, publication, and deployment are separate facts. A release requires the exact authorized target, revision, task set, checks, review, preview disposition when applicable, recovery evidence, and clean delta. Recorded session provenance does not make release authority session-exclusive. Forced, chained, stale, held, mismatched, or multi-ref pushes remain denied.
+
+Agent-Team 7.3.1 permits an explicitly authorized manual release record to cover its named deployment-triggering non-force `origin` push to `refs/heads/main` only when every ordinary integration and release gate matches.
+
+## Official archive installation
+
+Download `agent-team-7.3.1.zip` and the matching one-entry `SHA256SUMS` from the [Agent-Team v7.3.1 release](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1), or discover the current package through [releases/latest](https://github.com/thebpandey/agent-team/releases/latest).
 
 ```bash
 (cd /absolute/download && sha256sum -c SHA256SUMS)
@@ -112,181 +155,24 @@ node /absolute/extracted/agent-team/hooks/agent-team-cli.mjs install \
   --scope user
 ```
 
-Use `--host claude-code` for Claude Code or explicit `--host both` for an authorized two-host transaction. Project scope additionally requires `--scope project --project /absolute/project/root`. Never omit the selector to guess the destination. `install --source` is rejected: an inspected or locally built source checkout is useful for validation and artifact building, but is not official installation evidence.
+Use `--host claude-code` or an explicitly authorized `--host both`. Project scope also requires `--scope project --project /absolute/project/root`. On macOS, use `shasum -a 256` on the same downloaded archive/checksum pair.
 
-Automatic artifact installation is qualified only on Linux and WSL where `/proc/self/fd` directory traversal functions. Missing or nonfunctional descriptor-root support returns `unsupported_platform`, `changed: false` before the install lock or any mutation. An exact byte/mode/size-identical reinstall returns `installed`, `changed: false` without target mutation. Every differing present target—including owned and schema-3 targets—returns `update_requires_manual_replacement`, `changed: false`, with zero target, configuration, role, backup, or receipt mutation. A later changed release requires separately authorized quiescence and an explicit rollback-backed move of the old target, followed by the normal fresh absent-target install and restoration on failure.
+Automatic archive installation is qualified on Linux and WSL only when `/proc/self/fd` descriptor-root traversal works. Otherwise it returns `unsupported_platform`, `changed: false` before mutation. An identical reinstall changes nothing. A differing present target returns `update_requires_manual_replacement`, `changed: false`; replacement requires authorized quiescence and a rollback-backed move before a fresh absent-target installation.
 
-The closed `.agent-team-source.json` contains package source identity and its non-self-referential package map. Verified artifact authority and schema-4 installation receipts separately bind archive/checksum names, URLs and SHA-256 values, the complete archive map including metadata, per-host installed maps, host/scope, transaction, recovery, targets, and installation time. A receipt does not prove publication, native reload/trust, dependency readiness, or live owner recovery.
+The sealed `.agent-team-source.json` and schema-4 receipt bind archive identity, checksums, source revision, complete file maps, modes, sizes, host, scope, targets, roles, handlers, conflicts, backups, and recovery. Installation still does not prove native trust, event execution, dependency functionality, or worker discovery.
 
-## 4. Run setup once
+## Source and verification
 
-Use `$agent-team setup` or `/agent-team setup`. Setup adopts the approved Kickoff handoff, an existing plan, or a standalone task; checks actual readiness; and shows a grouped summary with targeted fixes.
+The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). Release identity is [v7.3.1](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1). Licensed packages should remain outside application commits.
 
-| Order | What must be ready | Who handles it |
-| --- | --- | --- |
-| 1 | Host/account, Git, gh, Node.js 24/npm, project access | Agent prepares supported tools; user completes authentication/admin steps. |
-| 2 | Agent-Team package, selected host registration, reload/trust | Managed installer plus native user controls. |
-| 3 | uv/managed Python and Serena's selected language-server prerequisites | Automatic preparation in supported scope; actual semantic lookup required. |
-| 4 | Microsoft Playwright CLI, browser binaries and required OS libraries | Automatic preparation; OS libraries may need administrator action. |
-| 5 | Default-selected tools and skill profiles | Compatible copies reused, sources pinned, functional checks recorded. |
-| 6 | Beads and its actual backend, when selected | Capability-specific verification; no unconditional external Dolt-server requirement. |
-| 7 | Optional components | Only after selection. |
-
-Mandatory capabilities and selected defaults are prepared automatically on first setup, without a separate approval question for every already-selected component. This does not grant administrator privileges, accept external terms, overwrite custom settings, or fabricate native discovery.
-
-A file existing on disk is not proof that a tool works or that a fresh worker can access it. Setup reports **installed → detected → functional → available to worker** separately. Ordinary failures are diagnosed and repaired; an unavailable required gate remains pending.
-
-Canonical initialization records the approved owner, full task IDs, selected tracker and branch before any dispatch. It does not certify native capabilities. The agent then uses scoped preparation/readiness and targeted settings helpers; user-level dependency readiness is distinct from project-owned settings. See the [agent-run setup examples and request contracts](references/SETUP.md#bundled-setup-helpers). Users do not need to compose these JSON requests themselves.
-
-### Prepared tools and official repositories
-
-| Component | Default | Why it is included |
-| --- | --- | --- |
-| [Serena](https://github.com/oraios/serena) | Mandatory | Semantic code navigation with isolated project/worktree context. |
-| [Microsoft Playwright CLI](https://github.com/microsoft/playwright-cli) | Mandatory, including backend projects | Default browser automation for real interaction and visual verification. Host-required browser controls take precedence. |
-| [ast-grep CLI](https://github.com/ast-grep/ast-grep) | Prepared | Structural code search alongside Serena; scoped rewrites still require tests. |
-| [Graphify](https://github.com/Graphify-Labs/graphify) | Prepared, code-only | Offline repository structure graph: blast radius, cross-module paths and hotspots; Serena still owns exact symbols and edits. |
-| [LeanCTX](https://github.com/yvgude/lean-ctx) | Prepared, narrowed | Compact output with exact-source recovery; no broad permission, proxy or second-memory/controller setup. |
-| [Superpowers](https://github.com/obra/superpowers) | Selected procedures | Relevant TDD, debugging and verification inside Agent-Team's existing workflow. |
-| [Ponytail](https://github.com/DietrichGebert/ponytail) | Local skills | Simple, readable implementation and focused overengineering review; no MCP or blanket hooks. |
-| [Impeccable](https://github.com/pbakaus/impeccable) | Skill and detector | UI guidance and batched checks; detector success does not replace browser review. |
-| [React Best Practices](https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices) | Individual skill | Relevant React/Next rules only; no entire Vercel plugin bundle. |
-| [Beads](https://github.com/gastownhall/beads) | When selected | Canonical tasks, owners, dependencies and evidence. Main `bd` implementation; no `beads_rust`. |
-| [Context7](https://github.com/upstash/context7) | Optional | Version-specific library documentation. Helpful for unfamiliar APIs; adds an external docs service. |
-| [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) | Optional | Additional dependency-graph data for the local dashboard; separate upstream terms apply. |
-
-Preparation is not context loading. Each fresh worker reads the complete applicable skill instructions and only the required references for its assignment. It does not inherit proof of reading from the parent or load every installed plugin. Relevant source and test output remain available uncompressed.
-
-See [dependency profiles](references/DEPENDENCIES.md), [setup](references/SETUP.md), and [LeanCTX boundaries](references/LEAN-CTX.md). No RTK, agent-browser, Backlog.md, GSD, Ralph, Caveman runtime stack, or beads_rust is added.
-
-## 5. See and change role settings
-
-Ask `agent-team settings` for the overview, or “change the reviewer model” for a focused edit. Friendly model labels and compatible effort choices are shown in native controls where available, otherwise as numbered options. You do not need to memorize IDs.
-
-| Name | Role | Responsibility |
-| --- | --- | --- |
-| Morpheus | Project/team orchestrator | Scope, assignments, shared records, integration and release gates. |
-| Neo | Complex developer | Difficult or tightly connected engineering work. |
-| Trinity | Standard developer | Feature and UI implementation. |
-| Tank | Routine developer | Bounded changes and defined checks. |
-| Agent Smith | Independent reviewer | Requirements and code quality in one focused review loop. |
-| The Oracle | Visual reviewer | Real interaction, accessibility and responsive visual review. |
-
-The overview shows each role's saved/effective model, effort, source, availability and whether the host actually enforces it. Quality-first is the default. An unavailable choice is reported, not silently downgraded. Codex and Claude Code preferences are stored separately; switching hosts does not erase either profile. A skill cannot change its parent process's model or grant model access.
-
-| Setting | Built-in default | Effect |
-| --- | --- | --- |
-| Parallel teams | 1 | Requested active capacity, limited by real host slots and reserved review capacity. |
-| Continuous | Off | Admit more authorized eligible work as verified integration or safe parking frees capacity. |
-| Auto-deploy | Off | Submit verified batches to an already authorized target; never grants new authority. |
-| Deployment batch | Effective team limit | Number of completed top-level delivery tasks per batch; an explicit size overrides it. |
-| Model/effort | Quality-first profile | Per-host routes and approved fallback/escalation choices. |
-| Usage budget | No hard limit | Soft limits guide efficiency; an explicit hard limit requests a safe checkpoint, not waived tests. |
-
-Back/Cancel leaves settings unchanged. The full wizard is opt-in. Saved changes affect future dispatches; active run choices are not silently rewritten. See [settings](references/SETTINGS.md).
-
-When integration evidence is accepted, completed top-level deliveries that have not been deployed enter the deployment queue in integration order. This includes recovered completions already scoped into the run. An incomplete top-level delivery makes that integration fail closed; subtasks and epics never become deployment-queue entries.
-
-## 6. Start development and let the orchestrator continue
-
-These are skill requests, **not terminal subcommands**:
-
-| Codex example | Meaning |
-| --- | --- |
-| `$agent-team start` | Use saved run defaults and existing ready work. |
-| `$agent-team start 2 continuous` | Keep up to two safe development teams working through the authorized scope. |
-| `$agent-team start feature-name` | Work only on that existing named task. |
-| `$agent-team Implement <clear feature request>` | Define the requested canonical task, then implement and verify it. |
-| `$agent-team start with-preview` | Require your approval of the submitted preview before integration. |
-| `$agent-team status all` | Read all project teams/tasks without interrupting work or running tests. |
-| `$agent-team pause all` | Checkpoint and safely stop the project's affected activity. |
-| `$agent-team resume all` | Reconcile evidence and surviving writers before resuming unfinished work. |
-
-Replace `$agent-team` with `/agent-team` in Claude Code. Natural language also works. See [full command help](references/HELP.md), [runs](references/RUNS.md) and [release rules](references/RELEASE.md).
-
-The orchestrator gives each developer a bounded task packet, acceptance criteria, owned paths, exact references and a return contract. Independent work uses isolated worktrees. Even small implementation goes to a developer, and every pre-dispatch check and post-completion verification goes to the delegated verifier (GPT-5.6-Sol at medium effort; Opus 5 fallback in Claude Code); the orchestrator plans, assigns, decides, supervises and integrates. Reviews cover requirements and code quality; ordinary findings feed the same automatic repair loop.
-
-```mermaid
-flowchart TD
-  A["Actionable finding"] --> B{"In authorized scope?"}
-  B -->|Yes| C["Assign repair and verify original failure"]
-  C --> D{"Useful progress?"}
-  D -->|Yes| E["Continue toward acceptance"]
-  D -->|No| F["Change approach or approved escalation"]
-  F --> G{"External dependency or authority missing?"}
-  G -->|No| C
-  G -->|Yes| H["Save evidence and explicit resume condition"]
-  H --> I["Confirm exact writer stopped before parking"]
-  I --> J["Keep task claim; continue independent ready work"]
-  B -->|No| K["Record proposal in Beads or TASKS.md"]
-  K --> L["Do not implement without scope authority"]
-  classDef green fill:#063b2c,stroke:#34d399,color:#ffffff;
-  class A,B,C,D,E,F,G,H,I,J,K,L green;
-```
-
-A retry cap is a signal to change strategy, not permission to declare incomplete work successful. Explicit pauses and required preview approvals are never automatically overridden.
-
-### Harness execution flow
-
-[![Hand-sketched Agent-Team flowchart showing task admission, isolated development, independent review, repair, integration, continuation, reporting, and the separate release gate.](assets/guide/agent-team-harness-flow-3x4.webp)](assets/guide/agent-team-harness-flow-3x4.webp)
-
-Select the diagram to open it at full size. The [hosted interactive field guide](https://thebpandey.github.io/agent-team/agent-team-guide-v7.1.0.html#conduct) explains the 7.1.0 delegated verification and orchestration flow.
-
-## 7. Inspect the optional local dashboard
-
-Ask: “Show Agent-Team status as a local webpage, including overall progress, teams and every task.”
-
-The default dashboard is a standalone local HTML snapshot. No React, Vite, database, mandatory server or external upload is required. It shows task progress, all task statuses, teams, active/parked/paused work, freshness and available evidence. A zero-task project shows N/A; unavailable data is not presented as zero.
-
-- **Snapshot:** open the generated file in a browser. After the agent regenerates it, reload the file. Browser reload alone cannot execute Beads or refresh the source.
-- **Opt-in live mode:** a small local Node process binds only to loopback. Opening the page or pressing Refresh reads current state through the same status model. Stop it when finished. It is not a remote service or a task controller.
-- **Failure:** retain the last good snapshot with an explicit stale/unavailable indication. Do not replace it with an empty “100% complete” report.
-
-When automatic snapshots are explicitly enabled, meaningful recorded transitions refresh the snapshot; read-only CLI status does not enable the feature or mutate tasks. Progress counts unique actionable tasks, excluding summary groups, cancellations and approved deferrals. It measures tasks, not time or effort.
-
-### Optional beads_viewer attribution and boundaries
-
-[beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) is created by **Jeffrey Emanuel**. Agent-Team's adapter references it as a separate third-party component. It does not bundle or relicense the TUI engine, binaries or web assets.
-
-The adapter uses a fresh export from the selected canonical `bd` backend in isolated staging and requests bv's JSON graph output with hooks disabled. Exported JSONL is a rendering input, not task authority. Graph selection filters the task list; the complete task list remains useful when graph generation is unavailable.
-
-Read the [complete upstream LICENSE](https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE), including its OpenAI/Anthropic rider and disclaimers, before enabling or distributing bv. Do not describe it as unrestricted MIT. Attribution and repository links do not establish eligibility for every user or use case. Agent-Team's built-in dashboard works without bv.
-
-## Continuity, efficiency and cleanup
-
-Keep the orchestrator's context small: reuse verified facts, send compact task-specific packets, avoid repeated discovery and save authored decisions **before** the context fills. Recovery records preserve original source fingerprints, task attribution, evidence revision, pending operations and the next action.
-
-Native auto-compaction stays enabled as a fallback. Agent-Team cannot promise zero compaction, recover unwritten decisions after a crash, or automatically replace its parent conversation on every host. Recovery rechecks stale source and writer evidence; it does not blindly trust the newest summary file.
-
-Usage reports distinguish observed per-agent receipts from estimates and missing data. Cached input is a subset of input, not an extra charge. Missing worker records, repair overhead or prices remain unknown; no unmeasured token-saving percentage is claimed. Required tests and independent review remain mandatory under any efficiency profile.
-
-After verified integration, eligible development worktrees can be cleaned even with auto-deploy off. Cleanup requires a stopped identified writer, clean/integrated work, retained evidence and no required preview. Preserve unfinished/user/shared files and uncertain resources. Deployment is a separate gate.
-
-See [recovery](references/RECOVERY.md), [canonical state](references/STATE.md), [status](references/STATUS.md) and [team coordination](references/TEAM.md).
-
-## Source, versions and updates
-
-The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). The current skill version is **7.3.1**; `metadata.version` in `SKILL.md` is authoritative. Release identity is [v7.3.1](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1). Version [7.3.0](https://github.com/thebpandey/agent-team/releases/tag/v7.3.0) added durable lanes, bounded setup helpers, and uppercase canonical Pro Markdown paths. Version [7.2.6](https://github.com/thebpandey/agent-team/releases/tag/v7.2.6) repaired sequential delivery-batch evidence. Version [7.2.5](https://github.com/thebpandey/agent-team/releases/tag/v7.2.5) restored trusted native published-history reconciliation. Version [7.2.4](https://github.com/thebpandey/agent-team/releases/tag/v7.2.4) corrected deployment-queue admission for recovered, already-scoped deliveries. Version [7.2.3](https://github.com/thebpandey/agent-team/releases/tag/v7.2.3) added the exact Project Kickoff 0.4.2 compatibility pair. Version [7.2.2](https://github.com/thebpandey/agent-team/releases/tag/v7.2.2) added native owner routing for run reconciliation and scope extension. Version [7.2.1](https://github.com/thebpandey/agent-team/releases/tag/v7.2.1) stabilized owner-adoption receipt ordering and accepted Project Kickoff 0.4.1 handoffs tested against that release. Version [7.2.0](https://github.com/thebpandey/agent-team/releases/tag/v7.2.0) introduced the reliability, ownership, installation, and active-turn safeguards summarized in the changelog. Version [7.1.1](https://github.com/thebpandey/agent-team/releases/tag/v7.1.1) accepts AST-origin `INFERRED` Graphify relationships as offline structural leads while rejecting semantic or missing provenance for readiness evidence. Version [7.1.0](https://github.com/thebpandey/agent-team/releases/tag/v7.1.0) makes the orchestrator a pure orchestrator and routes verification to a delegated verifier. Version [7.0.2](https://github.com/thebpandey/agent-team/releases/tag/v7.0.2) supports larger projects and includes the illustrated field guide. Find published packages and checksums in the [latest official release](https://github.com/thebpandey/agent-team/releases/latest). See the [changelog](CHANGELOG.md).
-
-Use an identified authorized revision and the complete package. Universal archives have an `agent-team/` prefix and include `SKILL.md`, `README.md`, `LICENSE`, `CHANGELOG.md`, `agents/`, `references/`, `assets/` and `hooks/`. External dependencies and model access are not bundled. Inactive `legacy/` and maintenance tests are excluded. Provenance lives in `.agent-team-source.json`; verify the exact revision and checksum.
-
-Maintainer reference, from a qualified committed source revision:
+From a source checkout:
 
 ```bash
-node hooks/agent-team-cli.mjs check-package
-node hooks/agent-team-cli.mjs build-artifacts --revision <full-commit-id> --output ../agent-team-artifacts
+node --test tests/hooks-*.test.mjs
+node hooks/agent-team-cli.mjs check-package --source .
+node hooks/agent-team-cli.mjs build-artifacts --source . --revision <full-commit-id> --output ../agent-team-artifacts
 node hooks/agent-team-cli.mjs check-artifacts --revision <full-commit-id> --archive ../agent-team-artifacts/agent-team-7.3.1.zip
 sha256sum ../agent-team-artifacts/agent-team-7.3.1.zip
 ```
 
-On macOS, use `shasum -a 256` on the same exact archive. These commands reproduce and validate the versioned artifact from an identified revision; verify any published checksum against the exact GitHub release asset. Change the version consistently before releasing altered contents; never replace an existing released version with different files.
-
-For updates, inspect whether the installed copy is a Git clone, symlink or extracted package. Preserve local customizations and use the matching managed scope/host. Updating a source checkout does not update installed copies automatically. Reload the host and verify discovery afterward. Rollback/uninstall removes only matched owned resources and reports retained conflicts; it does not delete unrelated plugins.
-
-## Verification and license
-
-Portable tests cover contracts and actual shipped Node consumers; native host registration/discovery, mandatory dependency functionality and real browser behavior are separate qualification gates. Exact archive tests cover Codex, Claude Code and explicit both-host selection across user/project scope. No universal cross-platform guarantee or synthetic-to-native equivalence is claimed.
-
-This release is governed by the [LearnStack OS Proprietary Skill License](LICENSE), including its entitlement and distribution restrictions. Public source access is not unrestricted permission to modify, redistribute or resell. Third-party components retain their own licenses.
-
-Repository guide: `SKILL.md` is the selective entrypoint; `references/` holds conditional instructions; `hooks/` contains Node standard-library helpers; `assets/claude-agents/` contains native role definitions; `assets/dashboard/` contains the original local dashboard; `tests/` contains maintainer verification.
+Portable tests cover package contracts and shipped Node consumers. Native registration, account/model access, trust, provider behavior, and real browser operations remain separately reported host facts; they block only work that explicitly requires them.

@@ -131,19 +131,24 @@ test("a temporary Beads outage remains a specific gap and never migrates the tra
   assert.ok(result.missing.every(({ question }) => !/continue|anything else/i.test(question)));
 });
 
-test("mandatory baseline capabilities cannot be bypassed by an omitted plan requirement list", async () => {
+test("optional companion tools never block a plan that does not require them", async () => {
   const { assessReadiness } = await import("../hooks/lib/readiness.mjs");
   const result = assessReadiness({
     existing: { plan: {
       scope: "Repair parser", acceptance: ["Parser passes"], tasks: [{ id: "T-1", status: "ready", dependencies: [] }],
       branch: "main", verification: ["node --test"], authority: { writes: ["parser.mjs"] },
     }, tracker: { kind: "markdown", path: "TASKS.md", status: "current" } },
-    capabilities: {},
+    capabilities: {
+      serena: { functional: "passed", availableToWorker: "unknown" },
+      "playwright-cli": { functional: "failed", availableToWorker: "not_run" },
+      graphify: { functional: "passed", availableToWorker: "unknown" },
+    },
   });
 
-  assert.equal(result.eligible, false);
-  assert.deepEqual(result.requiredCapabilities, ["serena", "playwright-cli"]);
-  assert.deepEqual(result.missing.map(({ id }) => id), ["capability:serena", "capability:playwright-cli"]);
+  assert.equal(result.eligible, true);
+  assert.equal(result.readyForDispatch, true);
+  assert.deepEqual(result.requiredCapabilities, []);
+  assert.deepEqual(result.missing, []);
 });
 
 test("tracker readiness requires a positive current status and preserves the selected tracker", async () => {

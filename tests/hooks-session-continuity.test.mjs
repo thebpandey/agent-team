@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -69,8 +70,66 @@ async function transferEnvelope(project, {
   } };
 }
 
-test("fresh canonical sessions may edit unclaimed files without crossing registered ownership", async () => {
-  // This catches restoring a historical owner UUID as a permanent ordinary-write lock.
+async function legacyStagingFixture(legacyOwnerSessionId) {
+  const { value, project } = await transferFixture();
+  const state = JSON.parse(await readFile(project.paths.state, "utf8"));
+  const setup = JSON.parse(await readFile(project.paths.setup, "utf8"));
+  delete state.ownership;
+  delete setup.ownership;
+  for (const gate of [state.integration, state.release]) {
+    gate.ownerSessionId = legacyOwnerSessionId;
+    delete gate.ownerHost;
+    delete gate.ownershipEpoch;
+  }
+  const teams = (await readFile(project.paths.teams, "utf8"))
+    .replace(/^Project owner:.*$/m, `Project owner: ${legacyOwnerSessionId}`)
+    .replace(/^Integration owner:.*$/m, `Integration owner: ${legacyOwnerSessionId}`)
+    .replace(/^Project owner host:.*\n/m, "")
+    .replace(/^Integration owner host:.*\n/m, "")
+    .replace("| src/** |", "| * |");
+  await writeFile(project.paths.state, `${JSON.stringify(state, null, 2)}\n`);
+  await writeFile(project.paths.setup, `${JSON.stringify(setup, null, 2)}\n`);
+  await writeFile(project.paths.teams, teams);
+  await rm(project.paths.ownerHistory);
+  return { value, project: await resolveProject(project.root) };
+}
+
+async function legacyContinuityEnvelope(project, { operationId, legacyOwnerSessionId, newOwner }) {
+  const canonical = await loadCanonicalState(project, { includeDeliveryEvidence: false });
+  const tracker = await import("../hooks/lib/tracker.mjs").then(({ readTracker }) => readTracker(project));
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: project.root, encoding: "utf8" }).trim();
+  const request = {
+    operationId,
+    projectId: project.projectId,
+    expectedLegacyOwnerSessionId: legacyOwnerSessionId,
+    expectedProjectRoot: project.root,
+    expectedRevision: revision,
+    expectedTracker: { kind: tracker.tracker.kind, path: tracker.tracker.path, fingerprint: tracker.tracker.fingerprint },
+    expectedSetupVersion: canonical.setup.version,
+    expectedStateVersion: canonical.state.stateVersion,
+    expectedTeamsFingerprint: await digest(project.paths.teams),
+    expectedSetupFingerprint: await digest(project.paths.setup),
+    expectedStateFingerprint: await digest(project.paths.state),
+    expectedOwnerHistoryFingerprint: null,
+    authorization: {
+      kind: "user-directed-maintenance",
+      status: "approved",
+      scope: "legacy_coordinator_continuity_migration",
+      source: "explicit user instruction to continue in the current native session",
+      approvalId: `approval-${operationId}`,
+      grantedAt: "2026-09-14T12:00:00.000Z",
+      projectId: project.projectId,
+      revision,
+      trackerFingerprint: tracker.tracker.fingerprint,
+      expectedLegacyOwnerSessionId: legacyOwnerSessionId,
+      newOwner,
+    },
+    reason: "continue the legacy project without asserting prior-session liveness",
+  };
+  return { schemaVersion: 1, request };
+}
+
+test("fresh Claude or Codex sessions may continue all repository edits without ownership transfer", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-session-continuity-"));
   const value = await policyFixture(root, { qualifiedOwnership: true });
   const project = await resolveProject(root);
@@ -86,10 +145,182 @@ test("fresh canonical sessions may edit unclaimed files without crossing registe
   const stateAlias = await evaluatePolicy(event("./.agent-team/state.json"), project);
   const absoluteEvidence = await evaluatePolicy(event(path.join(project.paths.stateRoot, "evidence", "forged.json")), project);
 
-  assert.equal(documentation.allow, true);
-  for (const result of [claimed, tracker, stateAlias, absoluteEvidence]) {
-    assert.equal(result.allow, false);
-    assert.equal(result.mode, "enforce");
+  for (const result of [documentation, claimed, tracker, stateAlias, absoluteEvidence]) assert.equal(result.allow, true);
+});
+
+test("takeover-named files are ordinary in-checkout files and receive no ownership exception", async () => {
+  const { value, project } = await transferFixture();
+  const root = project.root;
+  const teams = await readFile(project.paths.teams, "utf8");
+  await writeFile(project.paths.teams, teams.replace("| src/** |", "| * |"));
+  const envelope = await transferEnvelope(project, {
+    operationId: "takeover-stage-codex-1",
+    newOwner: { host: "codex", sessionId: "fresh-coordinator-session" },
+  });
+  const requestName = `.agent-team-takeover-${envelope.request.operationId}.json`;
+  const requestPath = path.join(root, requestName);
+  const event = (file, runtime = "codex", sessionId = "fresh-coordinator-session") => ({
+    ...hookEvent(value, { cwd: root, sessionId, operation: { kind: "file_change", files: [file] } }),
+    runtime,
+  });
+
+  const allowed = await evaluatePolicy(event({
+    action: "add_or_edit",
+    path: requestName,
+    changedContent: `${JSON.stringify(envelope, null, 2)}\n`,
+  }), project);
+  assert.equal(allowed.allow, true, allowed.messages.join("; "));
+
+  const claudeEnvelope = await transferEnvelope(project, {
+    operationId: "takeover-stage-claude-1",
+    newOwner: { host: "claude-code", sessionId: "fresh-claude-session" },
+  });
+  const claudeName = `.agent-team-takeover-${claudeEnvelope.request.operationId}.json`;
+  assert.equal((await evaluatePolicy(event({
+    action: "add",
+    path: claudeName,
+    changedContent: `${JSON.stringify(claudeEnvelope)}\n`,
+  }, "claude", "fresh-claude-session"), project)).allow, true);
+
+  await writeFile(requestPath, `${JSON.stringify(envelope, null, 2)}\n`);
+  const crossSession = structuredClone(envelope);
+  crossSession.request.operationId = "takeover-cross-session-1";
+  crossSession.request.newOwner.sessionId = "different-session";
+  crossSession.request.authorization.newOwner.sessionId = "different-session";
+  const wrongOwner = structuredClone(envelope);
+  wrongOwner.request.operationId = "takeover-wrong-owner-1";
+  wrongOwner.request.expectedOwner.sessionId = "different-owner";
+  wrongOwner.request.authorization.oldOwner.sessionId = "different-owner";
+  const stale = structuredClone(envelope);
+  stale.request.operationId = "takeover-stale-1";
+  stale.request.expectedStateFingerprint = "0".repeat(64);
+  const symlinkEnvelope = structuredClone(envelope);
+  symlinkEnvelope.request.operationId = "takeover-symlink-1";
+  const symlinkName = `.agent-team-takeover-${symlinkEnvelope.request.operationId}.json`;
+  await symlink(path.join(os.tmpdir(), "missing-takeover-request.json"), path.join(root, symlinkName));
+  const unsafe = [
+    { action: "add", path: `.agent-team-takeover-malformed-1.json`, changedContent: "not json\n" },
+    { action: "add", path: `.agent-team-takeover-${crossSession.request.operationId}.json`, changedContent: JSON.stringify(crossSession) },
+    { action: "add", path: `.agent-team-takeover-${wrongOwner.request.operationId}.json`, changedContent: JSON.stringify(wrongOwner) },
+    { action: "add", path: `.agent-team-takeover-${stale.request.operationId}.json`, changedContent: JSON.stringify(stale) },
+    { action: "add_or_edit", path: symlinkName, changedContent: JSON.stringify(symlinkEnvelope) },
+    { action: "add", path: `.agent-team/${requestName}`, changedContent: JSON.stringify(envelope) },
+    { action: "add", path: path.join(os.tmpdir(), requestName), changedContent: JSON.stringify(envelope) },
+    { action: "add", path: "README.md", changedContent: "claimed\n" },
+    { action: "edit", path: requestName, previousContent: "{}", changedContent: JSON.stringify(envelope) },
+    { action: "delete", path: requestName, changedContent: "" },
+    { action: "move", previousPath: requestName, path: `.agent-team-takeover-moved-1.json`, changedContent: JSON.stringify(envelope) },
+  ];
+  for (const file of unsafe) {
+    const result = await evaluatePolicy(event(file), project);
+    const outside = path.isAbsolute(file.path) && !file.path.startsWith(`${root}${path.sep}`);
+    const symlinkEscape = file.path === symlinkName;
+    assert.equal(result.allow, !outside && !symlinkEscape, `${file.action}:${file.path}`);
+    if (outside || symlinkEscape) assert.equal(result.mode, "enforce");
+  }
+
+  assert.equal((await ownerRecovery.transferProjectCoordinator(project, envelope, {
+    now: () => "2026-09-14T12:01:00.000Z",
+  })).status, "applied");
+  const transferredProject = await resolveProject(root);
+  const cleanup = await evaluatePolicy(event({ action: "delete", path: requestName, changedContent: "" }), transferredProject);
+  assert.equal(cleanup.allow, true, cleanup.messages.join("; "));
+});
+
+test("legacy takeover-named files are not session-gated", async () => {
+  const legacyOwnerSessionId = "69ebff15-55b3-4f58-b531-legacy-owner";
+  const newOwner = { host: "codex", sessionId: "fresh-legacy-coordinator" };
+  const { value, project } = await legacyStagingFixture(legacyOwnerSessionId);
+  const envelope = await legacyContinuityEnvelope(project, {
+    operationId: "legacy-takeover-stage-1", legacyOwnerSessionId, newOwner,
+  });
+  const requestName = `.agent-team-takeover-${envelope.request.operationId}.json`;
+  const event = (file, cwd = project.root) => hookEvent(value, {
+    cwd,
+    sessionId: newOwner.sessionId,
+    operation: { kind: "file_change", files: [file] },
+  });
+
+  const allowed = await evaluatePolicy(event({
+    action: "add_or_edit", path: requestName, changedContent: `${JSON.stringify(envelope)}\n`,
+  }), project);
+  assert.equal(allowed.allow, true, allowed.messages.join("; "));
+  await writeFile(path.join(project.root, requestName), `${JSON.stringify(envelope)}\n`);
+
+  const classic = structuredClone(envelope);
+  classic.request.operationId = "legacy-classic-adoption-1";
+  classic.request.authorization = {
+    status: "approved",
+    scope: "legacy_owner_adoption",
+    source: "user-approved-migration",
+    approvalId: "approval-legacy-classic-1",
+    grantedAt: "2026-09-14T12:00:00.000Z",
+    projectId: project.projectId,
+    revision: classic.request.expectedRevision,
+    trackerFingerprint: classic.request.expectedTracker.fingerprint,
+    host: "codex",
+  };
+  const crossTarget = structuredClone(envelope);
+  crossTarget.request.operationId = "legacy-cross-target-1";
+  crossTarget.request.authorization.newOwner.sessionId = "different-session";
+  const stale = structuredClone(envelope);
+  stale.request.operationId = "legacy-stale-1";
+  stale.request.expectedRevision = "0".repeat(40);
+  stale.request.authorization.revision = "0".repeat(40);
+  const staleTracker = structuredClone(envelope);
+  staleTracker.request.operationId = "legacy-stale-tracker-1";
+  staleTracker.request.expectedTracker.fingerprint = "0".repeat(64);
+  staleTracker.request.authorization.trackerFingerprint = "0".repeat(64);
+  const wrongLegacyOwner = structuredClone(envelope);
+  wrongLegacyOwner.request.operationId = "legacy-wrong-owner-1";
+  wrongLegacyOwner.request.expectedLegacyOwnerSessionId = "different-legacy-owner";
+  wrongLegacyOwner.request.authorization.expectedLegacyOwnerSessionId = "different-legacy-owner";
+  const unsafe = [
+    { action: "add", path: `.agent-team-takeover-${classic.request.operationId}.json`, changedContent: JSON.stringify(classic) },
+    { action: "add", path: `.agent-team-takeover-${crossTarget.request.operationId}.json`, changedContent: JSON.stringify(crossTarget) },
+    { action: "add", path: `.agent-team-takeover-${stale.request.operationId}.json`, changedContent: JSON.stringify(stale) },
+    { action: "add", path: `.agent-team-takeover-${staleTracker.request.operationId}.json`, changedContent: JSON.stringify(staleTracker) },
+    { action: "add", path: `.agent-team-takeover-${wrongLegacyOwner.request.operationId}.json`, changedContent: JSON.stringify(wrongLegacyOwner) },
+    { action: "add", path: ".agent-team-takeover-legacy-invalid-1.json", changedContent: "{}" },
+    { action: "edit", path: requestName, previousContent: "{}", changedContent: JSON.stringify(envelope) },
+    { action: "delete", path: requestName, changedContent: "" },
+    { action: "move", previousPath: requestName, path: ".agent-team-takeover-legacy-moved-1.json", changedContent: JSON.stringify(envelope) },
+    { action: "add", path: `.agent-team/${requestName}`, changedContent: JSON.stringify(envelope) },
+    { action: "add", path: path.join(os.tmpdir(), requestName), changedContent: JSON.stringify(envelope) },
+  ];
+  for (const file of unsafe) {
+    const result = await evaluatePolicy(event(file), project);
+    const outside = path.isAbsolute(file.path) && !file.path.startsWith(`${project.root}${path.sep}`);
+    assert.equal(result.allow, !outside, `${file.action}:${file.path}`);
+    if (outside) assert.equal(result.mode, "enforce");
+  }
+
+  const linkedProject = await resolveProject(value.feature);
+  const linked = await evaluatePolicy(event({ action: "add", path: requestName, changedContent: JSON.stringify(envelope) }, value.feature), linkedProject);
+  assert.equal(linked.allow, true);
+
+  for (const [label, owner] of [["root", "root"], ["self", newOwner.sessionId]]) {
+    const classicFixture = await legacyStagingFixture(owner);
+    const classicEnvelope = await legacyContinuityEnvelope(classicFixture.project, {
+      operationId: `legacy-classic-${label}-1`, legacyOwnerSessionId: owner, newOwner,
+    });
+    classicEnvelope.request.authorization = {
+      status: "approved",
+      scope: "legacy_owner_adoption",
+      source: "user-approved-migration",
+      approvalId: `approval-legacy-classic-${label}-1`,
+      grantedAt: "2026-09-14T12:00:00.000Z",
+      projectId: classicFixture.project.projectId,
+      revision: classicEnvelope.request.expectedRevision,
+      trackerFingerprint: classicEnvelope.request.expectedTracker.fingerprint,
+      host: "codex",
+    };
+    const classicName = `.agent-team-takeover-${classicEnvelope.request.operationId}.json`;
+    const result = await evaluatePolicy(hookEvent(classicFixture.value, { cwd: classicFixture.project.root,
+      sessionId: newOwner.sessionId, operation: { kind: "file_change", files: [{
+        action: "add", path: classicName, changedContent: JSON.stringify(classicEnvelope),
+      }] } }), classicFixture.project);
+    assert.equal(result.allow, true, label);
   }
 });
 
@@ -267,6 +498,7 @@ test("continuity journal rolls forward after an interrupted record replacement",
     failAfterRename: 2,
   }), /injected_owner_recovery_crash_2/);
 
+  await ownerRecovery.repairOwnerRecovery(project);
   const repaired = await loadCanonicalState(project, { includeDeliveryEvidence: false });
   assert.equal(repaired.registry.projectOwner, envelope.request.newOwner.sessionId);
   assert.equal(repaired.ownerHistory.entries[0].livenessEvidence.status, "not_asserted");

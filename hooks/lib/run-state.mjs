@@ -167,11 +167,12 @@ async function authenticatedActor(project, options) {
   let canonical;
   try { canonical = await loadCanonicalState(project, { includeTasks: false, budget: options.budget }); }
   catch { return null; }
-  const epoch = canonical.registry.ownershipEpoch;
+  const epoch = Number.isSafeInteger(canonical.registry.ownershipEpoch) && canonical.registry.ownershipEpoch > 0
+    ? canonical.registry.ownershipEpoch : 1;
   const nativeIdentity = { ...options.nativeIdentity, ownershipEpoch: epoch };
-  if (!await validateNativeOwnerAuthority(project, nativeIdentity, canonical.state.ownership, options.actorSessionId)
-    || canonical.registry.projectOwner !== options.actorSessionId || canonical.registry.projectOwnerHost !== nativeIdentity.host) return null;
-  return { ownerHost: nativeIdentity.host, ownerSessionId: options.actorSessionId, ownershipEpoch: epoch, nativeIdentity };
+  if (!await validateNativeOwnerAuthority(project, nativeIdentity, canonical.state.ownership, options.actorSessionId)) return null;
+  const ownerHost = nativeIdentity.host === "claude" ? "claude-code" : nativeIdentity.host;
+  return { ownerHost, ownerSessionId: options.actorSessionId, ownershipEpoch: epoch, nativeIdentity };
 }
 
 function validReason(value) { return typeof value === "string" && value.trim() === value && value.length > 0 && Buffer.byteLength(value) <= 4096; }
@@ -180,7 +181,7 @@ export async function startRun(project, request, options = {}) {
   if (!exactKeys(request, ["operationId", "expectedTrackerFingerprint", "reason", "run"]) || !validId(request?.operationId)
     || !/^[a-f0-9]{64}$/.test(request?.expectedTrackerFingerprint ?? "") || !validReason(request?.reason)) return conflict("invalid_request");
   const actor = await authenticatedActor(project, options);
-  if (!actor) return conflict("project_owner_required");
+  if (!actor) return conflict("native_project_context_required");
   const effectiveRequest = { ...request, actorSessionId: options.actorSessionId, expectedVersion: options.expectedVersion,
     authenticatedActor: { ownerHost: actor.ownerHost, ownerSessionId: actor.ownerSessionId, ownershipEpoch: actor.ownershipEpoch } };
   return mutateOperationalState(project, effectiveRequest, async (state, canonical) => {
@@ -196,7 +197,6 @@ export async function startRun(project, request, options = {}) {
     const current = await loadCanonicalTracker(project, { budget: options.budget });
     if (current.tracker.status !== "current") return conflict("tracker_unavailable");
     if (current.tracker.fingerprint !== request.expectedTrackerFingerprint) return conflict("stale_tracker");
-    if (canonical.registry.projectOwnerHost !== actor.ownerHost || canonical.registry.projectOwner !== actor.ownerSessionId || canonical.registry.ownershipEpoch !== actor.ownershipEpoch) return conflict("project_owner_required");
     const problem = proposalProblem(request.run, current.tasks);
     if (problem) return conflict(problem);
     const run = { ...structuredClone(request.run), ownerSessionId: actor.ownerSessionId, ownerHost: actor.ownerHost, ownershipEpoch: actor.ownershipEpoch,
@@ -220,7 +220,7 @@ export async function retireRun(project, request, options = {}) {
     || !/^[a-f0-9]{40}$/.test(request?.expectedRevision ?? "") || !validReason(request?.reason)
     || !retirementAuthorizationValid(request?.authorization) || !successorIntentValid(request?.successorIntent)) return conflict("invalid_request");
   const actor = await authenticatedActor(project, options);
-  if (!actor) return conflict("project_owner_required");
+  if (!actor) return conflict("native_project_context_required");
   const authenticated = { ownerHost: actor.ownerHost, ownerSessionId: actor.ownerSessionId, ownershipEpoch: actor.ownershipEpoch };
   const effectiveRequest = { ...request, actorSessionId: options.actorSessionId, expectedVersion: options.expectedVersion, authenticatedActor: authenticated };
   return mutateOperationalState(project, effectiveRequest, async (state, canonical) => {
@@ -242,8 +242,6 @@ export async function retireRun(project, request, options = {}) {
     const revision = await currentRevision(project, options);
     if (!revision) return { status: "unavailable", reason: "revision_unavailable" };
     if (revision !== request.expectedRevision) return conflict("stale_revision");
-    if (canonical.registry.projectOwnerHost !== actor.ownerHost || canonical.registry.projectOwner !== actor.ownerSessionId
-      || canonical.registry.ownershipEpoch !== actor.ownershipEpoch) return conflict("project_owner_required");
     if (!state.integration || typeof state.integration !== "object" || Array.isArray(state.integration)
       || !state.release || typeof state.release !== "object" || Array.isArray(state.release)) return conflict("authority_state_invalid");
     const retiredAt = (options.now ?? (() => new Date().toISOString()))();
@@ -274,7 +272,7 @@ export async function extendRunScope(project, request, options = {}) {
     || !/^[a-f0-9]{64}$/.test(request?.expectedTrackerFingerprint ?? "") || !validReason(request?.reason)
     || !unique(request?.taskIds) || !request.taskIds.length || request.taskIds.some((id) => !validId(id))) return conflict("invalid_request");
   const actor = await authenticatedActor(project, options);
-  if (!actor) return conflict("project_owner_required");
+  if (!actor) return conflict("native_project_context_required");
   const authenticated = { ownerHost: actor.ownerHost, ownerSessionId: actor.ownerSessionId, ownershipEpoch: actor.ownershipEpoch };
   const effectiveRequest = { ...request, actorSessionId: options.actorSessionId, expectedVersion: options.expectedVersion, authenticatedActor: authenticated };
   return mutateOperationalState(project, effectiveRequest, async (state, canonical) => {
@@ -285,8 +283,6 @@ export async function extendRunScope(project, request, options = {}) {
     if (current.tracker.status !== "current") return conflict("tracker_unavailable");
     if (current.tracker.fingerprint !== request.expectedTrackerFingerprint) return conflict("stale_tracker");
     if (validateEffectiveRun(previousRun, current.tasks)) return conflict("invalid_effective_run");
-    if (canonical.registry.projectOwnerHost !== actor.ownerHost || canonical.registry.projectOwner !== actor.ownerSessionId
-      || canonical.registry.ownershipEpoch !== actor.ownershipEpoch) return conflict("project_owner_required");
     const prior = new Set(previousRun.taskIds);
     const additions = request.taskIds.map((id) => current.tasks.find((task) => task.id === id));
     if (additions.some((task, index) => !task || prior.has(request.taskIds[index]) || !topLevel(task) || task.hierarchyUnknown)) {
@@ -313,7 +309,7 @@ export async function reconcileRun(project, request, options = {}) {
     || !validId(request?.operationId) || ![request?.expectedTrackerFingerprint, request?.expectedRunFingerprint].every((value) => /^[a-f0-9]{64}$/.test(value ?? ""))
     || !validReason(request?.reason) || !unique(request?.affectedTaskIds) || !request.affectedTaskIds.length || request.affectedTaskIds.some((id) => !validId(id))) return conflict("invalid_request");
   const actor = await authenticatedActor(project, options);
-  if (!actor) return conflict("project_owner_required");
+  if (!actor) return conflict("native_project_context_required");
   const effectiveRequest = { ...request, actorSessionId: options.actorSessionId, expectedVersion: options.expectedVersion,
     authenticatedActor: { ownerHost: actor.ownerHost, ownerSessionId: actor.ownerSessionId, ownershipEpoch: actor.ownershipEpoch } };
   return mutateOperationalState(project, effectiveRequest, async (state, canonical) => {
@@ -325,7 +321,6 @@ export async function reconcileRun(project, request, options = {}) {
     if (current.tracker.status !== "current") return conflict("tracker_unavailable");
     if (current.tracker.fingerprint !== request.expectedTrackerFingerprint) return conflict("stale_tracker");
     if (effectiveRunFingerprint(previousRun) !== request.expectedRunFingerprint) return conflict("stale_run");
-    if (canonical.registry.projectOwnerHost !== actor.ownerHost || canonical.registry.projectOwner !== actor.ownerSessionId || canonical.registry.ownershipEpoch !== actor.ownershipEpoch) return conflict("project_owner_required");
     const qualified = !validateEffectiveRun(previousRun, current.tasks);
     const legacy = !validId(previousRun.id) || !validId(previousRun.ownerSessionId) || !["codex", "claude-code"].includes(previousRun.ownerHost)
       || !Number.isSafeInteger(previousRun.ownershipEpoch) || previousRun.ownershipEpoch < 1;
@@ -460,15 +455,13 @@ export function readRunDecision(canonical, { writerLiveness = {} } = {}) {
   const run = canonical?.state?.run;
   const classification = classifyRun(canonical, { writerLiveness });
   const valid = !validateEffectiveRun(run, canonical?.tasks ?? []);
-  const currentOwner = canonical?.registry?.projectOwnerHost && canonical?.registry?.projectOwner && canonical?.registry?.ownershipEpoch
-    ? { ownerHost: canonical.registry.projectOwnerHost, ownerSessionId: canonical.registry.projectOwner, ownershipEpoch: canonical.registry.ownershipEpoch } : null;
+  const currentOwner = null;
   const runProvenance = valid ? { ownerHost: run.ownerHost, ownerSessionId: run.ownerSessionId, ownershipEpoch: run.ownershipEpoch,
-    historical: !currentOwner || run.ownerHost !== currentOwner.ownerHost || run.ownerSessionId !== currentOwner.ownerSessionId || run.ownershipEpoch !== currentOwner.ownershipEpoch } : null;
+    historical: false } : null;
   const holdReasons = [];
   const selectedBatchTaskIds = valid ? selectReleaseBatch(canonical, classification) : [];
   if (!valid || classification.kind === "unknown") holdReasons.push("effective_run_unavailable");
   if (valid && !run.autoDeploy) holdReasons.push("auto_deploy_disabled");
-  if (runProvenance?.historical && selectedBatchTaskIds.length === 0) holdReasons.push("historical_run_provenance");
   if (valid && run.autoDeploy && selectedBatchTaskIds.length === 0) holdReasons.push("batch_not_ready");
   return { status: valid ? "available" : "unavailable", effectiveRun: run ? structuredClone(run) : null,
     effectiveRunFingerprint: valid ? effectiveRunFingerprint(run) : null, classification, selectedBatchTaskIds,

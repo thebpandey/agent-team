@@ -2,10 +2,16 @@
 
 ## 7.3.1 - 2026-09-14
 
-Version 7.3.1 permits an exact owner-authorized manual release record to cover its named deployment-triggering main push without weakening any other integration or release gate.
+Version 7.3.1 restores frictionless Claude Code↔Codex session continuity, separates companion-tool diagnostics from task readiness, and preserves exact release and path safety.
 
-- Accept only a clean non-force `origin` push to `refs/heads/main` when current manual release authority binds process `git-push`, the exact target, revision, tasks, owner generation, and ordinary gate evidence.
+- Accept only a clean non-force `origin` push to `refs/heads/main` when manual release authority binds process `git-push`, the exact target, revision, tasks, and ordinary gate evidence.
 - Continue to deny absent, stale, held, mismatched, forced, multi-ref, or chained publication attempts.
+- Remove coordinator ownership gates from setup, checkpoints, run control, task transitions, integration, release, lanes, and ordinary project edits. Any trusted native Claude Code or Codex session in the same Git project can continue without a release, takeover file, migration, or epoch match; retained owner fields are provenance only.
+- Make Serena and Playwright selected defaults rather than universal dispatch gates. Only explicit `plan.requiredCapabilities` can block a task; unobserved fresh-worker access is diagnostic, Graphify evidence is optional, and exact writable-path overlap remains enforced.
+- Stop multiline setup probes from being misclassified as Beads completion, report ambiguous completion at the parser boundary, and treat only noncanonical Claude native `TaskCompleted` lifecycle events as advisory.
+- Qualify LeanCTX workers with isolated process-local state and an in-worktree read target, and accept the exact upstream Impeccable 4.2.2 guidance tree with a package-specific 2 MiB file bound while retaining aggregate, entry, type, depth, and symlink limits.
+- Distinguish the selected Playwright CLI from Node REPL package imports, clarify Serena host reload/inheritance, and document why a valid DeepSeek profile cannot expand a ChatGPT-backed Codex native model allowlist.
+- Re-curate the README around the current 7.3.1 install, setup, continuity, run, recovery, and release workflow; historical release notes remain in this changelog.
 
 ## 7.3.0 - 2026-09-14
 

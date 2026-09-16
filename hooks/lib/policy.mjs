@@ -1,11 +1,10 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readlink, realpath, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 import { analyzeChangedFiles } from "./analyzers.mjs";
 import {
-  identityFor,
   loadCanonicalState,
   loadCanonicalTracker,
   loadOperationMappingInventory,
@@ -45,16 +44,26 @@ function fresh(value, now, maximumAgeMs = 5 * 60_000) {
   return Number.isFinite(timestamp) && now.getTime() - timestamp >= 0 && now.getTime() - timestamp <= maximumAgeMs;
 }
 
-async function canonicalTarget(base, name) {
+async function canonicalTarget(base, name, depth = 0) {
+  if (depth > 40) throw Object.assign(new Error("Too many symbolic links"), { code: "ELOOP" });
   const target = path.isAbsolute(name) ? name : path.resolve(base, name);
   const missing = [];
   let candidate = target;
   while (true) {
     try {
-      return path.join(await realpath(candidate), ...missing.reverse());
+      return path.join(await realpath(candidate), ...missing);
     } catch (error) {
       if (error.code !== "ENOENT" || path.dirname(candidate) === candidate) throw error;
-      missing.push(path.basename(candidate));
+      try {
+        if ((await lstat(candidate)).isSymbolicLink()) {
+          const destination = await readlink(candidate);
+          const resolved = await canonicalTarget(path.dirname(candidate), destination, depth + 1);
+          return path.join(resolved, ...missing);
+        }
+      } catch (linkError) {
+        if (linkError.code !== "ENOENT") throw linkError;
+      }
+      missing.unshift(path.basename(candidate));
       candidate = path.dirname(candidate);
     }
   }
@@ -63,11 +72,6 @@ async function canonicalTarget(base, name) {
 function inside(root, target) {
   const relative = path.relative(root, target);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function owns(patterns, relative) {
-  return patterns.some((pattern) => pattern === "*" || pattern === relative
-    || (pattern.endsWith("/**") && (relative === pattern.slice(0, -3) || relative.startsWith(pattern.slice(0, -2)))));
 }
 
 export function validateWorkerUpdate(source, { maximumChars, taskId, revision } = {}) {
@@ -116,7 +120,7 @@ async function workerUpdateGate(event, project, canonical, operation) {
   return undefined;
 }
 
-async function ownership(event, project, canonical, identity) {
+async function ownership(event, project) {
   if (event.event !== "PreToolUse" || event.operation.kind !== "file_change") return undefined;
   for (const file of event.operation.files) {
     for (const changedPath of [file.previousPath, file.path].filter(Boolean)) {
@@ -124,44 +128,9 @@ async function ownership(event, project, canonical, identity) {
       if (inside(project.commonDirectory, target)) {
         return deny(`Git metadata must be changed through a supported native Git route, not the file path ${changedPath}.`);
       }
-    }
-  }
-  if (identity.role === "unknown") {
-    if (!["codex", "claude-code"].includes(identity.host) || typeof identity.sessionId !== "string" || !identity.sessionId
-      || identity.sessionId === canonical.registry.projectOwner
-      || project.root !== project.worktreeRoot) return deny("Registered Agent-Team ownership is missing for this session.");
-    for (const file of event.operation.files) {
-      for (const changedPath of [file.previousPath, file.path].filter(Boolean)) {
-        const target = await canonicalTarget(event.cwd, changedPath);
-        if (target === project.tracker?.path) return deny("A registered project coordinator must change the selected canonical tracker.");
-        if (!inside(project.root, target)) return deny(`The changed path ${changedPath} resolves outside the canonical project checkout.`);
-        const relative = path.relative(project.root, target).replaceAll("\\", "/");
-        if (relative === "MISTAKES.md" || relative === ".agent-team" || relative.startsWith(".agent-team/")) {
-          return deny(`A registered project coordinator must change the shared path ${changedPath}.`);
-        }
-        const claimed = canonical.registry.teams.find((team) => owns(team["owned paths"].split(/\s*,\s*/).filter(Boolean), relative));
-        if (claimed) return deny(`The registered team ${claimed["team id"]} owns ${changedPath}.`);
+      if (!inside(project.worktreeRoot, target)) {
+        return deny(`The changed path ${changedPath} resolves outside the active project checkout.`);
       }
-    }
-    return undefined;
-  }
-  if (identity.role === "project_owner") return undefined;
-  if (typeof identity.team.worktree !== "string" || !identity.team.worktree.trim()) return deny("The registered team worktree is missing.");
-  const registeredWorktree = await realpath(path.resolve(project.root, identity.team.worktree));
-  if (project.worktreeRoot !== registeredWorktree) return deny("The registered team does not own this worktree.");
-  const patterns = identity.team["owned paths"].split(/\s*,\s*/).filter(Boolean);
-
-  for (const file of event.operation.files) {
-    for (const changedPath of [file.previousPath, file.path].filter(Boolean)) {
-      if (changedPath === "MISTAKES.md" || changedPath.startsWith(".agent-team/")) {
-        return deny(`Only the project owner can change the shared path ${changedPath}.`);
-      }
-      const target = await canonicalTarget(event.cwd, changedPath);
-      if (target === project.tracker?.path) return deny("Only the project owner can change the selected canonical tracker.");
-      if (!inside(registeredWorktree, target)) return deny(`The changed path ${changedPath} resolves outside the registered worktree.`);
-      const relative = path.relative(registeredWorktree, target).replaceAll("\\", "/");
-      if (relative === "CONTEXT.md") continue;
-      if (!owns(patterns, relative)) return deny(`The registered team does not own ${changedPath}.`);
     }
   }
   return undefined;
@@ -216,11 +185,8 @@ function integrationAuthorization(gate, now) {
 }
 
 function currentOwner(canonical, event, gate = {}) {
-  const identity = identityFor(canonical.registry, event.runtime, event.sessionId);
-  if (identity.role !== "project_owner" || event.sessionId !== gate.ownerSessionId) return false;
-  if (!canonical.registry.projectOwnerHost) return true;
-  return gate.ownerHost === canonical.registry.projectOwnerHost
-    && gate.ownershipEpoch === canonical.registry.ownershipEpoch;
+  const host = event.runtime === "claude" ? "claude-code" : event.runtime;
+  return ["codex", "claude-code"].includes(host) && typeof event.sessionId === "string" && event.sessionId.length > 0;
 }
 
 function configuredRemoteBaseRef(baseRef) {
@@ -255,7 +221,7 @@ async function annotatedTagObject(cwd, sourceRef, revision, budget) {
 
 async function integrationGate(event, project, canonical, operation, now, budget) {
   const gate = canonical.state.integration ?? {};
-  if (event.sessionId !== canonical.registry.integrationOwner || !currentOwner(canonical, event, gate)) return deny("The registered integration owner must run this operation.");
+  if (!currentOwner(canonical, event, gate)) return deny("A native Claude or Codex session must run this operation.");
   if (!gate.authorized) return deny("Integration authorization is missing.");
   if (!integrationAuthorization(gate, now)) return deny("Integration authorization provenance is missing or mismatched.");
   if (gate.baseRemoteRef !== configuredRemoteBaseRef(gate.baseRef)) return deny("The integration remote base does not match the configured integration branch.");
@@ -276,7 +242,6 @@ async function integrationGate(event, project, canonical, operation, now, budget
       return deny("The deployment-triggering integration does not match the exact frozen selected task IDs.");
     }
     if (release.authorized !== true || !(release.runMode === "auto_deploy" || manualMainRelease)
-      || release.ownerSessionId !== canonical.registry.integrationOwner
       || release.expectedRevision !== gate.expectedRevision || release.trackerFingerprint !== canonical.tracker.fingerprint
       || !fresh(release.evidenceAt, now) || release.remoteMainDeploys !== true || release.hold || release.projectPaused || canonical.state.run?.paused
       || typeof authorization.source !== "string" || !authorization.source.trim() || authorization.source.length > 256
@@ -353,6 +318,14 @@ function consequentialScope(canonical, operation) {
   return null;
 }
 
+function nativeNoncanonicalCompletion(event, canonical, operation) {
+  return event.runtime === "claude" && event.event === "TaskCompleted" && operation.kind === "completion"
+    && operation.parserFailed !== true && typeof operation.taskId === "string"
+    && /^[\w.:-]{1,128}$/.test(operation.taskId)
+    && !["none", "unknown", "unassigned", "-"].includes(operation.taskId.toLowerCase())
+    && !(canonical.tasks ?? []).some(({ id }) => id === operation.taskId);
+}
+
 function exactFrozenRelease(canonical) {
   const gate = canonical.state.release ?? {};
   const selected = readRunDecision(canonical).selectedBatchTaskIds;
@@ -391,13 +364,8 @@ function releaseArtifact(record, revision, taskIds) {
 /** Pure aggregate check shared by policy and read-only recovery; performs no Git/provider probes. */
 export function releaseAuthorityReady(canonical, { now = new Date(), process } = {}) {
   const gate = canonical.state?.release ?? {};
-  const registry = canonical.registry ?? {};
   const authorization = gate.authorization ?? {};
-  return [registry.projectOwnerHost, gate.ownerHost].every((host) => ["codex", "claude-code"].includes(host))
-    && Number.isSafeInteger(registry.ownershipEpoch) && registry.ownershipEpoch > 0
-    && gate.ownerHost === registry.projectOwnerHost && gate.ownerSessionId === registry.projectOwner
-    && gate.ownerSessionId === registry.integrationOwner && gate.ownershipEpoch === registry.ownershipEpoch
-    && gate.authorized === true && boundedString(gate.target, 4096) && boundedString(gate.process, 256)
+  return gate.authorized === true && boundedString(gate.target, 4096) && boundedString(gate.process, 256)
     && (process === undefined || process === gate.process) && gate.trackerFingerprint === canonical.tracker?.fingerprint
     && canonical.git?.headRevision === gate.expectedRevision
     && typeof authorization.source === "string" && authorization.source.trim() && authorization.source.length <= 256
@@ -421,8 +389,8 @@ export function releaseAuthorityReady(canonical, { now = new Date(), process } =
 
 async function releaseGate(event, project, canonical, operation, now, budget) {
   const gate = canonical.state.release ?? {};
-  if (!releaseAuthorityReady(canonical, { now, process: operation.process })) return deny("Release evidence does not match the exact frozen selected task IDs, ordinary gates, and current owner generation.");
-  if (!currentOwner(canonical, event, gate) || event.sessionId !== canonical.registry.integrationOwner) return deny("The registered release owner must run this operation.");
+  if (!releaseAuthorityReady(canonical, { now, process: operation.process })) return deny("Release evidence does not match the exact frozen selected task IDs and ordinary release gates.");
+  if (!currentOwner(canonical, event, gate)) return deny("A native Claude or Codex session must run this operation.");
   if (!gate.authorized) return deny("Release authorization is missing.");
   if (!gate.target) return deny("The release target is unknown.");
   const authorization = gate.authorization ?? {};
@@ -474,7 +442,7 @@ async function releaseGate(event, project, canonical, operation, now, budget) {
 function databaseGate(event, canonical, operation, now) {
   const gate = canonical.state.database ?? {};
   if (operation.parserFailed) return deny("The recognized destructive database operation could not be parsed safely.");
-  if (!currentOwner(canonical, event, gate)) return deny("The recorded database operation owner must run this operation.");
+  if (!currentOwner(canonical, event, gate)) return deny("A native Claude or Codex session must run this operation.");
   if (!gate.authorized) return deny("Destructive database authorization is missing.");
   if (!gate.environment) return deny("The database target environment is unknown.");
   if (gate.environment === "production" && !gate.productionApproved) return deny("Production database approval is missing.");
@@ -497,12 +465,10 @@ function databaseGate(event, canonical, operation, now) {
 
 async function completionGate(event, project, canonical, operation, budget) {
   if (operation.parserFailed) return deny("Completion requires one explicit canonical task ID and an unambiguous command.");
-  const identity = identityFor(canonical.registry, event.runtime, event.sessionId);
-  if (identity.role === "unknown") return deny("Registered task ownership is missing for completion.");
   const gate = canonical.state.completion ?? {};
   const taskId = operation.taskId ?? gate.taskId;
   const task = canonical.tasks.find((entry) => entry.id === taskId);
-  if (!task || (identity.role === "team" && task.owner !== identity.team["team id"])) return deny("The canonical task owner does not match this completion.");
+  if (!task) return deny("The canonical completion task is missing.");
   if (["partial", "blocked", "deferred"].includes(operation.outcome)) return undefined;
   let head;
   try {
@@ -576,10 +542,16 @@ export async function evaluatePolicy(event, project, { now = new Date(), canonic
     return unavailableDecision(event, inventory, { inventoryStatus });
   }
 
-  const identity = identityFor(canonical.registry, event.runtime, event.sessionId);
+  if (operation.kind === "completion" && operation.parserFailed) {
+    return deny("Completion requires one explicit canonical task ID and an unambiguous command.");
+  }
   if (["completion", "release", "integration"].includes(operation.kind)) {
     if (canonical.tracker?.status === "not_read") Object.assign(canonical, await loadCanonicalTracker(project, { budget, runBeads }));
     if (canonical.tracker?.status !== "current") return deny(`The selected canonical tracker is unavailable (${canonical.tracker?.reason ?? "not_read"}).`);
+    if (nativeNoncanonicalCompletion(event, canonical, operation)) return decision({
+      messages: ["A noncanonical native host task completed; Agent-Team task state was not changed."],
+      capabilities: { completion: "noncanonical_host_lifecycle" },
+    });
     const scopeProblem = consequentialScope(canonical, operation);
     if (scopeProblem) return deny(scopeProblem);
     const recordedFingerprint = canonical.state[operation.kind]?.trackerFingerprint;
@@ -602,7 +574,7 @@ export async function evaluatePolicy(event, project, { now = new Date(), canonic
   if (updateDecision) return updateDecision;
   let ownershipDecision;
   try {
-    ownershipDecision = await bounded(() => ownership(policyEvent, project, canonical, identity));
+    ownershipDecision = await bounded(() => ownership(policyEvent, project));
   } catch {
     return unavailableDecision({ ...event, operation }, inventory, { inventoryStatus });
   }

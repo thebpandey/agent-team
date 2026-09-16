@@ -10,7 +10,7 @@ Resolve saved [settings](SETTINGS.md) and explicit run-only modifiers before cla
 
 Read complete eligible records from the selected Beads or Markdown authority. Select authorized, actionable, ready, unclaimed work by priority/order and stable ID. Preserve native IDs/hierarchy. A summary epic is not another delivery when its children represent the work. A proposed or deferred improvement is not eligible merely because it was recorded.
 
-Claim atomically using the backend's supported operation or verified single-writer control. Recheck dependencies, scope, owner/version and resource conflicts under that control. Use idempotency identities for repeated requests. Unknown tracker state or writer liveness cannot authorize a new claim or takeover.
+Claim atomically using the backend's supported operation or verified single-writer control. Recheck dependencies, scope, version and resource conflicts under that control. Use idempotency identities for repeated requests. Unknown tracker state or writer liveness cannot authorize a conflicting claim.
 
 Distinguish logical task ownership from compute occupancy:
 
@@ -29,7 +29,7 @@ Orchestration is continuous while any team is active. Follow the active host-tur
 3. Answer a status/question in commentary. It is an interrupt, not pause, cancel, ownership loss, or a terminal condition.
 4. Reconcile every live worker and completed handoff against canonical state.
 5. Route exact revisions to repair or independent review, and serially integrate only accepted work.
-6. Prove a writer stopped or ownership transferred before compute becomes free. Unknown liveness is occupied and must not create a free slot.
+6. Prove a writer stopped or explicitly handed off its worker slot before compute becomes free. Unknown liveness is occupied and must not create a free slot.
 7. Recompute actual capacity, reserve reviewer capacity, and admit the next authorized eligible disjoint task.
 8. While the host turn has active workers, supervise with the effective `supervision.heartbeatSeconds`, default 600 and minimum 60. Use shorter host waits when required without treating each return as a heartbeat deadline. At the configured interval, emit one compact heartbeat from known state/blocker facts, reconcile, and repeat. A lower interval consumes more orchestrator turns.
 
@@ -49,7 +49,7 @@ Automatically resume a parked external blocker only when its prerequisite is dem
 
 Consume the read-only `run-decision` result. Its classifications are exactly `unknown`, `paused`, `unreconciled_completion`, `progress_possible`, `finite_exhausted`, `continuous_scope_exhausted`, and `blocked_tail`. `progress_possible` means continue/refill. `unknown`, `paused`, and `unreconciled_completion` never select a release. Only the three terminal classifications permit a nonempty underfilled final batch, and cardinality never waives review, checks, preview, target, authority, recovery, or exact boundary evidence.
 
-Count unique top-level delivery IDs, not commits, subtasks, checks, agents, or prose. Join task-keyed source, integration, review, checks, preview, target, authority, and recovery evidence for the exact current selected set. Work outside `run.taskIds` never widens a continuous run; extension is an owner-only additive versioned `run-scope-extend` transition.
+Count unique top-level delivery IDs, not commits, subtasks, checks, agents, or prose. Join task-keyed source, integration, review, checks, preview, target, authority, and recovery evidence for the exact current selected set. Work outside `run.taskIds` never widens a continuous run; extension is an additive versioned `run-scope-extend` transition.
 
 ## Durable run records
 

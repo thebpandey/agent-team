@@ -191,7 +191,7 @@ test("retirement archives the historical run and holds authority without changin
 test("retirement refuses missing native identity and every stale or pending canonical input without writes", async () => {
   assert.equal(typeof runState.retireRun, "function", "run-state must expose the authenticated retirement transition");
   const cases = [
-    ["native", (request, options) => [request, { ...options, nativeIdentity: undefined }], "project_owner_required"],
+    ["native", (request, options) => [request, { ...options, nativeIdentity: undefined }], "native_project_context_required"],
     ["version", (request, options) => [request, { ...options, expectedVersion: options.expectedVersion + 1 }], "stale_version"],
     ["state", (request, options) => [{ ...request, expectedStateFingerprint: "a".repeat(64) }, options], "stale_state"],
     ["run", (request, options) => [{ ...request, expectedRunFingerprint: "b".repeat(64) }, options], "stale_run"],
@@ -230,7 +230,7 @@ test("retirement refuses missing native identity and every stale or pending cano
   assert.deepEqual(await readFile(currentOwner.project.paths.state), currentOwnerBefore);
 });
 
-test("only the exact pending maintenance successor can start and it still requires native owner identity", async () => {
+test("only the exact pending maintenance successor can start and it still requires native project identity", async () => {
   assert.equal(typeof runState.retireRun, "function", "run-state must expose the authenticated retirement transition");
   const value = await fixture();
   const before = await loadCanonicalState(value.project);
@@ -246,7 +246,7 @@ test("only the exact pending maintenance successor can start and it still requir
     reason: "Start only the explicitly authorized release-maintenance task.", run: proposed };
   const options = nativeOptions(value, current.state.stateVersion);
   const beforeStart = await readFile(value.project.paths.state);
-  assert.equal((await runState.startRun(value.project, start, { ...options, nativeIdentity: undefined })).reason, "project_owner_required");
+  assert.equal((await runState.startRun(value.project, start, { ...options, nativeIdentity: undefined })).reason, "native_project_context_required");
   assert.deepEqual(await readFile(value.project.paths.state), beforeStart);
   assert.equal((await runState.startRun(value.project, { ...start, operationId: "wrong-successor", run: { ...proposed, taskIds: ["AT-001"] } }, options)).reason,
     "run_successor_mismatch");

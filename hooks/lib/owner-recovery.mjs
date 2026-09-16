@@ -125,15 +125,14 @@ async function gitIdentity(location) {
 }
 
 export async function validateNativeOwnerAuthority(project, nativeIdentity, ownership, expectedSessionId) {
-  if (!ownership) return true;
   const host = nativeIdentity?.host === "claude" ? "claude-code" : nativeIdentity?.host;
-  if (!validateQualifiedOwnership(ownership) || nativeIdentity?.observed !== true || host !== ownership.current.host
-    || nativeIdentity?.sessionId !== expectedSessionId || expectedSessionId !== ownership.current.sessionId
-    || nativeIdentity?.ownershipEpoch !== ownership.epoch || typeof nativeIdentity?.cwd !== "string") return false;
+  if (nativeIdentity?.observed !== true || !runtimes.has(host)
+    || nativeIdentity?.sessionId !== expectedSessionId || !validId(expectedSessionId)
+    || typeof nativeIdentity?.cwd !== "string") return false;
   let derived;
   try { derived = await gitIdentity(nativeIdentity.cwd); }
   catch { return false; }
-  return project.root === project.worktreeRoot && project.root === derived.canonicalTop && derived.nativeTop === derived.canonicalTop
+  return project.root === derived.canonicalTop && project.worktreeRoot === derived.nativeTop
     && project.commonDirectory === derived.commonDirectory;
 }
 
@@ -732,6 +731,30 @@ const legacyAdoptionRequestKeys = ["operationId", "projectId", "expectedLegacyOw
   "expectedRevision", "expectedTracker", "expectedSetupVersion", "expectedStateVersion", "expectedTeamsFingerprint",
   "expectedSetupFingerprint", "expectedStateFingerprint", "expectedOwnerHistoryFingerprint", "authorization", "reason"];
 const adoptionAuthorizationKeys = ["status", "scope", "source", "approvalId", "grantedAt", "projectId", "revision", "trackerFingerprint", "host"];
+const continuityAdoptionAuthorizationKeys = ["kind", "status", "scope", "source", "approvalId", "grantedAt", "projectId",
+  "revision", "trackerFingerprint", "expectedLegacyOwnerSessionId", "newOwner"];
+
+function validLegacyAdoptionAuthorization(authorization, request) {
+  return exactKeys(authorization, adoptionAuthorizationKeys) && authorization.status === "approved"
+    && authorization.scope === "legacy_owner_adoption"
+    && typeof authorization.source === "string" && authorization.source.trim() && authorization.source.length <= 256
+    && validId(authorization.approvalId) && timestamp(authorization.grantedAt)
+    && authorization.projectId === request.projectId && authorization.revision === request.expectedRevision
+    && authorization.trackerFingerprint === request.expectedTracker.fingerprint && runtimes.has(authorization.host);
+}
+
+function validLegacyContinuityAuthorization(authorization, request) {
+  return exactKeys(authorization, continuityAdoptionAuthorizationKeys) && authorization.kind === "user-directed-maintenance"
+    && authorization.status === "approved" && authorization.scope === "legacy_coordinator_continuity_migration"
+    && typeof authorization.source === "string" && authorization.source.trim() === authorization.source
+    && authorization.source.length > 0 && authorization.source.length <= 256
+    && validId(authorization.approvalId) && timestamp(authorization.grantedAt)
+    && authorization.projectId === request.projectId && authorization.revision === request.expectedRevision
+    && authorization.trackerFingerprint === request.expectedTracker.fingerprint
+    && authorization.expectedLegacyOwnerSessionId === request.expectedLegacyOwnerSessionId
+    && qualifiedIdentity(authorization.newOwner)
+    && authorization.newOwner.sessionId !== request.expectedLegacyOwnerSessionId;
+}
 
 /** Validate the one-time migration request without accepting any asserted actor identity. */
 export function validateLegacyOwnerAdoptionEnvelope(envelope) {
@@ -748,32 +771,39 @@ export function validateLegacyOwnerAdoptionEnvelope(envelope) {
     || !Number.isSafeInteger(request.expectedSetupVersion) || request.expectedSetupVersion < 1
     || !Number.isSafeInteger(request.expectedStateVersion) || request.expectedStateVersion < 0
     || ![request.expectedTeamsFingerprint, request.expectedSetupFingerprint, request.expectedStateFingerprint].every((value) => hex(value, 64))
-    || request.expectedOwnerHistoryFingerprint !== null || !exactKeys(authorization, adoptionAuthorizationKeys)
-    || authorization.status !== "approved" || authorization.scope !== "legacy_owner_adoption"
-    || typeof authorization.source !== "string" || !authorization.source.trim() || authorization.source.length > 256
-    || !validId(authorization.approvalId) || !timestamp(authorization.grantedAt) || authorization.projectId !== request.projectId
-    || authorization.revision !== request.expectedRevision || authorization.trackerFingerprint !== tracker.fingerprint
-    || !runtimes.has(authorization.host) || typeof request.reason !== "string" || request.reason.trim() !== request.reason
+    || request.expectedOwnerHistoryFingerprint !== null
+    || !(validLegacyAdoptionAuthorization(authorization, request) || validLegacyContinuityAuthorization(authorization, request))
+    || typeof request.reason !== "string" || request.reason.trim() !== request.reason
     || !request.reason || Buffer.byteLength(request.reason) > 4096) return "invalid_request";
   return undefined;
 }
 
 const adoptionReceiptKeys = ["schemaVersion", "operationId", "signature", "projectId", "expectedLegacyOwnerSessionId",
   "ownershipEpoch", "newOwner", "appliedAt", "authorization", "prior", "nativeEvidence", "reason"];
+const continuityAdoptionReceiptKeys = [...adoptionReceiptKeys, "kind", "livenessEvidence"];
 const priorKeys = ["stateFingerprint", "teamsFingerprint", "setupFingerprint", "ownerHistoryFingerprint"];
 const nativeEvidenceKeys = ["host", "sessionId", "cwd", "invocationId", "writer"];
 
 function validateLegacyOwnerAdoptionReceipt(receipt) {
-  return exactKeys(receipt, adoptionReceiptKeys) && receipt.schemaVersion === 1 && validId(receipt.operationId) && hex(receipt.signature, 64)
+  const continuity = exactKeys(receipt, continuityAdoptionReceiptKeys) && receipt.kind === "legacy_coordinator_continuity"
+    && validContinuityEvidence(receipt.livenessEvidence);
+  const classic = exactKeys(receipt, adoptionReceiptKeys);
+  const authorizationRequest = { projectId: receipt?.projectId, expectedRevision: receipt?.authorization?.revision,
+    expectedTracker: { fingerprint: receipt?.authorization?.trackerFingerprint },
+    expectedLegacyOwnerSessionId: receipt?.expectedLegacyOwnerSessionId };
+  const authorizationValid = continuity
+    ? validLegacyContinuityAuthorization(receipt.authorization, authorizationRequest)
+      && stable(receipt.authorization.newOwner) === stable(receipt.newOwner)
+      && receipt.livenessEvidence.observedAt === receipt.appliedAt
+    : classic && validLegacyAdoptionAuthorization(receipt?.authorization, authorizationRequest);
+  return (classic || continuity) && receipt.schemaVersion === 1 && validId(receipt.operationId) && hex(receipt.signature, 64)
     && validId(receipt.projectId) && validId(receipt.expectedLegacyOwnerSessionId)
-    && (receipt.expectedLegacyOwnerSessionId === "root" || receipt.expectedLegacyOwnerSessionId === receipt.newOwner?.sessionId)
+    && (continuity ? receipt.expectedLegacyOwnerSessionId !== receipt.newOwner?.sessionId
+      : receipt.expectedLegacyOwnerSessionId === "root" || receipt.expectedLegacyOwnerSessionId === receipt.newOwner?.sessionId)
     && receipt.ownershipEpoch === 1
-    && qualifiedIdentity(receipt.newOwner) && timestamp(receipt.appliedAt) && exactKeys(receipt.authorization, adoptionAuthorizationKeys)
-    && receipt.authorization.status === "approved" && receipt.authorization.scope === "legacy_owner_adoption"
-    && typeof receipt.authorization.source === "string" && receipt.authorization.source.trim() && receipt.authorization.source.length <= 256
-    && validId(receipt.authorization.approvalId) && timestamp(receipt.authorization.grantedAt)
-    && receipt.authorization.projectId === receipt.projectId && hex(receipt.authorization.revision, 40)
-    && hex(receipt.authorization.trackerFingerprint, 64) && receipt.authorization.host === receipt.newOwner.host
+    && qualifiedIdentity(receipt.newOwner) && timestamp(receipt.appliedAt) && authorizationValid
+    && hex(receipt.authorization.revision, 40) && hex(receipt.authorization.trackerFingerprint, 64)
+    && (continuity || receipt.authorization.host === receipt.newOwner.host)
     && exactKeys(receipt.prior, priorKeys) && hex(receipt.prior.stateFingerprint, 64) && hex(receipt.prior.teamsFingerprint, 64)
     && hex(receipt.prior.setupFingerprint, 64) && receipt.prior.ownerHistoryFingerprint === null
     && exactKeys(receipt.nativeEvidence, nativeEvidenceKeys) && receipt.nativeEvidence.host === receipt.newOwner.host
@@ -926,12 +956,13 @@ function semanticAdoptionJournal(journal, project) {
   const identity = parseTeams(priorTeams);
   const owner = receipt.newOwner;
   const legacyOwner = receipt.expectedLegacyOwnerSessionId;
+  const continuity = receipt.kind === "legacy_coordinator_continuity";
   const expectedOwnership = { epoch: 1, current: { ...owner, since: receipt.appliedAt, operationId: receipt.operationId,
     writer: receipt.nativeEvidence.writer } };
   const stripGate = (gate) => without(gate, ["ownerSessionId", "ownerHost", "ownershipEpoch", "authorized", "hold"]);
   if (!priorState || !postState || !priorSetup || !postSetup || !priorTeams
     || records["owner-history"].prior !== null || records.receipt.prior !== null
-    || legacyOwner !== "root" && legacyOwner !== owner.sessionId
+    || !continuity && legacyOwner !== "root" && legacyOwner !== owner.sessionId
     || journal.records.find(({ name }) => name === "state").priorSha256 !== receipt.prior.stateFingerprint
     || journal.records.find(({ name }) => name === "teams").priorSha256 !== receipt.prior.teamsFingerprint
     || journal.records.find(({ name }) => name === "setup").priorSha256 !== receipt.prior.setupFingerprint
@@ -1007,15 +1038,19 @@ async function rollForwardAdoption(project, journal, options = {}) {
   return journal.receipt;
 }
 
-/** One-time migration for the historically known synthetic `root` owner. */
+/** One-time qualification for exact legacy ownership, including explicit current-session continuity. */
 export async function adoptLegacyProjectOwner(project, envelope, context = {}, options = {}) {
   if (validateLegacyOwnerAdoptionEnvelope(envelope)) return refusal("invalid_request");
   const request = envelope.request;
   const native = context.nativeIdentity;
   const nativeHost = native?.host === "claude" ? "claude-code" : native?.host;
+  const continuity = validLegacyContinuityAuthorization(request.authorization, request);
+  const nativeOwner = { host: nativeHost, sessionId: native?.sessionId };
   if (native?.observed !== true || !runtimes.has(nativeHost) || !validId(native.sessionId) || native.sessionId === "root"
-    || !validId(native.invocationId) || typeof native.cwd !== "string" || request.authorization.host !== nativeHost
-    || request.expectedLegacyOwnerSessionId !== "root" && request.expectedLegacyOwnerSessionId !== native.sessionId) {
+    || !validId(native.invocationId) || typeof native.cwd !== "string"
+    || (continuity ? stable(request.authorization.newOwner) !== stable(nativeOwner)
+      : request.authorization.host !== nativeHost
+        || request.expectedLegacyOwnerSessionId !== "root" && request.expectedLegacyOwnerSessionId !== native.sessionId)) {
     return { status: "validated", ready: false, reason: "native_legacy_owner_adoption_required" };
   }
   let git;
@@ -1094,7 +1129,10 @@ export async function adoptLegacyProjectOwner(project, envelope, context = {}, o
             expectedLegacyOwnerSessionId: legacyOwner, ownershipEpoch: 1, newOwner, appliedAt,
             authorization: structuredClone(request.authorization), prior: { stateFingerprint: hashes.state, teamsFingerprint: hashes.teams,
               setupFingerprint: hashes.setup, ownerHistoryFingerprint: null },
-            nativeEvidence: { host: nativeHost, sessionId: native.sessionId, cwd: git.nativeCwd, invocationId: native.invocationId, writer }, reason: request.reason };
+            nativeEvidence: { host: nativeHost, sessionId: native.sessionId, cwd: git.nativeCwd, invocationId: native.invocationId, writer },
+            ...(continuity ? { kind: "legacy_coordinator_continuity",
+              livenessEvidence: { status: "not_asserted", observedAt: appliedAt } } : {}),
+            reason: request.reason };
           const nextBytes = { teams: Buffer.from(nextTeams), state: encodeJson(nextState), setup: encodeJson(nextSetup),
             "owner-history": encodeJson(nextHistory), receipt: encodeJson(receipt) };
           const records = entries.map(([name, file, before]) => journalRecord(name, file, before, nextBytes[name]));

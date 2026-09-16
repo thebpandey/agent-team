@@ -66,14 +66,30 @@ test("real pinned Superpowers source prepares only selected complete skills", { 
 
 test("real selected LeanCTX executable passes its isolated narrow-read gate", { skip: !enabled || !process.env.AGENT_TEAM_REAL_LEAN_CTX }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-team-real-leanctx-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }));
   const paths = { projectRoot: root, toolRoot: path.join(root, "tools"), skillRoot: path.join(root, "skills") };
   const dependency = { ...CATALOG_BY_ID.get("lean-ctx"), executable: process.env.AGENT_TEAM_REAL_LEAN_CTX };
-  const runner = createDependencyRunner({ host: "codex", scope: "project", paths });
+  const inherited = { LEAN_CTX_EXTRA_ROOTS: "/tmp", LEAN_CTX_PROJECT_ROOT: "/tmp", LEAN_CTX_ALLOW_REROOT: "1" };
+  let observedQualification;
+  const runner = createDependencyRunner({ host: "codex", scope: "project", paths, workerDiscovery: async ({ executable, qualification }) => {
+    observedQualification = qualification;
+    assert.equal(await readFile(qualification.marker.path, "utf8"), qualification.marker.content);
+    assert.equal(qualification.marker.access, "read-only");
+    const env = { ...process.env, ...inherited, ...qualification.environment.set };
+    for (const key of qualification.environment.unset) delete env[key];
+    const { stdout } = await exec(executable, ["read", qualification.marker.path], { cwd: qualification.cwd, env });
+    return stdout.includes("readinessLeanCtxMarker")
+      ? { status: "passed", evidence: "real isolated fresh-worker read" }
+      : { status: "failed", evidence: stdout };
+  } });
 
   const functional = await runner({ dependency, phase: "functional", check: dependency.functionalCheck });
+  const worker = await runner({ dependency, phase: "worker", check: "fresh-worker-discovery" });
 
   assert.equal(functional.status, "passed", functional.evidence);
+  assert.equal(worker.status, "passed", worker.evidence);
+  await assert.rejects(access(path.dirname(observedQualification.marker.path)), { code: "ENOENT" });
+  await assert.rejects(access(observedQualification.isolationRoot), { code: "ENOENT" });
 });
 
 test("real selected Beads executable passes isolated concurrent write and export", { skip: !enabled || !process.env.AGENT_TEAM_REAL_BD }, async (t) => {
@@ -124,8 +140,8 @@ test("real Beads verification ignores contaminated tracker and Git routing", { s
 
 test("real isolated Impeccable package passes its documented detector exit contract", { skip: !enabled }, async (t) => {
   const dependency = CATALOG_BY_ID.get("impeccable");
-  assert.equal(dependency.guidance.revision, "2c33196c51ac52e47691384e61d89f1218d8d21d");
-  for (const [host, sourcePath] of [["codex", ".agents/skills/impeccable"], ["claude-code", ".agent/skills/impeccable"]]) {
+  assert.equal(dependency.guidance.revision, "f64da20b07271b760e4e3133eef3b87942860f11");
+  for (const [host, sourcePath] of [["codex", ".agents/skills/impeccable"], ["claude-code", ".claude/skills/impeccable"]]) {
     await t.test(host, async (t) => {
       const root = await mkdtemp(path.join(os.tmpdir(), `agent-team-real-impeccable-${host}-`));
       t.after(() => rm(root, { recursive: true, force: true }));

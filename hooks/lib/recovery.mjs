@@ -266,7 +266,8 @@ async function factualSnapshot(project, sessionId, probe, { worktree, includePro
   } catch {
     canonical = undefined;
   }
-  const identity = canonical ? identityFor(canonical.registry, host, sessionId) : { role: "unknown" };
+  const registeredIdentity = canonical ? identityFor(canonical.registry, host, sessionId) : { role: "unknown" };
+  const identity = registeredIdentity.role === "unknown" && canonical ? { role: "project_session" } : registeredIdentity;
   return {
     worktree,
     git: {

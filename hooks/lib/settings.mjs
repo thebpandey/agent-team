@@ -3,7 +3,6 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ROLE_DEFINITIONS } from "./dependency-profiles.mjs";
 import { withDirectoryLock } from "./lock.mjs";
-import { assertNoOwnerRecoveryJournal, repairOwnerRecovery } from "./owner-recovery.mjs";
 
 const HOSTS = new Set(["codex", "claude-code"]);
 
@@ -277,11 +276,7 @@ async function atomicJson(file, value, budget) {
   } finally { await rm(temporary, { force: true }); }
 }
 
-function registryOwner(registry) {
-  return typeof registry?.projectOwner === "string" ? registry.projectOwner : registry?.projectOwner?.id;
-}
-
-/** Serialize setup.json changes under one project-owner/version/idempotency contract. */
+/** Serialize setup.json changes under one native-session/version/idempotency contract. */
 export async function mutateSetup({ setupPath, expectedVersion, writer, operationId, operation, loadRegistry, mutate, budget }) {
   if (!validWriter(writer)) throw new Error("A setup writer identity and role are required.");
   if (typeof operationId !== "string" || !operationId) throw new Error("A setup operationId is required.");
@@ -289,22 +284,12 @@ export async function mutateSetup({ setupPath, expectedVersion, writer, operatio
   const operationSignature = signature(operation);
   const stateRoot = path.dirname(setupPath);
   const locks = path.join(stateRoot, ".locks");
-  const project = { root: path.dirname(stateRoot), paths: { stateRoot, setup: setupPath, state: path.join(stateRoot, "state.json"),
-    teams: path.join(stateRoot, "TEAMS.md"), ownerHistory: path.join(stateRoot, "owner-history.json"),
-    ownerRecoveryJournal: path.join(stateRoot, ".owner-recovery.json"), ownerRecoveryLock: path.join(locks, "owner-recovery.lock"), locks } };
-  await repairOwnerRecovery(project, { budget });
   const lockPath = path.join(locks, "setup.lock");
   return withDirectoryLock(lockPath, { operation: operation?.kind ?? "setup", operationId, writer }, async () => {
-    await assertNoOwnerRecoveryJournal(project);
     const setup = JSON.parse(await readFile(setupPath, "utf8"));
     const registry = await loadRegistry();
-    const owner = registryOwner(registry);
-    const ownerHost = typeof registry?.projectOwnerHost === "string" ? registry.projectOwnerHost : undefined;
-    const writerHost = writer.host === "claude" ? "claude-code" : writer.host;
-    if (!owner || owner !== writer.id || ownerHost && writerHost !== ownerHost
-      || setup.ownership?.epoch !== undefined && writer.ownershipEpoch !== setup.ownership.epoch
-      || writer.role !== "project_orchestrator") {
-      return { status: "conflict", reason: "project_owner_required" };
+    if (!registry || typeof registry !== "object" || writer.role !== "project_orchestrator") {
+      return { status: "conflict", reason: "project_context_required" };
     }
     const previous = setup.setupOperations?.find(({ id }) => id === operationId);
     if (previous) {

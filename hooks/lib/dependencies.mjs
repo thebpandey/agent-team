@@ -12,6 +12,11 @@ import { createBeadsGraphCommandAdapter } from "./dashboard.mjs";
 
 const exec = promisify(execFile);
 const HOSTS = new Set(["codex", "claude-code"]);
+const IMPECCABLE_COMPANION_BOUNDS = Object.freeze({ maxEntries: 256, maxFileBytes: 2 * 1024 * 1024 });
+
+function skillBounds(dependency) {
+  return dependency.id === "impeccable" ? { entries: 0, bytes: 0, ...IMPECCABLE_COMPANION_BOUNDS } : undefined;
+}
 
 function includePrerequisites(ids) {
   const selected = new Set(ids);
@@ -75,7 +80,7 @@ export function inspectDependencies({ setup = {}, host }) {
     groups: [
       { id: "runtimes_tools", ...count(tools) },
       { id: "skills", ...count(skills) },
-      { id: "project_readiness", ready: failed.length ? 0 : (receipts.length ? 1 : 0), failed: failed.length ? 1 : 0 },
+      { id: "selected_components", ready: receipts.length - failed.length, failed: failed.length },
     ],
     unresolved: failed.map(({ id, boundary }) => ({ id, boundary: boundary ?? "No functional evidence." })),
   };
@@ -123,9 +128,9 @@ export function buildPreparationPlan({ dependencyId, host, scope, paths, executa
     command: target,
     args: ["start-mcp-server", "--context", host, "--project", paths.projectRoot],
     scope,
-    ownership: "agent-team-entry-only",
-    status: "host-approval-required",
-    boundary: "Merge only the owned Serena entry, complete host trust/reload, then verify it from a fresh worker.",
+    management: "scoped-entry",
+    status: "host-registration-required",
+    boundary: "Register only this Serena entry, reload the host, then observe fresh-worker availability when a task requires it.",
   } : undefined;
   return {
     id: dependency.id,
@@ -260,10 +265,13 @@ async function prepareOne(dependency, runner, budget) {
   }
   const worker = await run({ dependency, phase: "worker", check: "fresh-worker-discovery" });
   if (worker.status !== "passed") {
+    const unverified = worker.status === "unverified";
     return {
       id: dependency.id, version: dependency.version, detected, installed, ...ownership, functional: "passed",
-      availableToWorker: worker.status === "unverified" ? "unknown" : "failed", status: "failed",
-      boundary: dependencyBoundary(dependency, worker, "A fresh worker could not discover the capability."), observedAt,
+      availableToWorker: unverified ? "unknown" : "failed", status: unverified ? "ready" : "failed",
+      boundary: dependencyBoundary(dependency, worker, unverified
+        ? "Fresh-worker discovery is advisory; explicitly task-required capabilities remain unavailable until verified."
+        : "A fresh worker could not discover the capability."), observedAt,
     };
   }
   return {
@@ -319,7 +327,7 @@ export async function prepareDependencies({ setupPath, expectedVersion, writer, 
           receipts.push({
             id: dependency.id, version: dependency.version, detected: false, installed: "not_installed",
             functional: "not_run", availableToWorker: "failed", status: "required_unavailable",
-            boundary: `Mandatory dependency ${dependency.id} was explicitly declined; readiness remains unavailable until it is approved and verified.`,
+            boundary: `Required capability ${dependency.id} was explicitly declined; tasks that require it remain unavailable until it is prepared.`,
             observedAt: new Date().toISOString(),
           });
         } else if (unavailablePrerequisites.length) {
@@ -624,9 +632,7 @@ async function inspectSkillDestinations(dependency, paths, { budget, bounded = f
     const requirement = dependency.compatibility?.selectedPaths?.find((entry) => entry.selectedPath === selectedPath);
     let allFiles;
     try {
-      allFiles = await skillContents(destination, budget, "", dependency.id === "impeccable"
-        ? { entries: 0, bytes: 0, maxEntries: 256 }
-        : undefined);
+      allFiles = await skillContents(destination, budget, "", skillBounds(dependency));
       const entrypoints = Object.keys(allFiles).filter((file) => path.posix.basename(file) === (dependency.compatibility?.entrypoint ?? "SKILL.md"));
       if (entrypoints.length !== 1 || entrypoints[0] !== (dependency.compatibility?.entrypoint ?? "SKILL.md")) {
         await preserve(selectedPath, destination,
@@ -706,9 +712,7 @@ async function validateGitSkillStage(dependency, selectedPath, root, budget) {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  const files = await skillContents(root, budget, "", dependency.id === "impeccable"
-    ? { entries: 0, bytes: 0, maxEntries: 256 }
-    : undefined);
+  const files = await skillContents(root, budget, "", skillBounds(dependency));
   if (Object.keys(files).some((file) => path.posix.basename(file) === ".agent-team-source.json")) {
     throw new Error("Pinned skill source contains nested reserved provenance.");
   }
@@ -735,8 +739,8 @@ async function unchangedGitSkillPublication(destination, expected) {
   try {
     const stat = await lstat(destination);
     if (!stat.isDirectory() || stat.dev !== expected.identity.dev || stat.ino !== expected.identity.ino) return false;
-    const files = await skillContents(destination, undefined, "", expected.maxEntries
-      ? { entries: 0, bytes: 0, maxEntries: expected.maxEntries }
+    const files = await skillContents(destination, undefined, "", expected.bounds
+      ? { entries: 0, bytes: 0, ...expected.bounds }
       : undefined);
     const expectedFiles = Object.fromEntries(Object.entries(expected.files).sort(([left], [right]) => left.localeCompare(right)));
     if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) return false;
@@ -784,7 +788,7 @@ async function installGitSkills(dependency, paths, budget) {
       const metadata = Buffer.from(`${JSON.stringify({ source: dependency.install.source, revision: dependency.version, selectedPath }, null, 2)}\n`);
       await writeFile(path.join(stage, ".agent-team-source.json"), metadata, { mode: 0o600, flag: "wx" });
       staged.push({ selectedPath, stage, destination: skillDestination(dependency, paths, selectedPath),
-        expected: { files, metadata, ...(dependency.id === "impeccable" ? { maxEntries: 256 } : {}) } });
+        expected: { files, metadata, ...(dependency.id === "impeccable" ? { bounds: IMPECCABLE_COMPANION_BOUNDS } : {}) } });
     }
   } catch (error) {
     await rm(stageRoot, { recursive: true, force: true });
@@ -1297,25 +1301,76 @@ async function graphifyFunctional(executable, paths, budget) {
   }
 }
 
+const LEAN_CTX_MARKER = "readinessLeanCtxMarker: exact source remains recoverable.\n";
+const LEAN_CTX_ENV_UNSET = Object.freeze([
+  "LEAN_CTX_DISABLED", "LEAN_CTX_RAW", "LEAN_CTX_EXTRA_ROOTS", "LEAN_CTX_ALLOW_PATH", "LCTX_ALLOW_PATH",
+  "LEAN_CTX_ALLOW_REROOT", "LEAN_CTX_PROJECT_ROOT", "LEAN_CTX_READ_ONLY_ROOTS",
+]);
+
+function leanCtxQualification(worktree, isolationRoot, markerPath, isolationBoundary = worktree) {
+  const cwd = path.resolve(worktree);
+  const root = path.resolve(isolationRoot);
+  const marker = path.resolve(markerPath);
+  if (!contained(cwd, marker)) {
+    throw new Error("LeanCTX qualification marker must stay inside the assigned worktree.");
+  }
+  if (!contained(path.resolve(isolationBoundary), root)) {
+    throw new Error("LeanCTX qualification state must stay inside the selected verification root.");
+  }
+  const set = {};
+  for (const kind of ["CONFIG", "DATA", "STATE", "CACHE"]) {
+    const xdg = path.join(root, `xdg-${kind.toLowerCase()}`);
+    set[`XDG_${kind}_HOME`] = xdg;
+    set[`LEAN_CTX_${kind}_DIR`] = path.join(xdg, "lean-ctx");
+  }
+  set.XDG_RUNTIME_DIR = path.join(root, "xdg-runtime");
+  set.LEAN_CTX_NO_DAEMON = "1";
+  return {
+    kind: "lean-ctx-narrow-read",
+    cwd,
+    isolationRoot: root,
+    marker: { path: marker, content: LEAN_CTX_MARKER, access: "read-only" },
+    environment: { set, unset: [...LEAN_CTX_ENV_UNSET] },
+    boundary: { root: cwd, extraRoots: [] },
+  };
+}
+
+async function stageLeanCtxQualification(qualification, budget) {
+  const markerRoot = path.dirname(qualification.marker.path);
+  await mkdir(path.dirname(markerRoot), { recursive: true, mode: 0o700 });
+  await mkdir(markerRoot, { mode: 0o700 });
+  await mkdir(path.dirname(qualification.isolationRoot), { recursive: true, mode: 0o700 });
+  await mkdir(qualification.isolationRoot, { mode: 0o700 });
+  for (const directory of new Set(Object.values(qualification.environment.set)
+    .filter((value) => typeof value === "string" && path.isAbsolute(value)))) {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+  }
+  await writeFile(qualification.marker.path, qualification.marker.content,
+    { mode: 0o600, flag: "wx", signal: budget?.signal });
+}
+
+async function cleanLeanCtxQualification(qualification) {
+  await Promise.all([
+    rm(path.dirname(qualification.marker.path), { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }),
+    rm(qualification.isolationRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }),
+  ]);
+}
+
+function leanCtxEnvironment(qualification) {
+  const env = { ...process.env, ...qualification.environment.set };
+  for (const key of qualification.environment.unset) delete env[key];
+  return env;
+}
+
 async function leanCtxFunctional(executable, paths) {
   const root = path.join(paths.toolRoot, "verification", `lean-ctx-${randomUUID()}`);
-  const fixture = path.join(root, "fixture.txt");
+  const qualification = leanCtxQualification(root, root, path.join(root, "fixture.txt"));
   await mkdir(root, { recursive: true, mode: 0o700 });
-  await writeFile(fixture, "readinessLeanCtxMarker: exact source remains recoverable.\n", { mode: 0o600 });
-  const env = { ...process.env };
-  delete env.LEAN_CTX_DISABLED;
-  delete env.LEAN_CTX_RAW;
-  env.XDG_CONFIG_HOME = path.join(root, "xdg-config");
-  env.XDG_DATA_HOME = path.join(root, "xdg-data");
-  env.XDG_STATE_HOME = path.join(root, "xdg-state");
-  env.XDG_CACHE_HOME = path.join(root, "xdg-cache");
-  env.XDG_RUNTIME_DIR = path.join(root, "xdg-runtime");
-  // Explicit upstream pins take precedence over XDG and legacy layout detection.
-  for (const kind of ["CONFIG", "DATA", "STATE", "CACHE"]) {
-    env[`LEAN_CTX_${kind}_DIR`] = path.join(env[`XDG_${kind}_HOME`], "lean-ctx");
-  }
+  await writeFile(qualification.marker.path, qualification.marker.content, { mode: 0o600 });
   try {
-    const read = await command(executable, ["read", fixture], { cwd: root, env });
+    const read = await command(executable, ["read", qualification.marker.path], {
+      cwd: qualification.cwd, env: leanCtxEnvironment(qualification),
+    });
     return read.status === "passed" && read.stdout?.includes("readinessLeanCtxMarker")
       ? { status: "passed", evidence: "LeanCTX narrow read recovered readinessLeanCtxMarker from an isolated source." }
       : { status: "failed", evidence: evidence(read) ?? "LeanCTX narrow read did not return the known source marker." };
@@ -1693,7 +1748,26 @@ export function createDependencyRunner({ host, scope, paths, functionalAdapters 
       return { status: "failed", evidence: `Functional adapter '${check}' did not run.` };
     }
     if (phase === "worker") {
-      if (workerDiscovery) return workerDiscovery({ dependency, executable, executableIdentity: identity, host, scope, paths });
+      if (workerDiscovery) {
+        const qualificationId = dependency.id === "lean-ctx" ? randomUUID() : undefined;
+        const markerRoot = qualificationId
+          ? path.join(paths.projectRoot, ".agent-team", "qualification", `lean-ctx-${qualificationId}`)
+          : undefined;
+        const verificationRoot = qualificationId ? path.join(paths.toolRoot, "verification") : undefined;
+        const isolationRoot = qualificationId ? path.join(verificationRoot, `lean-ctx-worker-${qualificationId}`) : undefined;
+        const qualification = markerRoot
+          ? leanCtxQualification(paths.projectRoot, isolationRoot, path.join(markerRoot, "fixture.txt"), verificationRoot)
+          : undefined;
+        if (!qualification) {
+          return workerDiscovery({ dependency, executable, executableIdentity: identity, host, scope, paths });
+        }
+        try {
+          await stageLeanCtxQualification(qualification, budget);
+          return await workerDiscovery({ dependency, executable, executableIdentity: identity, host, scope, paths, qualification });
+        } finally {
+          await cleanLeanCtxQualification(qualification);
+        }
+      }
       return { status: "unverified", evidence: `Fresh ${host} worker discovery was not exercised for ${scope} scope.` };
     }
     return { status: "failed", evidence: `Unknown preparation phase: ${phase}.` };

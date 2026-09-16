@@ -67,7 +67,8 @@ test("7.1 field guide retains complete onboarding and documents its new operatin
   assert.ok(manifest.rootFiles.includes("agent-team-guide-v7.1.0.html"));
   assert.ok(manifest.files.includes("agent-team-guide-v7.1.0.html"));
   assert.match(index, /agent-team-guide-v7\.1\.0\.html/);
-  assert.match(readme, /agent-team-guide-v7\.1\.0\.html/);
+  assert.match(readme, /GETTING_STARTED\.md/);
+  assert.doesNotMatch(readme, /agent-team-guide-v7\.[0-2]\.\d+\.html/);
 });
 
 test("7.0.2 guide remains a reachable historical edition", async () => {
@@ -262,10 +263,11 @@ test("setup docs distinguish bounded records from output and unverified native c
   assert.match(settings, /subprocessMaxBufferBytes.*2097152/s);
   assert.match(settings, /workerUpdateMaxChars.*2000/s);
   assert.match(setup, /offered_unverified/);
-  assert.match(setup, /owner_reported_unverified/);
+  assert.match(setup, /native Codex or Claude Code session.*canonical Git project/is);
+  assert.match(setup, /unobserved fresh-worker check is `unknown`/i);
   assert.match(setup, /automatic.*visibility.*unavailable/i);
   assert.match(setup, /parent-model comparison.*unknown/i);
-  assert.match(codex, /owner_reported_unverified/);
+  assert.match(codex, /same Git project.*continue/is);
   assert.match(claude, /trusted.*home.*process/i);
   assert.match(hooks, /helpers-install/);
   assert.match(hooks, /context-reduction-apply/);
@@ -308,7 +310,7 @@ test("active orchestration follows one ordered question continuation loop", asyn
     /status\/question.*commentary/is,
     /reconcile.*live worker.*completed handoff/is,
     /repair.*independent review.*serial.*integrat/is,
-    /stopped.*ownership transferred.*compute.*free/is,
+    /stopped.*handed off.*worker slot.*compute.*free/is,
     /reserve.*review.*admit.*eligible/is,
     /supervision\.heartbeatSeconds.*default.*600.*minimum.*60/is,
     /heartbeat.*known.*reconcile.*repeat/is,
@@ -385,19 +387,21 @@ test("dependency instructions separate compatibility ownership and prerequisite 
   ]) assert.match(all, pattern);
 });
 
-test("native project and migration instructions expose only accepted authority", async () => {
+test("native project instructions preserve evidence tools without session authority gates", async () => {
   const [projects, state, hooks] = await readMany(["references/PROJECTS.md", "references/STATE.md", "references/HOOKS.md"]);
   const all = projects + state + hooks;
-  for (const required of ["project-owner-recover", "evidence-store-register", "completion-history-reconcile",
+  for (const required of ["evidence-store-register", "completion-history-reconcile",
     "run-reconcile", "run-scope-extend", "completion-quarantine", "completion-rebind", "run-decision"]) assert.ok(all.includes(required), required);
   for (const pattern of [
     /native.*host.*session.*cwd/is, /request.*cannot.*(?:assert|mint).*identity/is,
-    /four.*record|TEAMS\.md.*state\.json.*setup\.json.*owner-history\.json/is,
+    /Legacy owner records.*historical compatibility data/is,
     /initialization.*immutable.*scope.*additive.*version/is,
     /completion.*integration.*publication.*task-keyed/is,
     /generatedBy.*testedAgainst.*loadedRuntime.*sourceCandidate.*readiness/is,
     /local_only/i, /enabled_but_held.*target_required/is,
   ]) assert.match(all, pattern);
+  assert.match(hooks, /project-owner-recover.*Deprecated compatibility\/maintenance/is);
+  assert.match(projects, /requires no coordination transfer/i);
 });
 
 test("artifact instructions match the accepted Linux descriptor-root installer", async () => {
@@ -421,7 +425,7 @@ test("artifact instructions match the accepted Linux descriptor-root installer",
 
 test("setup automatically prepares defaults while keeping optional and manual authority boundaries", async () => {
   const [setup, actions, release] = await readMany(["references/SETUP.md", "references/ACTIONS.md", "references/RELEASE.md"]);
-  for (const pattern of [/automatically install missing mandatory and selected default/i,
+  for (const pattern of [/explicit setup prepare selected default catalog items/i,
     /optional choices remain user decisions/i, /gh auth status/, /gh auth login/,
     /Never ask for a token in chat/i, /administrator approval/i, /never activate a temporary Markdown tracker/i,
     /Project Kickoff is not a prerequisite/i, /Restart\/reload/i, /cannot fabricate trust/i,
@@ -441,4 +445,29 @@ test("continuity instructions preserve facts and native compaction as fallback",
   assert.match(recovery, /Keep native auto-compaction enabled as fallback/);
   assert.match(recovery, /cannot guarantee automatic replacement of its parent conversation/);
   assert.match(recovery, /Unknown activity does not count as stopped/);
+});
+
+test("7.3.1 README is current-first and host switching is a first-class action", async () => {
+  const [readme, skill, actions, setup, projects, recovery, help, hooks, codex, claude] = await readMany([
+    "README.md", "SKILL.md", "references/ACTIONS.md", "references/SETUP.md", "references/PROJECTS.md",
+    "references/RECOVERY.md", "references/HELP.md", "references/HOOKS.md", "references/PLATFORM-CODEX.md",
+    "references/PLATFORM-CLAUDE.md",
+  ]);
+  assert.match(readme, /Agent-Team 7\.3\.1/);
+  assert.match(readme, /\$agent-team setup.*\/agent-team setup/is);
+  assert.match(readme, /switch.*Claude Code.*Codex|switch.*Codex.*Claude Code/is);
+  assert.doesNotMatch(readme, /agent-team-guide-v7\.[0-2]|Version 7\.[0-2]|Version 7\.3\.0|releases\/tag\/v7\.[0-2]|releases\/tag\/v7\.3\.0/i);
+
+  const continuity = [skill, actions, setup, projects, recovery, help, hooks, codex, claude].join("\n");
+  for (const pattern of [
+    /same Git project.*continue/is,
+    /no coordination transfer/i,
+    /preserv.*tracker.*claims.*settings.*evidence/is,
+    /legacy owner.*(?:does not|do not).*block/is,
+    /model.*fallback.*separate.*session continuity/is,
+  ]) assert.match(continuity, pattern);
+  assert.doesNotMatch(continuity, /requires? (?:an? )?(?:ownership|coordination) transfer/i);
+  assert.match(codex, /standalone.*agent.*profile.*does not prove.*native.*subagent.*model.*available/is);
+  assert.match(codex, /env_key.*present.*host process/is);
+  assert.match(codex, /configured.*provider.*native.*model catalog.*fresh spawn/is);
 });

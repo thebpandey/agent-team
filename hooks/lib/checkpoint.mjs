@@ -2,8 +2,7 @@ import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { withDirectoryLock } from "./lock.mjs";
-import { assertNoOwnerRecoveryJournal, validateNativeOwnerAuthority } from "./owner-recovery.mjs";
-import { identityFor, loadCanonicalState } from "./canonical-state.mjs";
+import { validateNativeOwnerAuthority } from "./owner-recovery.mjs";
 
 const fields = [
   "eventId", "sessionId", "eventKind", "projectId", "teamId", "skillRevision", "worktree", "branch",
@@ -62,18 +61,15 @@ async function existing(file) {
 /** Save a small factual recovery record without storing the native hook payload. */
 export async function writeCheckpoint(project, input, { now = new Date(), timeoutMs = 1000, budget, expectedVersion, actorSessionId, nativeIdentity, receiptFilesystem = {} } = {}) {
   if (!project.active) return { created: false, skipped: "inactive" };
-  if (actorSessionId !== undefined && actorSessionId !== input.sessionId) return { status: "conflict", reason: "checkpoint_owner_required" };
+  if (actorSessionId !== undefined && actorSessionId !== input.sessionId) return { status: "conflict", reason: "checkpoint_session_mismatch" };
   if (Buffer.byteLength(JSON.stringify(input)) > 32768) return { status: "conflict", reason: "checkpoint_too_large" };
   const bounded = (action) => budget ? budget.run(action) : action();
   if (actorSessionId !== undefined) {
     if (!Number.isInteger(expectedVersion) || !input.eventId) return { status: "conflict", reason: "checkpoint_version_and_operation_required" };
-    if (!await validateNativeOwnerAuthority(project, nativeIdentity, project.setup?.ownership, actorSessionId)) {
-      return { status: "conflict", reason: "checkpoint_owner_required" };
+    if (nativeIdentity !== undefined
+      && !await validateNativeOwnerAuthority(project, nativeIdentity, project.setup?.ownership, actorSessionId)) {
+      return { status: "conflict", reason: "native_project_context_required" };
     }
-    const canonical = await loadCanonicalState(project, { includeTasks: false, budget });
-    if (identityFor(canonical.registry, nativeIdentity?.host, actorSessionId).role === "unknown"
-      || canonical.registry.projectOwnerHost && (nativeIdentity?.observed !== true || nativeIdentity?.sessionId !== actorSessionId
-        || nativeIdentity?.ownershipEpoch !== canonical.registry.ownershipEpoch)) return { status: "conflict", reason: "checkpoint_owner_required" };
   }
   const file = path.join(project.paths.checkpoints, `${safeId(input.sessionId)}.json`);
   const lock = path.join(project.paths.locks, `checkpoint-${safeId(input.sessionId)}.lock`);
@@ -145,12 +141,5 @@ export async function writeCheckpoint(project, input, { now = new Date(), timeou
     }, { timeoutMs, budget });
   };
   if (actorSessionId === undefined) return write();
-  return withDirectoryLock(project.paths.ownerRecoveryLock, { kind: "checkpoint_owner_fence", actorSessionId, pid: process.pid }, async () => {
-    await assertNoOwnerRecoveryJournal(project);
-    const canonical = await loadCanonicalState(project, { includeTasks: false, budget });
-    if (!await validateNativeOwnerAuthority(project, nativeIdentity, canonical.state.ownership, actorSessionId)) {
-      return { status: "conflict", reason: "checkpoint_owner_required" };
-    }
-    return write();
-  }, { timeoutMs, budget });
+  return write();
 }

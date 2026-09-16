@@ -130,11 +130,9 @@ async function validateLaneFiles(project, lane, team, expectedRevision, briefMax
     const otherPaths = String(other["owned paths"] ?? "").split(/\s*,\s*/).filter(Boolean);
     if (ownedPaths.some((left) => otherPaths.some((right) => overlaps(left, right)))) return "owned_paths_overlap";
   }
-  let brief; let evidenceBytes; let evidence;
+  let brief;
   try {
     brief = await sealedBytes(path.join(project.root, lane.brief.path));
-    evidenceBytes = await sealedBytes(path.join(project.root, lane.ownershipEvidence.path));
-    evidence = JSON.parse(evidenceBytes);
   } catch { return "lane_evidence_unavailable"; }
   if (createHash("sha256").update(brief).digest("hex") !== lane.brief.sha256
     || validateLaneBrief(brief.toString("utf8"), { maxWords: briefMaxWords })) return "lane_brief_invalid";
@@ -162,14 +160,21 @@ async function validateLaneFiles(project, lane, team, expectedRevision, briefMax
       if (createHash("sha256").update(bytes).digest("hex") !== entry.sha256) return "lane_instruction_changed";
     } catch { return "lane_instruction_unavailable"; }
   }
-  if (createHash("sha256").update(evidenceBytes).digest("hex") !== lane.ownershipEvidence.sha256
-    || !exactKeys(evidence, ["schemaVersion", "status", "source", "revision", "ownedPaths", "pathSetHash", "conflicts", "observedAt"])
-    || evidence.schemaVersion !== 1 || evidence.status !== "resolved" || evidence.source !== "graphify"
-    || evidence.revision !== expectedRevision || stable(evidence.ownedPaths) !== stable(ownedPaths)
-    || evidence.pathSetHash !== createHash("sha256").update(JSON.stringify(ownedPaths)).digest("hex")
-    || evidence.pathSetHash !== lane.ownershipEvidence.pathSetHash || evidence.revision !== lane.ownershipEvidence.revision
-    || !Array.isArray(evidence.conflicts) || evidence.conflicts.length !== 0
-    || typeof evidence.observedAt !== "string" || !Number.isFinite(Date.parse(evidence.observedAt))) return "ownership_evidence_unresolved";
+  if (lane.ownershipEvidence) {
+    let evidenceBytes; let evidence;
+    try {
+      evidenceBytes = await sealedBytes(path.join(project.root, lane.ownershipEvidence.path));
+      evidence = JSON.parse(evidenceBytes);
+    } catch { return "lane_evidence_unavailable"; }
+    if (createHash("sha256").update(evidenceBytes).digest("hex") !== lane.ownershipEvidence.sha256
+      || !exactKeys(evidence, ["schemaVersion", "status", "source", "revision", "ownedPaths", "pathSetHash", "conflicts", "observedAt"])
+      || evidence.schemaVersion !== 1 || evidence.status !== "resolved" || evidence.source !== "graphify"
+      || evidence.revision !== expectedRevision || stable(evidence.ownedPaths) !== stable(ownedPaths)
+      || evidence.pathSetHash !== createHash("sha256").update(JSON.stringify(ownedPaths)).digest("hex")
+      || evidence.pathSetHash !== lane.ownershipEvidence.pathSetHash || evidence.revision !== lane.ownershipEvidence.revision
+      || !Array.isArray(evidence.conflicts) || evidence.conflicts.length !== 0
+      || typeof evidence.observedAt !== "string" || !Number.isFinite(Date.parse(evidence.observedAt))) return "ownership_evidence_unresolved";
+  }
   for (const sheet of lane.factSheets) {
     let bytes; let record;
     try {
@@ -612,8 +617,9 @@ export async function rotateLane(project, request, options = {}) {
         authorizationBytes = await sealedBytes(path.join(project.root, request.transferEvidence.path), 128 * 1024);
         authorization = JSON.parse(authorizationBytes);
       } catch { return conflict("lane_rotation_evidence_unavailable"); }
-      const expectedActor = { host: canonical.registry.projectOwnerHost, sessionId: canonical.registry.projectOwner,
-        ownershipEpoch: canonical.registry.ownershipEpoch };
+      const expectedActor = { host: options.nativeIdentity?.host === "claude" ? "claude-code" : options.nativeIdentity?.host,
+        sessionId: options.actorSessionId,
+        ownershipEpoch: Number.isSafeInteger(canonical.registry.ownershipEpoch) ? canonical.registry.ownershipEpoch : 1 };
       const expectedAuthorization = { schemaVersion: 1, kind: "explicit_transfer", laneId: lane.id,
         outgoingWorker: request.outgoingWorker, replacementWorker: request.replacementWorker, revision: request.expectedRevision,
         handoverSha256: request.handover.sha256, authorizedBy: expectedActor, reason: request.reason };
@@ -678,8 +684,11 @@ export async function closeLane(project, request, options = {}) {
       try { bytes = await sealedBytes(path.join(project.root, request.writerRelease.path), 128 * 1024); release = JSON.parse(bytes); }
       catch { return conflict("lane_writer_release_unavailable"); }
       const expected = { schemaVersion: 1, kind: "explicit_release", laneId: lane.id, worker: lane.worker,
-        revision: request.expectedRevision, authorizedBy: { host: canonical.registry.projectOwnerHost,
-          sessionId: canonical.registry.projectOwner, ownershipEpoch: canonical.registry.ownershipEpoch }, reason: request.reason };
+        revision: request.expectedRevision, authorizedBy: {
+          host: options.nativeIdentity?.host === "claude" ? "claude-code" : options.nativeIdentity?.host,
+          sessionId: options.actorSessionId,
+          ownershipEpoch: Number.isSafeInteger(canonical.registry.ownershipEpoch) ? canonical.registry.ownershipEpoch : 1,
+        }, reason: request.reason };
       if (createHash("sha256").update(bytes).digest("hex") !== request.writerRelease.sha256
         || !exactKeys(release, [...Object.keys(expected), "observedAt"])
         || stable(Object.fromEntries(Object.keys(expected).map((key) => [key, release[key]]))) !== stable(expected)

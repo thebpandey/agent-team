@@ -9,7 +9,7 @@ import { loadCanonicalState, loadCanonicalTracker } from "./canonical-state.mjs"
 import { withDirectoryLock } from "./lock.mjs";
 import { inspectCheckpointEvidence } from "./recovery.mjs";
 import { beadsEnvironment } from "./tracker.mjs";
-import { assertNoOwnerRecoveryJournal, currentLegacyOwnerAdoption, repairOwnerRecovery, validateNativeOwnerAuthority } from "./owner-recovery.mjs";
+import { currentLegacyOwnerAdoption, validateNativeOwnerAuthority } from "./owner-recovery.mjs";
 import { DEFAULT_EXECUTION_SETTINGS, resolveExecutionSettings, validateExecutionSettings } from "./settings.mjs";
 
 const digest = (value) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
@@ -249,23 +249,19 @@ export async function mutateOperationalState(project, request, mutator, options 
   if (!project.active) return { status: "unavailable", reason: "inactive" };
   if (!/^[\w.:-]{1,128}$/.test(request.operationId ?? "")) return conflict("operation_identity_required");
   try {
-    if (!await validateNativeOwnerAuthority(project, options.nativeIdentity, project.setup?.ownership, request.actorSessionId)) {
-      return conflict("project_owner_required");
+    if (options.nativeIdentity !== undefined
+      && !await validateNativeOwnerAuthority(project, options.nativeIdentity, project.setup?.ownership, request.actorSessionId)) {
+      return conflict("native_project_context_required");
     }
-    await repairOwnerRecovery(project, { budget });
     const execute = () => withDirectoryLock(path.join(project.paths.locks, "state.lock"), {
       operationId: request.operationId, actorSessionId: request.actorSessionId, pid: process.pid,
     }, async () => {
-      await assertNoOwnerRecoveryJournal(project);
       const canonical = await loadCanonicalState(project, { includeTasks: false, includeDeliveryEvidence: false, budget });
-      const owner = canonical.registry.projectOwner;
       const actorHost = options.nativeIdentity?.host === "claude" ? "claude-code" : options.nativeIdentity?.host;
-      if (typeof owner !== "string" || !/^[\w.:-]{1,128}$/.test(owner) || ["none", "unknown", "unassigned", "-"].includes(owner.toLowerCase())
-        || typeof request.actorSessionId !== "string" || !/^[\w.:-]{1,128}$/.test(request.actorSessionId)
-        || request.actorSessionId !== owner || canonical.registry.projectOwnerHost && (actorHost !== canonical.registry.projectOwnerHost
-          || options.nativeIdentity?.observed !== true || options.nativeIdentity?.sessionId !== owner
-          || options.nativeIdentity?.ownershipEpoch !== canonical.registry.ownershipEpoch)
-        || !canonical.registry.projectId || canonical.registry.projectId !== project.projectId) return conflict("project_owner_required");
+      if (!validId(request.actorSessionId)
+        || options.nativeIdentity !== undefined && (options.nativeIdentity.observed !== true
+          || options.nativeIdentity.sessionId !== request.actorSessionId)
+        || !canonical.registry.projectId || canonical.registry.projectId !== project.projectId) return conflict("native_project_context_required");
       const signature = operationSignature(request);
       const previous = canonical.state.operationReceipts?.[request.operationId];
       if (previous) return previous.signature === signature
@@ -276,8 +272,9 @@ export async function mutateOperationalState(project, request, mutator, options 
       if (!Number.isInteger(request.expectedVersion) || request.expectedVersion !== (canonical.state.stateVersion ?? 0)) return conflict("stale_version");
       const state = structuredClone(canonical.state);
       const persistIntent = async (intent) => {
-        state.pendingOperations = { ...state.pendingOperations, [request.operationId]: { ...intent, signature, ownerSessionId: request.actorSessionId,
-          ...(canonical.registry.projectOwnerHost ? { ownerHost: actorHost, ownershipEpoch: canonical.registry.ownershipEpoch } : {}) } };
+        state.pendingOperations = { ...state.pendingOperations, [request.operationId]: { ...intent, signature,
+          ownerSessionId: request.actorSessionId, ownerHost: actorHost,
+          ownershipEpoch: Number.isSafeInteger(canonical.registry.ownershipEpoch) ? canonical.registry.ownershipEpoch : 1 } };
         state.stateVersion = (state.stateVersion ?? 0) + 1;
         await atomicWrite(project.paths.state, `${JSON.stringify(state, null, 2)}\n`, options);
       };
@@ -354,13 +351,12 @@ export async function transitionTaskInState(project, request, { state, canonical
       if (!resolved.startsWith(`${project.paths.checkpoints}${path.sep}`)) return conflict("checkpoint_identity_mismatch");
       const checkpoint = JSON.parse(await bounded(() => readFile(resolved, "utf8")));
       const team = canonical.registry.teams.find((entry) => entry["team id"] === task.owner);
-      const expectedSession = team?.session ?? canonical.registry.projectOwner;
       const registeredWorktree = team ? team.worktree : project.root;
       if (typeof registeredWorktree !== "string" || !registeredWorktree.trim()
         || typeof checkpoint.worktree !== "string" || !checkpoint.worktree.trim()) return conflict("checkpoint_identity_mismatch");
       const expectedWorktree = path.resolve(project.root, registeredWorktree);
       const checkpointWorktree = path.resolve(project.root, checkpoint.worktree);
-      if (checkpoint.sessionId !== expectedSession || checkpointWorktree !== expectedWorktree) return conflict("checkpoint_identity_mismatch");
+      if (checkpointWorktree !== expectedWorktree) return conflict("checkpoint_identity_mismatch");
       if (!checkpoint.taskIds?.includes(task.id) || !checkpoint.nextAction || !checkpoint.revision) return conflict("checkpoint_required");
       return { ...checkpoint, worktree: checkpointWorktree };
     };
@@ -368,7 +364,6 @@ export async function transitionTaskInState(project, request, { state, canonical
     if (request.action === "claim") {
       const eligibility = taskEligibility(canonical, { scopeTaskIds: state.run?.taskIds, capacity: request.capacity });
       if (!eligibility.eligible.some(({ id }) => id === task.id)) return conflict(eligibility.held.find(({ id }) => id === task.id)?.reason ?? "not_ready");
-      if (!canonical.registry.teams.some((team) => team["team id"] === request.owner) && request.owner !== canonical.registry.projectOwner) return conflict("registered_owner_required");
       if (request.writer !== undefined) {
         if (runtime.writer) return conflict("writer_already_registered");
         if ((await bounded(() => inspectWriterIdentity(request.writer))).status !== "active") return conflict("new_writer_unverified");
@@ -425,7 +420,7 @@ export async function transitionTaskInState(project, request, { state, canonical
         intendedRuntime: state.taskRuntime?.[task.id], worktree: canonical.registry.teams.find((team) => team["team id"] === task.owner)?.worktree });
     }
     if (canonical.tracker.kind === "beads") {
-      if (request.action !== "claim" && (project.setup.tracker.writerMode !== "single_owner" || project.setup.tracker.writerSessionId !== canonical.registry.projectOwner)) {
+      if (request.action !== "claim" && project.setup.tracker.writerMode !== "single_owner") {
         return { status: "unavailable", reason: "verified_single_writer_required" };
       }
       if (!reconciled) {
@@ -453,7 +448,7 @@ export async function transitionTaskInState(project, request, { state, canonical
   return { state, result: { taskId: task.id, action: request.action, trackerFingerprint: (await loadCanonicalTracker(project, options)).tracker.fingerprint, ...(reconciled ? { reconciled: true } : {}) } };
 }
 
-/** Claim or transition one task through the registered project owner. */
+/** Claim or transition one task from a native session in the canonical project. */
 export async function transitionTask(project, request, options = {}) {
   return mutateOperationalState(project, request, async (state, canonical, { persistIntent }) =>
     transitionTaskInState(project, request, { state, canonical, persistIntent, options }), options);
@@ -472,18 +467,13 @@ function runRetirementHoldCanClear(state, gateName, request, canonical, revision
     || successor.status !== "started" || !validId(successor.startOperationId) || !Number.isFinite(Date.parse(successor.startedAt))
     || stable({ retirementOperationId: successor.retirementOperationId, runId: successor.runId, taskId: successor.taskId, target: successor.target })
       !== stable({ retirementOperationId: hold.retirementOperationId, runId: hold.runId, taskId: hold.taskId, target: hold.target })
-    || state.run?.id !== hold.runId || !sameIds(state.run?.taskIds, [hold.taskId]) || state.run?.ownerHost !== canonical.registry.projectOwnerHost
-    || state.run?.ownerSessionId !== canonical.registry.projectOwner || state.run?.ownershipEpoch !== canonical.registry.ownershipEpoch
-    || gate.ownerHost !== canonical.registry.projectOwnerHost || gate.ownerSessionId !== canonical.registry.projectOwner
-    || gate.ownershipEpoch !== canonical.registry.ownershipEpoch || request.actorSessionId !== canonical.registry.projectOwner
+    || state.run?.id !== hold.runId || !sameIds(state.run?.taskIds, [hold.taskId])
     || !sameIds(request.taskIds, [hold.taskId]) || !hex(revision, 40) || target !== undefined && target !== hold.target) return false;
   const retirement = state.runRetirements?.find((entry) => entry?.operationId === hold.retirementOperationId);
   const startReceipt = state.operationReceipts?.[successor.startOperationId];
   return retirement?.runFingerprint === stateFingerprint(retirement.run)
     && stable(retirement.successorIntent) === stable({ kind: "maintenance_release", runId: hold.runId, taskId: hold.taskId, target: hold.target })
-    && retirement.authenticatedActor?.ownerHost === canonical.registry.projectOwnerHost
-    && retirement.authenticatedActor?.ownerSessionId === canonical.registry.projectOwner
-    && retirement.authenticatedActor?.ownershipEpoch === canonical.registry.ownershipEpoch
+    && retirement.authenticatedActor && validId(retirement.authenticatedActor.ownerSessionId)
     && startReceipt?.result?.run?.id === hold.runId && sameIds(startReceipt?.result?.run?.taskIds, [hold.taskId]);
 }
 
@@ -538,7 +528,6 @@ export async function recordGateEvidence(project, request, options = {}) {
       if (!remote || typeof remote !== "object" || typeof remote.name !== "string" || !remote.name.trim() || remote.name.length > 128
         || remote.baseRef !== expectedBaseRef || !ref(remote.targetRef) || typeof remote.revision !== "string" || !/^[0-9a-f]{40,64}$/i.test(remote.revision)
         || (remote.targetAbsent === true ? remote.targetRevision !== undefined : typeof remote.targetRevision !== "string" || !/^[0-9a-f]{40,64}$/i.test(remote.targetRevision))
-        || ownerSessionId !== canonicalState.registry.integrationOwner
         || !provenance(evidence.authorization, { ownerSessionId, revision, taskIds: request.taskIds })
         || !recovery(evidence.recovery, { revision, taskIds: request.taskIds }) || !preview(evidence.preview, revision)
         || typeof evidence.remoteMainDeploys !== "boolean") return conflict("integration_evidence_mismatch");
@@ -669,10 +658,7 @@ export async function recordGateEvidence(project, request, options = {}) {
         && (integration.deploymentTarget === undefined || boundedString(integration.deploymentTarget, 4096));
       const deltaBindingValid = releaseRecord(delta, "clean")
         && (delta.remoteBaseRevision === undefined || /^[0-9a-f]{40,64}$/i.test(delta.remoteBaseRevision));
-      if (ownerSessionId !== canonicalState.registry.integrationOwner || ownerSessionId !== request.actorSessionId
-        || canonicalState.registry.projectOwnerHost && (ownerHost !== canonicalState.registry.projectOwnerHost
-          || ownershipEpoch !== canonicalState.registry.ownershipEpoch)
-        || evidence.ownerSessionId !== ownerSessionId || evidence.authorized !== true || evidence.expectedRevision !== revision
+      if (evidence.ownerSessionId !== ownerSessionId || evidence.authorized !== true || evidence.expectedRevision !== revision
         || !boundedString(evidence.target, 1024) || !boundedString(evidence.process, 128)
         || !authorization || typeof authorization !== "object" || !boundedString(authorization.source)
         || authorization.target !== evidence.target || authorization.process !== evidence.process
@@ -876,7 +862,7 @@ export async function registerEvidenceStore(project, request, options = {}) {
     || !Number.isSafeInteger(request.expectedOwnershipEpoch) || request.expectedOwnershipEpoch < 1) return conflict("invalid_request");
   return mutateOperationalState(project, mutationRequest(request, options), async (state, canonical) => {
     const teams = canonical.sources?.teams;
-    if (request.projectId !== canonical.registry.projectId || request.expectedOwnershipEpoch !== canonical.registry.ownershipEpoch) return conflict("stale_owner_generation");
+    if (request.projectId !== canonical.registry.projectId) return conflict("project_identity_mismatch");
     if (typeof teams !== "string" || digest(teams) !== request.expectedTeamsFingerprint) return conflict("stale_teams");
     const declaration = `Evidence root: ${request.realpath}/<team>/.`;
     if (request.declaration !== declaration || teams.split(/\r?\n/).filter((line) => line === declaration).length !== 1) return conflict("evidence_store_not_declared");
@@ -969,7 +955,6 @@ export async function reconcileCompletionHistory(project, request, options = {})
     const runFingerprint = state.run ? stateFingerprint(state.run) : null;
     if (runFingerprint !== request.expectedRunFingerprint) return conflict("stale_run");
     if (digest(canonical.sources?.teams ?? "") !== request.expectedTeamsFingerprint) return conflict("stale_teams");
-    if (canonical.registry.ownershipEpoch !== request.expectedOwnershipEpoch) return conflict("stale_owner_generation");
     if (stable(activeCompletionProjection(state)) !== stable(request.expectedActiveCompletion)) return conflict("active_completion_changed");
     if (Object.entries(state.pendingOperations ?? {}).some(([id, entry]) => id !== request.operationId
       && ["uncertain", "pending", "unknown"].includes(entry.phase ?? entry.status))) return { status: "unavailable", reason: "pending_operation_unresolved" };

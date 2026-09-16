@@ -146,7 +146,7 @@ test("stale settings writer conflicts instead of overwriting a newer version", a
   assert.equal(JSON.parse(await readFile(setupPath, "utf8")).settings.runDefaults.teams, 2);
 });
 
-test("settings mutations require the registered project owner and are idempotent by operation signature", async () => {
+test("settings mutations accept a fresh project orchestrator and are idempotent by operation signature", async () => {
   const { updateSettings } = await import("../hooks/lib/settings.mjs");
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-team-settings-"));
   const setupPath = path.join(directory, "setup.json");
@@ -174,7 +174,7 @@ test("settings mutations require the registered project owner and are idempotent
   });
   const wrongRole = await updateSettings({
     ...base,
-    expectedVersion: 1,
+    expectedVersion: 2,
     operationId: "op-3",
     writer: { id: "owner-1", role: "developer" },
   });
@@ -182,11 +182,11 @@ test("settings mutations require the registered project owner and are idempotent
   assert.equal(applied.status, "applied");
   assert.deepEqual(duplicate, { status: "duplicate", version: 1, operationId: "op-1" });
   assert.deepEqual(reused, { status: "conflict", reason: "operation_id_reused", operationId: "op-1" });
-  assert.deepEqual(denied, { status: "conflict", reason: "project_owner_required" });
-  assert.deepEqual(wrongRole, { status: "conflict", reason: "project_owner_required" });
+  assert.equal(denied.status, "applied");
+  assert.deepEqual(wrongRole, { status: "conflict", reason: "project_context_required" });
   const saved = JSON.parse(await readFile(setupPath, "utf8"));
   assert.equal(saved.settings.runDefaults.teams, 2);
-  assert.equal(saved.setupOperations.length, 1);
+  assert.equal(saved.setupOperations.length, 2);
 });
 
 test("the explicit full wizard covers run defaults and each role with Back and Cancel controls", async () => {

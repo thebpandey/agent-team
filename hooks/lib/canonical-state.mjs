@@ -6,7 +6,6 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { withDirectoryLock } from "./lock.mjs";
 import { readTracker } from "./tracker.mjs";
-import { assertNoOwnerRecoveryJournal, repairOwnerRecovery, validateOwnerHistory, validateQualifiedOwnership } from "./owner-recovery.mjs";
 import { validateLaneCollection } from "./lane-schema.mjs";
 import { DEFAULT_EXECUTION_SETTINGS, resolveExecutionSettings, validateExecutionSettings } from "./settings.mjs";
 
@@ -63,8 +62,6 @@ function cells(line) {
 
 /** Read identities and task status from their canonical records; state.json only carries gate evidence. */
 export async function loadCanonicalState(project, options = {}) {
-  if (options.readOnly) await assertNoOwnerRecoveryJournal(project);
-  else await repairOwnerRecovery(project, options);
   const [teamsText, taskResult, stateText, setupText, ownerHistoryText] = await Promise.all([
     text(project.paths.teams),
     options.includeTasks === false ? null : loadCanonicalTracker(project, options),
@@ -72,12 +69,6 @@ export async function loadCanonicalState(project, options = {}) {
     text(project.paths.setup),
     project.paths.ownerHistory ? text(project.paths.ownerHistory, { missing: null }) : null,
   ]);
-  try { await assertNoOwnerRecoveryJournal(project); }
-  catch (error) {
-    if (options.readOnly || error.message !== "owner_recovery_in_progress" || options.ownerRecoveryRetry === false) throw error;
-    await repairOwnerRecovery(project, options);
-    return loadCanonicalState(project, { ...options, ownerRecoveryRetry: false });
-  }
   let state = {};
   if (stateText) state = JSON.parse(stateText);
   if (state.lanes !== undefined && validateLaneCollection(state.lanes)) throw new Error("invalid_lanes");
@@ -85,24 +76,7 @@ export async function loadCanonicalState(project, options = {}) {
   let ownerHistory;
   if (ownerHistoryText !== null) {
     try { ownerHistory = JSON.parse(ownerHistoryText); }
-    catch { throw new Error("owner_history_invalid"); }
-    const epoch = state.ownership?.epoch;
-    if (!validateQualifiedOwnership(state.ownership) || !validateQualifiedOwnership(setup.ownership)
-      || !validateOwnerHistory(ownerHistory, state.ownership) || !Number.isSafeInteger(epoch) || epoch < 1
-      || setup.ownership?.epoch !== epoch || ownerHistory.ownership?.epoch !== epoch
-      || JSON.stringify(setup.ownership?.current) !== JSON.stringify(state.ownership?.current)
-      || state.ownership?.current?.sessionId !== label(teamsText, "Project owner")
-      || state.ownership?.current?.host !== label(teamsText, "Project owner host")
-      || state.integration?.ownerSessionId !== label(teamsText, "Integration owner")
-      || state.integration?.ownerHost !== label(teamsText, "Integration owner host")
-      || state.integration?.ownershipEpoch !== epoch || state.release?.ownerSessionId !== label(teamsText, "Integration owner")
-      || state.release?.ownerHost !== label(teamsText, "Integration owner host") || state.release?.ownershipEpoch !== epoch) {
-      throw new Error("owner_generation_mismatch");
-    }
-  } else if (state.ownership !== undefined || setup.ownership !== undefined || label(teamsText, "Project owner host") !== undefined
-    || label(teamsText, "Integration owner host") !== undefined || state.integration?.ownerHost !== undefined
-    || state.integration?.ownershipEpoch !== undefined || state.release?.ownerHost !== undefined || state.release?.ownershipEpoch !== undefined) {
-    throw new Error("owner_history_missing");
+    catch { ownerHistory = undefined; }
   }
   let executionSettings = DEFAULT_EXECUTION_SETTINGS;
   if (options.executionSettings !== undefined) {

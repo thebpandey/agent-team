@@ -219,7 +219,7 @@ test("source and extracted universal CLIs complete every host and scope lifecycl
         assert.ok(overview.roles.length > 0);
         const readiness = JSON.parse((await run(process.execPath, [installedCli, "readiness", "--project", projectRoot, "--host", selectedHost, "--scope", scope])).stdout);
         assert.equal(readiness.projectInitialization.required, false);
-        assert.equal(readiness.readyForDispatch, false, "extracted files do not prove native dependencies ready");
+        assert.equal(readiness.readyForDispatch, true, "optional default dependencies do not block a plan that requires none");
         const status = JSON.parse((await run(process.execPath, [installedCli, "status", "--project", projectRoot])).stdout);
         assert.deepEqual(status.tasks.map(({ id }) => id), ["ZIP-1"]);
       }

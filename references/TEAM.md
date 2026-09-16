@@ -14,7 +14,7 @@ Delegated verification is a fixed route, not a judgment call: before dispatching
 
 Messages to and from workers do not pause orchestration. Follow the single [active host-turn loop](RUNS.md#eligibility-and-capacity): commentary answer, reconcile, review/integration/repair, refill, then supervise with the effective `supervision.heartbeatSeconds`, default 600 and minimum 60. Use shorter host waits without treating each return as a heartbeat deadline. A lower interval consumes more orchestrator turns. Handle each update, handoff or verdict as it arrives and keep the other teams moving.
 
-A completion follows one route: reconcile its exact handoff, obtain independent review, repair findings, take the accepted exact revision, serially integrate it, prove the prior writer stopped or ownership transferred, then refill the proven-free development slot while reviewer capacity remains reserved. Do not wait for an original cohort, release batch, deployment, or another `continue`. Unknown writer liveness remains occupied.
+A completion follows one route: reconcile its exact handoff, obtain independent review, repair findings, take the accepted exact revision, serially integrate it, prove the prior writer stopped or explicitly handed off its worker slot, then refill the proven-free development slot while reviewer capacity remains reserved. Do not wait for an original cohort, release batch, deployment, or another `continue`. Unknown writer liveness remains occupied.
 
 ## Assignment packet
 
@@ -34,7 +34,7 @@ Do not copy the full conversation, entire audit or unrelated skills. A fresh wor
 
 Follow [projects](PROJECTS.md). Use a separate worktree for independent implementation; one editor per shared entrypoint/schema/manifest. Isolation does not isolate ports, databases or credentials. Allocate separate external resources only when needed and authorized.
 
-The selected tracker is the only task authority. In Markdown mode only the project owner writes it; in Beads mode use the verified supported atomic/single-writer contract. Workers send concise task-ID/revision/evidence updates. CONTEXT.md and handoff files are recovery pointers, not another queue.
+The selected tracker is the only task authority. In Markdown mode serialize writes through its lock/version contract; in Beads mode use the verified supported atomic/single-writer contract. Workers send concise task-ID/revision/evidence updates. CONTEXT.md and handoff files are recovery pointers, not another queue.
 
 Reviewers inspect a stable exact revision or complete WIP snapshot including staged, unstaged and untracked intended changes. Review requirements and quality in one existing review loop. Return deduplicated findings with severity, location, impact and verification. Implementation-owner self-review is not independent review.
 
@@ -42,7 +42,7 @@ Reviewers inspect a stable exact revision or complete WIP snapshot including sta
 
 Assign ordinary findings back automatically. Diagnose repeated failure, change strategy or apply an approved escalation; do not ask the user to authorize routine repair again. Stop conflicting writes and park external blockers with a recovery condition while independent work continues. Never mark failed acceptance complete to free a slot.
 
-Before rotating a worker, save its authored decisions and pending operation facts, retain evidence outside disposable worktrees, and prove the previous writer stopped or transferred ownership. Unknown liveness is not takeover permission. See [recovery](RECOVERY.md).
+Before rotating a worker, save its authored decisions and pending operation facts, retain evidence outside disposable worktrees, and prove the previous writer stopped or explicitly handed off its slot. Unknown liveness is not permission to reuse that slot. See [recovery](RECOVERY.md).
 
 Return outcome, exact commit/revision, acceptance and check evidence, unresolved findings and next action. Link detail rather than dumping logs or images into parent context. Only the orchestrator integrates and closes the task after affected combined checks; deployment is a separate state.
 

@@ -11,6 +11,7 @@ For help, show installed version and creator/source credit; the [wordmark](WORDM
 | `help` | Show commands and examples. | `$agent-team help` |
 | `settings` | Show role/model/effort defaults and targeted choices without forcing the setup wizard. | `$agent-team settings` |
 | `setup` | Inspect canonical state, prepare dependencies, enter the current-effective settings wizard, then report readiness. Cancel keeps existing settings. | `$agent-team setup` |
+| `takeover` | Compatibility alias: verify the same Git project and continue in this native session. | `$agent-team takeover` |
 | `start` | Select existing ready tracker work using project defaults; built-in default is one task. | `$agent-team start` |
 | `start N` | Start up to N safe tasks; N is 1–6. Without continuous mode, finish only that set. | `$agent-team start 3` |
 | `start [N] continuous` | Refill each slot after verified integration into main. | `$agent-team start 3 continuous` |
@@ -39,6 +40,7 @@ Explain these rules below the table:
 - A final smaller batch deploys when the run's work ends or only blocked work remains, if auto-deploy is enabled and release gates pass. Explicit pause and a deployment-failure hold prevent that flush.
 - `pause and deploy` is the explicit exception to the normal pause flush rule: it pauses first, then releases only verified finished, integrated, approved, not-yet-deployed work through the normal gated process. It keeps the project paused afterward.
 - Preview approval, verified integration, established target authority, and production checks still apply. The skill does not keep running after the host stops.
+- `takeover` is a compatibility alias for host/session continuity. It creates no request file and changes no owner record. Preserve tracker, claims, settings, run state, and evidence; keep any model fallback choice separate.
 
 Exact rules: [actions](ACTIONS.md), [settings](SETTINGS.md), [runs](RUNS.md), [release](RELEASE.md).
 
@@ -46,6 +48,6 @@ During an active run, a status/question is answered briefly in commentary and su
 
 Workflow helpers use only the accepted names: `run-start`, `run-reconcile`, `run-scope-extend`, `completion-quarantine`, `completion-rebind`, `evidence-store-register`, `completion-history-reconcile`, and read-only `run-decision`. The sealed installer form is `install --archive ABSOLUTE_ZIP --checksums ABSOLUTE_SHA256SUMS --host codex|claude-code|both --scope user|project --home PATH [--project PATH]`; it is a package helper, not an invented native host command.
 
-Setup also exposes read-only `helpers` and `context-reduction` inspection plus native owner-only `helpers-install`, `helpers-recover`, `context-reduction-apply`, `context-reduction-revert`, and `context-reduction-recover`. A request cannot supply native identity, capability visibility, or a Claude home path.
+Setup also exposes read-only `helpers` and `context-reduction` inspection plus native `helpers-install`, `helpers-recover`, `context-reduction-apply`, `context-reduction-revert`, and `context-reduction-recover`. A request cannot supply native identity, capability visibility, or a Claude home path.
 
 `auto-agent start` accepts the same options as plain-language `agent-team start`. Ordinary start/resume/settings/status use compact output without branding. Ask for “change the reviewer model” to edit only that role, or “show the full settings wizard” for all choices.

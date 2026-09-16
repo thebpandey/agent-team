@@ -20,6 +20,7 @@ Accept `auto-agent start` with the same modifiers as a plain-language alias for 
 | `resume [name-or-ID or all]` | Without a target, show the paused team picker plus All and wait for selection. Explicit all acts on all eligible teams; a name/ID targets one. Inspect actual and saved state using recovery. |
 | `approve <name-or-ID>` | Record the user's approval of the current review version for integration using [preview approval](PREVIEW.md). |
 | `setup` | Follow [dependency setup](SETUP.md). Every state-changing setup runs canonical inspection, dependency inspection/preparation, the current-effective settings wizard, then readiness. Optional choices and real auth/trust remain separate. |
+| `takeover` | Compatibility alias: verify that this native Codex or Claude Code session resolves to the same canonical Git project, then continue without an ownership transfer. |
 
 Names use a short readable form such as `email-preferences`. Resolve exact name or stable team ID within the current project. Reserve action words, modifier words, `all`, and numeric selectors; never interpret user text as a shell command or path. No fuzzy selection for actions that change state. Ask one question for an ambiguous project, feature scope, or target; do not invent requirements from a name alone.
 
@@ -34,6 +35,14 @@ A normal development invocation checks for unfinished work in its resolved scope
 Keep status separate from action. During an active run, classify steered input as replacement, compatible addition, or status/question. A question is an interrupt, not a pause, cancel, ownership loss, or terminal condition. Answer a status/question briefly in commentary, then reconcile workers and completed handoffs, route repair/review and accepted serial integration, refill proven-free capacity with reviewer capacity reserved, and resume the bounded wait loop. A standalone status request in another session ends after the report; it must not start work. A resolved pause action supersedes continued development only for its selected target, after any required picker response. Honor later user corrections and current host permissions.
 
 These lifecycle, multi-team, and preview features belong to Pro. They are not a background service, a transcript restore system, or a promise that the host will keep executing after closure.
+
+## Continue in another host or session
+
+Treat `takeover`, “switch this project to Codex/Claude,” and “continue this Agent-Team project in this session” as the same continuity action. Resolve the canonical Git checkout from trusted native runtime metadata and continue. Do not create a takeover request, ask the previous session to release coordination, compare coordinator UUIDs, run an owner migration, or require an ownership epoch match.
+
+Re-read the tracker, setup, run, checkpoints, pending operations, and evidence. Preserve them. Recorded host/session/epoch values are audit provenance, not mutation authority. Re-running setup may update settings and companion-tool observations from the current native session without changing task history.
+
+Writer liveness is separate from coordinator identity. Do not overwrite a path that an active or unknown writer may still be changing; reattach, pause, or safely replace that writer through the normal recovery flow. Exact release authorization, evidence, clean revision, path containment, and destructive-operation safeguards also remain in force. A model fallback is a separate settings decision.
 
 ## Automatic start
 
@@ -51,6 +60,6 @@ Read the canonical team directory and recorded phase before asking. For pause, l
 
 Show each team's readable name, stable ID, and recorded state, plus an explicit All option. Describe All as all listed teams in this project, including the Interrupted group if present. Use the host's supported selection control. If its option limit cannot show every team, use supported paging or show the complete table and ask for a name, ID, or All. Do not hide eligible teams, install UI dependencies, or preselect All. If none are eligible, report that and do nothing; do not present an empty All action.
 
-Wait for the user's selection before changing task state, messaging agents to pause, checkpointing, resuming, or taking project ownership. Opening or cancelling the picker has no effect on work; existing agents continue as the host permits. A dismissed or unanswered picker is not approval to act. Record the offered project and team IDs in the conversation so the answer cannot target another project accidentally.
+Wait for the user's selection before changing task state, messaging agents to pause, checkpointing, or resuming the selected project. Opening or cancelling the picker has no effect on work; existing agents continue as the host permits. A dismissed or unanswered picker is not approval to act. Record the offered project and team IDs in the conversation so the answer cannot target another project accidentally.
 
 Resolve the selection against the offered IDs and recheck each selected team's actual state through the normal pause/recovery procedure. All chosen in the picker means the offered team set and identified project run, not teams created after the prompt. Holding that run stops future admissions; any later-created team must be reported as outside the offered set, not silently paused. If a team has finished or is already in the requested state, report that without restarting it or choosing a substitute. Honor current permissions, ownership, and preview gates. Explicit `pause all` or `resume all` uses a fresh bounded eligible inventory and requires no selection prompt; named commands use exactly the named team, including a named interrupted team that needs recovery.

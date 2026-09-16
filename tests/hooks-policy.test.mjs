@@ -134,14 +134,14 @@ test("owner generation and task receipts fence consequential operations", async 
   assert.equal(result.allow, false);
 });
 
-test("release fails closed without qualified current registry generation", async () => {
+test("release does not depend on a current coordinator registry generation", async () => {
   const value = await fixture();
   const canonical = modernReleaseCanonical(value, await loadCanonicalState(value.project));
   delete canonical.registry.projectOwnerHost;
   delete canonical.registry.ownershipEpoch;
   const result = await evaluatePolicy(hookEvent(value, { sessionId: "owner-session", operation: { kind: "release", process: "npm" } }), value.project,
     { canonical, now: new Date("2026-09-06T12:01:00Z") });
-  assert.equal(result.allow, false);
+  assert.equal(result.allow, true);
 });
 
 test("fully joined release rejects aggregate owner generation corruption", async () => {
@@ -156,8 +156,8 @@ test("fully joined release rejects aggregate owner generation corruption", async
   }
 });
 
-test("canonical ownership allows assigned files and blocks unowned, shared, main, and symlink targets", async () => {
-  // This test catches trust in caller role text or a path-prefix check before symlink resolution.
+test("project sessions may edit any checkout path while resolved escapes remain blocked", async () => {
+  // Caller role text and historical assignments do not restrict in-checkout edits; realpath containment still does.
   const value = await fixture();
   const allowed = await evaluatePolicy(hookEvent(value, {
     operation: { kind: "file_change", files: [{ action: "edit", path: "src/owned.js", changedContent: "export const x = 1;" }] },
@@ -179,10 +179,9 @@ test("canonical ownership allows assigned files and blocks unowned, shared, main
   }), value.project);
 
   assert.equal(allowed.allow, true);
-  for (const result of [unowned, shared, main, escaped]) {
-    assert.equal(result.allow, false);
-    assert.equal(result.mode, "enforce");
-  }
+  for (const result of [unowned, shared, main]) assert.equal(result.allow, true);
+  assert.equal(escaped.allow, false);
+  assert.equal(escaped.mode, "enforce");
 });
 
 test("worker update receipts bind task revision checks and cap final write/edit content", async () => {
@@ -212,7 +211,7 @@ test("worker update receipts bind task revision checks and cap final write/edit 
   assert.match(unavailable.messages.join("\n"), /final worker update content is unavailable/i);
 });
 
-test("relative registered worktrees resolve from the canonical project without relaxing ownership", async () => {
+test("registered worktree metadata does not restrict in-checkout edits", async () => {
   const value = await fixture();
   const teams = await readFile(value.project.paths.teams, "utf8");
   const relative = path.relative(value.root, value.feature);
@@ -220,14 +219,13 @@ test("relative registered worktrees resolve from the canonical project without r
   const operation = { kind: "file_change", files: [{ action: "edit", path: "src/owned.js", changedContent: "export {};" }] };
   assert.equal((await evaluatePolicy(hookEvent(value, { operation }), value.project)).allow, true);
   const main = await resolveProject(value.root);
-  assert.equal((await evaluatePolicy(hookEvent(value, { cwd: value.root, operation }), main)).allow, false);
-  assert.equal((await evaluatePolicy(hookEvent(value, { operation: { kind: "file_change", files: [{ action: "edit", path: "README.md" }] } }), value.project)).allow, false);
+  assert.equal((await evaluatePolicy(hookEvent(value, { cwd: value.root, operation }), main)).allow, true);
+  assert.equal((await evaluatePolicy(hookEvent(value, { operation: { kind: "file_change", files: [{ action: "edit", path: "README.md" }] } }), value.project)).allow, true);
   await writeFile(value.project.paths.teams, teams.replace(value.feature, ""));
-  assert.equal((await evaluatePolicy(hookEvent(value, { operation }), value.project)).allow, false);
+  assert.equal((await evaluatePolicy(hookEvent(value, { operation }), value.project)).allow, true);
 });
 
-test("one unowned file blocks a multi-file change", async () => {
-  // This test catches enforcement that checks only the first file in a patch.
+test("multi-file changes are allowed across historical assignment boundaries", async () => {
   const value = await fixture();
   const decision = await evaluatePolicy(hookEvent(value, {
     operation: { kind: "file_change", files: [
@@ -236,12 +234,10 @@ test("one unowned file blocks a multi-file change", async () => {
     ] },
   }), value.project);
 
-  assert.equal(decision.allow, false);
-  assert.match(decision.messages.join("\n"), /README\.md/);
+  assert.equal(decision.allow, true);
 });
 
-test("moving a file checks both its source and destination ownership", async () => {
-  // This test catches a move that hides an unowned source behind an owned destination.
+test("moving a file across historical assignment boundaries is allowed inside the checkout", async () => {
   const value = await fixture();
   const decision = await evaluatePolicy(hookEvent(value, {
     operation: { kind: "file_change", files: [{
@@ -252,11 +248,10 @@ test("moving a file checks both its source and destination ownership", async () 
     }] },
   }), value.project);
 
-  assert.equal(decision.allow, false);
+  assert.equal(decision.allow, true);
 });
 
-test("shell mv retains every source path and rejects ambiguous operand forms", async () => {
-  // This test catches a shell move that checks only its destination path.
+test("shell mv retains every source path while assignment boundaries do not gate it", async () => {
   const single = classifyOperation({ operation: { kind: "shell", command: "mv README.md src/README.md" } });
   const multiple = classifyOperation({ operation: { kind: "shell", command: "mv src/a.js README.md src/archive/" } });
   const separator = classifyOperation({ operation: { kind: "shell", command: "mv -- src/a.js src/b.js" } });
@@ -271,8 +266,8 @@ test("shell mv retains every source path and rejects ambiguous operand forms", a
   const unownedSource = await evaluatePolicy(hookEvent(value, { operation: { kind: "shell", command: "mv README.md src/README.md" } }), value.project);
   const unownedDestination = await evaluatePolicy(hookEvent(value, { operation: { kind: "shell", command: "mv src/owned.js README.md" } }), value.project);
   const allowed = await evaluatePolicy(hookEvent(value, { operation: { kind: "shell", command: "mv -- src/owned.js src/moved.js" } }), value.project);
-  assert.equal(unownedSource.allow, false);
-  assert.equal(unownedDestination.allow, false);
+  assert.equal(unownedSource.allow, true);
+  assert.equal(unownedDestination.allow, true);
   assert.equal(allowed.allow, true);
 });
 
@@ -290,8 +285,7 @@ test("adding a file under new owned directories resolves against the nearest exi
   assert.equal(decision.allow, true);
 });
 
-test("recognized shell and provider file operations use the same ownership gate", async () => {
-  // This test catches file ownership enforcement that covers only Edit and apply_patch.
+test("recognized shell and provider file operations use the same project boundary", async () => {
   const value = await fixture();
   const shellAllowed = await evaluatePolicy(hookEvent(value, {
     operation: { kind: "shell", command: "rm src/owned.js" },
@@ -307,21 +301,21 @@ test("recognized shell and provider file operations use the same ownership gate"
   }), value.project);
 
   assert.equal(shellAllowed.allow, true);
-  assert.equal(shellDenied.allow, false);
-  assert.equal(providerDenied.allow, false);
+  assert.equal(shellDenied.allow, true);
+  assert.equal(providerDenied.allow, true);
   assert.equal(malformedProvider.allow, false);
 });
 
-test("authorized integration and release operations pass without an approval prompt", async () => {
+test("authorized integration and release evidence is usable after a session switch", async () => {
   // This test catches a gate that asks again after scoped authorization is recorded.
   const value = await fixture();
   const push = await evaluatePolicy(hookEvent(value, {
-    sessionId: "owner-session",
+    sessionId: "successor-session",
     operation: { kind: "shell", command: `git -C ${value.feature} push origin HEAD:feature` },
   }), value.project, { now: new Date("2026-09-06T12:01:00.000Z") });
   const releaseCanonical = modernReleaseCanonical(value, await loadCanonicalState(value.project));
   const publish = await evaluatePolicy(hookEvent(value, {
-    sessionId: "owner-session",
+    sessionId: "successor-session",
     operation: { kind: "shell", command: "npm publish" },
   }), value.project, { canonical: releaseCanonical, now: new Date("2026-09-06T12:01:00.000Z") });
 
@@ -343,10 +337,9 @@ test("recognized critical operations fail closed when runtime evidence is unavai
   assert.equal(release.mode, "enforce");
 });
 
-test("integration blocks wrong owner, revision, base, remote, stale evidence, gates, delta, recovery, and deployment triggers", async (context) => {
+test("integration is session-neutral but blocks revision, base, remote, stale evidence, gates, delta, recovery, and deployment triggers", async (context) => {
   // This table catches each deterministic prerequisite being accidentally skipped.
   const cases = [
-    ["wrong owner", {}, { sessionId: "developer-session" }],
     ["wrong revision", { expectedRevision: "deadbeef" }],
     ["wrong base", { baseRevision: "deadbeef" }],
     ["wrong remote", { remoteRevision: "deadbeef" }],
@@ -358,6 +351,13 @@ test("integration blocks wrong owner, revision, base, remote, stale evidence, ga
     ["recovery", { recoveryReconciled: false }],
     ["deployment trigger", { updatesRemoteMain: true, remoteMainDeploys: true }],
   ];
+
+  const switched = await fixture();
+  const switchedDecision = await evaluatePolicy(hookEvent(switched, {
+    sessionId: "developer-session",
+    operation: { kind: "shell", command: `git -C ${switched.feature} push origin HEAD:feature` },
+  }), switched.project, { now: new Date("2026-09-06T12:01:00.000Z") });
+  assert.equal(switchedDecision.allow, true);
 
   for (const [name, override, eventOverride = {}] of cases) {
     await context.test(name, async () => {
@@ -802,6 +802,41 @@ test("explicit completion checks evidence while Stop and interruption events do 
   assert.equal(blocked.allow, false);
 });
 
+test("ambiguous completion reports parser failure before effective-run scope", async () => {
+  const value = await fixture();
+  const result = await evaluatePolicy(hookEvent(value, {
+    sessionId: "owner-session",
+    operation: { kind: "completion", taskId: "sed", parserFailed: true },
+  }), value.project);
+  assert.equal(result.allow, false);
+  assert.match(result.messages.join("\n"), /unambiguous command/i);
+  assert.doesNotMatch(result.messages.join("\n"), /outside the effective run scope/i);
+});
+
+test("Claude native noncanonical TaskCompleted is advisory without weakening canonical completion", async () => {
+  const value = await fixture();
+  const before = await readFile(path.join(value.root, ".agent-team", "state.json"));
+  const native = await evaluatePolicy({
+    ...hookEvent(value, { event: "TaskCompleted", operation: { kind: "completion", taskId: "setup-worker-42" } }),
+    runtime: "claude",
+  }, value.project);
+  assert.equal(native.allow, true);
+  assert.equal(native.capabilities.completion, "noncanonical_host_lifecycle");
+  assert.deepEqual(await readFile(path.join(value.root, ".agent-team", "state.json")), before);
+
+  const malformed = await evaluatePolicy({
+    ...hookEvent(value, { event: "TaskCompleted", operation: { kind: "completion", taskId: "../escape" } }),
+    runtime: "claude",
+  }, value.project);
+  assert.equal(malformed.allow, false);
+
+  const preToolCompletion = await evaluatePolicy({
+    ...hookEvent(value, { operation: { kind: "completion", taskId: "setup-worker-42", parserFailed: false } }),
+    runtime: "claude",
+  }, value.project);
+  assert.equal(preToolCompletion.allow, false);
+});
+
 test("completion checks deployment and cleanup only when scoped and permits honest non-final outcomes", async () => {
   // This test catches final-only evidence being applied to blocked or out-of-scope completion states.
   const value = await fixture();
@@ -882,7 +917,9 @@ test("Codex permits a verified flip only after valid HEAD completion gate eviden
   const canonical = await loadCanonicalState(project);
   const recorded = await recordGateEvidence(project, { actorSessionId: "owner-session", operationId: "completion-evidence",
     expectedVersion: canonical.state.stateVersion ?? 0, expectedFingerprint: canonical.tracker.fingerprint, gate: "completion",
-    taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath });
+    taskIds: ["AT-001"], expectedRevision: value.revision, evidencePath }, {
+    nativeIdentity: { observed: true, host: "codex", sessionId: "owner-session", cwd: value.root },
+  });
   const afterEvidence = await evaluatePolicy(hookEvent(value, { cwd: value.root, sessionId: "owner-session", operation }), project);
 
   assert.equal(beforeEvidence.allow, false);

@@ -4,6 +4,8 @@ Use only in a Codex runtime. Invoke `$agent-team`; resolve dependency skills wit
 
 Confirm Codex from trusted runtime/tool metadata. Select its saved role profile using [settings](SETTINGS.md), preserving Claude Code routing and all run defaults. A host switch must not delete custom model/effort choices. Diagnose malformed/ambiguous legacy routing without silently resetting it. Do not infer the host from `$agent-team` text alone.
 
+When this Codex session continues a project last used by Claude Code or another session, apply [session continuity](ACTIONS.md#continue-in-another-host-or-session): verify the same Git project and continue. No prior-session release, takeover request, or owner migration is needed; model fallback remains a separate choice.
+
 | Role | Model | Effort |
 | --- | --- | --- |
 | Project/team orchestrator: planning, assignment, decisions, supervision, integration and release only | `gpt-6-astra` | high |
@@ -17,13 +19,17 @@ The orchestrator never performs code searches, feature checks, reviews, visual r
 
 These are quality-first routing defaults, not proof of account availability. Show actual parent and child model/effort from exposed controls; a skill cannot change its parent. Use the user's approved available routing/fallback, preserving quality and reporting configured versus enforceable settings. Do not stall unrelated work solely because metadata is unavailable or silently substitute a weaker model.
 
-For Codex CLI sessions, launch each developer with `-C` set to its registered feature worktree. A shell tool's `workdir` and absolute edit paths do not change the native session's working directory; the ownership guard checks that session location as well as affected paths. Arrange canonical shared-tool and skill reads through the already-authorized narrow scope before dispatch. If access is denied, report it and stop the affected operation.
+A standalone `~/.codex/agents/<name>.toml` agent profile proves only that Codex can discover and parse that role; it does not prove the native subagent backend makes the configured model available. For a custom provider, its `env_key` must also be present in the actual host process. Report configured provider, native model catalog availability, credential presence, and the result of a fresh spawn as separate facts. A native “model is not supported” result remains unavailable even when the provider's Responses API and local TOML are valid; do not silently substitute another model.
+
+In particular, configuring `deepseek-flash` with `deepseek_api` does not add that model to a ChatGPT-backed Codex account's native subagent allowlist. If a fresh spawn reports that the model is unsupported, Agent-Team must report that host limitation. A standalone custom-provider call additionally needs `DEEPSEEK_API_KEY` in the running process; a key stored elsewhere or a misspelled agent filename does not make it available. Keep the requested DeepSeek routing saved unless the user explicitly chooses a fallback.
+
+For Codex CLI sessions, launch each developer with `-C` set to its registered feature worktree. A shell tool's `workdir` and absolute edit paths do not change the native session's working directory; project identity and resolved path containment use the native session location. If access is denied, report the actual boundary and stop only the affected operation.
 
 Use exposed Codex spawning, messaging, resume, and stop tools, not assumed shell commands. Pass supported model/effort settings explicitly. Where controls match `spawn_agent`, use `fork_turns="none"` or supported limited context for model overrides; send the compact dispatch contract and relevant evidence. Adapt to the actual schema rather than assuming identical APIs on every surface. Reuse an appropriate idle agent instead of duplicating it. Only the orchestrator dispatches.
 
 Feed observed catalog and fresh-worker results into the [native setup binding](SETUP.md#bind-the-native-observations) before claiming scoped readiness or saving a role change. A generated driver transfers inspected facts; it does not grant native trust or substitute for the actual dispatch.
 
-The executable hook cannot automatically enumerate the complete MCP/plugin inventory. A reviewed manual context-reduction report remains `owner_reported_unverified`, requires explicit unknown-visibility acknowledgement and native owner identity to apply, and cannot relabel a canonically selected dependency as unused. Missing inventory stays unknown. Parent-model comparison also stays unknown unless the adapter exposes trustworthy comparable metadata.
+The executable hook cannot automatically enumerate the complete MCP/plugin inventory. A reviewed manual context-reduction report remains unverified, requires explicit unknown-visibility acknowledgement and native project identity to apply, and cannot relabel a canonically selected dependency as unused. Missing inventory stays unknown. Parent-model comparison also stays unknown unless the adapter exposes trustworthy comparable metadata.
 
 Before work, each fresh child completes [selective skill startup](DEPENDENCIES.md#skill-startup-for-every-agent). Send only the applicable instruction paths and capability evidence. With no Skill tool, complete file/resource reads load instructions; a name in a message or parent receipt does not. Reuse valid retained context and report exceptions compactly.
 
@@ -43,7 +49,7 @@ LeanCTX initialization and Agent-Team hook installation are separate additive op
 
 ## Named teams and lifecycle actions
 
-Use shared [runs](RUNS.md), [settings](SETTINGS.md), and [help](HELP.md) for counted starts (1–6 teams), continuous refill, project defaults, and task-based auto-deploy. The project owner alone schedules and releases. Measure actual host capacity for complete developer/reviewer assignments; do not map six teams to six tool slots or change model tiers to fit. Preserve the shared-orchestrator disclosure when full independent sessions are unavailable. Use compact role-first output for ordinary actions; reserve optional branding for first setup/help. No banner tool or background scheduler is required.
+Use shared [runs](RUNS.md), [settings](SETTINGS.md), and [help](HELP.md) for counted starts (1–6 teams), continuous refill, project defaults, and task-based auto-deploy. The active native project orchestrator schedules and releases through versioned locks and exact evidence. Measure actual host capacity for complete developer/reviewer assignments; do not map six teams to six tool slots or change model tiers to fit. Preserve the shared-orchestrator disclosure when full independent sessions are unavailable. Use compact role-first output for ordinary actions; reserve optional branding for first setup/help. No banner tool or background scheduler is required.
 
 Use shared [session actions](ACTIONS.md), [project coordination](PROJECTS.md), [recovery](RECOVERY.md), [status](STATUS.md), and [preview approval](PREVIEW.md). These are skill instructions, not added native CLI subcommands. Both project and full team orchestrators use this adapter’s orchestrator tier. A second invocation is not automatically a new full session. Use supported independent sessions, or disclose one parent coordinating named groups when separate orchestrators cannot be created. Do not enable forbidden nested spawning. Keep status read-only and leave other sessions running. Main is for coordination; all feature changes use feature worktrees and serial integration uses the project-owned integration worktree.
 

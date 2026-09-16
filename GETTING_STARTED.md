@@ -77,7 +77,7 @@ Automatic artifact installation is qualified only on Linux and WSL where `/proc/
 
 This includes the 7.2.6 lowercase-to-uppercase Markdown migration. Verify every installed package and lowercase Claude role against its schema-4 receipt before a separately authorized replacement, retain rollback backups, and never leave lowercase and uppercase files for the same native role ID active together. Customized or ambiguous files remain in place as conflicts. The normal installer will not infer permission to replace them from the release version.
 
-The embedded `.agent-team-source.json` records the ten-field package source identity and package map. Verified artifact authority and schema-4 receipts separately bind archive/checksum identity, complete archive and installed maps, selected hosts/scope, transaction, recovery, targets, and time. They do not prove publication, host reload/trust, dependency readiness, or live owner recovery.
+The embedded `.agent-team-source.json` records the ten-field package source identity and package map. Verified artifact authority and schema-4 receipts separately bind archive/checksum identity, complete archive and installed maps, selected hosts/scope, transaction, recovery, targets, and time. They do not prove publication, host reload/trust, dependency readiness, or live session state.
 
 ## 4. Reload and review hook trust
 
@@ -105,23 +105,23 @@ Setup reuses the Kickoff handoff, an existing plan, or a standalone task. It pre
 | --- | --- | --- |
 | 1 | Host, Git, gh, Node.js 24/npm, account/project access | Agent can install in approved scope; you complete login, access, admin and trust steps. |
 | 2 | Complete Agent-Team package and native reload/trust | Managed selected-host installer; native trust remains yours. |
-| 3 | [uv](https://docs.astral.sh/uv/getting-started/installation/), managed Python, [Serena](https://github.com/oraios/serena), selected language-server prerequisites | Mandatory; supported missing prerequisites prepared in order and functionally checked. |
-| 4 | [Microsoft Playwright CLI](https://github.com/microsoft/playwright-cli), browser binaries and required OS libraries | Mandatory even for backend projects; system libraries may need administrator access. |
+| 3 | [uv](https://docs.astral.sh/uv/getting-started/installation/), managed Python, [Serena](https://github.com/oraios/serena), selected language-server prerequisites | Selected default; prepare when useful or explicitly required. Host registration/reload is reported separately. |
+| 4 | [Microsoft Playwright CLI](https://github.com/microsoft/playwright-cli), browser binaries and required OS libraries | Selected default; required only for plans that explicitly need browser interaction. System libraries may need administrator access. |
 | 5 | Selected default skills and CLIs below | Prepared automatically on first run; compatible existing copies reused. |
 | 6 | [Beads](https://github.com/gastownhall/beads), if selected | Verify its actual backend; do not assume an external database server is always required. |
 | 7 | Optional additions | Install only after selection. |
 
 Default-selected profiles: [ast-grep CLI](https://github.com/ast-grep/ast-grep), code-only [Graphify](https://github.com/Graphify-Labs/graphify) for offline repository structure, blast radius and cross-module paths, narrowed [LeanCTX](https://github.com/yvgude/lean-ctx), selective [Superpowers](https://github.com/obra/superpowers), local [Ponytail](https://github.com/DietrichGebert/ponytail), [Impeccable](https://github.com/pbakaus/impeccable) skill/detector, and individual [React Best Practices](https://github.com/vercel-labs/agent-skills/tree/main/skills/react-best-practices).
 
-Setup shows grouped progress, not a separate approval question for each already-selected tool. Required missing capabilities remain pending until useful functional checks pass. Optional [Context7](https://github.com/upstash/context7) supplies library docs; the dashboard is also opt-in.
+Setup shows grouped progress, not a separate approval question for each already-selected tool. A companion failure is diagnostic and does not block unrelated work. Only capabilities explicitly named by the active plan remain pending until both functional and worker checks pass. Optional [Context7](https://github.com/upstash/context7) supplies library docs; the dashboard is also opt-in.
 
-The current executable adapters cannot automatically list every visible MCP/plugin capability. If you ask to reduce context, Agent-Team may show an `offered_unverified` proposal based on your reviewed report. Visibility remains unknown, required selected dependencies stay excluded, and applying requires your explicit acknowledgement plus the native project owner. Cancel or no answer changes nothing. Claude Code derives its configuration home from the running adapter, not from request text.
+The current executable adapters cannot automatically list every visible MCP/plugin capability. If you ask to reduce context, Agent-Team may show an `offered_unverified` proposal based on your reviewed report. Visibility remains unknown, required selected dependencies stay excluded, and applying requires your explicit acknowledgement from a native session in the same project. Cancel or no answer changes nothing. Claude Code derives its configuration home from the running adapter, not from request text.
 
 Preparation is not universal instruction loading. Each role reads only the complete instructions needed for its assignment. No second tracker, proxy, blanket plugin hook set or paid JetBrains dependency is introduced by these profiles.
 
 ## 6. Inspect and change settings
 
-Creating the canonical project records is separate from passing dependency and native-host readiness. Keep the final setup summary: it identifies the owner, selected tracker, remaining checks and any reload/trust step. The agent should never call a saved installation preference proof of fresh-worker access.
+Creating the canonical project records is separate from dependency observations and native-host trust. Keep the final setup summary: it identifies the active native session, selected tracker, task-required checks and any reload/trust step. The agent should never call a saved installation preference proof of fresh-worker access.
 
 Ask:
 
@@ -160,6 +160,6 @@ Ask Agent-Team to enable a local saved HTML dashboard and report its path. It sh
 
 Optional Beads graph provider: [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer), by Jeffrey Emanuel, under its [complete license including the OpenAI/Anthropic rider](https://github.com/Dicklesworthstone/beads_viewer/blob/main/LICENSE). It is referenced externally, not white-labeled or vendored as unrestricted MIT. Attribution is not blanket license eligibility. TASKS-only views work without it.
 
-Ask “Resume Agent-Team” after interruption. Source-linked checkpoints preserve approved/rejected decisions, ownership, verification and pending operations. Native compaction stays enabled as fallback; the skill cannot guarantee zero compactions or autonomous parent replacement after host exit.
+Ask “Resume Agent-Team” after interruption, or open the same checkout in the other host and ask it to continue. No ownership release or takeover file is needed. Source-linked checkpoints preserve approved/rejected decisions, writer assignments, verification and pending operations. Native compaction stays enabled as fallback; the skill cannot guarantee zero compactions or autonomous parent replacement after host exit.
 
 If something fails, request the specific failed prerequisite and its supported recovery. Never bypass policy, silently switch trackers, treat absent metrics as zero cost, or call an unrun test passed.

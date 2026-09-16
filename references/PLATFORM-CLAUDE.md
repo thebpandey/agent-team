@@ -4,6 +4,8 @@ Use only in Claude Code. Invoke `/agent-team`; resolve dependencies through the 
 
 Confirm Claude Code from trusted runtime/tool metadata. Select its saved role profile through [settings](SETTINGS.md), preserving Codex routing and all run defaults. A host switch does not delete model/effort preferences. Diagnose ambiguous or malformed legacy data without silently resetting custom values. Do not infer the host from `/agent-team` text alone.
 
+When this Claude Code session continues a project last used by Codex or another session, apply [session continuity](ACTIONS.md#continue-in-another-host-or-session): verify the same Git project and continue. No prior-session release, takeover request, or owner migration is needed; model fallback remains a separate choice.
+
 ## Role map
 
 These are workflow choices, not benchmark equivalence claims. Verified against Anthropic's model documentation on 2026-09-04.
@@ -72,7 +74,7 @@ LeanCTX and Agent-Team setup must merge their hook arrays, settings objects, and
 
 ## Named teams and lifecycle actions
 
-Use shared [runs](RUNS.md), [settings](SETTINGS.md), and [help](HELP.md) for counted starts (1–6 teams), continuous refill, project defaults, and task-based auto-deploy. The project owner alone schedules and releases. Measure actual host capacity for complete developer/reviewer assignments; do not map six teams to six tool slots or change model tiers to fit. Preserve the shared-orchestrator disclosure when full independent sessions are unavailable. Use compact role-first output for ordinary actions; reserve optional branding for first setup/help. No banner tool or background scheduler is required.
+Use shared [runs](RUNS.md), [settings](SETTINGS.md), and [help](HELP.md) for counted starts (1–6 teams), continuous refill, project defaults, and task-based auto-deploy. The active native project orchestrator schedules and releases through versioned locks and exact evidence. Measure actual host capacity for complete developer/reviewer assignments; do not map six teams to six tool slots or change model tiers to fit. Preserve the shared-orchestrator disclosure when full independent sessions are unavailable. Use compact role-first output for ordinary actions; reserve optional branding for first setup/help. No banner tool or background scheduler is required.
 
 Use shared [session actions](ACTIONS.md), [project coordination](PROJECTS.md), [recovery](RECOVERY.md), [status](STATUS.md), and [preview approval](PREVIEW.md). These are skill instructions, not added native CLI subcommands. Both project and full team orchestrators use this adapter’s orchestrator tier. A second invocation is not automatically a new full session. Use supported independent sessions, or disclose one parent coordinating named groups when separate orchestrators cannot be created. Do not enable forbidden nested spawning. Keep status read-only and leave other sessions running. Main is for coordination; all feature changes use feature worktrees and serial integration uses the project-owned integration worktree.
 

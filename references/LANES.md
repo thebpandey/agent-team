@@ -10,11 +10,11 @@ Lane roles reuse the native role IDs `project_orchestrator`, `complex_developer`
 
 The durable lane record contains its identity, role, effective model and effort, full queue, current task, worker generation, worktree and branch, brief pointer and hash, ownership evidence, rotation count, handover pointer, fact sheets, and immutable assignment and result history. Progress is derived from tracker and accepted integration evidence. Do not add lane-local task status that can contradict the tracker.
 
-Before lane creation, a delegated Graphify affected/path check records the owned paths, exact revision, path-set hash, and absence or approved resolution of overlaps. Missing or stale ownership evidence is unresolved. Resolve an overlap through one writer or an explicit per-task split before dispatch.
+Before lane creation, validate exact writable paths and reject overlap with another live lane. When available, delegated Graphify `affected`/`path` evidence may record the revision, path-set hash, and structural leads, but that evidence is optional and never a lane-creation prerequisite. Resolve an actual overlap through one writer or an explicit per-task split before dispatch.
 
 ## Route contract
 
-Every native mutation file is the closed envelope `{schemaVersion:1, actorSessionId, expectedVersion, request}` and requires the current native project owner. Each closed request has its own `schemaVersion:1`, `operationId`, `reason`, and phase-specific preconditions. CLI text does not create native identity. Commands are exact and unchained.
+Every native mutation file is the closed envelope `{schemaVersion:1, actorSessionId, expectedVersion, request}` and requires a native session resolving to the same project. Each closed request has its own `schemaVersion:1`, `operationId`, `reason`, and phase-specific preconditions. CLI text does not create native identity. Commands are exact and unchained.
 
 - `lane-create` binds an already prepared worktree and registered team. It records the full queue but claims no task. Its request binds tracker, run, revision, lanes-collection fingerprint, and the new lane. One open reserved reviewer lane may overlap author task IDs only when every queued task belongs to exactly one non-review lane; it is excluded from logical author occupancy.
 - `lane-next` has exactly four phases: `prepare`, `dispatch`, `result`, and `bind`.
@@ -54,7 +54,7 @@ Shared fact sheets have one owner lane, content hash, consumer citations, and fa
 
 ## Capacity and supervision
 
-Open lanes occupy logical capacity between tasks. Native reviewer slots and logical `parallel_teams` are different quantities and must not be double counted. Unknown liveness never frees a slot. Rotation status alone never proves a writer stopped. Release compute only after authentic stopped-writer evidence or an explicit ownership transfer.
+Open lanes occupy logical capacity between tasks. Native reviewer slots and logical `parallel_teams` are different quantities and must not be double counted. Unknown liveness never frees a slot. Rotation status alone never proves a writer stopped. Release compute only after authentic stopped-writer evidence or an explicit worker-slot handoff.
 
 Normal wakeups are user input, worker messages, completions, handovers, reviews, and provider results. The configured heartbeat is an active-host-turn fallback, default 600 seconds with a minimum of 60. Use the shorter host wait limit when required, but a returned wait is not evidence of progress and does not justify a manufactured poll.
 

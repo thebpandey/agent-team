@@ -59,7 +59,7 @@ test("helpers route installs through the canonical setup transaction and health 
 
   const request = await envelope(value, {}, { operationId: "install-helpers" });
   const refused = await runCommand("helpers-install", { ...value.options, request });
-  assert.deepEqual(refused, { status: "conflict", reason: "project_owner_required" });
+  assert.deepEqual(refused, { status: "conflict", reason: "native_project_context_required" });
   await assert.rejects(readFile(path.join(value.root, "scripts", "agent-team", "with-env.mjs")), { code: "ENOENT" });
 
   const installed = await runCommand("helpers-install", { ...value.options, request }, { nativeIdentity: value.nativeIdentity });
@@ -84,7 +84,7 @@ test("executable public CLI inspects helpers but cannot invent mutation authorit
   assert.equal(unknown.proposal, null);
   const request = await envelope(value, {}, { operationId: "public-helper-install" });
   const refused = JSON.parse((await exec(process.execPath, [cli, "helpers-install", ...base, "--request", request])).stdout);
-  assert.deepEqual(refused, { status: "conflict", reason: "project_owner_required" });
+  assert.deepEqual(refused, { status: "conflict", reason: "native_project_context_required" });
   await assert.rejects(readFile(path.join(value.root, "scripts", "agent-team", "with-env.mjs")), { code: "ENOENT" });
 });
 

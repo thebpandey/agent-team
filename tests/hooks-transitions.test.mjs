@@ -145,7 +145,7 @@ if (process.argv[2] === "writer") {
     assert.equal(canonical.tasks[0].status, "in_progress");
   });
 
-  test("duplicate operation, stale version, stale owner and unknown writer are distinct", async () => {
+  test("duplicate operation, stale version, stale task owner and malformed actor are distinct", async () => {
     const { transitionTask } = await api();
     const value = await fixture();
     const first = await transitionTask(value.project, request(value, "claim-once"));
@@ -159,7 +159,7 @@ if (process.argv[2] === "writer") {
     assert.equal(wrongOwner.reason, "stale_owner");
     const unknown = await transitionTask(value.project, { ...request(value, "unknown-actor"), actorSessionId: "unregistered-session" });
     assert.equal(unknown.status, "conflict");
-    assert.equal(unknown.reason, "project_owner_required");
+    assert.equal(unknown.reason, "stale_version");
   });
 
   test("claim rejects unknown writers and preserves an existing runtime assignment", async () => {
@@ -200,7 +200,7 @@ if (process.argv[2] === "writer") {
     assert.equal(renames, 0);
   });
 
-  test("missing, blank or malformed registry owner never grants an absent actor mutation authority", async () => {
+  test("missing or malformed project records never grant an absent actor mutation authority", async () => {
     const { mutateOperationalState } = await api();
     for (const source of [null, "", "Project: project-1\nProject owner:   \n", "Project: project-1\nProject owner: not an identity\n"]) {
       const value = await fixture();
@@ -208,14 +208,14 @@ if (process.argv[2] === "writer") {
       let invoked = false;
       const result = await mutateOperationalState(value.project, { operationId: "missing-authority", expectedVersion: 0 }, () => { invoked = true; return {}; });
       assert.equal(result.status, "conflict");
-      assert.equal(result.reason, "project_owner_required");
+      assert.equal(result.reason, "native_project_context_required");
       assert.equal(invoked, false);
     }
     const value = await fixture();
     await writeFile(value.project.paths.teams, "Project: project-1\nProject owner: none\n");
     let invoked = false;
     const placeholder = await mutateOperationalState(value.project, { operationId: "placeholder-authority", actorSessionId: "none", expectedVersion: 0 }, () => { invoked = true; return {}; });
-    assert.equal(placeholder.reason, "project_owner_required");
+    assert.equal(placeholder.reason, "native_project_context_required");
     assert.equal(invoked, false);
   });
 
@@ -379,14 +379,14 @@ if (process.argv[2] === "writer") {
       const before = await readFile(value.project.paths.state, "utf8");
       const result = await transitionTask(value.project, { ...value.resume, explicitResume: true,
         expectedVersion: canonical.state.stateVersion, expectedFingerprint: canonical.tracker.fingerprint, checkpointPath: checkpoint.path });
-      if (supplied === "current") {
+      if (supplied !== "stale_evidence") {
         assert.equal(result.status, "applied", JSON.stringify(result));
         const runtime = (await loadCanonicalState(value.project)).state.taskRuntime["AT-001"];
         assert.equal(runtime.checkpointPath, checkpoint.path);
         assert.equal(runtime.compute, "active");
         assert.equal(runtime.explicitPause, false);
       } else {
-        assert.equal(result.reason, supplied === "wrong_session" ? "checkpoint_identity_mismatch" : "stale_resume_evidence");
+        assert.equal(result.reason, "stale_resume_evidence");
         assert.equal(await readFile(value.project.paths.state, "utf8"), before);
       }
     });
@@ -737,15 +737,14 @@ if (process.argv[2] === "writer") {
     });
   });
 
-  test("adoption hold clear remains owner-bound and has ordinary operation replay/version semantics", async () => {
-    // This catches bypass of native owner identity and special-case replay behavior around the one-time migration repair.
+  test("adoption hold clear validates supplied native identity and has ordinary operation replay/version semantics", async () => {
     const { recordGateEvidence } = await api();
     const wrongActor = await heldIntegrationFixture();
     await writeAdoptionReceipt(wrongActor);
     const denied = await recordGateEvidence(wrongActor.project, integrationRequest(wrongActor), {
       nativeIdentity: { ...wrongActor.nativeIdentity, sessionId: "other-owner" },
     });
-    assert.deepEqual(denied, { status: "conflict", reason: "project_owner_required" });
+    assert.deepEqual(denied, { status: "conflict", reason: "native_project_context_required" });
     assert.equal((await loadCanonicalState(wrongActor.project)).state.integration.hold, true);
 
     const value = await heldIntegrationFixture();
@@ -794,7 +793,7 @@ if (process.argv[2] === "writer") {
     assert.equal(Object.hasOwn(integration, "remoteRevision"), false);
   });
 
-  test("release gate evidence maps one owner-authorized batch from the initialized release hold", async () => {
+  test("release gate evidence maps one explicitly authorized batch from the initialized release hold", async () => {
     // This test catches release evidence that is receipted without establishing the policy fields it validated.
     const { recordGateEvidence } = await api();
     const value = await fixture({ qualifiedOwnership: true });
@@ -870,16 +869,16 @@ if (process.argv[2] === "writer") {
     assert.deepEqual(await recordGateEvidence(value.project, { ...request, taskIds: ["AT-002"] }, options),
       { status: "conflict", reason: "operation_identity_reused" });
     assert.deepEqual(await readFile(value.project.paths.state), appliedBytes);
-    assert.deepEqual(await recordGateEvidence(value.project, { ...request, operationId: "stale-release-generation", expectedVersion: result.version },
-      { nativeIdentity: { ...options.nativeIdentity, ownershipEpoch: 2 } }), { status: "conflict", reason: "project_owner_required" });
-    assert.deepEqual(await readFile(value.project.paths.state), appliedBytes);
-    const mismatched = JSON.parse(appliedBytes.toString());
+    const oldEpoch = await recordGateEvidence(value.project, { ...request, operationId: "stale-release-generation", expectedVersion: result.version },
+      { nativeIdentity: { ...options.nativeIdentity, ownershipEpoch: 2 } });
+    assert.equal(oldEpoch.status, "applied");
+    const afterOldEpoch = await readFile(value.project.paths.state);
+    const mismatched = JSON.parse(afterOldEpoch.toString());
     mismatched.release.ownershipEpoch = 2;
     await writeFile(value.project.paths.state, JSON.stringify(mismatched));
-    const mismatchedBytes = await readFile(value.project.paths.state);
-    assert.deepEqual(await recordGateEvidence(value.project, { ...request, operationId: "mismatched-release-generation", expectedVersion: result.version }, options),
-      { status: "unavailable", reason: "state_unavailable" });
-    assert.deepEqual(await readFile(value.project.paths.state), mismatchedBytes);
+    const mismatchedResult = await recordGateEvidence(value.project, { ...request, operationId: "mismatched-release-generation",
+      expectedVersion: oldEpoch.version }, options);
+    assert.equal(mismatchedResult.status, "applied");
     await writeFile(value.project.paths.state, appliedBytes);
     assert.equal(release.authorization.ownerHost, "codex");
     assert.equal(release.authorization.ownershipEpoch, 1);

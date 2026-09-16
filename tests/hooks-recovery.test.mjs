@@ -199,7 +199,7 @@ test("original source edits invalidate recovery evidence without rewriting autho
 test("semantic checkpoint rejects wrong actor and oversized packet before overwriting", async () => {
   const value = await fixture();
   const input = { eventId: "authored", sessionId: "developer-session", taskIds: ["AT-001"], nextAction: "Run owned tests." };
-  assert.equal((await writeCheckpoint(value.project, input, { actorSessionId: "other-session", expectedVersion: 0 })).reason, "checkpoint_owner_required");
+  assert.equal((await writeCheckpoint(value.project, input, { actorSessionId: "other-session", expectedVersion: 0 })).reason, "checkpoint_session_mismatch");
   assert.equal((await writeCheckpoint(value.project, { ...input, decisionNotes: "x".repeat(33000) }, { actorSessionId: "developer-session", expectedVersion: 0 })).reason, "checkpoint_too_large");
 });
 

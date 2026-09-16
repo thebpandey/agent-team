@@ -418,7 +418,7 @@ if (process.argv[2] === "initialize-worker") {
     await assert.rejects(access(path.join(value.root, ".agent-team/TASKS.md")), { code: "ENOENT" });
   });
 
-  test("missing plan facts, unsafe paths and active setup without valid owner remain unready", async () => {
+  test("missing plan facts, unsafe paths and mismatched active projects remain unready", async () => {
     const value = await fixture();
     assert.equal((await initialize(value.root, { ...value.request, plan: { ...value.request.plan, verification: [] } })).ready, false);
     assert.equal((await initialize(value.root, { ...value.request, plan: { ...value.request.plan, authority: { ownedPaths: ["../outside/**"] } } })).ready, false);
@@ -427,7 +427,7 @@ if (process.argv[2] === "initialize-worker") {
     const before = await readFile(path.join(value.root, ".agent-team/setup.json"), "utf8");
     const result = await initialize(value.root, { ...value.request, source: "existing" }, { expectedVersion: 0 });
     assert.equal(result.status, "conflict");
-    assert.equal(result.reason, "existing_owner_unavailable");
+    assert.equal(result.reason, "existing_project_conflict");
     assert.equal(await readFile(path.join(value.root, ".agent-team/setup.json"), "utf8"), before);
   });
 
@@ -461,17 +461,15 @@ if (process.argv[2] === "initialize-worker") {
     assert.equal(result.reason, "required_state_facts_missing");
   });
 
-  test("adoption rejects each malformed authority fact without publishing setup", async (t) => {
+  test("adoption rejects malformed operational facts but ignores obsolete session provenance", async (t) => {
     const mutations = {
       stateVersion: (state) => { state.stateVersion = -1; },
       runMode: (state) => { state.run.mode = "anything"; },
       runIdentity: (state) => { state.run.taskIds = ["missing-task"]; },
       duplicateIdentity: (state) => { state.run.taskIds.push(state.run.taskIds[0]); },
-      integrationOwner: (state) => { delete state.integration.ownerSessionId; },
       integrationHold: (state) => { delete state.integration.hold; },
       integrationPause: (state) => { delete state.integration.paused; },
       baseBranch: (state) => { state.integration.baseRef = "different-branch"; },
-      releaseOwner: (state) => { delete state.release.ownerSessionId; },
       releaseHold: (state) => { delete state.release.hold; },
       completionChecks: (state) => { state.completion.checks = "passed"; },
       malformedCheck: (state) => { state.completion.checks = [null]; },
@@ -490,6 +488,20 @@ if (process.argv[2] === "initialize-worker") {
       assert.equal(result.reason, "required_state_facts_missing", name);
       await assert.rejects(access(project.paths.setup), { code: "ENOENT" });
       assert.equal(await readFile(project.paths.state, "utf8"), source);
+    });
+    for (const [name, mutate] of Object.entries({
+      integrationSession: (state) => { delete state.integration.ownerSessionId; },
+      releaseSession: (state) => { delete state.release.ownerSessionId; },
+    })) await t.test(name, async () => {
+      const value = await fixture();
+      await initialize(value.root, value.request);
+      const project = await resolveProject(value.root);
+      const state = JSON.parse(await readFile(project.paths.state, "utf8"));
+      mutate(state);
+      await writeFile(project.paths.state, JSON.stringify(state));
+      await rm(project.paths.setup);
+      const result = await initialize(value.root, { ...value.request, source: "existing" });
+      assert.equal(result.ready, true, name);
     });
   });
 

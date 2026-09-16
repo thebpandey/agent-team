@@ -57,7 +57,7 @@ function output(result) {
   return JSON.parse(result.stdout);
 }
 
-async function legacyEntryFixture() {
+async function legacyEntryFixture({ legacyOwner = "root", nativeOwner = "native-owner", continuity = false } = {}) {
   const value = await fixture();
   const setupPath = path.join(value.root, ".agent-team/setup.json");
   const statePath = path.join(value.root, ".agent-team/state.json");
@@ -67,10 +67,10 @@ async function legacyEntryFixture() {
   setup.version = 1; delete setup.ownership;
   state.stateVersion = 0; delete state.ownership;
   for (const gate of [state.integration, state.release]) {
-    gate.ownerSessionId = "root"; delete gate.ownerHost; delete gate.ownershipEpoch;
+    gate.ownerSessionId = legacyOwner; delete gate.ownerHost; delete gate.ownershipEpoch;
   }
   let teams = await readFile(teamsPath, "utf8");
-  teams = teams.replace(/^Project owner:.*$/m, "Project owner: root").replace(/^Integration owner:.*$/m, "Integration owner: root")
+  teams = teams.replace(/^Project owner:.*$/m, `Project owner: ${legacyOwner}`).replace(/^Integration owner:.*$/m, `Integration owner: ${legacyOwner}`)
     .replace(/^Project owner host:.*\n/m, "").replace(/^Integration owner host:.*\n/m, "");
   await writeFile(setupPath, `${JSON.stringify(setup, null, 2)}\n`);
   await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
@@ -78,16 +78,24 @@ async function legacyEntryFixture() {
   const project = await resolveProject(value.root);
   const tracker = await readTracker(project);
   const digest = async (file) => createHash("sha256").update(await readFile(file)).digest("hex");
+  const operationId = continuity ? "entry-migrate-legacy" : "entry-adopt-root";
+  const authorization = continuity ? {
+    kind: "user-directed-maintenance", status: "approved", scope: "legacy_coordinator_continuity_migration",
+    source: "explicit user instruction to continue in the current native session", approvalId: "entry-continuity-approval",
+    grantedAt: "2026-09-12T00:00:00.000Z", projectId: project.projectId, revision: value.revision,
+    trackerFingerprint: tracker.tracker.fingerprint, expectedLegacyOwnerSessionId: legacyOwner,
+    newOwner: { host: "codex", sessionId: nativeOwner },
+  } : { status: "approved", scope: "legacy_owner_adoption",
+    source: "approved-entry-test", approvalId: "entry-approval", grantedAt: "2026-09-12T00:00:00.000Z",
+    projectId: project.projectId, revision: value.revision, trackerFingerprint: tracker.tracker.fingerprint, host: "codex" };
   const request = { schemaVersion: 1, request: {
-    operationId: "entry-adopt-root", projectId: project.projectId, expectedLegacyOwnerSessionId: "root",
+    operationId, projectId: project.projectId, expectedLegacyOwnerSessionId: legacyOwner,
     expectedProjectRoot: project.root, expectedRevision: value.revision,
     expectedTracker: { kind: tracker.tracker.kind, path: tracker.tracker.path, fingerprint: tracker.tracker.fingerprint },
     expectedSetupVersion: 1, expectedStateVersion: 0, expectedTeamsFingerprint: await digest(project.paths.teams),
     expectedSetupFingerprint: await digest(project.paths.setup), expectedStateFingerprint: await digest(project.paths.state),
-    expectedOwnerHistoryFingerprint: null, authorization: { status: "approved", scope: "legacy_owner_adoption",
-      source: "approved-entry-test", approvalId: "entry-approval", grantedAt: "2026-09-12T00:00:00.000Z",
-      projectId: project.projectId, revision: value.revision, trackerFingerprint: tracker.tracker.fingerprint, host: "codex" },
-    reason: "adopt synthetic root",
+    expectedOwnerHistoryFingerprint: null, authorization,
+    reason: continuity ? "continue from the legacy coordinator in this native session" : "adopt synthetic root",
   } };
   const requestPath = path.join(project.paths.stateRoot, "adopt.json");
   await writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`);
@@ -144,6 +152,34 @@ test("native PreToolUse performs exact legacy adoption while bare CLI only repor
   assert.equal(state.release.authorized, false);
   const replay = invokeCli("legacy-owner-adopt", { project: value.root, request: value.requestPath });
   assert.equal(replay.output.status, "duplicate");
+});
+
+test("native PreToolUse performs an explicitly targeted legacy continuity migration", async () => {
+  const legacyOwner = "69ebff15-55b3-4f58-b531-legacy-owner";
+  const nativeOwner = "01a08d53-dc5d-7fe2-9c3a-371cde406965";
+  const value = await legacyEntryFixture({ legacyOwner, nativeOwner, continuity: true });
+  const bare = invokeCli("legacy-owner-adopt", { project: value.root, request: value.requestPath });
+  assert.equal(bare.status, 0);
+  assert.equal(bare.output.reason, "native_legacy_owner_adoption_required");
+  const command = `node ${cli} legacy-owner-adopt --project ${value.root} --request ${value.requestPath}`;
+  const result = await runNormalizedHook(normalizeEvent("codex", "PreToolUse", { cwd: value.root,
+    session_id: nativeOwner, event_id: "entry-continuity-invocation", tool_name: "exec_command", tool_input: { cmd: command } }));
+  assert.equal(result.decision.allow, true, JSON.stringify(result.decision));
+  assert.equal(result.decision.mutations.some((entry) => entry.kind === "legacy_owner_adoption" && entry.status === "applied"), true,
+    JSON.stringify(result.decision));
+  const project = await resolveProject(value.root);
+  const state = JSON.parse(await readFile(project.paths.state, "utf8"));
+  assert.deepEqual({ host: state.ownership.current.host, sessionId: state.ownership.current.sessionId },
+    { host: "codex", sessionId: nativeOwner });
+  assert.equal(state.integration.hold, true);
+  assert.equal(state.integration.authorized, false);
+  assert.equal(state.release.hold, true);
+  assert.equal(state.release.authorized, false);
+  const receipt = JSON.parse(await readFile(path.join(project.paths.stateRoot, "legacy-owner-adoption.json"), "utf8"));
+  assert.equal(receipt.kind, "legacy_coordinator_continuity");
+  assert.equal(receipt.expectedLegacyOwnerSessionId, legacyOwner);
+  assert.equal(receipt.nativeEvidence.sessionId, nativeOwner);
+  assert.equal(receipt.livenessEvidence.status, "not_asserted");
 });
 
 test("native command adapter rejects copied CLI paths and chains without adopting", async () => {
@@ -328,7 +364,7 @@ function invokeCli(command, options) {
 }
 
 for (const runtime of ["codex", "claude"]) {
-  test(`${runtime} mapped-provider tracker completion requires the project owner (synthetic host payload)`, async () => {
+  test(`${runtime} mapped-provider tracker completion cannot write outside its active checkout (synthetic host payload)`, async () => {
     const value = await fixture();
     value.state.run = effectiveRun(runtime === "claude" ? "claude-code" : "codex");
     await writeFile(path.join(value.root, ".agent-team/state.json"), JSON.stringify(value.state));
@@ -337,7 +373,7 @@ for (const runtime of ["codex", "claude"]) {
     }, value.home);
     assert.equal(result.status, 0);
     assert.equal(output(result).hookSpecificOutput.permissionDecision, "deny");
-    assert.match(output(result).hookSpecificOutput.permissionDecisionReason, /project owner|shared path/i);
+    assert.match(output(result).hookSpecificOutput.permissionDecisionReason, /outside the active project checkout/i);
   });
   test(`${runtime} subprocess stdout exposes actionable lint failure while permitting repair (synthetic host payload)`, async () => {
     const value = await fixture();

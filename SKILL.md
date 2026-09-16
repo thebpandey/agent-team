@@ -2,7 +2,7 @@
 name: agent-team
 metadata:
   version: "7.3.1"
-description: Use when coordinating development in Codex or Claude Code, continuing Agent-Team tasks, or requesting agent-team setup, settings, start, status, pause, resume, review, or release.
+description: Use when coordinating development in Codex or Claude Code, switching the same Agent-Team project between hosts or sessions, continuing tasks, or requesting setup, settings, start, status, pause, resume, review, or release.
 ---
 
 # Agent-Team
@@ -22,6 +22,7 @@ Use `$agent-team` in Codex, `/agent-team` in Claude Code, or a clear natural-lan
 | Help or version | [Help](references/HELP.md); no setup or mutations |
 | Status | [Status](references/STATUS.md); recorded facts only; then continue an already-authorized active run |
 | Setup | [Setup](references/SETUP.md); prepare selected capabilities, then always enter the current-effective settings wizard before readiness |
+| Take over or switch host/session | [Actions](references/ACTIONS.md#continue-in-another-host-or-session), then [projects](references/PROJECTS.md#session-continuity); verify the same native Git project and continue without transfer |
 | Settings | [Settings](references/SETTINGS.md); show roles/model/effort and edit the requested setting; bare settings remains targeted |
 | Start or feature request | Establish readiness, then [runs](references/RUNS.md) and [team dispatch](references/TEAM.md) |
 | Pause or resume | [Recovery](references/RECOVERY.md); preserve explicit pauses, claims and pending operations |
@@ -37,13 +38,13 @@ Reuse an approved Project Kickoff handoff when present. Otherwise adopt an exist
 
 Preserve the selected Beads or root/designated Markdown tracker across worktrees. Missing UI skills or a temporarily unavailable backend never select another tracker. Follow [state](references/STATE.md) and [projects](references/PROJECTS.md).
 
-First use automatically prepares missing mandatory Serena and Microsoft Playwright CLI plus selected defaults through [dependency profiles](references/DEPENDENCIES.md). Optional tools require selection. Preparation is not permission to approve trust, obtain credentials, purchase access or overwrite customization.
+First use prepares selected defaults through [dependency profiles](references/DEPENDENCIES.md). Serena and Microsoft Playwright CLI are useful defaults, not universal dispatch requirements. Only `plan.requiredCapabilities` gates dispatch; a failed or unobserved companion stays diagnostic unless the active task requires it. Optional tools require selection. Preparation is not permission to approve trust, obtain credentials, purchase access or overwrite customization.
 
 ## Dispatch a bounded task
 
 Each assignment contains task IDs, acceptance, exclusive paths/worktree, input revision, relevant decisions and prohibitions, actual model/effort, required skill paths, evidence destination and next action. Fresh workers read their own applicable instructions; retained workers reuse still-valid context. Do not fork the full conversation or load every prepared skill into every agent.
 
-Use the smallest useful team within actual host capacity, reserving review capacity. Default to a developer and independent reviewer. Before dispatch, derive the parallel set from the tracker: tasks with no unmet dependencies and disjoint writable paths/resources run at once on separate teams in separate worktrees; tasks that share an entrypoint, schema or resource serialize behind one writer. Have the delegated verifier confirm that ownership is actually disjoint with Graphify `affected` and `path` on the integration worktree graph before dispatch. Send any pre-dispatch code search, feature check or review to the delegated verifier rather than doing it in the orchestrator context. One writer owns each shared file or resource. Only the orchestrator spawns; do not add another scheduler, database or agent hierarchy.
+Use the smallest useful team within actual host capacity, reserving review capacity. Default to a developer and independent reviewer. Before dispatch, derive the parallel set from the tracker: tasks with no unmet dependencies and disjoint writable paths/resources run at once on separate teams in separate worktrees; tasks that share an entrypoint, schema or resource serialize behind one writer. Use Graphify `affected` and `path` when available and useful; missing Graphify evidence never replaces or blocks deterministic path-overlap validation. Send any pre-dispatch code search, feature check or review to the delegated verifier rather than doing it in the orchestrator context. One writer handles each shared file or resource at a time. Only the orchestrator spawns; do not add another scheduler, database or agent hierarchy.
 
 ## Execute and repair continuously
 
@@ -64,7 +65,7 @@ While an authorized run has live work, use this one ordered loop:
 3. Answer a status/question briefly in commentary. A question is an interrupt, not a pause, cancel, ownership loss, or terminal condition.
 4. Reconcile every live worker and completed handoff with canonical state.
 5. Route exact revisions through repair or independent review, then serially integrate only accepted work.
-6. Prove the previous writer stopped or ownership transferred before treating compute as free; unknown liveness remains occupied.
+6. Prove the previous writer stopped or explicitly handed off its worker slot before treating compute as free; unknown liveness remains occupied.
 7. Recompute actual capacity, reserve reviewer capacity, and admit the next authorized eligible disjoint task. Only the project orchestrator refills.
 8. While active workers remain in the current host turn, supervise with the effective `supervision.heartbeatSeconds`, default 600 and minimum 60. Use shorter host waits when required without treating each return as a heartbeat deadline. At the configured interval, emit exactly one compact heartbeat from already-known state and blocker facts, then reconcile and repeat. A lower interval consumes more orchestrator turns.
 
@@ -78,6 +79,6 @@ Tests prove the checked revision and environment only. Keep unavailable, failed,
 
 Cleanup and deployment are separate. After verified integration, reclaim only safely stopped, clean task-owned resources with retained evidence; preserve dirty/untracked/ignored user files and required previews. Publish only to the authorized destination through required gates.
 
-Persist decisions, exclusions and consequential operation facts when they arise. Tracker owns tasks; project docs own decisions; [recovery](references/RECOVERY.md) checkpoints point to current attempts, evidence and next action. Fresh-context handoff must validate ownership, revision and pending operations before continuing. Keep native auto-compaction enabled as fallback; do not promise automatic parent replacement or execution after host exit.
+Persist decisions, exclusions and consequential operation facts when they arise. Tracker owns tasks; project docs own decisions; [recovery](references/RECOVERY.md) checkpoints point to current attempts, evidence and next action. A fresh host or session validates the same Git project, revision, writer liveness and pending operations, then continues; recorded coordinator identity is never a mutation gate. Keep native auto-compaction enabled as fallback; do not promise automatic parent replacement or execution after host exit.
 
 Measure total accepted-work cost across orchestration, developers, review, repair and recovery. Label missing usage and estimates; cached input is a subset, not extra context capacity. Report implemented, verified, integrated and released states separately.

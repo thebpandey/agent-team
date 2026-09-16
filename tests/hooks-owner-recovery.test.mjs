@@ -164,6 +164,32 @@ async function adoptionEnvelope(project, overrides = {}) {
   return { schemaVersion: 1, request };
 }
 
+async function continuityAdoptionEnvelope(project, {
+  operationId = "migrate-legacy-coordinator",
+  legacyOwnerSessionId = "69ebff15-55b3-4f58-b531-legacy-owner",
+  newOwner = { host: "codex", sessionId: "01a08d53-dc5d-7fe2-9c3a-371cde406965" },
+} = {}) {
+  const envelope = await adoptionEnvelope(project, {
+    operationId,
+    expectedLegacyOwnerSessionId: legacyOwnerSessionId,
+    reason: "continue the legacy project in the current native session without asserting prior-session liveness",
+  });
+  envelope.request.authorization = {
+    kind: "user-directed-maintenance",
+    status: "approved",
+    scope: "legacy_coordinator_continuity_migration",
+    source: "explicit user instruction to continue in the current native session",
+    approvalId: `approval-${operationId}`,
+    grantedAt: "2026-09-12T00:00:00.000Z",
+    projectId: project.projectId,
+    revision: envelope.request.expectedRevision,
+    trackerFingerprint: envelope.request.expectedTracker.fingerprint,
+    expectedLegacyOwnerSessionId: legacyOwnerSessionId,
+    newOwner,
+  };
+  return envelope;
+}
+
 test("legacy adoption envelope is closed and cannot supply actor writer or liveness", async () => {
   const module = await testHarness();
   const project = await legacyFixture();
@@ -239,6 +265,99 @@ test("trusted native session can self-qualify an otherwise exact legacy owner wi
   const tampered = structuredClone(envelope);
   tampered.request.reason = "different";
   assert.equal((await module.adoptLegacyProjectOwner(project, tampered, context)).reason, "operation_identity_reused");
+});
+
+test("user-directed legacy continuity migration qualifies a different native session without rewriting project history", async () => {
+  const module = await testHarness();
+  const legacyOwnerSessionId = "69ebff15-55b3-4f58-b531-legacy-owner";
+  const newOwner = { host: "codex", sessionId: "01a08d53-dc5d-7fe2-9c3a-371cde406965" };
+  let project = await legacyFixture(legacyOwnerSessionId);
+  const before = await loadCanonicalState(project, { includeDeliveryEvidence: false });
+  const trackerBytes = await readFile(project.paths.tasks);
+  const evidencePath = path.join(project.paths.stateRoot, "evidence", "retained.json");
+  await mkdir(path.dirname(evidencePath), { recursive: true });
+  await writeFile(evidencePath, "retained evidence\n");
+  const envelope = await continuityAdoptionEnvelope(project, { legacyOwnerSessionId, newOwner });
+  const context = { nativeIdentity: { ...newOwner, observed: true, cwd: project.root,
+    invocationId: "native-legacy-continuity" } };
+
+  const result = await module.adoptLegacyProjectOwner(project, envelope, context, {
+    now: () => "2026-09-12T00:00:01.000Z",
+  });
+
+  assert.equal(result.status, "applied");
+  project = await resolveProject(project.root);
+  const after = await loadCanonicalState(project, { includeDeliveryEvidence: false });
+  assert.deepEqual({ owner: after.registry.projectOwner, host: after.registry.projectOwnerHost,
+    epoch: after.registry.ownershipEpoch }, { owner: newOwner.sessionId, host: newOwner.host, epoch: 1 });
+  assert.deepEqual(after.state.ownership, after.setup.ownership);
+  assert.deepEqual(after.ownerHistory, { schemaVersion: 1, version: 1, ownership: { epoch: 1 }, entries: [] });
+  assert.deepEqual(after.state.completion, before.state.completion);
+  assert.deepEqual(after.state.database, before.state.database);
+  assert.deepEqual(after.state.operationMappings, before.state.operationMappings);
+  const { version: _beforeVersion, ownership: _beforeOwnership, ...beforeSetup } = before.setup;
+  const { version: _afterVersion, ownership: _afterOwnership, ...afterSetup } = after.setup;
+  assert.deepEqual(afterSetup, beforeSetup);
+  for (const [nextGate, priorGate] of [[after.state.integration, before.state.integration], [after.state.release, before.state.release]]) {
+    const stripOwnerGate = ({ ownerSessionId: _session, ownerHost: _host, ownershipEpoch: _epoch,
+      authorized: _authorized, hold: _hold, ...retained }) => retained;
+    assert.deepEqual(stripOwnerGate(nextGate), stripOwnerGate(priorGate));
+    assert.equal(nextGate.ownerSessionId, newOwner.sessionId);
+    assert.equal(nextGate.ownerHost, newOwner.host);
+    assert.equal(nextGate.ownershipEpoch, 1);
+    assert.equal(nextGate.authorized, false);
+    assert.equal(nextGate.hold, true);
+  }
+  assert.deepEqual(await readFile(project.paths.tasks), trackerBytes);
+  assert.equal(await readFile(evidencePath, "utf8"), "retained evidence\n");
+  const receipt = JSON.parse(await readFile(path.join(project.paths.stateRoot, "legacy-owner-adoption.json"), "utf8"));
+  assert.equal(receipt.kind, "legacy_coordinator_continuity");
+  assert.equal(receipt.expectedLegacyOwnerSessionId, legacyOwnerSessionId);
+  assert.deepEqual(receipt.newOwner, newOwner);
+  assert.deepEqual(receipt.livenessEvidence, { status: "not_asserted", observedAt: "2026-09-12T00:00:01.000Z" });
+  assert.deepEqual(receipt.authorization, envelope.request.authorization);
+  assert.deepEqual({ host: receipt.nativeEvidence.host, sessionId: receipt.nativeEvidence.sessionId,
+    cwd: receipt.nativeEvidence.cwd, invocationId: receipt.nativeEvidence.invocationId }, {
+    host: newOwner.host, sessionId: newOwner.sessionId, cwd: project.root, invocationId: "native-legacy-continuity",
+  });
+  assert.equal((await module.adoptLegacyProjectOwner(project, envelope, context)).status, "duplicate");
+});
+
+test("legacy continuity migration requires its explicitly approved native target", async () => {
+  const module = await testHarness();
+  const legacyOwnerSessionId = "69ebff15-55b3-4f58-b531-legacy-owner";
+  const approvedOwner = { host: "codex", sessionId: "approved-native-session" };
+  for (const [name, nativeIdentity] of [
+    ["session", { host: "codex", sessionId: "different-native-session" }],
+    ["host", { host: "claude-code", sessionId: approvedOwner.sessionId }],
+  ]) {
+    const project = await legacyFixture(legacyOwnerSessionId);
+    const envelope = await continuityAdoptionEnvelope(project, { operationId: `legacy-target-${name}`,
+      legacyOwnerSessionId, newOwner: approvedOwner });
+    const before = await Promise.all([project.paths.teams, project.paths.state, project.paths.setup].map((file) => readFile(file)));
+    const result = await module.adoptLegacyProjectOwner(project, envelope, { nativeIdentity: {
+      ...nativeIdentity, observed: true, cwd: project.root, invocationId: `native-target-${name}`,
+    } });
+    assert.deepEqual(result, { status: "validated", ready: false, reason: "native_legacy_owner_adoption_required" }, name);
+    assert.deepEqual(await Promise.all([project.paths.teams, project.paths.state, project.paths.setup].map((file) => readFile(file))), before, name);
+    await assert.rejects(access(path.join(project.paths.stateRoot, "legacy-owner-adoption.json")), { code: "ENOENT" });
+  }
+});
+
+test("legacy continuity migration cannot assert stopped-owner recovery facts", async () => {
+  const module = await testHarness();
+  const legacyOwnerSessionId = "69ebff15-55b3-4f58-b531-legacy-owner";
+  const project = await legacyFixture(legacyOwnerSessionId);
+  const envelope = await continuityAdoptionEnvelope(project, { legacyOwnerSessionId });
+  assert.equal(module.validateLegacyOwnerAdoptionEnvelope(envelope), undefined);
+  for (const field of ["liveness", "stopped", "capability", "replacementOwner", "writer"]) {
+    assert.equal(module.validateLegacyOwnerAdoptionEnvelope({ ...envelope, request: {
+      ...envelope.request, [field]: field,
+    } }), "invalid_request", field);
+  }
+  assert.deepEqual(await module.inspectLegacyOwnerAdoption(project, envelope), {
+    status: "validated", ready: false, reason: "native_legacy_owner_adoption_required",
+  });
 });
 
 test("legacy self-qualification rejects mismatched session host and cwd without writes", async () => {
@@ -386,7 +505,7 @@ test("standalone inspection rejects a permanent receipt with a substituted legac
   assert.deepEqual(await readFile(receiptPath), before);
 });
 
-test("canonical readers fail closed during a partial adoption generation", async () => {
+test("partial legacy adoption journals do not fence ordinary canonical readers", async () => {
   const module = await testHarness();
   const project = await legacyFixture();
   const envelope = await adoptionEnvelope(project);
@@ -394,7 +513,8 @@ test("canonical readers fail closed during a partial adoption generation", async
     invocationId: "reader-fence-invocation" } };
   await assert.rejects(module.adoptLegacyProjectOwner(project, envelope, context, { failAfterRename: 1 }),
     /injected_legacy_owner_adoption_crash/);
-  await assert.rejects(loadCanonicalState(await resolveProject(project.root)), /legacy_owner_adoption_in_progress/);
+  const canonical = await loadCanonicalState(await resolveProject(project.root));
+  assert.equal(canonical.registry.projectId, project.projectId);
 });
 
 test("legacy adoption requires a clean tracked main revision", async () => {
@@ -624,7 +744,7 @@ test("capabilities are one-shot expiry and runtime bound before callbacks", asyn
   assert.deepEqual(results.map(({ reason }) => reason).sort(), ["native_owner_recovery_required", "owner_active"]);
 });
 
-test("the same textual session on another host cannot retain owner authority", async () => {
+test("the same textual session on another native host can continue without owner authority", async () => {
   const module = await testHarness();
   let project = await fixture();
   const envelope = await recoveryEnvelope(project);
@@ -636,18 +756,15 @@ test("the same textual session on another host cannot retain owner authority", a
   const request = { operationId: "after-transfer", actorSessionId: "old-owner", expectedVersion: version };
   assert.equal((await mutateOperationalState(project, request, (state) => ({ state, result: {} }), {
     nativeIdentity: { host: "codex", sessionId: "old-owner", observed: true, cwd: project.root, ownershipEpoch: 1 },
-  })).reason, "project_owner_required");
-  assert.equal((await mutateOperationalState(project, request, (state) => ({ state, result: {} }), {
-    nativeIdentity: { host: "claude-code", sessionId: "old-owner", observed: true, cwd: project.root, ownershipEpoch: 2 },
   })).status, "applied");
   const { evaluatePolicy } = await import("../hooks/lib/policy.mjs");
   const operation = { kind: "file_change", files: [{ action: "edit", path: "README.md", changedContent: "fixture" }] };
   const oldPolicy = await evaluatePolicy({ runtime: "codex", event: "PreToolUse", cwd: project.root, sessionId: "old-owner", operation }, project);
   const newPolicy = await evaluatePolicy({ runtime: "claude", event: "PreToolUse", cwd: project.root, sessionId: "old-owner", operation }, project);
-  assert.equal(oldPolicy.allow, false);
+  assert.equal(oldPolicy.allow, true);
   assert.equal(newPolicy.allow, true);
   const { inspectRecovery } = await import("../hooks/lib/recovery.mjs");
-  assert.equal((await inspectRecovery(project, { sessionId: "old-owner", host: "codex", includeGit: true })).identity.kind, "unknown");
+  assert.equal((await inspectRecovery(project, { sessionId: "old-owner", host: "codex", includeGit: true })).identity.kind, "project_session");
   assert.equal((await inspectRecovery(project, { sessionId: "old-owner", host: "claude-code", includeGit: true })).identity.kind, "project_owner");
 });
 
@@ -660,6 +777,7 @@ test("a crash after each canonical rename rolls forward to identical generation 
     const expected = await independentPostimages(project, envelope, { invocationId });
     await assert.rejects(module.recoverProjectOwner(project, envelope, { nativeOwnerRecovery: await nativeContext(module, project, { invocationId }), failAfterRename,
       now: () => "2026-09-12T00:00:00.000Z" }), /injected_owner_recovery_crash/);
+    await module.repairOwnerRecovery(project);
     const repaired = await loadCanonicalState(await resolveProject(project.root));
     assert.equal(repaired.state.ownership.epoch, 2);
     const bytes = await Promise.all([project.paths.teams, project.paths.state, project.paths.setup, project.paths.ownerHistory].map((file) => readFile(file)));
@@ -823,12 +941,12 @@ test("journal structure phase receipt and semantic postimages are exact before t
   }
 });
 
-test("qualified absent empty whitespace or malformed history refuses while exact legacy absence remains readable", async () => {
-  for (const [mode, source, reason] of [
-    ["absent", undefined, /owner_history_missing/],
-    ["empty", "", /owner_history_invalid/],
-    ["whitespace", " \n\t", /owner_history_invalid/],
-    ["malformed", undefined, /owner_generation/],
+test("absent empty whitespace or malformed legacy history never fences ordinary reads", async () => {
+  for (const [mode, source] of [
+    ["absent", undefined],
+    ["empty", ""],
+    ["whitespace", " \n\t"],
+    ["malformed", undefined],
   ]) {
     const project = await fixture();
     if (mode === "absent") await rm(project.paths.ownerHistory);
@@ -838,7 +956,8 @@ test("qualified absent empty whitespace or malformed history refuses while exact
       history.extra = true;
       await writeFile(project.paths.ownerHistory, JSON.stringify(history));
     }
-    await assert.rejects(loadCanonicalState(await resolveProject(project.root)), reason);
+    const canonical = await loadCanonicalState(await resolveProject(project.root));
+    assert.equal(canonical.registry.projectId, project.projectId);
   }
   const legacy = await fixture();
   const state = JSON.parse(await readFile(legacy.paths.state));
@@ -921,7 +1040,7 @@ test("prepared and committed crash boundaries repair once and third hashes prese
   }
 });
 
-test("epoch-one authority is fenced from operational checkpoint setup integration and release paths", async () => {
+test("obsolete owner epochs do not fence native project operations", async () => {
   const module = await testHarness();
   const original = await fixture();
   const envelope = await recoveryEnvelope(original);
@@ -930,45 +1049,36 @@ test("epoch-one authority is fenced from operational checkpoint setup integratio
   const project = await resolveProject(original.root);
   const staleIdentity = { host: "claude-code", sessionId: "new-owner", observed: true, cwd: project.root, ownershipEpoch: 1 };
   const current = await loadCanonicalState(project);
-  const before = await rawFour(project);
   let mutatorCalls = 0;
-  const authorityCases = [
-    ["stale", staleIdentity],
-    ["absent", (({ ownershipEpoch: _, ...identity }) => identity)({ ...staleIdentity, ownershipEpoch: 2 })],
-    ["zero", { ...staleIdentity, ownershipEpoch: 0 }],
-    ["noninteger", { ...staleIdentity, ownershipEpoch: 2.5 }],
-    ["host", { ...staleIdentity, ownershipEpoch: 2, host: "codex" }],
-    ["session", { ...staleIdentity, ownershipEpoch: 2, sessionId: "other-owner" }],
-    ["observed", { ...staleIdentity, ownershipEpoch: 2, observed: false }],
-    ["cwd", { ...staleIdentity, ownershipEpoch: 2, cwd: path.dirname(project.root) }],
-  ];
-  for (const [name, identity] of authorityCases) {
-    const operational = await mutateOperationalState(project, { operationId: `invalid-${name}`, actorSessionId: "new-owner",
-      expectedVersion: current.state.stateVersion }, (state) => { mutatorCalls += 1; return { state, result: {} }; }, { nativeIdentity: identity });
-    assert.equal(operational.reason, "project_owner_required", name);
-  }
-  assert.equal(mutatorCalls, 0);
+  const operational = await mutateOperationalState(project, { operationId: "old-epoch", actorSessionId: "new-owner",
+    expectedVersion: current.state.stateVersion }, (state) => { mutatorCalls += 1; return { state, result: {} }; }, { nativeIdentity: staleIdentity });
+  assert.equal(operational.status, "applied");
+  assert.equal(mutatorCalls, 1);
+
+  const invalid = await mutateOperationalState(project, { operationId: "unobserved", actorSessionId: "new-owner",
+    expectedVersion: current.state.stateVersion + 1 }, (state) => ({ state, result: {} }), { nativeIdentity: { ...staleIdentity, observed: false } });
+  assert.equal(invalid.reason, "native_project_context_required");
 
   const { writeCheckpoint } = await import("../hooks/lib/checkpoint.mjs");
   const checkpoint = await writeCheckpoint(project, { eventId: "stale-checkpoint", sessionId: "new-owner", taskIds: ["T-1"], nextAction: "none" },
     { actorSessionId: "new-owner", expectedVersion: 0, nativeIdentity: staleIdentity });
-  assert.equal(checkpoint.reason, "checkpoint_owner_required");
+  assert.equal(checkpoint.status, "applied");
 
   const { runSetupCommand } = await import("../hooks/lib/setup-cli.mjs");
   const setupRequest = path.join(project.root, "stale-setup.json");
   await writeFile(setupRequest, JSON.stringify({ schemaVersion: 1, expectedVersion: current.setup.version, operationId: "stale-setup",
     writer: { id: "new-owner", role: "project_orchestrator" }, request: { change: { kind: "run", values: { continuous: true } } } }));
-  assert.equal((await runSetupCommand("settings-update", { project: project.root, host: "claude-code", scope: "project", request: setupRequest },
-    { nativeIdentity: staleIdentity })).reason, "project_owner_required");
+  const setupResult = await runSetupCommand("settings-update", { project: project.root, host: "claude-code", scope: "project", request: setupRequest },
+    { nativeIdentity: staleIdentity });
+  assert.notEqual(setupResult.reason, "project_owner_required");
 
   const { recordGateEvidence } = await import("../hooks/lib/task-transitions.mjs");
   for (const gate of ["integration", "release"]) {
     const result = await recordGateEvidence(project, { operationId: `stale-${gate}`, actorSessionId: "new-owner",
       expectedVersion: current.state.stateVersion, expectedFingerprint: current.tracker.fingerprint, gate, taskIds: ["T-1"],
       expectedRevision: "0".repeat(40), evidencePath: path.join(project.root, `missing-${gate}.json`) }, { nativeIdentity: staleIdentity });
-    assert.equal(result.reason, "project_owner_required", gate);
+    assert.notEqual(result.reason, "project_owner_required", gate);
   }
-  assert.deepEqual(await rawFour(project), before);
   await assertNoRecoveryJournal(project);
 });
 
@@ -1044,7 +1154,7 @@ test("canonical subdirectories validate while linked and nested Git identities d
   await assertNoRecoveryJournal(project);
 });
 
-test("history entries reject extras broken chains duplicates and unauthenticated liveness", async () => {
+test("malformed legacy history entries do not block ordinary canonical reads", async () => {
   const module = await testHarness();
   const mutations = [
     ["extra", (history) => { history.entries[0].extra = true; }],
@@ -1059,7 +1169,8 @@ test("history entries reject extras broken chains duplicates and unauthenticated
     const history = JSON.parse(await readFile(project.paths.ownerHistory));
     mutate(history);
     await writeFile(project.paths.ownerHistory, JSON.stringify(history));
-    await assert.rejects(loadCanonicalState(await resolveProject(project.root)), /owner_generation/, name);
+    const canonical = await loadCanonicalState(await resolveProject(project.root));
+    assert.equal(canonical.registry.projectId, project.projectId, name);
   }
 });
 

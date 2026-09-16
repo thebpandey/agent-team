@@ -8,7 +8,6 @@ const missingDefinitions = {
   tracker_available: "When will the selected tracker be available again?",
 };
 
-const BASELINE_CAPABILITIES = Object.freeze(["serena", "playwright-cli"]);
 const TERMINAL_TASK_STATUSES = new Set(["closed", "complete", "completed", "done", "integrated"]);
 
 function gap(id, detail) {
@@ -29,7 +28,7 @@ function readyTask(tasks) {
 }
 
 function requiredCapabilities(plan) {
-  return [...new Set([...BASELINE_CAPABILITIES, ...(Array.isArray(plan.requiredCapabilities) ? plan.requiredCapabilities : [])])];
+  return [...new Set(Array.isArray(plan.requiredCapabilities) ? plan.requiredCapabilities : [])];
 }
 
 function requirements(plan, tracker, capabilities) {

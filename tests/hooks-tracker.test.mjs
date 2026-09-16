@@ -112,7 +112,8 @@ for (const tracker of [{ kind: "markdown", path: "TASKS.md" }, { kind: "markdown
     const shorthandPush = hookEvent(value, { sessionId: "owner-session", operation: { kind: "shell", command: "git push origin feature" } });
     assert.equal((await evaluatePolicy(shorthandPush, linked, { canonical, now: new Date("2026-09-06T12:00:00Z") })).allow, false);
     canonical.tasks[0].owner = "TEAM-OTHER";
-    assert.equal((await evaluatePolicy(event, linked, { canonical })).allow, false);
+    assert.equal((await evaluatePolicy(event, linked, { canonical })).allow, true,
+      "task assignment provenance does not create a coordinator-session lock");
   });
 }
 
@@ -304,7 +305,7 @@ test("selected Beads close and closed-status commands use the completion gate", 
   }
 });
 
-test("mapped provider final tracker writes preserve shared project-owner enforcement", async () => {
+test("mapped provider final tracker writes cannot escape the active linked checkout", async () => {
   const value = await fixture({ kind: "markdown", path: ".agent-team/TASKS.md" });
   value.state.run = effectiveRun();
   await writeFile(path.join(value.root, ".agent-team/state.json"), JSON.stringify(value.state));
@@ -313,7 +314,7 @@ test("mapped provider final tracker writes preserve shared project-owner enforce
     path: project.paths.tasks, content: "| AT-001 | TEAM-001 | verified |",
   } } }), project);
   assert.equal(result.allow, false);
-  assert.match(result.messages.join(" "), /project owner|shared path/i);
+  assert.match(result.messages.join(" "), /outside the active project checkout/i);
 });
 
 test("Markdown transitions compare terminal status per task ID and reject multiple new completions", async () => {

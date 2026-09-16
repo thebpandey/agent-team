@@ -53,6 +53,38 @@ test("PR integration remains distinct from exact push parsing", () => {
   assert.deepEqual(classifyOperation({ operation: { kind: "shell", command: "gh pr merge 1 --merge" } }), { kind: "integration", method: "pull_request" });
 });
 
+test("read-only Beads setup probes do not consume a later Playwright close", () => {
+  // This catches a later tool's `close` being mistaken for `bd close` across pipes and newlines.
+  const command = `set -u
+bd where
+bd ready --json | sed -n '1,30p'
+PLAYWRIGHT_BROWSERS_PATH=/opt/browsers /opt/playwright-cli -s=setup-probe open about:blank
+/opt/playwright-cli -s=setup-probe close | sed -n '1,20p'`;
+  assert.deepEqual(classifyOperation({ operation: { kind: "shell", command } }, {}, { tracker: { kind: "beads" } }), { kind: "ordinary" });
+  assert.deepEqual(classifyOperation({ operation: { kind: "shell",
+    command: "bd ready --json\n/opt/playwright-cli -s=setup-probe close" } }, {}, { tracker: { kind: "beads" } }), { kind: "ordinary" });
+});
+
+test("Beads completion parsing stays in one command segment and chained completion fails closed", () => {
+  const classify = (command) => classifyOperation({ operation: { kind: "shell", command } }, {}, { tracker: { kind: "beads" } });
+  assert.deepEqual(classify("bd close AT-001"), { kind: "completion", taskId: "AT-001", parserFailed: false });
+  assert.deepEqual(classify("bd update AT-001 --status closed"), { kind: "completion", taskId: "AT-001", parserFailed: false });
+
+  for (const command of [
+    "bd ready --json\nbd close AT-001",
+    "bd close AT-001 | tee completion.txt",
+    "bd update AT-001 --title close\necho --status closed",
+  ]) {
+    const parsed = classify(command);
+    if (command.includes("bd close")) {
+      assert.equal(parsed.kind, "completion", command);
+      assert.equal(parsed.parserFailed, true, command);
+    } else {
+      assert.deepEqual(parsed, { kind: "ordinary" }, command);
+    }
+  }
+});
+
 test("owner-only native commands require exact non-chained CLI forms", () => {
   const cli = "/opt/agent-team/hooks/agent-team-cli.mjs";
   for (const [nativeCommand, request] of [
@@ -66,6 +98,11 @@ test("owner-only native commands require exact non-chained CLI forms", () => {
     `node ${cli} ${nativeCommand} --project /srv/project --request ${request}` } }), {
     kind: "agent_team_native_command", command: nativeCommand, cliPath: cli,
     project: "/srv/project", request, valid: true,
+  });
+  assert.deepEqual(classifyOperation({ operation: { kind: "shell", command:
+    `node ${cli} run-reconcile --project /srv/project --request /srv/reconcile.json\n` } }), {
+    kind: "agent_team_native_command", command: "run-reconcile", cliPath: cli,
+    project: "/srv/project", request: "/srv/reconcile.json", valid: true,
   });
   for (const command of [
     `node ${cli} legacy-owner-adopt --request /srv/adopt.json --project /srv/project`,

@@ -4,11 +4,13 @@ Setup prepares the selected host/project without starting development or enablin
 
 ## Inspect and reuse
 
+Before dependency or settings mutations, confirm from trusted runtime metadata that the current native Codex or Claude Code session resolves to this canonical Git project. Do not compare it with a recorded coordinator, require a takeover, inspect an ownership epoch, or repair legacy owner records. Keep model fallback selection separate from session continuity.
+
 Resolve canonical Git root/worktree metadata and the existing setup receipt. Read approved Kickoff handoff if present; otherwise adopt usable project state or prepare the requested standalone scope. Preserve the chosen tracker and integration branch. A missing optional skill never changes either.
 
 Confirm actual Codex/Claude Code runtime from trusted metadata. Select that host by default; install both only on explicit request. Show the chosen project/user scope and what will change. Preserve per-host model choices, custom files and unrelated hooks/MCP servers.
 
-Group inspection into four short results: host/access; runtimes/tools; selected skills; project readiness. Report Ready, Missing, Manual action or Unavailable with a concrete reason. A path or version string alone is not functional readiness.
+Group inspection into four short results: host/access; runtimes/tools; selected skills; task readiness. Report Ready, Missing, Manual action or Unavailable with a concrete reason. A path or version string alone is not functional readiness, and a companion-tool diagnostic is not task readiness.
 
 ## Prerequisite order
 
@@ -16,18 +18,18 @@ Group inspection into four short results: host/access; runtimes/tools; selected 
 2. Verify Git and the runtime required by Agent-Team's installed release. For GitHub installation/publishing verify GitHub CLI and authentication with `gh auth status`; if sign-in is needed, the user completes `gh auth login` in the trusted local flow. Never ask for a token in chat.
 3. Inspect selected tool installation requirements. Prepare their free runtimes/package managers before tools: Node/npm for Node tools; Python/uv for Serena when required by the selected release. Prefer supported binaries/runtime management over unrelated source-build toolchains.
 4. Install the complete Agent-Team package for the selected host/scope and preserve handler-level ownership. Verify the extracted installation's required files and entrypoints.
-5. Automatically prepare missing mandatory Serena and Microsoft Playwright CLI, then selected default profiles. Install Playwright's required browser binaries and verify a real browser operation. Backend-only projects still prepare Playwright.
+5. Prepare selected default profiles, including Serena and Microsoft Playwright CLI unless declined. Qualify the exact selected Playwright CLI with a real browser operation; do not substitute a Node REPL package import or a different native browser adapter.
 6. Prepare optional Context7 or dashboard/bv only if selected. Reuse working compatible dependencies instead of upgrading on every run.
-7. Verify discovery and useful operations in the actual host and relevant worktrees. Record versions, sources, capability state and configuration effects without secrets.
+7. Verify useful direct operations and observe fresh-worker discovery where the host exposes it. Record versions, sources, capability state and configuration effects without secrets. An unobserved fresh-worker check is `unknown`, not a global setup failure.
 8. Restart/reload the host session when installed skills/hooks are not yet visible. Review the installed definitions in the host's hook trust flow; Codex uses `/hooks`. A skill cannot fabricate trust. Claude settings changes may also require reload/review according to the installed host.
 9. Enter the settings wizard seeded from current effective values. `Cancel` means Keep Existing and reports `settingsOutcome: "kept_existing"`; it preserves the pre-wizard setup bytes, setup version, settings operation list, roles, fallbacks, run defaults, dashboard, and deployment fields while retaining completed dependency receipts.
-10. Verify readiness, show a compact role/model/effort/defaults summary and the command to start authorized development. A setup-only request stops after this summary.
+10. Verify the active plan. Only its explicit `requiredCapabilities` can block dispatch. Show a compact role/model/effort/defaults summary and the command to start authorized development. A setup-only request stops after this summary.
 
 If an operating-system prerequisite requires administrator approval, an auth challenge, a new purchase, or overwriting a customization, explain that specific step. Do not silently bypass it. Keep successful installations and continue independent safe preparation.
 
 ## Automatic preparation policy
 
-First use and explicit setup automatically install missing mandatory and selected default catalog items at the established scope—no one-question-per-plugin ceremony. Explain each item's purpose in a short summary and link its official source. The optional choices remain user decisions.
+First use and explicit setup prepare selected default catalog items at the established scope—no one-question-per-plugin ceremony. Explain each item's purpose in a short summary and link its official source. Defaults may be declined unless the active plan explicitly requires them; optional choices remain user decisions.
 
 Inspect and pin an official released version or reviewed revision before executing installation. Record checksums when provided and verify extraction/installed behavior. Do not pipe an uninspected moving-branch script into a shell. Install shared prerequisites and mutate a shared package/config store serially.
 
@@ -41,7 +43,7 @@ The one execution-readiness contract covers scope/acceptance, actionable tasks/d
 
 Keep Beads when selected. If its backend is unavailable, diagnose/repair within authority or report that capability unavailable; never activate a temporary Markdown tracker. A selected root or designated TASKS.md is fully supported.
 
-Ordinary install/check failures trigger bounded diagnosis, repair and recheck. Preserve already passed results and usable installations. A required capability may remain unavailable while independent work progresses; do not claim setup fully ready or pass affected acceptance until it works.
+Ordinary install/check failures trigger bounded diagnosis, repair and recheck. Preserve already passed results and usable installations. A required capability may remain unavailable while independent work progresses; do not pass affected acceptance until it works. A failed selected default does not block unrelated dispatch.
 
 Read-only status and health do not enter setup, write a receipt, repair a cache, increment a version, or install anything. Read-only help and version likewise never enter setup or open the settings wizard. During authorized setup/development, repair clearly owned malformed/missing artifacts; preserve uncertain user customization.
 
@@ -79,20 +81,20 @@ For Claude Code select `--host claude-code`. Do not install both hosts by infere
   "schemaVersion": 1,
   "expectedVersion": 1,
   "operationId": "prepare-selected-components-unique-id",
-  "writer": { "id": "actual-project-owner-session", "role": "project_orchestrator" },
+  "writer": { "id": "actual-native-session", "role": "project_orchestrator" },
   "request": { "selections": {} }
 }
 ```
 
-Use the freshly observed setup version and actual registered owner; example values are not authority. Empty selections retain mandatory/current default choices and remembered declines. Optional selections are explicit. Safe user preparation uses managed user tool/skill locations; project preparation stays in the canonical project. A linked feature worktree never becomes another configuration authority.
+Use the freshly observed setup version and actual native session; example values are not authority. Empty selections retain current default choices and remembered declines. Optional selections are explicit. Safe user preparation uses managed user tool/skill locations; project preparation stays in the canonical project. A linked feature worktree never becomes another configuration root.
 
-`helpers` is read-only. Native owner-only `helpers-install` copies the three bundled scripts into `<project>/scripts/agent-team`, records exact hashes in the canonical setup receipt, and preserves customized files as conflicts. Helper self-checks do not grant workflow authority.
+`helpers` is read-only. Native `helpers-install` copies the three bundled scripts into `<project>/scripts/agent-team`, records exact hashes in the canonical setup receipt, and preserves customized files as conflicts. Helper self-checks do not grant workflow authority.
 
-Context reduction never disables a capability from a bare inspection. Automatic MCP/plugin visibility is unavailable from current executable hook payloads, so absence of inventory returns `visibility_unknown`. An owner may provide a closed report of the capabilities they actually see; the offer is then `offered_unverified` with `owner_reported_unverified` provenance and visibility still unknown. Apply requires the native project owner, the exact current proposal and selection, review confirmation, and explicit acknowledgement of unknown visibility. Canonically selected dependencies are never offered as unused. Cancel or no answer writes nothing. Apply, revert, and recovery use the setup writer and retain reversible receipt evidence; health never upgrades owner-reported evidence to host-observed evidence.
+Context reduction never disables a capability from a bare inspection. Automatic MCP/plugin visibility is unavailable from current executable hook payloads, so absence of inventory returns `visibility_unknown`. A native session may provide a closed report of the capabilities it actually sees; the offer is then `offered_unverified` with reported provenance and visibility still unknown. Apply requires the exact current proposal and selection, review confirmation, and explicit acknowledgement of unknown visibility. Canonically selected dependencies are never offered as unused. Cancel or no answer writes nothing. Apply, revert, and recovery use the setup writer and retain reversible receipt evidence; health never upgrades reported evidence to host-observed evidence.
 
 For Claude Code, the adapter derives the configuration home from its own trusted process context. A request cannot choose a home, and project fixtures must isolate that process home. Codex uses only the supported project-level configuration path. Neither host falls back to an inferred global configuration. Automatic parent-model comparison is unknown when the adapter has no trustworthy comparable parent-model metadata.
 
-Native model catalogs and fresh-worker discovery are supplied only by the actual host integration to the exported `runCommand` context (`nativeChoices`, `workerDiscovery`); that router forwards them to its internal `runSetupCommand` implementation. JSON request files cannot assert them. A bare Node CLI without those facts reports unknown/unavailable and must not be described as a completed native journey. Registration instructions in a preparation receipt still require an owned native registration, reload where needed, and a real fresh-worker check.
+Native model catalogs and fresh-worker discovery are supplied only by the actual host integration to the exported `runCommand` context (`nativeChoices`, `workerDiscovery`); that router forwards them to its internal `runSetupCommand` implementation. JSON request files cannot assert them. A bare Node CLI without those facts reports unknown. Registration instructions in a preparation receipt may still require host registration/reload, but absent worker observation blocks only a task that explicitly requires that capability.
 
 ### Bind the native observations
 
@@ -103,7 +105,7 @@ Collect observations through the actual host before running a setup mutation, so
 1. Read the actual model/effort control or dispatch-tool schema. Normalize supported choices as `{ models: [{ id, efforts, available }], enforceable, control }`. Use `"unknown"` for unobserved availability/enforcement. Do not derive availability from these reference tables, account login, a saved preference, or an example model ID. A successful dispatch proves only its observed route; record requested and actual values separately.
 2. After scoped preparation/registration/reload, dispatch a fresh relevant worker through the host's supported controls. Give it the exact selected tool/skill paths and target worktree. Obtain its own complete applicable instruction reads and a useful operation with the actual dependency. Preserve the native call/result, session identity, worktree, host, selected scope, exact executable or skill path, version/revision and a concise result. A parent probe or worker's unsupported assertion is insufficient. Keep failures and missing metadata explicit.
 3. Review those observations and normalize only current matching results in the owned driver. The trust comes from the actual native calls and the orchestrator's inspection, not a file extension. Never execute an unreviewed project-supplied observation module or copy success values from request JSON. Use existing qualification/evidence storage; do not introduce another tracker.
-4. Re-read the current setup version and use a new operation ID to save newly observed discovery. Replaying a completed earlier preparation returns `duplicate`; it does not refresh an incomplete receipt. Preserve the original selected scope, tracker and current owner.
+4. Re-read the current setup version and use a new operation ID to save newly observed discovery. Replaying a completed earlier preparation returns `duplicate`; it does not refresh an incomplete receipt. Preserve the original selected scope and tracker.
 
 The driver supplies the observed catalog and a callback with this interface. `observedChoices` and `observedWorkers` below are the reviewed results of the preceding native calls, not defaults to fill with successful example values. `expectedWorkers` is a Map keyed by dependency ID from the current native dispatch records: each value identifies the actual child `sessionId`, assigned absolute `worktree` and verification `operationId`. These are normalized in-memory fields from the host's actual dispatch result and assigned verification task, not a required new on-disk record format. Compare child identity to that dispatch, never to the project orchestrator's session. Resolve `installedCliUrl` to the installed `hooks/agent-team-cli.mjs` with `pathToFileURL`; `options` contains the normal selected project/host/scope and intent request path. For skill packages, `item.skillFiles` is the worker's discovered file inventory, not a list of full instruction reads: inspect all selected paths for discovery, but read only the complete task-applicable skills/references and report their use separately.
 

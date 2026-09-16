@@ -16,6 +16,10 @@ export function tokenizeShell(command) {
       else token += character;
     } else if (character === "'" || character === '"') {
       quote = character;
+    } else if (["\r", "\n"].includes(character)) {
+      if (token) tokens.push(token);
+      if (tokens.at(-1) !== "\n") tokens.push("\n");
+      token = "";
     } else if (/\s/.test(character)) {
       if (token) tokens.push(token);
       token = "";
@@ -28,6 +32,8 @@ export function tokenizeShell(command) {
     }
   }
   if (token) tokens.push(token);
+  while (tokens[0] === "\n") tokens.shift();
+  while (tokens.at(-1) === "\n") tokens.pop();
   return tokens;
 }
 
@@ -173,19 +179,25 @@ export function classifyOperation(event, mappings = {}, { tracker } = {}) {
       host: rawTokens[6], scope: rawTokens[8], request: rawTokens[10], valid: true };
   }
   const tokens = unwrapLeanCtx(rawTokens);
-  const bd = tokens.findIndex((token) => ["bd", "bd.exe"].includes(executable(token)));
-  if (bd !== -1 && (!tracker || tracker.kind === "beads")) {
-    const action = tokens.findIndex((token, index) => index > bd && ["close", "update"].includes(token));
-    const closes = tokens[action] === "close" || (tokens[action] === "update"
-      && tokens.some((token, index) => token === "--status=closed" || (["--status", "-s"].includes(token) && tokens[index + 1] === "closed")));
-    if (closes) {
+  const controls = new Set([";", "|", "&", "\n"]);
+  if (!tracker || tracker.kind === "beads") {
+    for (let bd = 0; bd < tokens.length; bd += 1) {
+      if (!["bd", "bd.exe"].includes(executable(tokens[bd]))) continue;
+      const boundary = tokens.findIndex((token, index) => index > bd && controls.has(token));
+      const end = boundary === -1 ? tokens.length : boundary;
+      const action = tokens.findIndex((token, index) => index > bd && index < end && ["close", "update"].includes(token));
+      if (action === -1) continue;
+      const segment = tokens.slice(action, end);
+      const closes = segment[0] === "close" || (segment[0] === "update"
+        && segment.some((token, index) => token === "--status=closed" || (["--status", "-s"].includes(token) && segment[index + 1] === "closed")));
+      if (!closes) continue;
       const ids = [];
-      let parserFailed = action !== bd + 1;
-      for (let index = action + 1; index < tokens.length; index += 1) {
+      let parserFailed = action !== bd + 1 || tokens.some((token) => controls.has(token));
+      for (let index = action + 1; index < end; index += 1) {
         const token = tokens[index];
         if (["--reason", "-r", "--status", "-s"].includes(token)) { index += 1; continue; }
         if (/^--(reason|status)=/.test(token) || ["--json", "--force", "-f"].includes(token)) continue;
-        if (token.startsWith("-") || [";", "&", "|"].includes(token)) parserFailed = true;
+        if (token.startsWith("-")) parserFailed = true;
         else ids.push(token);
       }
       return { kind: "completion", taskId: ids[0], parserFailed: parserFailed || ids.length !== 1 };

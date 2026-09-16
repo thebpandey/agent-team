@@ -46,7 +46,7 @@ function validHandover(value, laneId) {
 }
 
 function validOwnershipEvidence(value, laneId) {
-  return exactKeys(value, ["path", "sha256", "revision", "pathSetHash"])
+  return value === null || exactKeys(value, ["path", "sha256", "revision", "pathSetHash"])
     && value.path === `.agent-team/lanes/${laneId}/evidence/ownership.json`
     && hex(value.sha256) && /^[a-f0-9]{40,64}$/.test(value.revision ?? "") && hex(value.pathSetHash);
 }

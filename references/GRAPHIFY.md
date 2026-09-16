@@ -29,7 +29,7 @@ Agent-Team uses `graphify extract . --code-only --no-viz` only. That path is det
 
 ## Who uses what
 
-- **Project orchestrator**, through the delegated verifier: `affected` on the candidate task files and `god-nodes` to find shared entrypoints before dispatch, `path` to check whether two planned tasks meet. This derives disjoint ownership and the parallel task set. The orchestrator does not run these itself.
+- **Project orchestrator**, through the delegated verifier when Graphify is available: `affected` on candidate task files and `god-nodes` to find shared entrypoints, `path` to check whether two planned tasks meet. These results can refine the parallel set; deterministic writable-path overlap remains sufficient when Graphify is absent.
 - **Developers**: `explain "<symbol>"` before editing an unfamiliar symbol, `path "<A>" "<B>"` before changing something that crosses modules. Then read the actual code with Serena.
 - **Reviewers and the verifier**: `affected` on the changed files versus the claimed ownership and the stated scope. Reach outside the claim is a finding.
 
