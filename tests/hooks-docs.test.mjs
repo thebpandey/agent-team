@@ -66,7 +66,8 @@ test("7.1 field guide retains complete onboarding and documents its new operatin
   ]) assert.ok(guide.includes(required), required);
   assert.ok(manifest.rootFiles.includes("agent-team-guide-v7.1.0.html"));
   assert.ok(manifest.files.includes("agent-team-guide-v7.1.0.html"));
-  assert.match(index, /agent-team-guide-v7\.1\.0\.html/);
+  assert.match(index, /Current source on main/);
+  assert.match(index, /7\.3\.1/);
   assert.match(readme, /GETTING_STARTED\.md/);
   assert.doesNotMatch(readme, /agent-team-guide-v7\.[0-2]\.\d+\.html/);
 });
@@ -82,12 +83,29 @@ test("7.0.2 guide remains a reachable historical edition", async () => {
   assert.ok(manifest.files.includes("agent-team-guide-v7.0.2.html"));
 });
 
-test("landing-page banner alt text does not misidentify retained artwork as the release version", async () => {
+test("landing-page workflow board is current and has a useful accessible description", async () => {
   const index = await read("index.html");
-  const banner = index.match(/<img class="banner"[^>]*alt="([^"]+)"/);
-  assert.ok(banner);
-  assert.match(banner[1], /^Blueprint banner for Agent-Team\./);
-  assert.doesNotMatch(banner[1], /version\s+\d+\.\d+\.\d+/i);
+  assert.match(index, /class="hero-board" role="img" aria-labelledby="hero-board-title hero-board-desc"/);
+  assert.match(index, /same Git project, any session/);
+  assert.match(index, /Bounded work/);
+  assert.match(index, /Review \+ integrate/);
+  assert.doesNotMatch(index, /agent-team-banner-ultrawide\.webp/);
+  assert.match(index, /Agent-Team 7\.3\.1 development flow/);
+  assert.match(index, /aria-labelledby="flow-title flow-desc"/);
+  assert.match(index, /<text x="1120" y="80">Release<\/text>/);
+  assert.match(index, /authorized target/);
+  assert.match(index, /repair loop returns only the affected task/);
+});
+
+test("landing page distinguishes the current source from the tagged archive", async () => {
+  const index = await read("index.html");
+  assert.match(index, /Current source/);
+  assert.match(index, /Current source on main/);
+  assert.match(index, /Tagged release archive/);
+  assert.match(index, /Current source correction/);
+  assert.match(index, /tagged v7\.3\.1 archive predates this session-switching correction/i);
+  assert.match(index, /current source on <a href="https:\/\/github\.com\/thebpandey\/agent-team">main<\/a>/i);
+  assert.doesNotMatch(index, /The current release/);
 });
 
 // Text contracts catch instruction drift; behavioral/consumer/native tests remain separate gates.
@@ -99,7 +117,7 @@ test("release version and public guidance stay consistent", async () => {
   assert.ok(skill.includes('version: "' + manifest.version + '"'));
   assert.ok(readme.includes("current skill version is **" + manifest.version + "**"));
   assert.ok(changelog.includes("## " + manifest.version + " - "));
-  assert.match(index, /Version 7\.2\.6/);
+  assert.match(index, /Agent<span>-Team<\/span> \/ 7\.3\.1/);
   for (const publicDoc of [readme, gettingStarted]) {
     assert.match(publicDoc, /agent-team-7\.3\.1\.zip/);
     assert.match(publicDoc, /SHA256SUMS/);
