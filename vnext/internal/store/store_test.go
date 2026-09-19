@@ -306,3 +306,18 @@ func TestStoreCanonicalHardLimitIsSixteenMiB(t *testing.T) {
 		}
 	}
 }
+
+func TestStoreCreateJSONNeverReplacesAnExistingRecord(t *testing.T) {
+	s := New(t.TempDir(), core.StorageLimits{})
+	first, err := s.CreateJSON("commits/one.json", map[string]string{"winner": "first"}, 1024)
+	if err != nil || first.Bytes == 0 {
+		t.Fatalf("first create = %#v, %v", first, err)
+	}
+	if _, err := s.CreateJSON("commits/one.json", map[string]string{"winner": "second"}, 1024); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("second create = %v, want ErrAlreadyExists", err)
+	}
+	var got map[string]string
+	if err := s.ReadJSON("commits/one.json", 1024, &got); err != nil || got["winner"] != "first" {
+		t.Fatalf("winner changed: %#v, %v", got, err)
+	}
+}

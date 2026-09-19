@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,6 +21,11 @@ import (
 )
 
 const maxStorageBytes int64 = 16 << 20
+
+// ErrAlreadyExists marks a no-replace create whose canonical destination was
+// already published. It also wraps fs.ErrExist for callers using standard
+// filesystem error matching.
+var ErrAlreadyExists = fmt.Errorf("already exists: %w", fs.ErrExist)
 
 // Store is a root-relative, bounded persistence store.
 type Store struct {
@@ -91,6 +97,80 @@ func (s *Store) WriteJSON(relative string, value any, maxBytes int64) (AtomicRes
 	return s.write(relative, maxBytes, func(writer io.Writer) error {
 		return json.NewEncoder(writer).Encode(value)
 	})
+}
+
+// CreateJSON publishes a fully-written, synced JSON document only if relative
+// does not yet exist. Link is the commit primitive: unlike replacement it is
+// an atomic no-replace operation across independent processes sharing a root.
+func (s *Store) CreateJSON(relative string, value any, maxBytes int64) (AtomicResult, error) {
+	limit, err := s.limit(maxBytes)
+	if err != nil {
+		return AtomicResult{}, err
+	}
+	relative, err = validateRelative(relative)
+	if err != nil {
+		return AtomicResult{}, err
+	}
+	root, _, err := s.openRoot(true)
+	if err != nil {
+		return AtomicResult{}, pathError("open root", s.Root, err)
+	}
+	defer root.Close()
+	if directory := path.Dir(relative); directory != "." {
+		if err := root.MkdirAll(directory, 0o700); err != nil {
+			return AtomicResult{}, pathError("create parent", relative, err)
+		}
+	}
+	if info, err := root.Lstat(relative); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return AtomicResult{}, fmt.Errorf("%w: destination %s is a symbolic link", core.ErrPath, relative)
+		}
+		return AtomicResult{}, fmt.Errorf("%w: %s", ErrAlreadyExists, relative)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return AtomicResult{}, pathError("lstat", relative, err)
+	}
+	temporary, file, err := createOwnedTemp(root, path.Dir(relative), ".agent-team-create-")
+	if err != nil {
+		return AtomicResult{}, pathError("create temporary", relative, err)
+	}
+	defer func() { _ = removeOwned(root, temporary) }()
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return AtomicResult{}, pathError("chmod temporary", relative, err)
+	}
+	writer := &boundedWriter{writer: file, remaining: limit}
+	if err := json.NewEncoder(writer).Encode(value); err != nil {
+		_ = file.Close()
+		if errors.Is(err, errTooLarge) {
+			return AtomicResult{}, limitError(relative, limit)
+		}
+		return AtomicResult{}, pathError("encode temporary", relative, err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return AtomicResult{}, pathError("flush temporary", relative, err)
+	}
+	if err := file.Close(); err != nil {
+		return AtomicResult{}, pathError("close temporary", relative, err)
+	}
+	result, err := hashRootFile(root, temporary.name, limit)
+	if err != nil {
+		return AtomicResult{}, pathError("verify temporary", relative, err)
+	}
+	if err := root.Link(temporary.name, relative); err != nil {
+		if errors.Is(err, fs.ErrExist) || errors.Is(err, os.ErrExist) {
+			return AtomicResult{}, fmt.Errorf("%w: %s", ErrAlreadyExists, relative)
+		}
+		return AtomicResult{}, pathError("publish no-replace", relative, err)
+	}
+	confirmed, err := hashRootFile(root, relative, limit)
+	if err != nil {
+		return AtomicResult{}, pathError("verify publication", relative, err)
+	}
+	if confirmed != result {
+		return AtomicResult{}, fmt.Errorf("%w: publication checksum mismatch", core.ErrRevision)
+	}
+	return result, nil
 }
 
 // WriteMarkdown atomically persists valid UTF-8 Markdown bytes.
