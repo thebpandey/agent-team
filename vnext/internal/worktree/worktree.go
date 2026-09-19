@@ -128,7 +128,9 @@ func (m *Manager) resumeCreate(ctx context.Context, repo string, identity Worktr
 		if !worktreePresent || !branchPresent {
 			return contracts.Worktree{}, core.ErrGit
 		}
-		identity.Lifecycle, identity.Revision, identity.WrittenAt = active, identity.Revision+1, timestamp()
+		if err := advance(&identity, active, false); err != nil {
+			return contracts.Worktree{}, err
+		}
 		if err := m.persist(identity.RunID, identity.Team, identity); err != nil {
 			return contracts.Worktree{}, err
 		}
@@ -194,7 +196,9 @@ func (m *Manager) Integrate(ctx context.Context, candidate contracts.Candidate) 
 	}
 	if identity.CandidateTask == "" {
 		identity.CandidateTask, identity.CandidateRevision = candidate.Task, candidate.Revision
-		identity.Revision, identity.WrittenAt = identity.Revision+1, timestamp()
+		if err := advance(&identity, identity.Lifecycle, false); err != nil {
+			return contracts.Candidate{}, err
+		}
 		if err := m.persist(identity.RunID, identity.Team, identity); err != nil {
 			return contracts.Candidate{}, err
 		}
@@ -230,7 +234,9 @@ func (m *Manager) removeExact(ctx context.Context, supplied contracts.Worktree) 
 		return core.ErrPath
 	}
 	if identity.Lifecycle == active {
-		identity.Lifecycle, identity.Revision, identity.WrittenAt = removingWorktree, identity.Revision+1, timestamp()
+		if err := advance(&identity, removingWorktree, false); err != nil {
+			return err
+		}
 		if err := m.persist(identity.RunID, identity.Team, identity); err != nil {
 			return err
 		}
@@ -243,7 +249,9 @@ func (m *Manager) removeExact(ctx context.Context, supplied contracts.Worktree) 
 		if present && m.git(ctx, repo, "worktree", "remove", identity.Path) != nil {
 			return core.ErrGit
 		}
-		identity.Lifecycle, identity.Revision, identity.WrittenAt = removingBranch, identity.Revision+1, timestamp()
+		if err := advance(&identity, removingBranch, false); err != nil {
+			return err
+		}
 		if err := m.persist(identity.RunID, identity.Team, identity); err != nil {
 			return err
 		}
@@ -256,7 +264,9 @@ func (m *Manager) removeExact(ctx context.Context, supplied contracts.Worktree) 
 		if present && m.git(ctx, repo, "branch", "-d", identity.Branch) != nil {
 			return core.ErrGit
 		}
-		identity.Lifecycle, identity.Removed, identity.Revision, identity.WrittenAt = removed, true, identity.Revision+1, timestamp()
+		if err := advance(&identity, removed, true); err != nil {
+			return err
+		}
 		if err := m.persist(identity.RunID, identity.Team, identity); err != nil {
 			return err
 		}
@@ -278,7 +288,7 @@ func (m *Manager) Cleanup(ctx context.Context, team core.TeamID) error {
 		}
 	}
 	if len(candidates) == 0 {
-		return nil
+		return core.ErrPath
 	}
 	if len(candidates) != 1 {
 		return core.ErrPath
@@ -339,7 +349,7 @@ func (m *Manager) readIdentity(repo string, run core.RunID, team core.TeamID) (W
 }
 
 func (m *Manager) validIdentity(repo string, identity WorktreeIdentity, run core.RunID, team core.TeamID) bool {
-	if identity.Schema != 1 || identity.Project != m.project || identity.RunID != run || identity.Team != team || !safeID(string(identity.RunID)) || !safeID(string(identity.Team)) || !safeGitAtom(identity.Base) || identity.Branch != branchFor(run, team) {
+	if identity.Schema != 1 || identity.Project != m.project || identity.RunID != run || identity.Team != team || identity.Revision == 0 || identity.Revision == ^uint64(0) || !validTimestamp(identity.WrittenAt) || !safeID(string(identity.RunID)) || !safeID(string(identity.Team)) || !safeGitAtom(identity.Base) || identity.Branch != branchFor(run, team) {
 		return false
 	}
 	if identity.Lifecycle != creating && identity.Lifecycle != active && identity.Lifecycle != removingWorktree && identity.Lifecycle != removingBranch && identity.Lifecycle != removed {
@@ -408,22 +418,27 @@ func (m *Manager) branchPresent(ctx context.Context, repo, branch string) (bool,
 	}
 	return r.Exit == 0, nil
 }
-func (m *Manager) worktreePresent(ctx context.Context, repo string, identity WorktreeIdentity) (bool, error) {
-	out, err := m.output(ctx, repo, "worktree", "list", "--porcelain")
+func (m *Manager) worktreePresent(ctx context.Context, _ string, identity WorktreeIdentity) (bool, error) {
+	info, err := os.Lstat(identity.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false, core.ErrGit
+	}
+	exact, err := canonicalExisting(identity.Path)
+	if err != nil || exact != identity.Path {
+		return false, core.ErrGit
+	}
+	returned, err := m.output(ctx, exact, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return false, err
 	}
-	for _, block := range strings.Split(strings.TrimSpace(out), "\n\n") {
-		lines := strings.Split(block, "\n")
-		if len(lines) > 0 && lines[0] == "worktree "+identity.Path {
-			for _, line := range lines[1:] {
-				if line == "branch refs/heads/"+identity.Branch {
-					return true, nil
-				}
-			}
-		}
+	returnedPath, err := canonicalGitPath(returned)
+	if err != nil || returnedPath != exact {
+		return false, core.ErrGit
 	}
-	return false, nil
+	return true, nil
 }
 
 func worktreeFrom(i WorktreeIdentity) contracts.Worktree {
@@ -443,6 +458,35 @@ func branchFor(run core.RunID, team core.TeamID) string {
 	return "agent-team/" + string(run) + "/" + string(team)
 }
 func timestamp() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
+func validTimestamp(value string) bool {
+	_, err := time.Parse(time.RFC3339Nano, value)
+	return err == nil
+}
+
+func advance(identity *WorktreeIdentity, next lifecycle, isRemoved bool) error {
+	if identity == nil || identity.Revision == 0 || identity.Revision == ^uint64(0) {
+		return core.ErrRevision
+	}
+	previous, err := time.Parse(time.RFC3339Nano, identity.WrittenAt)
+	if err != nil {
+		return core.ErrRevision
+	}
+	now := time.Now().UTC()
+	if !now.After(previous) {
+		now = previous.Add(time.Nanosecond)
+	}
+	identity.Lifecycle, identity.Removed, identity.Revision, identity.WrittenAt = next, isRemoved, identity.Revision+1, now.Format(time.RFC3339Nano)
+	return nil
+}
+
+func canonicalGitPath(output string) (string, error) {
+	value := strings.TrimSpace(output)
+	if value == "" || strings.Contains(value, "\n") {
+		return "", core.ErrPath
+	}
+	return canonicalExisting(filepath.FromSlash(value))
+}
 func canonicalExisting(path string) (string, error) {
 	abs, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {

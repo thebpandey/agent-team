@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -308,6 +309,48 @@ func TestManagerSerializesConcurrentLifecycleCalls(t *testing.T) {
 	}
 }
 
+func TestFreshTeamCleanupIsUnknownEvenWithDurableIdentity(t *testing.T) {
+	repo := testkit.GitRepo(t)
+	state := store.New(repo, core.StorageLimits{CanonicalBytes: 16 << 20})
+	runner := &gitRunner{}
+	manager := NewManager(repo, "project", state, runner)
+	if _, err := manager.Create(context.Background(), worktreeSpec("run", "team", filepath.Join(repo, ".agent-team", "worktrees", "task"))); err != nil {
+		t.Fatal(err)
+	}
+	fresh := NewManager(repo, "project", state, runner)
+	if err := fresh.Cleanup(context.Background(), "team"); !errors.Is(err, core.ErrPath) {
+		t.Fatalf("fresh Cleanup error = %v", err)
+	}
+}
+
+func TestIdentityRevisionAndTimestampAreStrict(t *testing.T) {
+	for _, identity := range []WorktreeIdentity{
+		{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: "project", RunID: "run", Revision: 0, WrittenAt: timestamp()}, Team: "team", Path: "/tmp/path", Base: "base", Branch: "agent-team/run/team", Lifecycle: active},
+		{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: "project", RunID: "run", Revision: ^uint64(0), WrittenAt: timestamp()}, Team: "team", Path: "/tmp/path", Base: "base", Branch: "agent-team/run/team", Lifecycle: active},
+	} {
+		if err := advance(&identity, active, false); !errors.Is(err, core.ErrRevision) {
+			t.Fatalf("advance(%d) = %v", identity.Revision, err)
+		}
+	}
+	identity := WorktreeIdentity{RecordEnvelope: core.RecordEnvelope{Revision: 1, WrittenAt: "2020-01-01T00:00:00Z"}}
+	if err := advance(&identity, active, false); err != nil || identity.Revision != 2 || !validTimestamp(identity.WrittenAt) {
+		t.Fatalf("advance = %#v, %v", identity, err)
+	}
+}
+
+func TestCanonicalGitPathUsesNativeRules(t *testing.T) {
+	root := t.TempDir()
+	got, err := canonicalGitPath(filepath.ToSlash(root))
+	if err != nil || got != root {
+		t.Fatalf("canonicalGitPath = %q, %v", got, err)
+	}
+	if runtime.GOOS == "windows" {
+		if _, err := canonicalGitPath(strings.ReplaceAll(root, `\\`, `/`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 type gitRunner struct {
 	calls     [][]string
 	result    tracker.CommandResult
@@ -333,20 +376,22 @@ func (r *gitRunner) Run(_ context.Context, name string, args ...string) tracker.
 		return tracker.CommandResult{Exit: 1}
 	}
 	switch {
-	case len(command) == 3 && reflect.DeepEqual(command, []string{"worktree", "list", "--porcelain"}):
-		var out string
-		for path, branch := range r.worktrees {
-			out += "worktree " + path + "\nbranch refs/heads/" + branch + "\n\n"
-		}
-		return tracker.CommandResult{Stdout: []byte(out)}
 	case len(command) == 4 && command[0] == "show-ref":
 		return tracker.CommandResult{Exit: map[bool]int{true: 0, false: 1}[r.branches[strings.TrimPrefix(command[3], "refs/heads/")]]}
+	case len(command) == 2 && command[0] == "rev-parse" && command[1] == "--show-toplevel":
+		return tracker.CommandResult{Stdout: []byte(args[1])}
 	case len(command) == 2 && command[0] == "rev-parse":
 		return tracker.CommandResult{Stdout: []byte(r.heads[args[1]])}
 	case len(command) == 6 && command[0] == "worktree" && command[1] == "add":
+		if err := os.MkdirAll(command[4], 0o755); err != nil {
+			return tracker.CommandResult{Transport: err}
+		}
 		r.branches[command[3]] = true
 		r.worktrees[command[4]] = command[3]
 	case len(command) == 3 && command[0] == "worktree" && command[1] == "remove":
+		if err := os.RemoveAll(command[2]); err != nil {
+			return tracker.CommandResult{Transport: err}
+		}
 		delete(r.worktrees, command[2])
 	case len(command) == 3 && command[0] == "branch" && command[1] == "-d":
 		delete(r.branches, command[2])
