@@ -351,13 +351,53 @@ func TestCanonicalGitPathUsesNativeRules(t *testing.T) {
 	}
 }
 
+func TestExactProbeRejectsReusedPathBeforeMutation(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*gitRunner, contracts.Worktree, string)
+	}{
+		{"different branch", func(r *gitRunner, w contracts.Worktree, _ string) { r.worktrees[w.Path] = "agent-team/other" }},
+		{"different repo", func(r *gitRunner, w contracts.Worktree, other string) {
+			r.common[w.Path] = filepath.Join(other, ".git")
+		}},
+		{"detached", func(r *gitRunner, w contracts.Worktree, _ string) {
+			r.symbolic[w.Path] = ""
+			r.symbolicSet[w.Path] = true
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo, other := testkit.GitRepo(t), testkit.GitRepo(t)
+			runner := &gitRunner{}
+			manager := NewManager(repo, "project", store.New(repo, core.StorageLimits{CanonicalBytes: 16 << 20}), runner)
+			w, err := manager.Create(context.Background(), worktreeSpec("run", "team", filepath.Join(repo, ".agent-team", "worktrees", "task")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(runner, w, other)
+			before := len(mutations(runner.calls))
+			if _, err := manager.Integrate(context.Background(), contracts.Candidate{Task: "task", Revision: "candidate", Base: "base", Worktree: w}); !errors.Is(err, core.ErrGit) {
+				t.Fatalf("Integrate error = %v", err)
+			}
+			if err := manager.RemoveExact(context.Background(), w); !errors.Is(err, core.ErrGit) {
+				t.Fatalf("RemoveExact error = %v", err)
+			}
+			if len(mutations(runner.calls)) != before {
+				t.Fatalf("foreign worktree mutated: %#v", runner.calls)
+			}
+		})
+	}
+}
+
 type gitRunner struct {
-	calls     [][]string
-	result    tracker.CommandResult
-	branches  map[string]bool
-	worktrees map[string]string
-	heads     map[string]string
-	fail      map[string]int
+	calls       [][]string
+	result      tracker.CommandResult
+	branches    map[string]bool
+	worktrees   map[string]string
+	heads       map[string]string
+	fail        map[string]int
+	common      map[string]string
+	symbolic    map[string]string
+	symbolicSet map[string]bool
 }
 
 func (r *gitRunner) Run(_ context.Context, name string, args ...string) tracker.CommandResult {
@@ -370,6 +410,9 @@ func (r *gitRunner) Run(_ context.Context, name string, args ...string) tracker.
 		r.branches = map[string]bool{}
 		r.worktrees = map[string]string{}
 		r.heads = map[string]string{}
+		r.common = map[string]string{}
+		r.symbolic = map[string]string{}
+		r.symbolicSet = map[string]bool{}
 	}
 	if r.fail[strings.Join(command, " ")] > 0 {
 		r.fail[strings.Join(command, " ")]--
@@ -380,6 +423,18 @@ func (r *gitRunner) Run(_ context.Context, name string, args ...string) tracker.
 		return tracker.CommandResult{Exit: map[bool]int{true: 0, false: 1}[r.branches[strings.TrimPrefix(command[3], "refs/heads/")]]}
 	case len(command) == 2 && command[0] == "rev-parse" && command[1] == "--show-toplevel":
 		return tracker.CommandResult{Stdout: []byte(args[1])}
+	case len(command) == 3 && command[0] == "rev-parse" && command[2] == "--git-common-dir":
+		common := r.common[args[1]]
+		if common == "" {
+			common = filepath.Join(args[1], ".git")
+		}
+		return tracker.CommandResult{Stdout: []byte(common)}
+	case len(command) == 3 && command[0] == "symbolic-ref":
+		head := r.symbolic[args[1]]
+		if head == "" && !r.symbolicSet[args[1]] {
+			head = "refs/heads/" + r.worktrees[args[1]]
+		}
+		return tracker.CommandResult{Stdout: []byte(head)}
 	case len(command) == 2 && command[0] == "rev-parse":
 		return tracker.CommandResult{Stdout: []byte(r.heads[args[1]])}
 	case len(command) == 6 && command[0] == "worktree" && command[1] == "add":
@@ -388,6 +443,7 @@ func (r *gitRunner) Run(_ context.Context, name string, args ...string) tracker.
 		}
 		r.branches[command[3]] = true
 		r.worktrees[command[4]] = command[3]
+		r.common[command[4]] = filepath.Join(args[1], ".git")
 	case len(command) == 3 && command[0] == "worktree" && command[1] == "remove":
 		if err := os.RemoveAll(command[2]); err != nil {
 			return tracker.CommandResult{Transport: err}

@@ -418,7 +418,7 @@ func (m *Manager) branchPresent(ctx context.Context, repo, branch string) (bool,
 	}
 	return r.Exit == 0, nil
 }
-func (m *Manager) worktreePresent(ctx context.Context, _ string, identity WorktreeIdentity) (bool, error) {
+func (m *Manager) worktreePresent(ctx context.Context, repo string, identity WorktreeIdentity) (bool, error) {
 	info, err := os.Lstat(identity.Path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -438,7 +438,27 @@ func (m *Manager) worktreePresent(ctx context.Context, _ string, identity Worktr
 	if err != nil || returnedPath != exact {
 		return false, core.ErrGit
 	}
+	primaryCommon, err := m.gitCommonDir(ctx, repo)
+	if err != nil {
+		return false, err
+	}
+	exactCommon, err := m.gitCommonDir(ctx, exact)
+	if err != nil || exactCommon != primaryCommon {
+		return false, core.ErrGit
+	}
+	head, err := m.output(ctx, exact, "symbolic-ref", "-q", "HEAD")
+	if err != nil || !singleLine(head) || strings.TrimSpace(head) != "refs/heads/"+identity.Branch {
+		return false, core.ErrGit
+	}
 	return true, nil
+}
+
+func (m *Manager) gitCommonDir(ctx context.Context, root string) (string, error) {
+	output, err := m.output(ctx, root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	return canonicalGitPath(output)
 }
 
 func worktreeFrom(i WorktreeIdentity) contracts.Worktree {
@@ -486,6 +506,11 @@ func canonicalGitPath(output string) (string, error) {
 		return "", core.ErrPath
 	}
 	return canonicalExisting(filepath.FromSlash(value))
+}
+
+func singleLine(output string) bool {
+	value := strings.TrimSpace(output)
+	return value != "" && !strings.Contains(value, "\n")
 }
 func canonicalExisting(path string) (string, error) {
 	abs, err := filepath.Abs(filepath.Clean(path))
