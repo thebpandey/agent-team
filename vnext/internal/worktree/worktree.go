@@ -3,8 +3,11 @@ package worktree
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -13,275 +16,433 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/dispatch"
 	"github.com/thebpandey/agent-team/vnext/internal/host"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
+	"github.com/thebpandey/agent-team/vnext/internal/tracker"
 )
 
-// WorktreeManager is the inherited Phase 1 manager boundary.
 type WorktreeManager = contracts.WorktreeManager
-
-// ExactWorktreeRemover permits cleanup only of the exact durable worktree.
 type ExactWorktreeRemover interface {
 	RemoveExact(context.Context, contracts.Worktree) error
 }
+type lifecycle string
 
-// WorktreeIdentity is the durable, run-scoped ownership record.
+const (
+	creating         lifecycle = "creating"
+	active           lifecycle = "active"
+	removingWorktree lifecycle = "removing-worktree"
+	removingBranch   lifecycle = "removing-branch"
+	removed          lifecycle = "removed"
+)
+
+// WorktreeIdentity is the durable, run-scoped ownership record. Each stage is
+// persisted before a mutating Git command, so retries reconcile only this
+// exact path and branch.
 type WorktreeIdentity struct {
 	core.RecordEnvelope
-	Team    core.TeamID `json:"team"`
-	Path    string      `json:"path"`
-	Base    string      `json:"base"`
-	Branch  string      `json:"branch"`
-	Removed bool        `json:"removed"`
+	Team              core.TeamID `json:"team"`
+	Path              string      `json:"path"`
+	Base              string      `json:"base"`
+	Branch            string      `json:"branch"`
+	Lifecycle         lifecycle   `json:"lifecycle"`
+	CandidateTask     core.TaskID `json:"candidateTask,omitempty"`
+	CandidateRevision string      `json:"candidateRevision,omitempty"`
+	Removed           bool        `json:"removed"`
 }
 
-// Manager is the sole owner of Git worktree lifecycle operations.
 type Manager struct {
 	repoRoot string
 	project  string
 	state    *store.Store
 	runner   host.CommandRunner
+	mu       sync.Mutex
 	records  map[string]contracts.Worktree
+	write    func(string, WorktreeIdentity) error
+	create   func(string, WorktreeIdentity) error
 }
 
 var _ contracts.WorktreeManager = (*Manager)(nil)
 var _ ExactWorktreeRemover = (*Manager)(nil)
 
-// NewManager creates a manager rooted at repoRoot. It does not run Git.
 func NewManager(repoRoot, project string, state *store.Store, runner host.CommandRunner) *Manager {
-	return &Manager{repoRoot: repoRoot, project: project, state: state, runner: runner, records: make(map[string]contracts.Worktree)}
+	m := &Manager{repoRoot: repoRoot, project: project, state: state, runner: runner, records: map[string]contracts.Worktree{}}
+	m.write = m.writeIdentity
+	m.create = m.createIdentity
+	return m
 }
 
 func (m *Manager) Create(ctx context.Context, spec contracts.WorktreeSpec) (contracts.Worktree, error) {
-	if m == nil || m.runner == nil || m.state == nil || m.project == "" ||
-		!safeID(string(spec.Run)) || !safeID(string(spec.Team)) || !safeGitAtom(spec.Base) {
+	if m == nil {
 		return contracts.Worktree{}, core.ErrPath
 	}
-	if err := dispatch.ValidatePacket(core.AssignmentPacket{
-		RecordEnvelope: core.RecordEnvelope{RunID: spec.Run}, Team: spec.Team, Base: spec.Base,
-	}, spec); err != nil {
-		return contracts.Worktree{}, err
-	}
-	repo, err := canonicalExisting(m.repoRoot)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	repo, managed, path, err := m.validateSpec(spec)
 	if err != nil {
-		return contracts.Worktree{}, core.ErrPath
-	}
-	stateRoot, err := canonicalExisting(m.state.Root)
-	if err != nil || stateRoot != repo {
-		return contracts.Worktree{}, core.ErrPath
-	}
-	managedRoot, err := canonicalCandidate(filepath.Join(repo, ".agent-team", "worktrees"))
-	if err != nil || !strictDescendant(repo, managedRoot) {
-		return contracts.Worktree{}, core.ErrPath
-	}
-	candidate, err := canonicalCandidate(spec.Root)
-	if err != nil || !strictDescendant(managedRoot, candidate) {
-		return contracts.Worktree{}, core.ErrPath
-	}
-
-	key := worktreeKey(spec.Run, spec.Team)
-	if existing, ok := m.records[key]; ok {
-		if sameSpec(existing, spec, candidate) {
-			return existing, nil
-		}
-		return contracts.Worktree{}, core.ErrPath
-	}
-	if existing, err := m.load(spec.Run, spec.Team); err == nil {
-		if sameSpec(existing, spec, candidate) {
-			m.records[key] = existing
-			return existing, nil
-		}
-		return contracts.Worktree{}, core.ErrPath
-	}
-
-	branch := "agent-team/" + string(spec.Run) + "/" + string(spec.Team)
-	if err := m.git(ctx, "worktree", "add", "-b", branch, candidate, spec.Base); err != nil {
 		return contracts.Worktree{}, err
 	}
-	worktree := contracts.Worktree{Run: spec.Run, Team: spec.Team, Path: candidate, Canonical: candidate, Branch: branch, Base: spec.Base}
-	if err := m.save(worktree); err != nil {
-		// Do not leave an unrecorded worktree eligible for future cleanup. Both
-		// operations are deliberately non-force; an unsuccessful compensation is
-		// still reported as the state failure and never treated as ownership.
-		_ = m.git(ctx, "worktree", "remove", candidate)
-		_ = m.git(ctx, "branch", "-d", branch)
+	_ = managed
+	identity, exists, err := m.readIdentity(repo, spec.Run, spec.Team)
+	if err != nil {
 		return contracts.Worktree{}, err
 	}
-	m.records[key] = worktree
-	return worktree, nil
+	if !exists {
+		identity = WorktreeIdentity{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: m.project, RunID: spec.Run, WrittenAt: timestamp(), Revision: 1}, Team: spec.Team, Path: path, Base: spec.Base, Branch: branchFor(spec.Run, spec.Team), Lifecycle: creating}
+		// Creating intent is the ownership boundary: no Git mutation precedes it.
+		if err := m.persistNew(spec.Run, spec.Team, identity); err != nil {
+			if !errors.Is(err, store.ErrAlreadyExists) {
+				return contracts.Worktree{}, err
+			}
+			identity, exists, err = m.readIdentity(repo, spec.Run, spec.Team)
+			if err != nil || !exists || identity.Lifecycle == removed || !sameIdentitySpec(identity, spec, path) {
+				return contracts.Worktree{}, core.ErrPath
+			}
+		}
+	} else if identity.Lifecycle == removed || !sameIdentitySpec(identity, spec, path) {
+		return contracts.Worktree{}, core.ErrPath
+	}
+	worktree, err := m.resumeCreate(ctx, repo, identity)
+	if err == nil {
+		m.records[worktreeKey(spec.Run, spec.Team)] = worktree
+	}
+	return worktree, err
 }
 
-// Inspect returns only a worktree that exactly matches its durable identity.
-func (m *Manager) Inspect(_ context.Context, worktree contracts.Worktree) (contracts.Worktree, error) {
-	if m == nil || !safeID(string(worktree.Run)) || !safeID(string(worktree.Team)) {
+func (m *Manager) resumeCreate(ctx context.Context, repo string, identity WorktreeIdentity) (contracts.Worktree, error) {
+	if identity.Lifecycle != creating && identity.Lifecycle != active {
 		return contracts.Worktree{}, core.ErrPath
 	}
-	key := worktreeKey(worktree.Run, worktree.Team)
-	expected, ok := m.records[key]
-	if !ok {
-		var err error
-		expected, err = m.load(worktree.Run, worktree.Team)
-		if err != nil {
+	worktreePresent, err := m.worktreePresent(ctx, repo, identity)
+	if err != nil {
+		return contracts.Worktree{}, err
+	}
+	branchPresent, err := m.branchPresent(ctx, repo, identity.Branch)
+	if err != nil {
+		return contracts.Worktree{}, err
+	}
+	if identity.Lifecycle == creating {
+		if !worktreePresent && !branchPresent {
+			if err := m.git(ctx, repo, "worktree", "add", "-b", identity.Branch, identity.Path, identity.Base); err != nil {
+				return contracts.Worktree{}, err
+			}
+			worktreePresent, branchPresent = true, true
+		}
+		if !worktreePresent || !branchPresent {
+			return contracts.Worktree{}, core.ErrGit
+		}
+		identity.Lifecycle, identity.Revision, identity.WrittenAt = active, identity.Revision+1, timestamp()
+		if err := m.persist(identity.RunID, identity.Team, identity); err != nil {
 			return contracts.Worktree{}, err
 		}
-		m.records[key] = expected
 	}
-	if !sameWorktree(expected, worktree, true) {
+	if !worktreePresent || !branchPresent {
+		return contracts.Worktree{}, core.ErrGit
+	}
+	return worktreeFrom(identity), nil
+}
+
+func (m *Manager) Inspect(_ context.Context, supplied contracts.Worktree) (contracts.Worktree, error) {
+	if m == nil {
 		return contracts.Worktree{}, core.ErrPath
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	repo, _, err := m.environment()
+	if err != nil {
+		return contracts.Worktree{}, err
+	}
+	identity, exists, err := m.readIdentity(repo, supplied.Run, supplied.Team)
+	if err != nil || !exists || identity.Lifecycle != active {
+		return contracts.Worktree{}, core.ErrPath
+	}
+	expected := worktreeFrom(identity)
+	if !sameWorktree(expected, supplied, true) {
+		return contracts.Worktree{}, core.ErrPath
+	}
+	m.records[worktreeKey(expected.Run, expected.Team)] = expected
 	return expected, nil
 }
 
-// Integrate merges one exact candidate into the manager checkout.
 func (m *Manager) Integrate(ctx context.Context, candidate contracts.Candidate) (contracts.Candidate, error) {
-	if candidate.Task == "" || !safeID(string(candidate.Task)) || !safeGitAtom(candidate.Revision) || candidate.Base == "" {
+	if m == nil {
 		return contracts.Candidate{}, core.ErrPath
 	}
-	worktree, err := m.Inspect(ctx, candidate.Worktree)
-	if err != nil || candidate.Base != worktree.Base {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !safeID(string(candidate.Task)) || !safeGitAtom(candidate.Revision) || candidate.Base == "" {
 		return contracts.Candidate{}, core.ErrPath
 	}
-	if err := m.git(ctx, "merge", "--no-ff", "--no-edit", candidate.Revision); err != nil {
+	repo, _, err := m.environment()
+	if err != nil {
+		return contracts.Candidate{}, err
+	}
+	identity, exists, err := m.readIdentity(repo, candidate.Worktree.Run, candidate.Worktree.Team)
+	if err != nil || !exists || identity.Lifecycle != active || candidate.Base != identity.Base || !sameWorktree(worktreeFrom(identity), candidate.Worktree, true) {
+		return contracts.Candidate{}, core.ErrPath
+	}
+	present, err := m.worktreePresent(ctx, repo, identity)
+	if err != nil || !present {
+		return contracts.Candidate{}, core.ErrGit
+	}
+	head, err := m.output(ctx, identity.Path, "rev-parse", "HEAD")
+	if err != nil || strings.TrimSpace(head) != candidate.Revision {
+		return contracts.Candidate{}, core.ErrRevision
+	}
+	if err := m.git(ctx, identity.Path, "merge-base", "--is-ancestor", identity.Base, candidate.Revision); err != nil {
+		return contracts.Candidate{}, core.ErrRevision
+	}
+	if identity.CandidateTask != "" && (identity.CandidateTask != candidate.Task || identity.CandidateRevision != candidate.Revision) {
+		return contracts.Candidate{}, core.ErrRevision
+	}
+	if identity.CandidateTask == "" {
+		identity.CandidateTask, identity.CandidateRevision = candidate.Task, candidate.Revision
+		identity.Revision, identity.WrittenAt = identity.Revision+1, timestamp()
+		if err := m.persist(identity.RunID, identity.Team, identity); err != nil {
+			return contracts.Candidate{}, err
+		}
+	}
+	if err := m.git(ctx, repo, "merge", "--no-ff", "--no-edit", identity.CandidateRevision); err != nil {
 		return contracts.Candidate{}, err
 	}
 	return candidate, nil
 }
 
-// RemoveExact removes only a recorded, clean task worktree, never a caller
-// supplied path that merely resembles one. Base may be omitted by the later
-// cleanup boundary, but a supplied base must exactly match the durable value.
-func (m *Manager) RemoveExact(ctx context.Context, worktree contracts.Worktree) error {
-	if worktree.Dirty {
+func (m *Manager) RemoveExact(ctx context.Context, supplied contracts.Worktree) error {
+	if m == nil {
 		return core.ErrPath
 	}
-	expected, err := m.exactForRemoval(worktree)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.removeExact(ctx, supplied)
+}
+
+func (m *Manager) removeExact(ctx context.Context, supplied contracts.Worktree) error {
+	if supplied.Dirty {
+		return core.ErrPath
+	}
+	repo, _, err := m.environment()
 	if err != nil {
 		return err
 	}
-	if expected.Dirty {
+	identity, exists, err := m.readIdentity(repo, supplied.Run, supplied.Team)
+	if err != nil || !exists || identity.Lifecycle == removed || !sameWorktree(worktreeFrom(identity), supplied, false) {
 		return core.ErrPath
 	}
-	if err := m.git(ctx, "worktree", "remove", expected.Path); err != nil {
-		return err
+	if identity.Lifecycle != active && identity.Lifecycle != removingWorktree && identity.Lifecycle != removingBranch {
+		return core.ErrPath
 	}
-	if err := m.git(ctx, "branch", "-d", expected.Branch); err != nil {
-		return err
+	if identity.Lifecycle == active {
+		identity.Lifecycle, identity.Revision, identity.WrittenAt = removingWorktree, identity.Revision+1, timestamp()
+		if err := m.persist(identity.RunID, identity.Team, identity); err != nil {
+			return err
+		}
 	}
-	if err := m.tombstone(expected); err != nil {
-		return err
+	if identity.Lifecycle == removingWorktree {
+		present, err := m.worktreePresent(ctx, repo, identity)
+		if err != nil {
+			return err
+		}
+		if present && m.git(ctx, repo, "worktree", "remove", identity.Path) != nil {
+			return core.ErrGit
+		}
+		identity.Lifecycle, identity.Revision, identity.WrittenAt = removingBranch, identity.Revision+1, timestamp()
+		if err := m.persist(identity.RunID, identity.Team, identity); err != nil {
+			return err
+		}
 	}
-	delete(m.records, worktreeKey(expected.Run, expected.Team))
+	if identity.Lifecycle == removingBranch {
+		present, err := m.branchPresent(ctx, repo, identity.Branch)
+		if err != nil {
+			return err
+		}
+		if present && m.git(ctx, repo, "branch", "-d", identity.Branch) != nil {
+			return core.ErrGit
+		}
+		identity.Lifecycle, identity.Removed, identity.Revision, identity.WrittenAt = removed, true, identity.Revision+1, timestamp()
+		if err := m.persist(identity.RunID, identity.Team, identity); err != nil {
+			return err
+		}
+	}
+	delete(m.records, worktreeKey(supplied.Run, supplied.Team))
 	return nil
 }
 
-// Cleanup preserves the inherited team-only contract by refusing an ambiguous
-// team. Later cleanup uses RemoveExact with run-scoped identity instead.
 func (m *Manager) Cleanup(ctx context.Context, team core.TeamID) error {
 	if m == nil || !safeID(string(team)) {
 		return core.ErrPath
 	}
-	var found []contracts.Worktree
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var candidates []contracts.Worktree
 	for _, worktree := range m.records {
 		if worktree.Team == team {
-			found = append(found, worktree)
+			candidates = append(candidates, worktree)
 		}
 	}
-	if len(found) == 0 {
+	if len(candidates) == 0 {
 		return nil
 	}
-	if len(found) != 1 {
+	if len(candidates) != 1 {
 		return core.ErrPath
 	}
-	return m.RemoveExact(ctx, found[0])
+	return m.removeExact(ctx, candidates[0])
 }
 
-func (m *Manager) exactForRemoval(worktree contracts.Worktree) (contracts.Worktree, error) {
-	if m == nil || !safeID(string(worktree.Run)) || !safeID(string(worktree.Team)) || worktree.Path == "" || worktree.Branch == "" {
-		return contracts.Worktree{}, core.ErrPath
+func (m *Manager) validateSpec(spec contracts.WorktreeSpec) (string, string, string, error) {
+	if m == nil || m.runner == nil || m.state == nil || m.project == "" || !safeID(string(spec.Run)) || !safeID(string(spec.Team)) || !safeGitAtom(spec.Base) {
+		return "", "", "", core.ErrPath
 	}
-	key := worktreeKey(worktree.Run, worktree.Team)
-	expected, ok := m.records[key]
-	if !ok {
-		var err error
-		expected, err = m.load(worktree.Run, worktree.Team)
-		if err != nil {
-			return contracts.Worktree{}, err
-		}
-		m.records[key] = expected
+	if err := dispatch.ValidatePacket(core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: spec.Run}, Team: spec.Team, Base: spec.Base}, spec); err != nil {
+		return "", "", "", err
 	}
-	if !sameWorktree(expected, worktree, false) {
-		return contracts.Worktree{}, core.ErrPath
+	repo, managed, err := m.environment()
+	if err != nil {
+		return "", "", "", err
 	}
-	return expected, nil
+	path, err := canonicalCandidate(spec.Root)
+	if err != nil || !strictDescendant(managed, path) {
+		return "", "", "", core.ErrPath
+	}
+	return repo, managed, path, nil
 }
 
-func (m *Manager) git(ctx context.Context, args ...string) error {
-	if m == nil || m.runner == nil || m.repoRoot == "" {
+func (m *Manager) environment() (string, string, error) {
+	if m == nil || m.state == nil || m.runner == nil || m.project == "" {
+		return "", "", core.ErrPath
+	}
+	repo, err := canonicalExisting(m.repoRoot)
+	if err != nil {
+		return "", "", core.ErrPath
+	}
+	stateRoot, err := canonicalExisting(m.state.Root)
+	if err != nil || stateRoot != repo {
+		return "", "", core.ErrPath
+	}
+	managed, err := canonicalCandidate(filepath.Join(repo, ".agent-team", "worktrees"))
+	if err != nil || !strictDescendant(repo, managed) {
+		return "", "", core.ErrPath
+	}
+	return repo, managed, nil
+}
+
+func (m *Manager) readIdentity(repo string, run core.RunID, team core.TeamID) (WorktreeIdentity, bool, error) {
+	if !safeID(string(run)) || !safeID(string(team)) {
+		return WorktreeIdentity{}, false, core.ErrPath
+	}
+	var identity WorktreeIdentity
+	err := m.state.ReadJSON(worktreeIdentityPath(run, team), 64<<10, &identity)
+	if errors.Is(err, os.ErrNotExist) {
+		return WorktreeIdentity{}, false, nil
+	}
+	if err != nil || !m.validIdentity(repo, identity, run, team) {
+		return WorktreeIdentity{}, false, core.ErrPath
+	}
+	return identity, true, nil
+}
+
+func (m *Manager) validIdentity(repo string, identity WorktreeIdentity, run core.RunID, team core.TeamID) bool {
+	if identity.Schema != 1 || identity.Project != m.project || identity.RunID != run || identity.Team != team || !safeID(string(identity.RunID)) || !safeID(string(identity.Team)) || !safeGitAtom(identity.Base) || identity.Branch != branchFor(run, team) {
+		return false
+	}
+	if identity.Lifecycle != creating && identity.Lifecycle != active && identity.Lifecycle != removingWorktree && identity.Lifecycle != removingBranch && identity.Lifecycle != removed {
+		return false
+	}
+	managed, err := canonicalCandidate(filepath.Join(repo, ".agent-team", "worktrees"))
+	if err != nil || !strictDescendant(repo, managed) {
+		return false
+	}
+	path, err := canonicalCandidate(identity.Path)
+	if err != nil || path != identity.Path || !strictDescendant(managed, path) {
+		return false
+	}
+	if (identity.CandidateTask == "") != (identity.CandidateRevision == "") {
+		return false
+	}
+	if identity.CandidateTask != "" && (!safeID(string(identity.CandidateTask)) || !safeGitAtom(identity.CandidateRevision)) {
+		return false
+	}
+	return identity.Removed == (identity.Lifecycle == removed)
+}
+
+func (m *Manager) persist(run core.RunID, team core.TeamID, identity WorktreeIdentity) error {
+	if m.write == nil {
 		return core.ErrPath
 	}
-	result := m.runner.Run(ctx, "git", append([]string{"-C", m.repoRoot}, args...)...)
-	if result.Transport != nil || result.TimedOut || result.Exit != 0 {
+	return m.write(worktreeIdentityPath(run, team), identity)
+}
+func (m *Manager) writeIdentity(path string, identity WorktreeIdentity) error {
+	_, err := m.state.WriteJSON(path, identity, 64<<10)
+	return err
+}
+
+func (m *Manager) persistNew(run core.RunID, team core.TeamID, identity WorktreeIdentity) error {
+	if m.create == nil {
+		return core.ErrPath
+	}
+	return m.create(worktreeIdentityPath(run, team), identity)
+}
+
+func (m *Manager) createIdentity(path string, identity WorktreeIdentity) error {
+	_, err := m.state.CreateJSON(path, identity, 64<<10)
+	return err
+}
+func (m *Manager) run(ctx context.Context, root string, args ...string) tracker.CommandResult {
+	return m.runner.Run(ctx, "git", append([]string{"-C", root}, args...)...)
+}
+func (m *Manager) git(ctx context.Context, root string, args ...string) error {
+	r := m.run(ctx, root, args...)
+	if r.Transport != nil || r.TimedOut || r.Exit != 0 {
 		return core.ErrGit
 	}
 	return nil
 }
-
-func (m *Manager) save(worktree contracts.Worktree) error {
-	if m == nil || m.state == nil || m.project == "" {
-		return core.ErrPath
+func (m *Manager) output(ctx context.Context, root string, args ...string) (string, error) {
+	r := m.run(ctx, root, args...)
+	if r.Transport != nil || r.TimedOut || r.Exit != 0 {
+		return "", core.ErrGit
 	}
-	_, err := m.state.WriteJSON(worktreeIdentityPath(worktree.Run, worktree.Team), WorktreeIdentity{
-		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: m.project, RunID: worktree.Run, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano), Revision: 1},
-		Team:           worktree.Team, Path: worktree.Path, Base: worktree.Base, Branch: worktree.Branch,
-	}, 64<<10)
-	return err
+	return string(r.Stdout), nil
+}
+func (m *Manager) branchPresent(ctx context.Context, repo, branch string) (bool, error) {
+	r := m.run(ctx, repo, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	if r.Transport != nil || r.TimedOut || r.Exit < 0 || r.Exit > 1 {
+		return false, core.ErrGit
+	}
+	return r.Exit == 0, nil
+}
+func (m *Manager) worktreePresent(ctx context.Context, repo string, identity WorktreeIdentity) (bool, error) {
+	out, err := m.output(ctx, repo, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	for _, block := range strings.Split(strings.TrimSpace(out), "\n\n") {
+		lines := strings.Split(block, "\n")
+		if len(lines) > 0 && lines[0] == "worktree "+identity.Path {
+			for _, line := range lines[1:] {
+				if line == "branch refs/heads/"+identity.Branch {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
 }
 
-func (m *Manager) tombstone(worktree contracts.Worktree) error {
-	if m == nil || m.state == nil || m.project == "" {
-		return core.ErrPath
-	}
-	_, err := m.state.WriteJSON(worktreeIdentityPath(worktree.Run, worktree.Team), WorktreeIdentity{
-		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: m.project, RunID: worktree.Run, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano), Revision: 2},
-		Team:           worktree.Team, Removed: true,
-	}, 64<<10)
-	return err
+func worktreeFrom(i WorktreeIdentity) contracts.Worktree {
+	return contracts.Worktree{Run: i.RunID, Team: i.Team, Path: i.Path, Canonical: i.Path, Base: i.Base, Branch: i.Branch}
 }
-
-func (m *Manager) load(run core.RunID, team core.TeamID) (contracts.Worktree, error) {
-	if m == nil || m.state == nil || !safeID(string(run)) || !safeID(string(team)) {
-		return contracts.Worktree{}, core.ErrPath
-	}
-	var saved WorktreeIdentity
-	if err := m.state.ReadJSON(worktreeIdentityPath(run, team), 64<<10, &saved); err != nil ||
-		saved.Schema != 1 || saved.Project != m.project || saved.RunID != run || saved.Team != team || saved.Removed ||
-		saved.Path == "" || saved.Base == "" || saved.Branch != branchFor(run, team) {
-		return contracts.Worktree{}, core.ErrPath
-	}
-	return contracts.Worktree{Run: run, Team: team, Path: saved.Path, Canonical: saved.Path, Base: saved.Base, Branch: saved.Branch}, nil
+func sameIdentitySpec(i WorktreeIdentity, s contracts.WorktreeSpec, path string) bool {
+	return i.RunID == s.Run && i.Team == s.Team && i.Path == path && i.Base == s.Base && i.Branch == branchFor(s.Run, s.Team)
 }
-
-func sameSpec(worktree contracts.Worktree, spec contracts.WorktreeSpec, path string) bool {
-	return worktree.Run == spec.Run && worktree.Team == spec.Team && worktree.Path == path &&
-		worktree.Base == spec.Base && worktree.Branch == branchFor(spec.Run, spec.Team) && !worktree.Dirty
-}
-
 func sameWorktree(expected, supplied contracts.Worktree, requireBase bool) bool {
-	if expected.Run != supplied.Run || expected.Team != supplied.Team || expected.Path != supplied.Path ||
-		expected.Branch != supplied.Branch || supplied.Dirty || (supplied.Canonical != "" && supplied.Canonical != expected.Canonical) {
-		return false
-	}
-	return !requireBase || expected.Base == supplied.Base
+	return expected.Run == supplied.Run && expected.Team == supplied.Team && expected.Path == supplied.Path && expected.Branch == supplied.Branch && !supplied.Dirty && (supplied.Canonical == "" || supplied.Canonical == expected.Canonical) && (!requireBase || expected.Base == supplied.Base) && (supplied.Base == "" || supplied.Base == expected.Base)
 }
-
 func worktreeKey(run core.RunID, team core.TeamID) string { return string(run) + "\x00" + string(team) }
-
 func worktreeIdentityPath(run core.RunID, team core.TeamID) string {
 	return filepath.ToSlash(filepath.Join(".agent-team", "runtime", "worktrees", string(run), string(team)+".json"))
 }
-
 func branchFor(run core.RunID, team core.TeamID) string {
 	return "agent-team/" + string(run) + "/" + string(team)
 }
-
+func timestamp() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 func canonicalExisting(path string) (string, error) {
 	abs, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
@@ -289,7 +450,6 @@ func canonicalExisting(path string) (string, error) {
 	}
 	return filepath.EvalSymlinks(abs)
 }
-
 func canonicalCandidate(path string) (string, error) {
 	abs, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
@@ -308,12 +468,10 @@ func canonicalCandidate(path string) (string, error) {
 		}
 	}
 }
-
 func strictDescendant(root, candidate string) bool {
 	rel, err := filepath.Rel(root, candidate)
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
-
 func safeID(value string) bool {
 	if value == "" || value == "." || value == ".." || strings.ContainsAny(value, `/\\`) {
 		return false
@@ -325,7 +483,6 @@ func safeID(value string) bool {
 	}
 	return true
 }
-
 func safeGitAtom(value string) bool {
 	if value == "" || strings.HasPrefix(value, "-") {
 		return false
