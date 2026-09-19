@@ -1,0 +1,179 @@
+package admission
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"testing"
+
+	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/run"
+	"github.com/thebpandey/agent-team/vnext/internal/testkit"
+)
+
+func TestAppendAdmissionInterruptionConvergesOnRetry(t *testing.T) {
+	points := []admissionFaultPoint{faultBeforeCommit, faultAfterCommit, faultAfterRunProjection, faultAfterTeamProjection}
+	for _, point := range points {
+		t.Run(faultName(point), func(t *testing.T) {
+			f := testkit.NewAdmissionFixture(t)
+			batch := f.Batch(1)
+			admissionFault = func(got admissionFaultPoint) error {
+				if got == point {
+					return errors.New("injected interruption")
+				}
+				return nil
+			}
+			t.Cleanup(func() { admissionFault = nil })
+			before := testkit.SnapshotTree(t, f.Store.Root)
+			if _, err := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, batch); err == nil {
+				t.Fatal("injected interruption succeeded")
+			}
+			if point == faultBeforeCommit {
+				testkit.RequireNoWrites(t, f.Store.Root, before)
+			} else {
+				assertInterruptionBoundary(t, f, point)
+			}
+			admissionFault = nil
+			out, err := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, batch)
+			want := Duplicate
+			if point == faultBeforeCommit {
+				want = Created
+			}
+			if err != nil || out.Kind != want {
+				t.Fatalf("retry = %#v, %v; want %s", out, err, want)
+			}
+			assertProjected(t, f, batch)
+		})
+	}
+}
+
+func TestAppendAdmissionRecoversPreviousCommitBeforeClassifyingNextRevision(t *testing.T) {
+	f := testkit.NewAdmissionFixture(t)
+	first := f.Batch(1)
+	admissionFault = func(point admissionFaultPoint) error {
+		if point == faultAfterCommit {
+			return errors.New("stop after durable commit")
+		}
+		return nil
+	}
+	if _, err := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, first); err == nil {
+		t.Fatal("interruption succeeded")
+	}
+	admissionFault = nil
+	t.Cleanup(func() { admissionFault = nil })
+
+	second := f.Batch(1)
+	second.BatchID = "batch-next"
+	second.Sequence++
+	second.Tasks = []core.TaskID{"T-0002"}
+	second.Paths = []string{"src/task-0002"}
+	second.Resources = []string{"resource:0002"}
+	second.Fingerprint = fingerprint(second)
+	out, err := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision+1, f.Team, f.TeamRevision+1, f.TrackerRevision, f.TaskRevisions, second)
+	if err != nil || out.Kind != Created {
+		t.Fatalf("next revision did not recover and create: %#v, %v", out, err)
+	}
+}
+
+func TestCorruptCommitVariantsBlockWithoutProjection(t *testing.T) {
+	mutations := map[string]func(*committedAdmission){
+		"schema":          func(c *committedAdmission) { c.Schema = 2 },
+		"batch-envelope":  func(c *committedAdmission) { c.Batch.Schema = 0 },
+		"project-binding": func(c *committedAdmission) { c.Batch.Project = "other"; c.Batch.Fingerprint = fingerprint(c.Batch) },
+		"unsafe-path": func(c *committedAdmission) {
+			c.Batch.Paths = []string{"../escape"}
+			c.Batch.Fingerprint = fingerprint(c.Batch)
+		},
+		"fingerprint":   func(c *committedAdmission) { c.Batch.Fingerprint = "sha256:bad" },
+		"run-envelope":  func(c *committedAdmission) { c.BeforeRun.Schema = 0 },
+		"team-envelope": func(c *committedAdmission) { c.BeforeTeam.Schema = 0 },
+		"slot":          func(c *committedAdmission) { c.AfterRun.Teams[0].ID = "other-team" },
+		"run-revision":  func(c *committedAdmission) { c.AfterRun.Revision++ },
+		"team-revision": func(c *committedAdmission) { c.AfterTeam.Revision++ },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			f := testkit.NewAdmissionFixture(t)
+			batch := f.Batch(1)
+			admissionFault = func(point admissionFaultPoint) error {
+				if point == faultAfterCommit {
+					return errors.New("stop after durable commit")
+				}
+				return nil
+			}
+			if _, err := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, batch); err == nil {
+				t.Fatal("interruption succeeded")
+			}
+			admissionFault = nil
+			path := runCommitPath(f.Run, f.RunRevision)
+			commit, found, err := readCommit(f.Store, path)
+			if err != nil || !found {
+				t.Fatalf("read durable commit: found=%v err=%v", found, err)
+			}
+			mutate(&commit)
+			if _, err := f.Store.WriteJSON(path, commit, maxRecordBytes); err != nil {
+				t.Fatal(err)
+			}
+			before := testkit.SnapshotTree(t, f.Store.Root)
+			_, err = AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, batch)
+			if !errors.Is(err, core.ErrRevision) {
+				t.Fatalf("corrupt commit accepted: %v", err)
+			}
+			testkit.RequireNoWrites(t, f.Store.Root, before)
+		})
+	}
+}
+
+func TestAdmissionInputProjectBindingHasNoPartialWrite(t *testing.T) {
+	f := testkit.NewAdmissionFixture(t)
+	batch := f.Batch(1)
+	batch.Project = "other"
+	batch.Fingerprint = fingerprint(batch)
+	before := testkit.SnapshotTree(t, f.Store.Root)
+	_, err := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, batch)
+	if !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("project mismatch = %v", err)
+	}
+	testkit.RequireNoWrites(t, f.Store.Root, before)
+}
+
+func assertProjected(t *testing.T, f testkit.AdmissionFixture, batch run.AdmissionBatch) {
+	t.Helper()
+	var gotRun run.Run
+	var gotTeam run.TeamRecord
+	if err := f.Store.ReadJSON(runPath(f.Run), maxRecordBytes, &gotRun); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Store.ReadJSON(teamPath(f.Team), maxRecordBytes, &gotTeam); err != nil {
+		t.Fatal(err)
+	}
+	if gotRun.Revision != f.RunRevision+1 || gotTeam.Revision != f.TeamRevision+1 || !reflect.DeepEqual(gotTeam.Queue, batch.Tasks) {
+		t.Fatalf("nonconvergent projection: run=%d team=%#v", gotRun.Revision, gotTeam)
+	}
+}
+
+func assertInterruptionBoundary(t *testing.T, f testkit.AdmissionFixture, point admissionFaultPoint) {
+	t.Helper()
+	var gotRun run.Run
+	var gotTeam run.TeamRecord
+	if err := f.Store.ReadJSON(runPath(f.Run), maxRecordBytes, &gotRun); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Store.ReadJSON(teamPath(f.Team), maxRecordBytes, &gotTeam); err != nil {
+		t.Fatal(err)
+	}
+	wantRun, wantTeam := f.RunRevision, f.TeamRevision
+	if point == faultAfterRunProjection || point == faultAfterTeamProjection {
+		wantRun++
+	}
+	if point == faultAfterTeamProjection {
+		wantTeam++
+	}
+	if gotRun.Revision != wantRun || gotTeam.Revision != wantTeam {
+		t.Fatalf("interruption boundary %s left run=%d team=%d, want %d/%d", faultName(point), gotRun.Revision, gotTeam.Revision, wantRun, wantTeam)
+	}
+}
+
+func faultName(point admissionFaultPoint) string {
+	return [...]string{"before-commit", "after-commit", "after-run", "after-team"}[point]
+}

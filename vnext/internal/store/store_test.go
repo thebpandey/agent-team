@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -171,6 +173,9 @@ func TestStoreRootAnchoringRejectsSymlinkEscape(t *testing.T) {
 	if _, err := s.WriteMarkdown("link/escape.md", []byte("no"), 64); !errors.Is(err, core.ErrPath) {
 		t.Fatalf("symlink escape error = %v, want ErrPath", err)
 	}
+	if _, err := s.CreateJSON("link/escape.json", map[string]string{"no": "escape"}, 64); !errors.Is(err, core.ErrPath) {
+		t.Fatalf("CreateJSON symlink escape error = %v, want ErrPath", err)
+	}
 	if _, err := os.Stat(filepath.Join(outside, "escape.md")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("write escaped root: %v", err)
 	}
@@ -288,7 +293,11 @@ func TestStoreRetainsDiscoverableLastGoodRecoveryOnRestoreFailure(t *testing.T) 
 	} else if !strings.Contains(err.Error(), recoveryPath("record.md")) {
 		t.Fatalf("recovery location missing from error: %v", err)
 	}
-	recovery, err := os.ReadFile(filepath.Join(s.Root, recoveryPath("record.md")))
+	entries, err := filepath.Glob(filepath.Join(s.Root, recoveryPath("record.md")+"-*"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("retained recovery entries = %v, %v", entries, err)
+	}
+	recovery, err := os.ReadFile(entries[0])
 	if err != nil || string(recovery) != "last good" {
 		t.Fatalf("retained last-good recovery = %q, %v", recovery, err)
 	}
@@ -306,6 +315,17 @@ func TestStoreCanonicalHardLimitIsSixteenMiB(t *testing.T) {
 			t.Fatalf("oversized caller limit=%v, want ErrLimit", err)
 		}
 	}
+	if _, err := New(t.TempDir(), core.StorageLimits{}).CreateJSON("zero.json", map[string]string{}, 0); !errors.Is(err, core.ErrLimit) {
+		t.Fatalf("zero create limit = %v, want ErrLimit", err)
+	}
+	jsonStore := New(t.TempDir(), core.StorageLimits{CanonicalBytes: hard})
+	boundaryJSON := strings.Repeat("x", hard-3) // quotes plus newline make exactly hard bytes.
+	if result, err := jsonStore.CreateJSON("boundary.json", boundaryJSON, hard); err != nil || result.Bytes != hard || result.SHA256 == "" {
+		t.Fatalf("JSON boundary result=%+v err=%v", result, err)
+	}
+	if _, err := jsonStore.CreateJSON("too-large.json", strings.Repeat("x", hard-2), hard); !errors.Is(err, core.ErrLimit) {
+		t.Fatalf("oversized JSON = %v, want ErrLimit", err)
+	}
 }
 
 func TestStoreCreateJSONNeverReplacesAnExistingRecord(t *testing.T) {
@@ -322,6 +342,14 @@ func TestStoreCreateJSONNeverReplacesAnExistingRecord(t *testing.T) {
 	var got map[string]string
 	if err := s.ReadJSON("commits/one.json", 1024, &got); err != nil || got["winner"] != "first" {
 		t.Fatalf("winner changed: %#v, %v", got, err)
+	}
+	data, err := os.ReadFile(filepath.Join(s.Root, "commits", "one.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	if first.Bytes != int64(len(data)) || first.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("CreateJSON result=%#v does not match persisted bytes", first)
 	}
 }
 
@@ -358,5 +386,75 @@ func TestStoreCreateJSONConcurrentAndUnsupportedLink(t *testing.T) {
 	var got map[string]string
 	if err := fail.ReadJSON("commit.json", 128, &got); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("canonical publication remains: %v", err)
+	}
+}
+
+// TestStoreCreateJSONSubprocessHelper deliberately runs in a distinct process.
+// The parent test below depends on the no-replace filesystem primitive, not the
+// Store's in-process mutexes.
+func TestStoreCreateJSONSubprocessHelper(t *testing.T) {
+	if os.Getenv("STORE_CREATE_HELPER") != "1" {
+		return
+	}
+	s := New(os.Getenv("STORE_CREATE_ROOT"), core.StorageLimits{})
+	_, err := s.CreateJSON("commit.json", map[string]string{"winner": os.Getenv("STORE_CREATE_VALUE")}, 1024)
+	switch {
+	case err == nil:
+		fmt.Fprint(os.Stdout, "STORE_CREATE=created")
+	case errors.Is(err, fs.ErrExist) && errors.Is(err, core.ErrRevision):
+		fmt.Fprint(os.Stdout, "STORE_CREATE=exists")
+	default:
+		t.Fatalf("subprocess CreateJSON: %v", err)
+	}
+}
+
+func TestStoreCreateJSONSubprocessContention(t *testing.T) {
+	for _, values := range [][]string{{"same", "same"}, {"left", "right"}} {
+		t.Run(strings.Join(values, "-"), func(t *testing.T) {
+			root := t.TempDir()
+			results := make(chan string, len(values))
+			for _, value := range values {
+				value := value
+				go func() {
+					cmd := exec.Command(os.Args[0], "-test.run=^TestStoreCreateJSONSubprocessHelper$")
+					cmd.Env = append(os.Environ(), "STORE_CREATE_HELPER=1", "STORE_CREATE_ROOT="+root, "STORE_CREATE_VALUE="+value)
+					out, err := cmd.CombinedOutput()
+					if err != nil {
+						results <- "error: " + err.Error() + ": " + string(out)
+						return
+					}
+					results <- string(out)
+				}()
+			}
+			created := 0
+			for range values {
+				result := <-results
+				if strings.Contains(result, "STORE_CREATE=created") {
+					created++
+					continue
+				}
+				if !strings.Contains(result, "STORE_CREATE=exists") {
+					t.Fatal(result)
+				}
+			}
+			if created != 1 {
+				t.Fatalf("subprocess winners=%d", created)
+			}
+			data, err := os.ReadFile(filepath.Join(root, "commit.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum := sha256.Sum256(data)
+			var value map[string]string
+			if err := New(root, core.StorageLimits{}).ReadJSON("commit.json", 1024, &value); err != nil {
+				t.Fatal(err)
+			}
+			if value["winner"] != values[0] && value["winner"] != values[1] {
+				t.Fatalf("unexpected subprocess winner: %#v", value)
+			}
+			if hex.EncodeToString(sum[:]) == "" || len(data) == 0 {
+				t.Fatalf("missing persisted hash/size: hash=%x bytes=%d", sum, len(data))
+			}
+		})
 	}
 }

@@ -289,8 +289,12 @@ func (s *Store) write(relative string, maxBytes int64, encode func(io.Writer) er
 	if err != nil {
 		if restoreErr := s.restoreDestination(root, relative, backup, temporary); restoreErr != nil {
 			retainBackup = backup != nil
+			recovery := recoveryPath(relative)
+			if backup != nil {
+				recovery = backup.name
+			}
 			return AtomicResult{}, pathError("verify replacement", relative, recoveryError{
-				path:  recoveryPath(relative),
+				path:  recovery,
 				cause: errors.Join(err, restoreErr),
 			})
 		}
@@ -487,7 +491,10 @@ func snapshotDestination(root *os.Root, relative string, limit int64) (*ownedTem
 		_ = file.Close()
 		return nil, err
 	}
-	backup, backupFile, err := createOwnedFile(root, recovery)
+	// Multiple processes can converge on the same durable commit. Keep their
+	// recovery copies identity-unique rather than colliding on one predictable
+	// name; the hash-prefixed directory is still discoverable after failure.
+	backup, backupFile, err := createOwnedTemp(root, path.Dir(recovery), path.Base(recovery)+"-")
 	if err != nil {
 		_ = file.Close()
 		return nil, err

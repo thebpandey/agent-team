@@ -3,6 +3,7 @@ package admission_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -36,7 +37,9 @@ func TestAdmissionRejectsEnvelopeAndTaskRevisionWithoutWrites(t *testing.T) {
 		mutate(&f, &batch)
 		before := testkit.SnapshotTree(t, f.Store.Root)
 		_, err := admission.AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, batch)
-		if err == nil { t.Fatal("invalid admission accepted") }
+		if err == nil {
+			t.Fatal("invalid admission accepted")
+		}
 		testkit.RequireNoWrites(t, f.Store.Root, before)
 	}
 }
@@ -116,7 +119,8 @@ func TestAdmissionCapacityWarningAndLimit(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || out.Kind != admission.Created || out.Warning == "" {
+			wantWarning := fmt.Sprintf("tracker has %d of %d non-archived tasks", n, 1000)
+			if err != nil || out.Kind != admission.Created || out.Warning != wantWarning {
 				t.Fatalf("capacity %d: %#v %v", n, out, err)
 			}
 		})

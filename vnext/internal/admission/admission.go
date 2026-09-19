@@ -61,6 +61,27 @@ type committedAdmission struct {
 
 var admissionLocks sync.Map // map[string]*sync.Mutex, process-local serialization only
 
+// admissionFault is a deliberately narrow test seam for interruption at each
+// durable boundary. Production leaves it nil. The commit itself remains the
+// only recovery authority; the seam never changes what is written.
+type admissionFaultPoint uint8
+
+const (
+	faultBeforeCommit admissionFaultPoint = iota
+	faultAfterCommit
+	faultAfterRunProjection
+	faultAfterTeamProjection
+)
+
+var admissionFault func(admissionFaultPoint) error
+
+func failAdmission(point admissionFaultPoint) error {
+	if admissionFault == nil {
+		return nil
+	}
+	return admissionFault(point)
+}
+
 // AppendAdmission validates a single tracker snapshot, writes one immutable
 // admission commit, and then projects its prepared run/team state. A committed
 // record is never reported as success until both projections exist.
@@ -100,7 +121,10 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 			return AdmissionOutcome{}, err
 		}
 		if existing.Batch.Fingerprint != batch.Fingerprint || !reflect.DeepEqual(existing.Batch, batch) {
-			return AdmissionOutcome{}, fmt.Errorf("%w: admission ID %q already has a different fingerprint", core.ErrRevision, batch.BatchID)
+			// The run-revision slot belongs to the already committed admission.
+			// A different proposal is stale, while an exact proposal below is a
+			// duplicate and must first finish that commit's projection.
+			return staleOutcome(st, runID, teamID, batch.Fingerprint)
 		}
 		if existing.ExpectedRunRevision == expectedRunRevision && existing.ExpectedTeamRevision == expectedTeamRevision && existing.ExpectedTrackerRevision == expectedTrackerRevision {
 			if err := project(ctx, st, existing); err != nil {
@@ -121,11 +145,25 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 	if currentRun.ID != runID || currentTeam.ID != teamID {
 		return AdmissionOutcome{}, fmt.Errorf("%w: noncanonical run/team slot", core.ErrRevision)
 	}
+	// An earlier durable commit may have stopped before either projection. It
+	// must converge before this caller is classified as stale.
+	if err := recoverPrevious(ctx, st, runID, expectedRunRevision); err != nil {
+		return AdmissionOutcome{}, err
+	}
+	if err := st.ReadJSON(runPath(runID), maxRecordBytes, &currentRun); err != nil {
+		return AdmissionOutcome{}, err
+	}
+	if err := st.ReadJSON(teamPath(teamID), maxRecordBytes, &currentTeam); err != nil {
+		return AdmissionOutcome{}, err
+	}
+	if currentRun.ID != runID || currentTeam.ID != teamID {
+		return AdmissionOutcome{}, fmt.Errorf("%w: noncanonical run/team slot", core.ErrRevision)
+	}
 	if currentRun.Revision != expectedRunRevision || currentTeam.Revision != expectedTeamRevision {
 		return outcome(Stale, committedAdmission{Batch: batch, AfterRun: currentRun, AfterTeam: currentTeam}), nil
 	}
-	if err := recoverPrevious(ctx, st, runID, expectedRunRevision); err != nil {
-		return AdmissionOutcome{}, err
+	if batch.Project != currentRun.Project || currentTeam.Project != currentRun.Project || currentTeam.RunID != runID {
+		return AdmissionOutcome{}, fmt.Errorf("%w: admission project or team binding", core.ErrRevision)
 	}
 	if err := rejectReusedFingerprint(st, teamID, batch); err != nil {
 		return AdmissionOutcome{}, err
@@ -179,7 +217,13 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 		warning = fmt.Sprintf("tracker has %d of %d non-archived tasks", page.TotalNonArchived, 1000)
 	}
 	commit := committedAdmission{Schema: 1, Batch: batch, ExpectedRunRevision: expectedRunRevision, ExpectedTeamRevision: expectedTeamRevision, ExpectedTrackerRevision: expectedTrackerRevision, BeforeRun: currentRun, BeforeTeam: currentTeam, AfterRun: afterRun, AfterTeam: afterTeam, Warning: warning}
+	if err := validateCommit(commit, runID, expectedRunRevision); err != nil {
+		return AdmissionOutcome{}, err
+	}
 	if err := ctx.Err(); err != nil {
+		return AdmissionOutcome{}, err
+	}
+	if err := failAdmission(faultBeforeCommit); err != nil {
 		return AdmissionOutcome{}, err
 	}
 	if _, err := st.CreateJSON(commitPath, commit, maxRecordBytes); err != nil {
@@ -201,6 +245,9 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 		}
 		return staleOutcome(st, runID, teamID, batch.Fingerprint)
 	}
+	if err := failAdmission(faultAfterCommit); err != nil {
+		return AdmissionOutcome{}, err
+	}
 	if err := project(ctx, st, commit); err != nil {
 		return AdmissionOutcome{}, err
 	}
@@ -219,10 +266,16 @@ func project(ctx context.Context, st *store.Store, commit committedAdmission) er
 	if err := convergeRun(st, commit); err != nil {
 		return err
 	}
+	if err := failAdmission(faultAfterRunProjection); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return convergeTeam(st, commit)
+	if err := convergeTeam(st, commit); err != nil {
+		return err
+	}
+	return failAdmission(faultAfterTeamProjection)
 }
 
 func convergeRun(st *store.Store, commit committedAdmission) error {
@@ -302,24 +355,61 @@ func recoverPrevious(ctx context.Context, st *store.Store, runID core.RunID, exp
 	if err := st.ReadJSON(runPath(runID), maxRecordBytes, &current); err != nil {
 		return err
 	}
-	if current.Revision == commit.AfterRun.Revision {
+	if current.Revision == commit.BeforeRun.Revision || current.Revision == commit.AfterRun.Revision {
 		return project(ctx, st, commit)
 	}
 	return nil
 }
 
 func validateCommit(commit committedAdmission, runID core.RunID, expected uint64) error {
-	if commit.Schema != 1 || commit.ExpectedRunRevision != expected || commit.BeforeRun.ID != runID || commit.AfterRun.ID != runID || commit.Batch.RunID != runID || commit.Batch.Project != commit.BeforeRun.Project || commit.AfterRun.Project != commit.BeforeRun.Project || commit.ExpectedTeamRevision != commit.BeforeTeam.Revision || commit.ExpectedTrackerRevision != commit.Batch.TrackerRevision {
+	if commit.Schema != 1 || commit.ExpectedRunRevision != expected || commit.BeforeRun.ID != runID || commit.AfterRun.ID != runID || commit.Batch.RunID != runID || commit.Batch.Project != commit.BeforeRun.Project || commit.BeforeTeam.Project != commit.BeforeRun.Project || commit.AfterRun.Project != commit.BeforeRun.Project || commit.AfterTeam.Project != commit.BeforeRun.Project || commit.ExpectedTeamRevision != commit.BeforeTeam.Revision || commit.ExpectedTrackerRevision != commit.Batch.TrackerRevision {
 		return fmt.Errorf("%w: invalid admission commit", core.ErrRevision)
 	}
-	if commit.AfterRun.Revision != commit.BeforeRun.Revision+1 || commit.AfterTeam.Revision != commit.BeforeTeam.Revision+1 || commit.BeforeRun.Revision != expected || commit.BeforeTeam.ID != commit.AfterTeam.ID || commit.BeforeTeam.RunID != runID || commit.AfterTeam.RunID != runID {
+	if commit.AfterRun.Revision != commit.BeforeRun.Revision+1 || commit.AfterTeam.Revision != commit.BeforeTeam.Revision+1 || commit.BeforeRun.Revision != expected || commit.BeforeTeam.ID != commit.AfterTeam.ID || commit.BeforeTeam.RunID != runID || commit.AfterTeam.RunID != runID || commit.BeforeRun.Schema != 1 || commit.AfterRun.Schema != 1 || commit.BeforeTeam.Schema != 1 || commit.AfterTeam.Schema != 1 || commit.BeforeRun.RunID != runID || commit.AfterRun.RunID != runID || commit.BeforeTeam.WrittenAt != commit.BeforeRun.WrittenAt || commit.AfterTeam.WrittenAt != commit.BeforeRun.WrittenAt {
 		return fmt.Errorf("%w: invalid admission commit revisions", core.ErrRevision)
 	}
-	if err := validateBatch(commit.Batch, runID, commit.BeforeTeam.ID); err != nil {
-		return err
+	if _, err := time.Parse(time.RFC3339, commit.BeforeRun.WrittenAt); err != nil || commit.BeforeRun.Root != commit.BeforeRun.Project {
+		return fmt.Errorf("%w: invalid admission commit envelope", core.ErrRevision)
 	}
-	if !teamInRun(commit.BeforeRun, commit.BeforeTeam) || len(commit.AfterTeam.Queue) != len(commit.BeforeTeam.Queue)+len(commit.Batch.Tasks) || commit.AfterTeam.QueueFingerprint != queueFingerprint(commit.AfterTeam.Queue) {
-		return fmt.Errorf("%w: invalid admission commit projection", core.ErrRevision)
+	root, err := canonicalRoot(commit.BeforeRun.Root)
+	if err != nil || root != commit.BeforeRun.Root {
+		return fmt.Errorf("%w: invalid admission commit root", core.ErrRevision)
+	}
+	if err := validateBatch(commit.Batch, runID, commit.BeforeTeam.ID); err != nil {
+		return fmt.Errorf("%w: invalid admission commit batch: %v", core.ErrRevision, err)
+	}
+	if !teamInRun(commit.BeforeRun, commit.BeforeTeam) {
+		return fmt.Errorf("%w: invalid admission commit projection: team is not in before run", core.ErrRevision)
+	}
+	var slot bool
+	for _, team := range commit.BeforeRun.Teams {
+		if team.ID == commit.BeforeTeam.ID && reflect.DeepEqual(team, commit.BeforeTeam) {
+			slot = true
+			break
+		}
+	}
+	if !slot {
+		return fmt.Errorf("%w: invalid admission commit slot", core.ErrRevision)
+	}
+	expectedTeam := cloneTeam(commit.BeforeTeam)
+	expectedTeam.Queue = append(expectedTeam.Queue, commit.Batch.Tasks...)
+	expectedTeam.Paths = union(expectedTeam.Paths, commit.Batch.Paths)
+	expectedTeam.Resources = union(expectedTeam.Resources, commit.Batch.Resources)
+	expectedTeam.QueueFingerprint = queueFingerprint(expectedTeam.Queue)
+	expectedTeam.State = core.Working
+	expectedTeam.Revision++
+	if !reflect.DeepEqual(expectedTeam, commit.AfterTeam) {
+		return fmt.Errorf("%w: invalid admission commit team projection", core.ErrRevision)
+	}
+	expectedRun := cloneRun(commit.BeforeRun)
+	expectedRun.Revision++
+	for i := range expectedRun.Teams {
+		if expectedRun.Teams[i].ID == expectedTeam.ID {
+			expectedRun.Teams[i] = expectedTeam
+		}
+	}
+	if !reflect.DeepEqual(expectedRun, commit.AfterRun) {
+		return fmt.Errorf("%w: invalid admission commit run projection", core.ErrRevision)
 	}
 	return nil
 }
@@ -493,9 +583,10 @@ func teamInRun(value run.Run, team run.TeamRecord) bool {
 
 func cloneRun(value run.Run) run.Run {
 	value.Tasks = append([]core.Task(nil), value.Tasks...)
-	value.Teams = make([]run.TeamRecord, len(value.Teams))
-	for i := range value.Teams {
-		value.Teams[i] = cloneTeam(value.Teams[i])
+	teams := value.Teams
+	value.Teams = make([]run.TeamRecord, len(teams))
+	for i := range teams {
+		value.Teams[i] = cloneTeam(teams[i])
 	}
 	return value
 }
