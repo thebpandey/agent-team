@@ -52,6 +52,24 @@ func NewAdmissionFixture(t *testing.T) AdmissionFixture {
 	return AdmissionFixture{Store: st, Tracker: selected, Run: manifest.ID, RunRevision: manifest.Revision, Team: team.ID, TeamRevision: team.Revision, TrackerRevision: revision, TaskRevisions: revisions, project: manifest.Project, writtenAt: manifest.WrittenAt}
 }
 
+// NewAdmissionFixtureWithCapacity keeps the canonical fixture run but supplies
+// a tracker snapshot containing exactly count active tasks for capacity tests.
+func NewAdmissionFixtureWithCapacity(t *testing.T, count int) AdmissionFixture {
+	t.Helper()
+	f := NewAdmissionFixture(t)
+	if count < 0 {
+		t.Fatalf("negative tracker capacity %d", count)
+	}
+	tasks := make([]core.Task, count)
+	for i := range tasks {
+		id := core.TaskID(fmt.Sprintf("T-%04d", i+1))
+		tasks[i] = core.Task{RecordEnvelope: core.RecordEnvelope{Revision: uint64(1000 + i)}, ID: id, Objective: "fixture task", State: core.Ready, Criteria: []string{"passes"}, WritablePaths: []string{fmt.Sprintf("src/task-%04d", i+1)}, Resources: []string{fmt.Sprintf("resource:%04d", i+1)}}
+		f.TaskRevisions[id] = tasks[i].Revision
+	}
+	f.Tracker = fixtureTracker{path: filepath.Join(f.project, "TASKS.md"), revision: f.TrackerRevision, tasks: tasks}
+	return f
+}
+
 type fixtureTracker struct {
 	path     string
 	revision uint64
@@ -66,7 +84,7 @@ func (f fixtureTracker) Page(ctx context.Context, cursor string, limit int) (cor
 	if err := ctx.Err(); err != nil {
 		return core.TrackerPage{}, err
 	}
-	if cursor != "" || limit < len(f.tasks) {
+	if cursor != "" || limit < 1 {
 		return core.TrackerPage{}, fmt.Errorf("%w: fixture requires one snapshot", core.ErrLimit)
 	}
 	return core.TrackerPage{TrackerRevision: f.revision, TotalNonArchived: len(f.tasks), Tasks: append([]core.Task(nil), f.tasks...)}, nil

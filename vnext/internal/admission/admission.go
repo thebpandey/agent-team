@@ -56,6 +56,7 @@ type committedAdmission struct {
 	BeforeTeam              run.TeamRecord     `json:"beforeTeam"`
 	AfterRun                run.Run            `json:"afterRun"`
 	AfterTeam               run.TeamRecord     `json:"afterTeam"`
+	Warning                 string             `json:"warning,omitempty"`
 }
 
 var admissionLocks sync.Map // map[string]*sync.Mutex, process-local serialization only
@@ -173,7 +174,11 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 		}
 	}
 	afterRun.Revision++
-	commit := committedAdmission{Schema: 1, Batch: batch, ExpectedRunRevision: expectedRunRevision, ExpectedTeamRevision: expectedTeamRevision, ExpectedTrackerRevision: expectedTrackerRevision, BeforeRun: currentRun, BeforeTeam: currentTeam, AfterRun: afterRun, AfterTeam: afterTeam}
+	warning := ""
+	if page.TotalNonArchived >= 900 {
+		warning = fmt.Sprintf("tracker has %d of %d non-archived tasks", page.TotalNonArchived, 1000)
+	}
+	commit := committedAdmission{Schema: 1, Batch: batch, ExpectedRunRevision: expectedRunRevision, ExpectedTeamRevision: expectedTeamRevision, ExpectedTrackerRevision: expectedTrackerRevision, BeforeRun: currentRun, BeforeTeam: currentTeam, AfterRun: afterRun, AfterTeam: afterTeam, Warning: warning}
 	if err := ctx.Err(); err != nil {
 		return AdmissionOutcome{}, err
 	}
@@ -264,7 +269,7 @@ func staleOutcome(st *store.Store, runID core.RunID, teamID core.TeamID, fingerp
 
 func outcome(kind OutcomeKind, commit committedAdmission) AdmissionOutcome {
 	r := commit.AfterRun
-	return AdmissionOutcome{Kind: kind, Run: core.RunRecord{RecordEnvelope: r.RecordEnvelope, ID: r.ID, SpecRevision: r.SpecRevision, TrackerKind: r.TrackerKind, TrackerRevision: r.TrackerRevision, CanonicalRevision: r.CanonicalRevision, State: r.State}, TeamRevision: commit.AfterTeam.Revision, Fingerprint: commit.Batch.Fingerprint}
+	return AdmissionOutcome{Kind: kind, Run: core.RunRecord{RecordEnvelope: r.RecordEnvelope, ID: r.ID, SpecRevision: r.SpecRevision, TrackerKind: r.TrackerKind, TrackerRevision: r.TrackerRevision, CanonicalRevision: r.CanonicalRevision, State: r.State}, TeamRevision: commit.AfterTeam.Revision, Fingerprint: commit.Batch.Fingerprint, Warning: commit.Warning}
 }
 
 func readCommit(st *store.Store, relative string) (committedAdmission, bool, error) {

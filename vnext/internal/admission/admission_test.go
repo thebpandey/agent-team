@@ -74,3 +74,21 @@ func TestAppendAdmissionConcurrentIdenticalIsCreatedThenDuplicate(t *testing.T) 
 		t.Fatalf("created=%d duplicate=%d", created, duplicate)
 	}
 }
+
+func TestAdmissionCapacityWarningAndLimit(t *testing.T) {
+	for _, n := range []int{900, 999, 1000, 1001} {
+		t.Run("capacity", func(t *testing.T) {
+			f := testkit.NewAdmissionFixtureWithCapacity(t, n)
+			out, err := admission.AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, f.Batch(1))
+			if n == 1001 {
+				if !errors.Is(err, core.ErrCapacity) {
+					t.Fatalf("capacity %d: %v", n, err)
+				}
+				return
+			}
+			if err != nil || out.Kind != admission.Created || out.Warning == "" {
+				t.Fatalf("capacity %d: %#v %v", n, out, err)
+			}
+		})
+	}
+}
