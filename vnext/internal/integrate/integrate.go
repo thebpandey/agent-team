@@ -97,7 +97,9 @@ func (i *serialIntegrator) Integrate(ctx context.Context, candidate contracts.Ca
 	if i.guard == nil {
 		return Integration{}, core.ErrPath
 	}
-	i.guard.mu.Lock()
+	if !i.guard.mu.TryLock() {
+		return Integration{}, core.ErrTransition
+	}
 	defer i.guard.mu.Unlock()
 	pointer := integrationPointer(candidate)
 	if existing, found, err := i.existing(pointer, candidate, gateResult); err != nil {

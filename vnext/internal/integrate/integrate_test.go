@@ -117,13 +117,16 @@ func TestIntegratorsShareProjectStoreGuard(t *testing.T) {
 	}
 	close(start)
 	firstResult, secondResult := <-results, <-results
-	if err := <-errs; err != nil {
-		t.Fatal(err)
+	errsSeen := []error{<-errs, <-errs}
+	transitions := 0
+	for _, err := range errsSeen {
+		if errors.Is(err, core.ErrTransition) {
+			transitions++
+		} else if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := <-errs; err != nil {
-		t.Fatal(err)
-	}
-	if manager.max != 1 || manager.integrations != 2 || firstResult.Order+secondResult.Order != 3 || firstResult.Order == secondResult.Order {
+	if manager.max != 1 || manager.integrations != 1 || transitions != 1 || (firstResult.Order != 1 && secondResult.Order != 1) {
 		t.Fatalf("serial results=%+v,%+v manager=%+v", firstResult, secondResult, manager)
 	}
 }
