@@ -50,7 +50,7 @@ func TestVersionParserAcceptsOnlyExactForms(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := cli.Parse(tc.args)
 			if tc.fail {
-				if err == nil {
+				if !errors.Is(err, core.ErrPhase) {
 					t.Fatal("invalid version form accepted")
 				}
 				return
