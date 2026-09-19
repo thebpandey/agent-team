@@ -338,12 +338,30 @@ func parseBeads(data []byte) ([]core.Task, error) {
 		if !ok {
 			return nil, fmt.Errorf("%w: unknown Beads status %q", core.ErrPath, item.Status)
 		}
-		archived = archived || item.Archived
+		if item.State != "" {
+			declared, declaredArchived, valid := beadsState(string(item.State))
+			if !valid || declared != state || declaredArchived != archived {
+				return nil, fmt.Errorf("%w: contradictory Beads state %q", core.ErrPath, item.State)
+			}
+		}
+		if _, present := fields["archived"]; present && item.Archived != archived {
+			return nil, fmt.Errorf("%w: contradictory Beads archived flag", core.ErrPath)
+		}
 		dependencies := item.Dependencies
 		if dependencies == nil {
 			dependencies = item.DependencyIDs
 		}
 		if len(item.Metadata) > 0 {
+			var metadataFields map[string]json.RawMessage
+			if err := json.Unmarshal(item.Metadata, &metadataFields); err != nil || metadataFields == nil {
+				return nil, fmt.Errorf("%w: malformed Beads metadata", core.ErrPath)
+			}
+			allowedMetadata := map[string]bool{"criteria": true, "checks": true, "writablePaths": true, "resources": true, "evidencePointers": true}
+			for key, value := range metadataFields {
+				if !allowedMetadata[key] || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+					return nil, fmt.Errorf("%w: invalid Beads metadata field %q", core.ErrPath, key)
+				}
+			}
 			var metadata struct {
 				Criteria         []string     `json:"criteria"`
 				Checks           []core.Check `json:"checks"`

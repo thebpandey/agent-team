@@ -301,6 +301,27 @@ func TestBeadsArchiveReusesAlreadyArchivedTask(t *testing.T) {
 	}
 }
 
+func TestBeadsRejectsContradictoryStateAndStrictlyValidatesMetadata(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{name: "contradictory archived", body: `[{"id":"B-1","title":"x","status":"open","archived":true}]`},
+		{name: "contradictory state", body: `[{"id":"B-1","title":"x","status":"open","state":"reviewing"}]`},
+		{name: "unknown metadata", body: `[{"id":"B-1","title":"x","status":"open","metadata":{"surprise":true}}]`},
+		{name: "null metadata value", body: `[{"id":"B-1","title":"x","status":"open","metadata":{"criteria":null}}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := NewBeads(NewFakeRunner(CommandResult{Stdout: []byte(tc.body)}))
+			if _, err := tr.Page(context.Background(), "", 8); !errors.Is(err, core.ErrPath) {
+				t.Fatalf("Page error = %v, want ErrPath", err)
+			}
+		})
+	}
+	archived := NewBeads(NewFakeRunner(CommandResult{Stdout: []byte(`[{"id":"B-2","title":"x","status":"closed","state":"archived","archived":true}]`)}))
+	task, err := archived.Get(context.Background(), "B-2", trackerRevision([]byte(`[{"id":"B-2","title":"x","status":"closed","state":"archived","archived":true}]`)))
+	if err != nil || task.State != core.Archived || !task.Archived {
+		t.Fatalf("archived task = %#v, %v", task, err)
+	}
+}
+
 type scriptedRunner struct {
 	mu      sync.Mutex
 	results []CommandResult
