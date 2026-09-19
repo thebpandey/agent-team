@@ -492,6 +492,23 @@ func TestExactProbeAcceptsSingleTerminalLineEnding(t *testing.T) {
 	}
 }
 
+func TestExactProbeAllowsPathsWithSpaces(t *testing.T) {
+	repo := testkit.GitRepo(t)
+	spaced := filepath.Join(filepath.Dir(repo), "repo with space")
+	if err := os.Rename(repo, spaced); err != nil {
+		t.Fatal(err)
+	}
+	runner := &gitRunner{}
+	manager := NewManager(spaced, "project", store.New(spaced, core.StorageLimits{CanonicalBytes: 16 << 20}), runner)
+	w, err := manager.Create(context.Background(), worktreeSpec("run", "team", filepath.Join(spaced, ".agent-team", "worktrees", "task with space")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RemoveExact(context.Background(), w); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type gitRunner struct {
 	calls          [][]string
 	result         tracker.CommandResult
