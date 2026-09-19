@@ -2,6 +2,9 @@ package integrate_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,7 +16,9 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/gate"
 	"github.com/thebpandey/agent-team/vnext/internal/integrate"
+	"github.com/thebpandey/agent-team/vnext/internal/knowledge"
 	"github.com/thebpandey/agent-team/vnext/internal/project"
+	"github.com/thebpandey/agent-team/vnext/internal/run"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
@@ -137,6 +142,83 @@ func TestIntegratorsShareProjectStoreGuard(t *testing.T) {
 	if manager.max != 0 || manager.integrations != 0 || transitions != 0 || firstResult.Order != 0 || secondResult.Order != 0 {
 		t.Fatalf("serial results=%+v,%+v manager=%+v", firstResult, secondResult, manager)
 	}
+}
+
+func TestIntegratorsShareResolvedAliasGuardAndPinnedStore(t *testing.T) {
+	root, stateRoot := t.TempDir(), t.TempDir()
+	projectAlias, stateAlias := filepath.Join(t.TempDir(), "project"), filepath.Join(t.TempDir(), "state")
+	if err := os.Symlink(root, projectAlias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Symlink(stateRoot, stateAlias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	state, candidate, gateResult := canonicalInput(t, root, stateRoot)
+	manager := &concurrentManager{}
+	left := integrate.NewIntegrator(project.Project{Root: root, CommonDir: root, Head: "base"}, state, manager)
+	right := integrate.NewIntegrator(project.Project{Root: projectAlias, CommonDir: projectAlias, Head: "base"}, store.New(stateAlias, state.Limits), manager)
+	start, errs := make(chan struct{}), make(chan error, 2)
+	for _, integrator := range []integrate.Integrator{left, right} {
+		go func(integrator integrate.Integrator) {
+			<-start
+			_, err := integrator.Integrate(context.Background(), candidate, gateResult)
+			errs <- err
+		}(integrator)
+	}
+	close(start)
+	errsSeen := []error{<-errs, <-errs}
+	transitions := 0
+	for _, err := range errsSeen {
+		if errors.Is(err, core.ErrTransition) {
+			transitions++
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if transitions != 1 || manager.integrations != 1 || manager.max != 1 {
+		t.Fatalf("alias calls transitions=%d manager=%+v", transitions, manager)
+	}
+	if err := os.Remove(stateAlias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), stateAlias); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := right.Integrate(context.Background(), candidate, gateResult); err != nil || manager.integrations != 1 {
+		t.Fatalf("retargeted alias replayed: %v manager=%+v", err, manager)
+	}
+}
+
+func canonicalInput(t *testing.T, root, stateRoot string) (*store.Store, contracts.Candidate, contracts.GateResult) {
+	t.Helper()
+	state := store.New(stateRoot, core.StorageLimits{CanonicalBytes: 16 << 20})
+	check := core.Check{Name: "check", Command: []string{"check"}}
+	manifest, err := run.CreateOneOff(context.Background(), root, run.Feature, "objective", []core.Task{{ID: "TASK", Objective: "objective", State: core.Ready, Criteria: []string{"criterion"}, Checks: []core.Check{check}, WritablePaths: []string{"vnext"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.NewRepositories(state).Runs.Initialize(context.Background(), manifest); err != nil {
+		t.Fatal(err)
+	}
+	candidate := contracts.Candidate{Task: "TASK", Revision: "candidate", Base: "base", Worktree: contracts.Worktree{Run: manifest.ID, Team: "TEAM", Path: "/tmp/task", Branch: "branch", Base: "base", Candidate: "candidate"}}
+	envelope := core.RecordEnvelope{Schema: 1, Project: manifest.Project, RunID: manifest.ID, Revision: 1, WrittenAt: "2026-09-19T00:00:00Z"}
+	encoded, _ := json.Marshal(check)
+	sum := sha256.Sum256(encoded)
+	fingerprint := "sha256:" + hex.EncodeToString(sum[:])
+	if err := knowledge.WriteEvidence(context.Background(), state, knowledge.Evidence{RecordEnvelope: envelope, Task: "TASK", Attempt: 1, Exit: 0, InputFingerprint: fingerprint}); err != nil {
+		t.Fatal(err)
+	}
+	receipt := knowledge.Receipt{RecordEnvelope: envelope, Team: "TEAM", Task: "TASK", Attempt: 1, State: core.Clean, Base: "base", Head: "candidate", Review: "review", EvidencePointers: []string{".agent-team/evidence/TASK/1/evidence.json"}, NextAction: "integrate"}
+	if err := knowledge.WriteReceipt(context.Background(), state, receipt); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ = json.Marshal(receipt)
+	sum = sha256.Sum256(encoded)
+	result, err := gate.NewGate(nil, state).Check(context.Background(), contracts.GateInput{Run: manifest.ID, Task: "TASK", Candidate: candidate, ReceiptRevision: 1, RequiredCheckFingerprints: []string{fingerprint}, ScopeFingerprint: "scope", ReceiptDigest: "sha256:" + hex.EncodeToString(sum[:]), ReviewDigest: "review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state, candidate, result
 }
 
 func validCandidate(task core.TaskID, revision string) contracts.Candidate {
