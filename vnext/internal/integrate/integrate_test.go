@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,6 +88,46 @@ func TestIntegratorRejectsInterruptedContextBeforeWorktreeMutation(t *testing.T)
 	}
 }
 
+func TestIntegratorsShareProjectStoreGuard(t *testing.T) {
+	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	project := project.Project{Root: "project", Head: "base"}
+	manager := &concurrentManager{}
+	first, second := validCandidate("TASK-1", "candidate-1"), validCandidate("TASK-2", "candidate-2")
+	firstGate, secondGate := durableGate(t, state, first), durableGate(t, state, second)
+	left := integrate.NewIntegrator(project, state, manager)
+	right := integrate.NewIntegrator(project, state, manager)
+	start := make(chan struct{})
+	results := make(chan integrate.Integration, 2)
+	errs := make(chan error, 2)
+	for _, call := range []struct {
+		integrator integrate.Integrator
+		candidate  contracts.Candidate
+		gate       contracts.GateResult
+	}{{left, first, firstGate}, {right, second, secondGate}} {
+		go func(call struct {
+			integrator integrate.Integrator
+			candidate  contracts.Candidate
+			gate       contracts.GateResult
+		}) {
+			<-start
+			result, err := call.integrator.Integrate(context.Background(), call.candidate, call.gate)
+			results <- result
+			errs <- err
+		}(call)
+	}
+	close(start)
+	firstResult, secondResult := <-results, <-results
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+	if manager.max != 1 || manager.integrations != 2 || firstResult.Order+secondResult.Order != 3 || firstResult.Order == secondResult.Order {
+		t.Fatalf("serial results=%+v,%+v manager=%+v", firstResult, secondResult, manager)
+	}
+}
+
 func validCandidate(task core.TaskID, revision string) contracts.Candidate {
 	return contracts.Candidate{Task: task, Revision: revision, Base: "base", Worktree: contracts.Worktree{Run: "RUN", Team: "TEAM", Path: "/tmp/task", Branch: "branch", Base: "base", Candidate: revision}}
 }
@@ -116,6 +157,32 @@ type recordingManager struct {
 	inspectOut   contracts.Worktree
 	order        []string
 	integrations int
+}
+
+type concurrentManager struct {
+	mu                        sync.Mutex
+	active, max, integrations int
+}
+
+func (m *concurrentManager) Create(context.Context, contracts.WorktreeSpec) (contracts.Worktree, error) {
+	return contracts.Worktree{}, errors.New("unexpected Create")
+}
+func (m *concurrentManager) Inspect(_ context.Context, worktree contracts.Worktree) (contracts.Worktree, error) {
+	return worktree, nil
+}
+func (m *concurrentManager) Integrate(_ context.Context, candidate contracts.Candidate) (contracts.Candidate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.active++
+	if m.active > m.max {
+		m.max = m.active
+	}
+	m.integrations++
+	m.active--
+	return candidate, nil
+}
+func (m *concurrentManager) Cleanup(context.Context, core.TeamID) error {
+	return errors.New("unexpected Cleanup")
 }
 
 func (m *recordingManager) Create(context.Context, contracts.WorktreeSpec) (contracts.Worktree, error) {

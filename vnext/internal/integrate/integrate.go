@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"time"
@@ -41,9 +42,15 @@ type serialIntegrator struct {
 	project project.Project
 	store   *store.Store
 	manager contracts.WorktreeManager
-	mu      sync.Mutex
-	next    int
+	guard   *integrationGuard
 }
+
+type integrationGuard struct {
+	mu   sync.Mutex
+	next int
+}
+
+var integrationGuards sync.Map
 
 type evidenceRecord struct {
 	Candidate   contracts.Candidate  `json:"candidate"`
@@ -61,7 +68,17 @@ type intentRecord struct {
 // NewIntegrator creates a foreground serial integrator. It delegates all Git
 // operations and exact worktree identity checks to the inherited manager.
 func NewIntegrator(project project.Project, state *store.Store, manager contracts.WorktreeManager) Integrator {
-	return &serialIntegrator{project: project, store: state, manager: manager}
+	key := project.Root
+	if root, err := filepath.Abs(project.Root); err == nil {
+		key = root
+	}
+	if state != nil {
+		if root, err := filepath.Abs(state.Root); err == nil {
+			key += "\x00" + root
+		}
+	}
+	value, _ := integrationGuards.LoadOrStore(key, &integrationGuard{})
+	return &serialIntegrator{project: project, store: state, manager: manager, guard: value.(*integrationGuard)}
 }
 
 func (i *serialIntegrator) Integrate(ctx context.Context, candidate contracts.Candidate, gateResult contracts.GateResult) (Integration, error) {
@@ -77,8 +94,11 @@ func (i *serialIntegrator) Integrate(ctx context.Context, candidate contracts.Ca
 	if err := gate.ValidateEvidence(i.store, candidate, gateResult); err != nil {
 		return Integration{}, err
 	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
+	if i.guard == nil {
+		return Integration{}, core.ErrPath
+	}
+	i.guard.mu.Lock()
+	defer i.guard.mu.Unlock()
 	pointer := integrationPointer(candidate)
 	if existing, found, err := i.existing(pointer, candidate, gateResult); err != nil {
 		return Integration{}, err
@@ -114,11 +134,11 @@ func (i *serialIntegrator) Integrate(ctx context.Context, candidate contracts.Ca
 	if inspected, err = i.manager.Inspect(ctx, candidate.Worktree); err != nil || inspected != candidate.Worktree {
 		return Integration{}, core.ErrRevision
 	}
-	i.next++
+	i.guard.next++
 	result := Integration{
-		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: i.project.Root, RunID: candidate.Worktree.Run, Revision: uint64(i.next), WrittenAt: "1970-01-01T00:00:00Z"},
+		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: i.project.Root, RunID: candidate.Worktree.Run, Revision: uint64(i.guard.next), WrittenAt: "1970-01-01T00:00:00Z"},
 		Task:           candidate.Task, Base: candidate.Base, Candidate: candidate.Revision, Commit: integrated.Revision,
-		Order: i.next, EvidencePointer: pointer,
+		Order: i.guard.next, EvidencePointer: pointer,
 	}
 	record := evidenceRecord{Candidate: candidate, Gate: gateResult, Integration: result}
 	record.Digest = evidenceDigest(record)
@@ -181,8 +201,8 @@ func (i *serialIntegrator) existing(pointer string, candidate contracts.Candidat
 	if _, err := time.Parse(time.RFC3339, record.Integration.WrittenAt); err != nil {
 		return Integration{}, false, core.ErrRevision
 	}
-	if record.Integration.Order > i.next {
-		i.next = record.Integration.Order
+	if record.Integration.Order > i.guard.next {
+		i.guard.next = record.Integration.Order
 	}
 	return record.Integration, true, nil
 }
