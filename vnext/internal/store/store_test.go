@@ -175,12 +175,10 @@ func TestStoreRootAnchoringRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
-func TestReadBoundedDoesNotOverflow(t *testing.T) {
-	if _, err := readBounded(strings.NewReader("x"), math.MaxInt64); !errors.Is(err, core.ErrLimit) {
-		t.Fatalf("readBounded overflow guard = %v, want ErrLimit", err)
-	}
-	if _, err := io.ReadAll(strings.NewReader("ok")); err != nil {
-		t.Fatal(err)
+func TestBoundedReaderDetectsBytesAfterBoundary(t *testing.T) {
+	data, err := io.ReadAll(&boundedReader{reader: strings.NewReader("xy"), remaining: 1})
+	if !errors.Is(err, core.ErrLimit) || string(data) != "x" {
+		t.Fatalf("bounded stream = %q, %v; want first byte and ErrLimit", data, err)
 	}
 }
 
@@ -270,5 +268,41 @@ func TestStoreRetainsTransientAndLastGoodOnSharingRenameFailure(t *testing.T) {
 	matches, err := filepath.Glob(filepath.Join(s.Root, ".agent-team-tmp-*"))
 	if err != nil || len(matches) != 1 {
 		t.Fatalf("retained transient matches = %v, %v", matches, err)
+	}
+}
+
+func TestStoreRetainsDiscoverableLastGoodRecoveryOnRestoreFailure(t *testing.T) {
+	s := New(t.TempDir(), core.StorageLimits{CanonicalBytes: 64})
+	if _, err := s.WriteMarkdown("record.md", []byte("last good"), 64); err != nil {
+		t.Fatal(err)
+	}
+	s.verify = func(*os.Root, string, int64) (AtomicResult, error) {
+		return AtomicResult{}, errors.New("simulated verification failure")
+	}
+	s.restore = func(*os.Root, string, string) error {
+		return errors.New("simulated persistent sharing violation")
+	}
+	if _, err := s.WriteMarkdown("record.md", []byte("new value"), 64); err == nil {
+		t.Fatal("write unexpectedly succeeded")
+	} else if !strings.Contains(err.Error(), recoveryPath("record.md")) {
+		t.Fatalf("recovery location missing from error: %v", err)
+	}
+	recovery, err := os.ReadFile(filepath.Join(s.Root, recoveryPath("record.md")))
+	if err != nil || string(recovery) != "last good" {
+		t.Fatalf("retained last-good recovery = %q, %v", recovery, err)
+	}
+}
+
+func TestStoreCanonicalHardLimitIsSixteenMiB(t *testing.T) {
+	const hard = 16 << 20
+	boundary := bytes.Repeat([]byte("x"), hard)
+	for _, limits := range []core.StorageLimits{{}, {CanonicalBytes: 64 << 20}} {
+		s := New(t.TempDir(), limits)
+		if result, err := s.WriteMarkdown("boundary.md", boundary, hard); err != nil || result.Bytes != hard {
+			t.Fatalf("boundary write limits=%+v result=%+v err=%v", limits, result, err)
+		}
+		if _, err := s.WriteMarkdown("oversized.md", []byte("x"), hard+1); !errors.Is(err, core.ErrLimit) {
+			t.Fatalf("oversized caller limit=%v, want ErrLimit", err)
+		}
 	}
 }

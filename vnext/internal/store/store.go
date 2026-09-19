@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,7 +19,7 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
 
-const maxStorageBytes int64 = 1 << 30
+const maxStorageBytes int64 = 16 << 20
 
 // Store is a root-relative, bounded persistence store.
 type Store struct {
@@ -31,6 +30,7 @@ type Store struct {
 	probe   func(*os.Root, string) (probeResult, error)
 	verify  func(*os.Root, string, int64) (AtomicResult, error)
 	replace func(*os.Root, string, string) error
+	restore func(*os.Root, string, string) error
 }
 
 // AtomicResult describes the fully flushed bytes that replaced a destination.
@@ -71,11 +71,16 @@ func (s *Store) ReadJSON(relative string, maxBytes int64, destination any) error
 		return pathError("open", relative, err)
 	}
 	defer file.Close()
-	data, err := readBounded(file, limit)
-	if err != nil {
-		return pathError("read", relative, err)
+	reader := &boundedReader{reader: file, remaining: limit}
+	decoder := json.NewDecoder(reader)
+	if err := decoder.Decode(destination); err != nil {
+		return pathError("decode", relative, err)
 	}
-	if err := json.Unmarshal(data, destination); err != nil {
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return pathError("decode", relative, errors.New("trailing JSON value"))
+		}
 		return pathError("decode", relative, err)
 	}
 	return nil
@@ -175,8 +180,13 @@ func (s *Store) write(relative string, maxBytes int64, encode func(io.Writer) er
 	if err != nil {
 		return AtomicResult{}, pathError("preserve last good", relative, err)
 	}
+	retainBackup := false
 	if backup != nil {
-		defer func() { _ = removeOwned(root, *backup) }()
+		defer func() {
+			if !retainBackup {
+				_ = removeOwned(root, *backup)
+			}
+		}()
 	}
 	if err := s.replaceDestination(root, temporary.name, relative); err != nil {
 		keepTemporary = true
@@ -189,8 +199,12 @@ func (s *Store) write(relative string, maxBytes int64, encode func(io.Writer) er
 		err = errors.New("replacement checksum mismatch")
 	}
 	if err != nil {
-		if restoreErr := restoreDestination(root, relative, backup, temporary); restoreErr != nil {
-			return AtomicResult{}, pathError("verify replacement; retained last-good backup", relative, errors.Join(err, restoreErr))
+		if restoreErr := s.restoreDestination(root, relative, backup, temporary); restoreErr != nil {
+			retainBackup = backup != nil
+			return AtomicResult{}, pathError("verify replacement", relative, recoveryError{
+				path:  recoveryPath(relative),
+				cause: errors.Join(err, restoreErr),
+			})
 		}
 		return AtomicResult{}, pathError("verify replacement", relative, err)
 	}
@@ -202,9 +216,6 @@ func (s *Store) limit(requested int64) (int64, error) {
 		return 0, fmt.Errorf("%w: storage bound must be between 1 and %d", core.ErrLimit, maxStorageBytes)
 	}
 	if s.Limits.CanonicalBytes > 0 && s.Limits.CanonicalBytes < requested {
-		if s.Limits.CanonicalBytes > maxStorageBytes {
-			return maxStorageBytes, nil
-		}
 		return s.Limits.CanonicalBytes, nil
 	}
 	return requested, nil
@@ -304,21 +315,29 @@ func createOwnedTemp(root *os.Root, directory, prefix string) (ownedTemp, *os.Fi
 			return ownedTemp{}, nil, err
 		}
 		name := path.Join(directory, prefix+hex.EncodeToString(token[:]))
-		file, err := createTemporary(root, name)
+		owned, file, err := createOwnedFile(root, name)
 		if errors.Is(err, os.ErrExist) {
 			continue
 		}
 		if err != nil {
 			return ownedTemp{}, nil, err
 		}
-		info, err := file.Stat()
-		if err != nil {
-			_ = file.Close()
-			return ownedTemp{}, nil, err
-		}
-		return ownedTemp{name: name, info: info}, file, nil
+		return owned, file, nil
 	}
 	return ownedTemp{}, nil, errors.New("temporary name collision exhaustion")
+}
+
+func createOwnedFile(root *os.Root, name string) (ownedTemp, *os.File, error) {
+	file, err := createTemporary(root, name)
+	if err != nil {
+		return ownedTemp{}, nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return ownedTemp{}, nil, err
+	}
+	return ownedTemp{name: name, info: info}, file, nil
 }
 
 func removeOwned(root *os.Root, owned ownedTemp) error {
@@ -375,19 +394,23 @@ func snapshotDestination(root *os.Root, relative string, limit int64) (*ownedTem
 	if err != nil {
 		return nil, err
 	}
-	data, readErr := readBounded(file, limit)
-	closeErr := file.Close()
-	if readErr != nil {
-		return nil, readErr
-	}
-	if closeErr != nil {
-		return nil, closeErr
-	}
-	backup, backupFile, err := createOwnedTemp(root, path.Dir(relative), ".agent-team-backup-")
-	if err != nil {
+	recovery := recoveryPath(relative)
+	if err := root.MkdirAll(path.Dir(recovery), 0o700); err != nil {
+		_ = file.Close()
 		return nil, err
 	}
-	if _, err := backupFile.Write(data); err != nil {
+	backup, backupFile, err := createOwnedFile(root, recovery)
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if _, err := copyBounded(backupFile, file, limit); err != nil {
+		_ = file.Close()
+		_ = backupFile.Close()
+		_ = removeOwned(root, backup)
+		return nil, err
+	}
+	if err := file.Close(); err != nil {
 		_ = backupFile.Close()
 		_ = removeOwned(root, backup)
 		return nil, err
@@ -404,14 +427,18 @@ func snapshotDestination(root *os.Root, relative string, limit int64) (*ownedTem
 	return &backup, nil
 }
 
-func restoreDestination(root *os.Root, relative string, backup *ownedTemp, replacement ownedTemp) error {
+func (s *Store) restoreDestination(root *os.Root, relative string, backup *ownedTemp, replacement ownedTemp) error {
 	if backup == nil {
 		// A first write has no last-good value. Remove only the replacement we
 		// created rather than leaving a failed, unverified canonical file.
 		replacement.name = relative
 		return removeOwned(root, replacement)
 	}
-	if err := replaceFile(root, backup.name, relative); err != nil {
+	if s.restore != nil {
+		if err := s.restore(root, backup.name, relative); err != nil {
+			return err
+		}
+	} else if err := replaceFile(root, backup.name, relative); err != nil {
 		return err
 	}
 	backup.name = ""
@@ -419,6 +446,22 @@ func restoreDestination(root *os.Root, relative string, backup *ownedTemp, repla
 }
 
 var errTooLarge = fmt.Errorf("%w: content exceeds bound", core.ErrLimit)
+
+type recoveryError struct {
+	path  string
+	cause error
+}
+
+func (e recoveryError) Error() string {
+	return fmt.Sprintf("last-good recovery retained at %s", e.path)
+}
+
+func (e recoveryError) Unwrap() error { return e.cause }
+
+func recoveryPath(relative string) string {
+	digest := sha256.Sum256([]byte(relative))
+	return path.Join(".agent-team-recovery", hex.EncodeToString(digest[:]))
+}
 
 type boundedWriter struct {
 	writer    io.Writer
@@ -443,18 +486,33 @@ func (w *boundedWriter) Write(data []byte) (int, error) {
 	return n, err
 }
 
-func readBounded(reader io.Reader, limit int64) ([]byte, error) {
-	if limit <= 0 || limit > maxStorageBytes || limit == math.MaxInt64 {
-		return nil, errTooLarge
+type boundedReader struct {
+	reader    io.Reader
+	remaining int64
+}
+
+func (r *boundedReader) Read(data []byte) (int, error) {
+	if r.remaining == 0 {
+		var extra [1]byte
+		n, err := r.reader.Read(extra[:])
+		if n > 0 {
+			return 0, errTooLarge
+		}
+		return 0, err
 	}
-	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
-	if err != nil {
-		return nil, err
+	if int64(len(data)) > r.remaining {
+		data = data[:int(r.remaining)]
 	}
-	if int64(len(data)) > limit {
-		return nil, errTooLarge
+	n, err := r.reader.Read(data)
+	r.remaining -= int64(n)
+	return n, err
+}
+
+func copyBounded(destination io.Writer, source io.Reader, limit int64) (int64, error) {
+	if limit <= 0 || limit > maxStorageBytes {
+		return 0, errTooLarge
 	}
-	return data, nil
+	return io.Copy(destination, &boundedReader{reader: source, remaining: limit})
 }
 
 func hashRootFile(root *os.Root, relative string, limit int64) (AtomicResult, error) {
@@ -463,12 +521,12 @@ func hashRootFile(root *os.Root, relative string, limit int64) (AtomicResult, er
 		return AtomicResult{}, err
 	}
 	defer file.Close()
-	data, err := readBounded(file, limit)
+	hash := sha256.New()
+	bytes, err := copyBounded(hash, file, limit)
 	if err != nil {
 		return AtomicResult{}, err
 	}
-	digest := sha256.Sum256(data)
-	return AtomicResult{Bytes: int64(len(data)), SHA256: hex.EncodeToString(digest[:])}, nil
+	return AtomicResult{Bytes: bytes, SHA256: hex.EncodeToString(hash.Sum(nil))}, nil
 }
 
 func limitError(relative string, limit int64) error {
