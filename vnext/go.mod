@@ -1,3 +1,3 @@
 module github.com/thebpandey/agent-team/vnext
 
-go 1.23
+go 1.25

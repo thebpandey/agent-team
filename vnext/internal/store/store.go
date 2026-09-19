@@ -1,28 +1,36 @@
-// Package store persists small canonical records without exposing partially
-// written files to readers.
+// Package store persists bounded canonical records beneath a rooted directory.
 package store
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
+
+const maxStorageBytes int64 = 1 << 30
 
 // Store is a root-relative, bounded persistence store.
 type Store struct {
 	Root   string
 	Limits core.StorageLimits
 
-	mu sync.Mutex
+	mu      sync.Mutex
+	probe   func(*os.Root, string) (probeResult, error)
+	verify  func(*os.Root, string, int64) (AtomicResult, error)
+	replace func(*os.Root, string, string) error
 }
 
 // AtomicResult describes the fully flushed bytes that replaced a destination.
@@ -42,272 +50,403 @@ func (s *Store) ReadJSON(relative string, maxBytes int64, destination any) error
 	if err != nil {
 		return err
 	}
-	path, err := s.readPath(relative)
+	relative, err = validateRelative(relative)
 	if err != nil {
 		return err
 	}
-	file, err := os.Open(path)
+	root, _, err := s.openRoot(false)
+	if err != nil {
+		return pathError("open root", s.Root, err)
+	}
+	defer root.Close()
+	info, err := root.Lstat(relative)
+	if err != nil {
+		return pathError("lstat", relative, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: %s is not a regular file", core.ErrPath, relative)
+	}
+	file, err := root.Open(relative)
 	if err != nil {
 		return pathError("open", relative, err)
 	}
 	defer file.Close()
-
-	info, err := file.Stat()
-	if err != nil {
-		return pathError("stat", relative, err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%w: %s is not a regular file", core.ErrPath, relative)
-	}
-	if info.Size() > limit {
-		return limitError(relative, limit)
-	}
-
 	data, err := readBounded(file, limit)
 	if err != nil {
-		if errors.Is(err, errTooLarge) {
-			return limitError(relative, limit)
-		}
 		return pathError("read", relative, err)
 	}
 	if err := json.Unmarshal(data, destination); err != nil {
-		return fmt.Errorf("%w: decode %s: %v", core.ErrPath, relative, err)
+		return pathError("decode", relative, err)
 	}
 	return nil
 }
 
-// WriteJSON serializes value and atomically replaces the root-relative file.
+// WriteJSON streams value into a bounded temporary file before replacement.
 func (s *Store) WriteJSON(relative string, value any, maxBytes int64) (AtomicResult, error) {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return AtomicResult{}, fmt.Errorf("%w: encode %s: %v", core.ErrPath, relative, err)
-	}
-	return s.write(relative, encoded, maxBytes)
+	return s.write(relative, maxBytes, func(writer io.Writer) error {
+		return json.NewEncoder(writer).Encode(value)
+	})
 }
 
-// WriteMarkdown atomically persists the supplied UTF-8 Markdown bytes.
+// WriteMarkdown atomically persists valid UTF-8 Markdown bytes.
 func (s *Store) WriteMarkdown(relative string, value []byte, maxBytes int64) (AtomicResult, error) {
-	return s.write(relative, value, maxBytes)
+	if !utf8.Valid(value) {
+		return AtomicResult{}, fmt.Errorf("%w: Markdown is not valid UTF-8", core.ErrPath)
+	}
+	return s.write(relative, maxBytes, func(writer io.Writer) error {
+		_, err := writer.Write(value)
+		return err
+	})
 }
 
-func (s *Store) write(relative string, value []byte, maxBytes int64) (AtomicResult, error) {
+func (s *Store) write(relative string, maxBytes int64, encode func(io.Writer) error) (AtomicResult, error) {
 	limit, err := s.limit(maxBytes)
 	if err != nil {
 		return AtomicResult{}, err
 	}
-	if int64(len(value)) > limit {
-		return AtomicResult{}, limitError(relative, limit)
+	relative, err = validateRelative(relative)
+	if err != nil {
+		return AtomicResult{}, err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	destination, err := s.writePath(relative)
+	root, rootKey, err := s.openRoot(true)
 	if err != nil {
-		return AtomicResult{}, err
+		return AtomicResult{}, pathError("open root", s.Root, err)
 	}
-	directory := filepath.Dir(destination)
-	if err := s.probeReplace(directory); err != nil {
-		return AtomicResult{}, err
+	defer root.Close()
+	if directory := path.Dir(relative); directory != "." {
+		if err := root.MkdirAll(directory, 0o700); err != nil {
+			return AtomicResult{}, pathError("create parent", relative, err)
+		}
+	}
+	if info, err := root.Lstat(relative); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return AtomicResult{}, fmt.Errorf("%w: destination %s is a symbolic link", core.ErrPath, relative)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return AtomicResult{}, pathError("lstat", relative, err)
 	}
 
-	temporary, err := createTemporary(directory, ".agent-team-tmp-*")
+	mode, err := s.replacementProbe(root, path.Dir(relative))
+	if err != nil {
+		return AtomicResult{}, pathError("probe replacement", relative, err)
+	}
+	if mode == probeFallback {
+		lock := sharedFallbackLock(rootKey)
+		lock.Lock()
+		defer lock.Unlock()
+	}
+
+	temporary, file, err := createOwnedTemp(root, path.Dir(relative), ".agent-team-tmp-")
 	if err != nil {
 		return AtomicResult{}, pathError("create temporary", relative, err)
 	}
-	temporaryPath := temporary.Name()
 	keepTemporary := false
 	defer func() {
 		if !keepTemporary {
-			_ = cleanupTemporary(temporaryPath) // This file was created by this call.
+			_ = removeOwned(root, temporary)
 		}
 	}()
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
 		return AtomicResult{}, pathError("chmod temporary", relative, err)
 	}
-	if _, err := temporary.Write(value); err != nil {
-		_ = temporary.Close()
-		return AtomicResult{}, pathError("write temporary", relative, err)
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return AtomicResult{}, pathError("flush temporary", relative, err)
-	}
-	if err := temporary.Close(); err != nil {
-		return AtomicResult{}, pathError("close temporary", relative, err)
-	}
-
-	result, err := hashFile(temporaryPath, limit)
-	if err != nil {
+	writer := &boundedWriter{writer: file, remaining: limit}
+	if err := encode(writer); err != nil {
+		_ = file.Close()
 		if errors.Is(err, errTooLarge) {
 			return AtomicResult{}, limitError(relative, limit)
 		}
+		return AtomicResult{}, pathError("encode temporary", relative, err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return AtomicResult{}, pathError("flush temporary", relative, err)
+	}
+	if err := file.Close(); err != nil {
+		return AtomicResult{}, pathError("close temporary", relative, err)
+	}
+	result, err := hashRootFile(root, temporary.name, limit)
+	if err != nil {
 		return AtomicResult{}, pathError("verify temporary", relative, err)
 	}
-	if result.Bytes != int64(len(value)) {
-		return AtomicResult{}, fmt.Errorf("%w: temporary size changed for %s", core.ErrPath, relative)
-	}
 
-	if err := replaceFile(temporaryPath, destination); err != nil {
-		// A failed replacement can be caused by a Windows sharing lock. Retain the
-		// known transient for recovery and leave the last-good destination alone.
+	backup, err := snapshotDestination(root, relative, limit)
+	if err != nil {
+		return AtomicResult{}, pathError("preserve last good", relative, err)
+	}
+	if backup != nil {
+		defer func() { _ = removeOwned(root, *backup) }()
+	}
+	if err := s.replaceDestination(root, temporary.name, relative); err != nil {
 		keepTemporary = true
 		return AtomicResult{}, pathError("replace", relative, err)
 	}
-	keepTemporary = true // rename consumed the temporary path; never remove destination.
+	keepTemporary = true
 
-	// Serializing writes and checking the bytes visible at the final path makes
-	// network/non-atomic filesystems fail closed instead of reporting an
-	// unverified successful replacement.
-	confirmed, err := hashFile(destination, limit)
+	confirmed, err := s.replacementVerify(root, relative, limit)
+	if err == nil && confirmed != result {
+		err = errors.New("replacement checksum mismatch")
+	}
 	if err != nil {
-		if errors.Is(err, errTooLarge) {
-			return AtomicResult{}, limitError(relative, limit)
+		if restoreErr := restoreDestination(root, relative, backup, temporary); restoreErr != nil {
+			return AtomicResult{}, pathError("verify replacement; retained last-good backup", relative, errors.Join(err, restoreErr))
 		}
 		return AtomicResult{}, pathError("verify replacement", relative, err)
-	}
-	if confirmed != result {
-		return AtomicResult{}, fmt.Errorf("%w: replacement checksum mismatch for %s", core.ErrPath, relative)
 	}
 	return result, nil
 }
 
 func (s *Store) limit(requested int64) (int64, error) {
-	if requested <= 0 {
-		return 0, fmt.Errorf("%w: non-positive storage bound", core.ErrLimit)
+	if requested <= 0 || requested > maxStorageBytes {
+		return 0, fmt.Errorf("%w: storage bound must be between 1 and %d", core.ErrLimit, maxStorageBytes)
 	}
-	if s.Limits.CanonicalBytes > 0 && requested > s.Limits.CanonicalBytes {
+	if s.Limits.CanonicalBytes > 0 && s.Limits.CanonicalBytes < requested {
+		if s.Limits.CanonicalBytes > maxStorageBytes {
+			return maxStorageBytes, nil
+		}
 		return s.Limits.CanonicalBytes, nil
 	}
 	return requested, nil
 }
 
-func (s *Store) readPath(relative string) (string, error) {
-	path, parts, err := s.relativePath(relative)
-	if err != nil {
-		return "", err
-	}
-	if err := ensureNoLinks(s.Root, parts, false); err != nil {
-		return "", pathError("resolve", relative, err)
-	}
-	return path, nil
-}
-
-func (s *Store) writePath(relative string) (string, error) {
-	path, parts, err := s.relativePath(relative)
-	if err != nil {
-		return "", err
-	}
-	if err := ensureNoLinks(s.Root, parts, true); err != nil {
-		return "", pathError("prepare", relative, err)
-	}
-	return path, nil
-}
-
-func (s *Store) relativePath(relative string) (string, []string, error) {
-	if s.Root == "" {
-		return "", nil, fmt.Errorf("%w: empty store root", core.ErrPath)
-	}
+func validateRelative(relative string) (string, error) {
 	if filepath.IsAbs(relative) || strings.HasPrefix(relative, "/") || strings.HasPrefix(relative, `\\`) {
-		return "", nil, fmt.Errorf("%w: absolute path %q", core.ErrPath, relative)
+		return "", fmt.Errorf("%w: absolute path %q", core.ErrPath, relative)
 	}
 	parts := strings.FieldsFunc(relative, func(r rune) bool { return r == '/' || r == '\\' })
 	if len(parts) == 0 {
-		return "", nil, fmt.Errorf("%w: empty path", core.ErrPath)
+		return "", fmt.Errorf("%w: empty path", core.ErrPath)
 	}
 	for _, part := range parts {
 		if part == "." || part == ".." || part == "" {
-			return "", nil, fmt.Errorf("%w: unsafe path %q", core.ErrPath, relative)
+			return "", fmt.Errorf("%w: unsafe path %q", core.ErrPath, relative)
 		}
 	}
-	root, err := filepath.Abs(s.Root)
-	if err != nil {
-		return "", nil, pathError("resolve root", s.Root, err)
-	}
-	return filepath.Join(append([]string{root}, parts...)...), parts, nil
+	return strings.Join(parts, "/"), nil
 }
 
-func ensureNoLinks(root string, parts []string, createDirectories bool) error {
-	info, err := os.Lstat(root)
+func (s *Store) openRoot(create bool) (*os.Root, string, error) {
+	if s.Root == "" {
+		return nil, "", errors.New("empty store root")
+	}
+	if create {
+		if err := os.MkdirAll(s.Root, 0o700); err != nil {
+			return nil, "", err
+		}
+	}
+	absolute, err := filepath.Abs(s.Root)
 	if err != nil {
-		if !createDirectories || !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if err := os.MkdirAll(root, 0o700); err != nil {
-			return err
-		}
-		info, err = os.Lstat(root)
-		if err != nil {
-			return err
-		}
+		return nil, "", err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("root is not a directory")
+	root, err := os.OpenRoot(s.Root)
+	if err != nil {
+		return nil, "", err
 	}
+	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+		absolute = resolved
+	}
+	return root, absolute, nil
+}
 
-	current := root
-	last := len(parts) - 1
-	for index, part := range parts {
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if index == last {
-			if err == nil && info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("destination is a symbolic link")
-			}
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-			return nil
+type probeResult uint8
+
+const (
+	probeAtomic probeResult = iota
+	probeFallback
+)
+
+func (s *Store) replacementProbe(root *os.Root, directory string) (probeResult, error) {
+	if s.probe != nil {
+		return s.probe(root, directory)
+	}
+	if err := probeSameDirectoryReplace(root, directory); err != nil {
+		return probeAtomic, err
+	}
+	// A rename probe cannot prove durable atomicity on an arbitrary network
+	// mount. Conservatively choose the serialized read-after-write path.
+	return probeFallback, nil
+}
+
+func (s *Store) replacementVerify(root *os.Root, relative string, limit int64) (AtomicResult, error) {
+	if s.verify != nil {
+		return s.verify(root, relative, limit)
+	}
+	return hashRootFile(root, relative, limit)
+}
+
+func (s *Store) replaceDestination(root *os.Root, source, destination string) error {
+	if s.replace != nil {
+		return s.replace(root, source, destination)
+	}
+	return replaceFile(root, source, destination)
+}
+
+var fallbackLocks sync.Map
+
+func sharedFallbackLock(root string) *sync.Mutex {
+	lock, _ := fallbackLocks.LoadOrStore(root, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+type ownedTemp struct {
+	name string
+	info os.FileInfo
+}
+
+func createOwnedTemp(root *os.Root, directory, prefix string) (ownedTemp, *os.File, error) {
+	if directory == "." {
+		directory = ""
+	}
+	for attempt := 0; attempt < 32; attempt++ {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return ownedTemp{}, nil, err
+		}
+		name := path.Join(directory, prefix+hex.EncodeToString(token[:]))
+		file, err := createTemporary(root, name)
+		if errors.Is(err, os.ErrExist) {
+			continue
 		}
 		if err != nil {
-			if !createDirectories || !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-			if err := os.Mkdir(current, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-				return err
-			}
-			info, err = os.Lstat(current)
+			return ownedTemp{}, nil, err
+		}
+		info, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			return ownedTemp{}, nil, err
+		}
+		return ownedTemp{name: name, info: info}, file, nil
+	}
+	return ownedTemp{}, nil, errors.New("temporary name collision exhaustion")
+}
+
+func removeOwned(root *os.Root, owned ownedTemp) error {
+	if owned.name == "" {
+		return nil
+	}
+	info, err := root.Lstat(owned.name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !os.SameFile(owned.info, info) {
+		return errors.New("temporary ownership changed")
+	}
+	return cleanupTemporary(root, owned.name)
+}
+
+func probeSameDirectoryReplace(root *os.Root, directory string) error {
+	from, fromFile, err := createOwnedTemp(root, directory, ".agent-team-probe-from-")
+	if err != nil {
+		return err
+	}
+	if err := fromFile.Close(); err != nil {
+		_ = removeOwned(root, from)
+		return err
+	}
+	defer removeOwned(root, from)
+	to, toFile, err := createOwnedTemp(root, directory, ".agent-team-probe-to-")
+	if err != nil {
+		return err
+	}
+	if err := toFile.Close(); err != nil {
+		_ = removeOwned(root, to)
+		return err
+	}
+	defer removeOwned(root, to)
+	return replaceFile(root, from.name, to.name)
+}
+
+func snapshotDestination(root *os.Root, relative string, limit int64) (*ownedTemp, error) {
+	info, err := root.Lstat(relative)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, errors.New("destination is not a regular file")
+	}
+	file, err := root.Open(relative)
+	if err != nil {
+		return nil, err
+	}
+	data, readErr := readBounded(file, limit)
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	backup, backupFile, err := createOwnedTemp(root, path.Dir(relative), ".agent-team-backup-")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := backupFile.Write(data); err != nil {
+		_ = backupFile.Close()
+		_ = removeOwned(root, backup)
+		return nil, err
+	}
+	if err := backupFile.Sync(); err != nil {
+		_ = backupFile.Close()
+		_ = removeOwned(root, backup)
+		return nil, err
+	}
+	if err := backupFile.Close(); err != nil {
+		_ = removeOwned(root, backup)
+		return nil, err
+	}
+	return &backup, nil
+}
+
+func restoreDestination(root *os.Root, relative string, backup *ownedTemp, replacement ownedTemp) error {
+	if backup == nil {
+		// A first write has no last-good value. Remove only the replacement we
+		// created rather than leaving a failed, unverified canonical file.
+		replacement.name = relative
+		return removeOwned(root, replacement)
+	}
+	if err := replaceFile(root, backup.name, relative); err != nil {
+		return err
+	}
+	backup.name = ""
+	return nil
+}
+
+var errTooLarge = fmt.Errorf("%w: content exceeds bound", core.ErrLimit)
+
+type boundedWriter struct {
+	writer    io.Writer
+	remaining int64
+}
+
+func (w *boundedWriter) Write(data []byte) (int, error) {
+	if int64(len(data)) > w.remaining {
+		allowed := int(w.remaining)
+		if allowed > 0 {
+			n, err := w.writer.Write(data[:allowed])
+			w.remaining -= int64(n)
 			if err != nil {
-				return err
+				return n, err
 			}
+			return n, errTooLarge
 		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("path component is not a directory")
-		}
+		return 0, errTooLarge
 	}
-	return nil
+	n, err := w.writer.Write(data)
+	w.remaining -= int64(n)
+	return n, err
 }
-
-func (s *Store) probeReplace(directory string) error {
-	from, err := createTemporary(directory, ".agent-team-probe-from-*")
-	if err != nil {
-		return pathError("create replacement probe", directory, err)
-	}
-	fromPath := from.Name()
-	defer cleanupTemporary(fromPath)
-	if err := from.Close(); err != nil {
-		return pathError("close replacement probe", directory, err)
-	}
-	to, err := createTemporary(directory, ".agent-team-probe-to-*")
-	if err != nil {
-		return pathError("create replacement probe", directory, err)
-	}
-	toPath := to.Name()
-	if err := to.Close(); err != nil {
-		_ = cleanupTemporary(toPath)
-		return pathError("close replacement probe", directory, err)
-	}
-	defer cleanupTemporary(toPath)
-	if err := replaceFile(fromPath, toPath); err != nil {
-		return pathError("probe replacement", directory, err)
-	}
-	return nil
-}
-
-var errTooLarge = errors.New("storage content exceeds bound")
 
 func readBounded(reader io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 || limit > maxStorageBytes || limit == math.MaxInt64 {
+		return nil, errTooLarge
+	}
 	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
 		return nil, err
@@ -318,8 +457,8 @@ func readBounded(reader io.Reader, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func hashFile(path string, limit int64) (AtomicResult, error) {
-	file, err := os.Open(path)
+func hashRootFile(root *os.Root, relative string, limit int64) (AtomicResult, error) {
+	file, err := root.Open(relative)
 	if err != nil {
 		return AtomicResult{}, err
 	}
@@ -337,5 +476,5 @@ func limitError(relative string, limit int64) error {
 }
 
 func pathError(operation, path string, err error) error {
-	return fmt.Errorf("%w: %s %s: %v", core.ErrPath, operation, path, err)
+	return fmt.Errorf("%w: %s %s: %w", core.ErrPath, operation, path, err)
 }

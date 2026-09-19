@@ -5,14 +5,14 @@ package store
 import "os"
 
 // replaceFile uses rename's same-filesystem atomic replacement semantics.
-func replaceFile(source, destination string) error {
-	return os.Rename(source, destination)
+func replaceFile(root *os.Root, source, destination string) error {
+	return root.Rename(source, destination)
 }
 
-func createTemporary(directory, pattern string) (*os.File, error) {
-	return os.CreateTemp(directory, pattern)
+func createTemporary(root *os.Root, name string) (*os.File, error) {
+	return root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 }
 
-func cleanupTemporary(path string) error {
-	return os.Remove(path)
+func cleanupTemporary(root *os.Root, name string) error {
+	return root.Remove(name)
 }
