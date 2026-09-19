@@ -2,6 +2,8 @@ package admission_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,10 +82,6 @@ func TestAdmissionSubprocessHelper(t *testing.T) {
 	}
 	out, err := admission.AppendAdmission(context.Background(), store.New(request.Root, core.StorageLimits{}), admissionProcessTracker{revision: request.TrackerRevision, tasks: request.Tasks}, request.Run, request.RunRevision, request.Team, request.TeamRevision, request.TrackerRevision, request.TaskRevisions, request.Batch)
 	if err != nil {
-		if errors.Is(err, core.ErrRevision) {
-			fmt.Fprint(os.Stdout, "ADMISSION=stale")
-			return
-		}
 		t.Fatalf("subprocess admission: %v", err)
 	}
 	fmt.Fprintf(os.Stdout, "ADMISSION=%s", out.Kind)
@@ -212,7 +210,23 @@ func TestAdmissionConflictsReleaseOnlyForIdleOrTerminalTeams(t *testing.T) {
 			if err := f.Store.ReadJSON(".agent-team/runs/"+string(f.Run)+".json", 16<<20, &current); err != nil {
 				t.Fatal(err)
 			}
-			current.Teams = append(current.Teams, run.TeamRecord{ID: "other-team", State: state, Paths: []string{"src/task-0001"}, Resources: []string{"resource:0001"}})
+			other := run.TeamRecord{
+				RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: current.Project, RunID: current.ID, WrittenAt: current.WrittenAt, Revision: 1},
+				ID:             core.TeamID(string(f.Run) + "-team-2"),
+				State:          state,
+				Paths:          []string{"src/task-0001"},
+				Resources:      []string{"resource:0001"},
+			}
+			if state != core.Idle {
+				other.Queue = []core.TaskID{"T-0002"}
+				encoded, err := json.Marshal(other.Queue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sum := sha256.Sum256(encoded)
+				other.QueueFingerprint = "sha256:" + hex.EncodeToString(sum[:])
+			}
+			current.Teams = append(current.Teams, other)
 			if _, err := f.Store.WriteJSON(".agent-team/runs/"+string(f.Run)+".json", current, 16<<20); err != nil {
 				t.Fatal(err)
 			}

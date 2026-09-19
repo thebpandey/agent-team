@@ -112,6 +112,7 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 	if err := ctx.Err(); err != nil {
 		return AdmissionOutcome{}, err
 	}
+	repositories := run.NewRepositories(st)
 
 	commitPath := runCommitPath(runID, expectedRunRevision)
 	if existing, found, err := readCommit(st, commitPath); err != nil {
@@ -120,26 +121,28 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 		if err := validateCommit(existing, runID, expectedRunRevision); err != nil {
 			return AdmissionOutcome{}, err
 		}
+		// A durable commit is authoritative even for a conflicting retry. Finish
+		// its canonical projections before returning Duplicate or Stale.
+		if err := project(ctx, repositories, existing); err != nil {
+			return AdmissionOutcome{}, err
+		}
 		if existing.Batch.Fingerprint != batch.Fingerprint || !reflect.DeepEqual(existing.Batch, batch) {
 			// The run-revision slot belongs to the already committed admission.
 			// A different proposal is stale, while an exact proposal below is a
 			// duplicate and must first finish that commit's projection.
-			return staleOutcome(st, runID, teamID, batch.Fingerprint)
+			return staleOutcome(ctx, repositories, runID, teamID, batch.Fingerprint)
 		}
 		if existing.ExpectedRunRevision == expectedRunRevision && existing.ExpectedTeamRevision == expectedTeamRevision && existing.ExpectedTrackerRevision == expectedTrackerRevision {
-			if err := project(ctx, st, existing); err != nil {
-				return AdmissionOutcome{}, err
-			}
 			return outcome(Duplicate, existing), nil
 		}
-		return staleOutcome(st, runID, teamID, batch.Fingerprint)
+		return staleOutcome(ctx, repositories, runID, teamID, batch.Fingerprint)
 	}
-	var currentRun run.Run
-	if err := st.ReadJSON(runPath(runID), maxRecordBytes, &currentRun); err != nil {
+	currentRun, err := repositories.Runs.Read(ctx, runID)
+	if err != nil {
 		return AdmissionOutcome{}, err
 	}
-	var currentTeam run.TeamRecord
-	if err := st.ReadJSON(teamPath(teamID), maxRecordBytes, &currentTeam); err != nil {
+	currentTeam, err := repositories.Teams.Read(ctx, teamID)
+	if err != nil {
 		return AdmissionOutcome{}, err
 	}
 	if currentRun.ID != runID || currentTeam.ID != teamID {
@@ -147,13 +150,15 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 	}
 	// An earlier durable commit may have stopped before either projection. It
 	// must converge before this caller is classified as stale.
-	if err := recoverPrevious(ctx, st, runID, expectedRunRevision); err != nil {
+	if err := recoverPrevious(ctx, st, repositories, runID, expectedRunRevision); err != nil {
 		return AdmissionOutcome{}, err
 	}
-	if err := st.ReadJSON(runPath(runID), maxRecordBytes, &currentRun); err != nil {
+	currentRun, err = repositories.Runs.Read(ctx, runID)
+	if err != nil {
 		return AdmissionOutcome{}, err
 	}
-	if err := st.ReadJSON(teamPath(teamID), maxRecordBytes, &currentTeam); err != nil {
+	currentTeam, err = repositories.Teams.Read(ctx, teamID)
+	if err != nil {
 		return AdmissionOutcome{}, err
 	}
 	if currentRun.ID != runID || currentTeam.ID != teamID {
@@ -198,20 +203,10 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 		return AdmissionOutcome{}, err
 	}
 
-	afterTeam := cloneTeam(currentTeam)
-	afterTeam.Queue = append(append([]core.TaskID(nil), currentTeam.Queue...), batch.Tasks...)
-	afterTeam.Paths = union(currentTeam.Paths, batch.Paths)
-	afterTeam.Resources = union(currentTeam.Resources, batch.Resources)
-	afterTeam.QueueFingerprint = queueFingerprint(afterTeam.Queue)
-	afterTeam.State = core.Working
-	afterTeam.Revision++
-	afterRun := cloneRun(currentRun)
-	for i := range afterRun.Teams {
-		if afterRun.Teams[i].ID == teamID {
-			afterRun.Teams[i] = afterTeam
-		}
+	afterRun, afterTeam, err := projectedAdmission(currentRun, currentTeam, batch)
+	if err != nil {
+		return AdmissionOutcome{}, err
 	}
-	afterRun.Revision++
 	warning := ""
 	if page.TotalNonArchived >= 900 {
 		warning = fmt.Sprintf("tracker has %d of %d non-archived tasks", page.TotalNonArchived, 1000)
@@ -238,17 +233,17 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 			return AdmissionOutcome{}, err
 		}
 		if winner.Batch.Fingerprint == batch.Fingerprint && reflect.DeepEqual(winner.Batch, batch) {
-			if err := project(ctx, st, winner); err != nil {
+			if err := project(ctx, repositories, winner); err != nil {
 				return AdmissionOutcome{}, err
 			}
 			return outcome(Duplicate, winner), nil
 		}
-		return staleOutcome(st, runID, teamID, batch.Fingerprint)
+		return staleOutcome(ctx, repositories, runID, teamID, batch.Fingerprint)
 	}
 	if err := failAdmission(faultAfterCommit); err != nil {
 		return AdmissionOutcome{}, err
 	}
-	if err := project(ctx, st, commit); err != nil {
+	if err := project(ctx, repositories, commit); err != nil {
 		return AdmissionOutcome{}, err
 	}
 	// The per-team record is immutable audit history; it is not read as active
@@ -259,11 +254,11 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 	return outcome(Created, commit), nil
 }
 
-func project(ctx context.Context, st *store.Store, commit committedAdmission) error {
+func project(ctx context.Context, repositories run.Repositories, commit committedAdmission) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := convergeRun(st, commit); err != nil {
+	if err := convergeRun(ctx, repositories, commit); err != nil {
 		return err
 	}
 	if err := failAdmission(faultAfterRunProjection); err != nil {
@@ -272,49 +267,70 @@ func project(ctx context.Context, st *store.Store, commit committedAdmission) er
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := convergeTeam(st, commit); err != nil {
+	if err := convergeTeam(ctx, repositories, commit); err != nil {
 		return err
 	}
 	return failAdmission(faultAfterTeamProjection)
 }
 
-func convergeRun(st *store.Store, commit committedAdmission) error {
-	var current run.Run
-	if err := st.ReadJSON(runPath(commit.AfterRun.ID), maxRecordBytes, &current); err != nil {
+func convergeRun(ctx context.Context, repositories run.Repositories, commit committedAdmission) error {
+	current, err := repositories.Runs.Read(ctx, commit.AfterRun.ID)
+	if err != nil {
 		return err
 	}
-	if reflect.DeepEqual(current, commit.AfterRun) {
+	expected, _, err := projectedAdmission(commit.BeforeRun, commit.BeforeTeam, commit.Batch)
+	if err != nil || !reflect.DeepEqual(expected, commit.AfterRun) {
+		return fmt.Errorf("%w: invalid committed run projection", core.ErrRevision)
+	}
+	if reflect.DeepEqual(current, expected) {
 		return nil
 	}
 	if !reflect.DeepEqual(current, commit.BeforeRun) {
 		return fmt.Errorf("%w: committed run projection conflicts", core.ErrRevision)
 	}
-	_, err := st.WriteJSON(runPath(commit.AfterRun.ID), commit.AfterRun, maxRecordBytes)
+	_, err = repositories.Runs.CompareAndSwap(ctx, current.ID, current.Revision, expected)
+	if err != nil {
+		// Repository CAS is process-local; another process may have projected
+		// this exact immutable commit after our read. Re-read canonical state
+		// before treating that race as a conflict.
+		if observed, readErr := repositories.Runs.Read(ctx, commit.AfterRun.ID); readErr == nil && reflect.DeepEqual(observed, expected) {
+			return nil
+		}
+	}
 	return err
 }
 
-func convergeTeam(st *store.Store, commit committedAdmission) error {
-	var current run.TeamRecord
-	if err := st.ReadJSON(teamPath(commit.AfterTeam.ID), maxRecordBytes, &current); err != nil {
+func convergeTeam(ctx context.Context, repositories run.Repositories, commit committedAdmission) error {
+	current, err := repositories.Teams.Read(ctx, commit.AfterTeam.ID)
+	if err != nil {
 		return err
 	}
-	if reflect.DeepEqual(current, commit.AfterTeam) {
+	_, expected, err := projectedAdmission(commit.BeforeRun, commit.BeforeTeam, commit.Batch)
+	if err != nil || !reflect.DeepEqual(expected, commit.AfterTeam) {
+		return fmt.Errorf("%w: invalid committed team projection", core.ErrRevision)
+	}
+	if reflect.DeepEqual(current, expected) {
 		return nil
 	}
 	if !reflect.DeepEqual(current, commit.BeforeTeam) {
 		return fmt.Errorf("%w: committed team projection conflicts", core.ErrRevision)
 	}
-	_, err := st.WriteJSON(teamPath(commit.AfterTeam.ID), commit.AfterTeam, maxRecordBytes)
+	_, err = repositories.Teams.CompareAndSwap(ctx, current.ID, current.Revision, expected)
+	if err != nil {
+		if observed, readErr := repositories.Teams.Read(ctx, commit.AfterTeam.ID); readErr == nil && reflect.DeepEqual(observed, expected) {
+			return nil
+		}
+	}
 	return err
 }
 
-func staleOutcome(st *store.Store, runID core.RunID, teamID core.TeamID, fingerprint string) (AdmissionOutcome, error) {
-	var r run.Run
-	if err := st.ReadJSON(runPath(runID), maxRecordBytes, &r); err != nil {
+func staleOutcome(ctx context.Context, repositories run.Repositories, runID core.RunID, teamID core.TeamID, fingerprint string) (AdmissionOutcome, error) {
+	r, err := repositories.Runs.Read(ctx, runID)
+	if err != nil {
 		return AdmissionOutcome{}, err
 	}
-	var t run.TeamRecord
-	if err := st.ReadJSON(teamPath(teamID), maxRecordBytes, &t); err != nil {
+	t, err := repositories.Teams.Read(ctx, teamID)
+	if err != nil {
 		return AdmissionOutcome{}, err
 	}
 	return outcome(Stale, committedAdmission{Batch: run.AdmissionBatch{Fingerprint: fingerprint}, AfterRun: r, AfterTeam: t}), nil
@@ -340,7 +356,7 @@ func readCommit(st *store.Store, relative string) (committedAdmission, bool, err
 	return commit, true, nil
 }
 
-func recoverPrevious(ctx context.Context, st *store.Store, runID core.RunID, expected uint64) error {
+func recoverPrevious(ctx context.Context, st *store.Store, repositories run.Repositories, runID core.RunID, expected uint64) error {
 	if expected == 0 {
 		return nil
 	}
@@ -351,14 +367,7 @@ func recoverPrevious(ctx context.Context, st *store.Store, runID core.RunID, exp
 	if err := validateCommit(commit, runID, expected-1); err != nil {
 		return err
 	}
-	var current run.Run
-	if err := st.ReadJSON(runPath(runID), maxRecordBytes, &current); err != nil {
-		return err
-	}
-	if current.Revision == commit.BeforeRun.Revision || current.Revision == commit.AfterRun.Revision {
-		return project(ctx, st, commit)
-	}
-	return nil
+	return project(ctx, repositories, commit)
 }
 
 func validateCommit(commit committedAdmission, runID core.RunID, expected uint64) error {
@@ -391,27 +400,51 @@ func validateCommit(commit committedAdmission, runID core.RunID, expected uint64
 	if !slot {
 		return fmt.Errorf("%w: invalid admission commit slot", core.ErrRevision)
 	}
-	expectedTeam := cloneTeam(commit.BeforeTeam)
-	expectedTeam.Queue = append(expectedTeam.Queue, commit.Batch.Tasks...)
-	expectedTeam.Paths = union(expectedTeam.Paths, commit.Batch.Paths)
-	expectedTeam.Resources = union(expectedTeam.Resources, commit.Batch.Resources)
-	expectedTeam.QueueFingerprint = queueFingerprint(expectedTeam.Queue)
-	expectedTeam.State = core.Working
-	expectedTeam.Revision++
+	_, expectedTeam, err := projectedAdmission(commit.BeforeRun, commit.BeforeTeam, commit.Batch)
+	if err != nil {
+		return fmt.Errorf("%w: invalid admission commit projection", core.ErrRevision)
+	}
 	if !reflect.DeepEqual(expectedTeam, commit.AfterTeam) {
 		return fmt.Errorf("%w: invalid admission commit team projection", core.ErrRevision)
 	}
-	expectedRun := cloneRun(commit.BeforeRun)
-	expectedRun.Revision++
-	for i := range expectedRun.Teams {
-		if expectedRun.Teams[i].ID == expectedTeam.ID {
-			expectedRun.Teams[i] = expectedTeam
-		}
+	expectedRun, _, err := projectedAdmission(commit.BeforeRun, commit.BeforeTeam, commit.Batch)
+	if err != nil {
+		return fmt.Errorf("%w: invalid admission commit projection", core.ErrRevision)
 	}
 	if !reflect.DeepEqual(expectedRun, commit.AfterRun) {
 		return fmt.Errorf("%w: invalid admission commit run projection", core.ErrRevision)
 	}
 	return nil
+}
+
+// projectedAdmission computes the only permitted projection from a canonical
+// before-state. Callers compare its result with the durable commit rather than
+// treating embedded after-state as authority.
+func projectedAdmission(beforeRun run.Run, beforeTeam run.TeamRecord, batch run.AdmissionBatch) (run.Run, run.TeamRecord, error) {
+	slot := -1
+	for i, team := range beforeRun.Teams {
+		if team.ID == beforeTeam.ID {
+			if !reflect.DeepEqual(team, beforeTeam) {
+				return run.Run{}, run.TeamRecord{}, fmt.Errorf("%w: team differs from canonical run slot", core.ErrRevision)
+			}
+			slot = i
+			break
+		}
+	}
+	if slot < 0 {
+		return run.Run{}, run.TeamRecord{}, fmt.Errorf("%w: team is not a canonical run slot", core.ErrRevision)
+	}
+	afterTeam := cloneTeam(beforeTeam)
+	afterTeam.Queue = append(afterTeam.Queue, batch.Tasks...)
+	afterTeam.Paths = union(afterTeam.Paths, batch.Paths)
+	afterTeam.Resources = union(afterTeam.Resources, batch.Resources)
+	afterTeam.QueueFingerprint = queueFingerprint(afterTeam.Queue)
+	afterTeam.State = core.Working
+	afterTeam.Revision++
+	afterRun := cloneRun(beforeRun)
+	afterRun.Teams[slot] = afterTeam
+	afterRun.Revision++
+	return afterRun, afterTeam, nil
 }
 
 func rejectReusedFingerprint(st *store.Store, team core.TeamID, batch run.AdmissionBatch) error {

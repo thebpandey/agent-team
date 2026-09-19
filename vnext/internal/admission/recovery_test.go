@@ -75,6 +75,28 @@ func TestAppendAdmissionRecoversPreviousCommitBeforeClassifyingNextRevision(t *t
 	}
 }
 
+func TestConflictingRetryConvergesCommittedProjectionBeforeStale(t *testing.T) {
+	f := testkit.NewAdmissionFixture(t)
+	first := f.Batch(1)
+	admissionFault = func(point admissionFaultPoint) error {
+		if point == faultAfterCommit {
+			return errors.New("stop after durable commit")
+		}
+		return nil
+	}
+	if _, err := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, first); err == nil {
+		t.Fatal("interruption succeeded")
+	}
+	admissionFault = nil
+	t.Cleanup(func() { admissionFault = nil })
+	conflict := f.Batch(2)
+	out, err := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, conflict)
+	if err != nil || out.Kind != Stale {
+		t.Fatalf("conflicting retry = %#v, %v; want converged stale", out, err)
+	}
+	assertProjected(t, f, first)
+}
+
 func TestCorruptCommitVariantsBlockWithoutProjection(t *testing.T) {
 	mutations := map[string]func(*committedAdmission){
 		"schema":          func(c *committedAdmission) { c.Schema = 2 },
@@ -88,6 +110,21 @@ func TestCorruptCommitVariantsBlockWithoutProjection(t *testing.T) {
 		"run-envelope":  func(c *committedAdmission) { c.BeforeRun.Schema = 0 },
 		"team-envelope": func(c *committedAdmission) { c.BeforeTeam.Schema = 0 },
 		"slot":          func(c *committedAdmission) { c.AfterRun.Teams[0].ID = "other-team" },
+		"extra-nested-team": func(c *committedAdmission) {
+			extra := cloneTeam(c.BeforeTeam)
+			extra.ID = core.TeamID(string(c.BeforeRun.ID) + "-team-2")
+			c.BeforeRun.Teams = append(c.BeforeRun.Teams, extra)
+			c.AfterRun.Teams = append(c.AfterRun.Teams, extra)
+		},
+		"renamed-nested-team": func(c *committedAdmission) {
+			renamed := core.TeamID(string(c.BeforeRun.ID) + "-team-9")
+			c.BeforeTeam.ID = renamed
+			c.AfterTeam.ID = renamed
+			c.BeforeRun.Teams[0].ID = renamed
+			c.AfterRun.Teams[0].ID = renamed
+			c.Batch.Team = renamed
+			c.Batch.Fingerprint = fingerprint(c.Batch)
+		},
 		"run-revision":  func(c *committedAdmission) { c.AfterRun.Revision++ },
 		"team-revision": func(c *committedAdmission) { c.AfterTeam.Revision++ },
 	}
