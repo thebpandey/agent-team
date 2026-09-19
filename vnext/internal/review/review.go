@@ -85,7 +85,7 @@ func (r *reviewer) Review(ctx context.Context, input Input) (Result, error) {
 	if r == nil || r.host == nil || r.store == nil || ctx == nil || ctx.Err() != nil {
 		return Result{}, core.ErrCapacity
 	}
-	p, err := validateInput(input)
+	p, err := validateInput(input, r.store.Root)
 	if err != nil {
 		return Result{}, err
 	}
@@ -202,9 +202,9 @@ func (r *reviewer) runChecks(ctx context.Context, checks []core.Check) ([]string
 	return findings, nil
 }
 
-func validateInput(input Input) (provenance, error) {
+func validateInput(input Input, stateRoot string) (provenance, error) {
 	task, candidate, worktree := input.Task, input.Candidate, input.Candidate.Worktree
-	if !safeID(string(task.ID)) || !safeID(string(task.RunID)) || !safeValue(task.Project) || candidate.Task != task.ID || !safeValue(candidate.Revision) || !safeValue(candidate.Base) || !safeValue(input.CandidateDigest) || worktree.Run != task.RunID || !safeID(string(worktree.Team)) || !safeValue(worktree.Base) || !safeValue(worktree.Branch) || worktree.Base != candidate.Base || !verifiedTaskRoot(worktree.Path, worktree.Canonical) || !validDeveloper(input.Developer, task, candidate, input.CandidateDigest) {
+	if !safeID(string(task.ID)) || !safeID(string(task.RunID)) || !safeValue(task.Project) || candidate.Task != task.ID || !safeValue(candidate.Revision) || !safeValue(candidate.Base) || !safeValue(input.CandidateDigest) || worktree.Run != task.RunID || !safeID(string(worktree.Team)) || !safeValue(worktree.Base) || !safeValue(worktree.Branch) || worktree.Base != candidate.Base || !verifiedTaskRoot(stateRoot, worktree.Path, worktree.Canonical) || !validDeveloper(input.Developer, task, candidate, input.CandidateDigest) {
 		return provenance{}, core.ErrPath
 	}
 	checks, err := copyChecks(input.Checks)
@@ -218,10 +218,9 @@ func validDeveloper(h contracts.WorkerHandle, task core.Task, candidate contract
 	return h.Host != "" && h.Identity != "" && !h.Reviewer && h.Run == task.RunID && h.Team == candidate.Worktree.Team && h.Task == task.ID && h.CandidateRevision == candidate.Revision && h.PacketDigest == digest
 }
 
-// verifiedTaskRoot consumes the manager's canonical handle and derives the
-// one available local authority (the module checkout). It fails closed unless
-// the physical root is a strict descendant of its managed-worktree directory.
-func verifiedTaskRoot(path, canonical string) bool {
+// verifiedTaskRoot derives authority from the same explicit project-rooted
+// store that owns review evidence, never from ambient process state.
+func verifiedTaskRoot(stateRoot, path, canonical string) bool {
 	if !safePath(path) || !safePath(canonical) {
 		return false
 	}
@@ -237,30 +236,21 @@ func verifiedTaskRoot(path, canonical string) bool {
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	root, err := moduleRoot()
+	root, err := filepath.Abs(stateRoot)
+	if err != nil {
+		return false
+	}
+	root, err = filepath.EvalSymlinks(root)
 	if err != nil {
 		return false
 	}
 	managed := filepath.Join(root, ".agent-team", "worktrees")
+	managed, err = filepath.EvalSymlinks(managed)
+	if err != nil {
+		return false
+	}
 	rel, err := filepath.Rel(managed, resolved)
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
-func moduleRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for {
-		if info, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil && !info.IsDir() {
-			return filepath.EvalSymlinks(dir)
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", os.ErrNotExist
-		}
-		dir = parent
-	}
 }
 
 func copyChecks(checks []core.Check) ([]core.Check, error) {

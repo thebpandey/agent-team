@@ -17,10 +17,10 @@ import (
 )
 
 func TestReviewerImmutableAttemptsAndFreshReplay(t *testing.T) {
-	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	state := reviewStore(t)
 	adapter := &reviewAdapter{}
 	r := NewReviewer(adapter, nil, state)
-	first := validInput(t, "rev-1", "sha256:first")
+	first := validInput(t, state.Root, "rev-1", "sha256:first")
 	got, err := r.Review(context.Background(), first)
 	if err != nil || got.Verdict != CLEAN {
 		t.Fatalf("first Review() = %#v, %v", got, err)
@@ -29,7 +29,7 @@ func TestReviewerImmutableAttemptsAndFreshReplay(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(again, got) || adapter.startCount() != 1 {
 		t.Fatalf("fresh replay = %#v, %v; starts=%d", again, err, adapter.startCount())
 	}
-	repaired := validInput(t, "rev-2", "sha256:repaired")
+	repaired := validInput(t, state.Root, "rev-2", "sha256:repaired")
 	repaired.Candidate.Worktree.Path, repaired.Candidate.Worktree.Canonical = first.Candidate.Worktree.Path, first.Candidate.Worktree.Canonical
 	gotRepair, err := r.Review(context.Background(), repaired)
 	if err != nil || gotRepair.EvidencePointer == got.EvidencePointer || adapter.startCount() != 2 {
@@ -38,8 +38,8 @@ func TestReviewerImmutableAttemptsAndFreshReplay(t *testing.T) {
 }
 
 func TestReviewerConcurrentPublicationReturnsOneImmutableReceipt(t *testing.T) {
-	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
-	in := validInput(t, "rev", "sha256:candidate")
+	state := reviewStore(t)
+	in := validInput(t, state.Root, "rev", "sha256:candidate")
 	var wg sync.WaitGroup
 	results := make([]Result, 2)
 	errs := make([]error, 2)
@@ -71,8 +71,8 @@ func TestReviewerRejectsTamperedOrStaleReceipt(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
-			in := validInput(t, "rev", "sha256:candidate")
+			state := reviewStore(t)
+			in := validInput(t, state.Root, "rev", "sha256:candidate")
 			r := NewReviewer(&reviewAdapter{}, nil, state)
 			got, err := r.Review(context.Background(), in)
 			if err != nil {
@@ -109,23 +109,66 @@ func TestReviewerRejectsIncompleteOrUnprovenProvenanceBeforeReservation(t *testi
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := &reviewAdapter{}
-			in := validInput(t, "rev", "sha256:candidate")
+			state := reviewStore(t)
+			in := validInput(t, state.Root, "rev", "sha256:candidate")
 			tc.edit(&in)
-			if _, err := NewReviewer(adapter, nil, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})).Review(context.Background(), in); !errors.Is(err, core.ErrPath) || adapter.startCount() != 0 {
+			if _, err := NewReviewer(adapter, nil, state).Review(context.Background(), in); !errors.Is(err, core.ErrPath) || adapter.startCount() != 0 {
 				t.Fatalf("Review() error=%v starts=%d", err, adapter.startCount())
 			}
 		})
 	}
-	if _, err := NewReviewer(nil, nil, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})).Review(context.Background(), validInput(t, "rev", "sha256:nil")); !errors.Is(err, core.ErrCapacity) {
+	state := reviewStore(t)
+	if _, err := NewReviewer(nil, nil, state).Review(context.Background(), validInput(t, state.Root, "rev", "sha256:nil")); !errors.Is(err, core.ErrCapacity) {
 		t.Fatalf("nil host error = %v", err)
 	}
 }
 
+func TestReviewerUsesStoreRootRatherThanAmbientModule(t *testing.T) {
+	state := reviewStore(t)
+	foreign := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(foreign, ".agent-team", "worktrees", "foreign"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(foreign, "go.mod"), []byte("module foreign\n\ngo 1.26\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(foreign); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+
+	foreignInput := validInput(t, state.Root, "rev", "sha256:foreign")
+	foreignPath := filepath.Join(foreign, ".agent-team", "worktrees", "foreign")
+	foreignInput.Candidate.Worktree.Path, foreignInput.Candidate.Worktree.Canonical = foreignPath, foreignPath
+	adapter := &reviewAdapter{}
+	if _, err := NewReviewer(adapter, nil, state).Review(context.Background(), foreignInput); !errors.Is(err, core.ErrPath) || adapter.startCount() != 0 {
+		t.Fatalf("foreign Review() error=%v starts=%d", err, adapter.startCount())
+	}
+
+	valid := validInput(t, state.Root, "rev", "sha256:local")
+	if _, err := NewReviewer(adapter, nil, state).Review(context.Background(), valid); err != nil {
+		t.Fatalf("store-root Review() error=%v", err)
+	}
+	if err := os.Symlink(foreignPath, filepath.Join(state.Root, ".agent-team", "worktrees", "alias")); err == nil {
+		aliased := validInput(t, state.Root, "rev-2", "sha256:alias")
+		aliased.Candidate.Worktree.Path = filepath.Join(state.Root, ".agent-team", "worktrees", "alias")
+		aliased.Candidate.Worktree.Canonical = foreignPath
+		if _, err := NewReviewer(&reviewAdapter{}, nil, state).Review(context.Background(), aliased); !errors.Is(err, core.ErrPath) {
+			t.Fatalf("symlink escape error=%v", err)
+		}
+	}
+}
+
 func TestReviewerRejectsNonIndependentIdentityBeforeChecks(t *testing.T) {
-	in := validInput(t, "rev", "sha256:candidate")
+	state := reviewStore(t)
+	in := validInput(t, state.Root, "rev", "sha256:candidate")
 	adapter := &reviewAdapter{identity: "developer"}
 	runner := &checkRunner{result: tracker.CommandResult{Exit: 1, Stderr: []byte("failed")}}
-	if _, err := NewReviewer(adapter, runner, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})).Review(context.Background(), in); !errors.Is(err, core.ErrRevision) || runner.callCount() != 0 {
+	if _, err := NewReviewer(adapter, runner, state).Review(context.Background(), in); !errors.Is(err, core.ErrRevision) || runner.callCount() != 0 {
 		t.Fatalf("Review() error=%v checks=%d", err, runner.callCount())
 	}
 }
@@ -144,9 +187,10 @@ func TestReviewerBoundsChecksExecutionAndFindings(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := &reviewAdapter{}
-			in := validInput(t, "rev", "sha256:"+tc.name)
+			state := reviewStore(t)
+			in := validInput(t, state.Root, "rev", "sha256:"+tc.name)
 			in.Checks = tc.checks
-			if _, err := NewReviewer(adapter, tc.runner, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})).Review(context.Background(), in); !errors.Is(err, core.ErrLimit) {
+			if _, err := NewReviewer(adapter, tc.runner, state).Review(context.Background(), in); !errors.Is(err, core.ErrLimit) {
 				t.Fatalf("Review() error = %v", err)
 			}
 			if tc.name != "execution" && adapter.startCount() != 0 {
@@ -157,28 +201,24 @@ func TestReviewerBoundsChecksExecutionAndFindings(t *testing.T) {
 }
 
 func TestReviewerCreatesFixEvidence(t *testing.T) {
-	in := validInput(t, "rev", "sha256:checks")
+	state := reviewStore(t)
+	in := validInput(t, state.Root, "rev", "sha256:checks")
 	in.Checks = []core.Check{{Name: "unit", Command: []string{"test", "arg"}}}
 	runner := &checkRunner{result: tracker.CommandResult{Exit: 1, Stderr: []byte("failed")}}
-	got, err := NewReviewer(&reviewAdapter{}, runner, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})).Review(context.Background(), in)
+	got, err := NewReviewer(&reviewAdapter{}, runner, state).Review(context.Background(), in)
 	if err != nil || got.Verdict != FIX || len(got.Findings) != 1 || runner.callCount() != 1 {
 		t.Fatalf("Review() = %#v, %v, checks=%d", got, err, runner.callCount())
 	}
 }
 
-func validInput(t *testing.T, revision, digest string) Input {
+func validInput(t *testing.T, stateRoot, revision, digest string) Input {
 	t.Helper()
-	root := managedTaskRoot(t)
+	root := managedTaskRoot(t, stateRoot)
 	return Input{Task: core.Task{RecordEnvelope: core.RecordEnvelope{Project: "project", RunID: "run"}, ID: "task"}, Candidate: contracts.Candidate{Task: "task", Revision: revision, Base: "base", Worktree: contracts.Worktree{Run: "run", Team: "team", Path: root, Canonical: root, Branch: "branch", Base: "base"}}, Developer: contracts.WorkerHandle{Host: "developer-host", Identity: "developer", Run: "run", Team: "team", Task: "task", CandidateRevision: revision, PacketDigest: digest}, CandidateDigest: digest}
 }
-func managedTaskRoot(t *testing.T) string {
+func managedTaskRoot(t *testing.T, stateRoot string) string {
 	t.Helper()
-	root, err := moduleRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	managed := filepath.Join(root, ".agent-team", "worktrees")
-	_, existed := os.Stat(managed)
+	managed := filepath.Join(stateRoot, ".agent-team", "worktrees")
 	if err := os.MkdirAll(managed, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -186,13 +226,12 @@ func managedTaskRoot(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(path)
-		if os.IsNotExist(existed) {
-			_ = os.RemoveAll(filepath.Join(root, ".agent-team"))
-		}
-	})
+	t.Cleanup(func() { _ = os.RemoveAll(path) })
 	return path
+}
+func reviewStore(t *testing.T) *store.Store {
+	t.Helper()
+	return store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
 }
 func makeChecks(n int) []core.Check {
 	checks := make([]core.Check, n)
