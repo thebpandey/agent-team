@@ -258,7 +258,11 @@ func project(ctx context.Context, repositories run.Repositories, commit committe
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := convergeRun(ctx, repositories, commit); err != nil {
+	plan, err := preflightProjection(ctx, repositories, commit)
+	if err != nil {
+		return err
+	}
+	if err := convergeRun(ctx, repositories, commit, plan); err != nil {
 		return err
 	}
 	if err := failAdmission(faultAfterRunProjection); err != nil {
@@ -267,57 +271,84 @@ func project(ctx context.Context, repositories run.Repositories, commit committe
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := convergeTeam(ctx, repositories, commit); err != nil {
+	// A competing process can have completed the run projection. Check both
+	// records again before the team CAS; this never accepts a third state.
+	plan, err = preflightProjection(ctx, repositories, commit)
+	if err != nil {
+		return err
+	}
+	if err := convergeTeam(ctx, repositories, commit, plan); err != nil {
 		return err
 	}
 	return failAdmission(faultAfterTeamProjection)
 }
 
-func convergeRun(ctx context.Context, repositories run.Repositories, commit committedAdmission) error {
+type projectionPlan struct {
+	run  run.Run
+	team run.TeamRecord
+}
+
+// preflightProjection validates both canonical records before any projection
+// write. Each may only be this commit's exact before or exact after state.
+func preflightProjection(ctx context.Context, repositories run.Repositories, commit committedAdmission) (projectionPlan, error) {
+	expectedRun, expectedTeam, err := projectedAdmission(commit.BeforeRun, commit.BeforeTeam, commit.Batch)
+	if err != nil || !reflect.DeepEqual(expectedRun, commit.AfterRun) || !reflect.DeepEqual(expectedTeam, commit.AfterTeam) {
+		return projectionPlan{}, fmt.Errorf("%w: invalid committed projection", core.ErrRevision)
+	}
+	currentRun, err := repositories.Runs.Read(ctx, commit.AfterRun.ID)
+	if err != nil {
+		return projectionPlan{}, err
+	}
+	if !reflect.DeepEqual(currentRun, commit.BeforeRun) && !reflect.DeepEqual(currentRun, expectedRun) {
+		return projectionPlan{}, fmt.Errorf("%w: committed run projection preflight conflicts", core.ErrRevision)
+	}
+	currentTeam, err := repositories.Teams.Read(ctx, commit.AfterTeam.ID)
+	if err != nil {
+		return projectionPlan{}, err
+	}
+	if !reflect.DeepEqual(currentTeam, commit.BeforeTeam) && !reflect.DeepEqual(currentTeam, expectedTeam) {
+		return projectionPlan{}, fmt.Errorf("%w: committed team projection preflight conflicts", core.ErrRevision)
+	}
+	return projectionPlan{run: expectedRun, team: expectedTeam}, nil
+}
+
+func convergeRun(ctx context.Context, repositories run.Repositories, commit committedAdmission, plan projectionPlan) error {
 	current, err := repositories.Runs.Read(ctx, commit.AfterRun.ID)
 	if err != nil {
 		return err
 	}
-	expected, _, err := projectedAdmission(commit.BeforeRun, commit.BeforeTeam, commit.Batch)
-	if err != nil || !reflect.DeepEqual(expected, commit.AfterRun) {
-		return fmt.Errorf("%w: invalid committed run projection", core.ErrRevision)
-	}
-	if reflect.DeepEqual(current, expected) {
+	if reflect.DeepEqual(current, plan.run) {
 		return nil
 	}
 	if !reflect.DeepEqual(current, commit.BeforeRun) {
 		return fmt.Errorf("%w: committed run projection conflicts", core.ErrRevision)
 	}
-	_, err = repositories.Runs.CompareAndSwap(ctx, current.ID, current.Revision, expected)
+	_, err = repositories.Runs.CompareAndSwap(ctx, current.ID, current.Revision, plan.run)
 	if err != nil {
 		// Repository CAS is process-local; another process may have projected
 		// this exact immutable commit after our read. Re-read canonical state
 		// before treating that race as a conflict.
-		if observed, readErr := repositories.Runs.Read(ctx, commit.AfterRun.ID); readErr == nil && reflect.DeepEqual(observed, expected) {
+		if observed, readErr := repositories.Runs.Read(ctx, commit.AfterRun.ID); readErr == nil && reflect.DeepEqual(observed, plan.run) {
 			return nil
 		}
 	}
 	return err
 }
 
-func convergeTeam(ctx context.Context, repositories run.Repositories, commit committedAdmission) error {
+func convergeTeam(ctx context.Context, repositories run.Repositories, commit committedAdmission, plan projectionPlan) error {
 	current, err := repositories.Teams.Read(ctx, commit.AfterTeam.ID)
 	if err != nil {
 		return err
 	}
-	_, expected, err := projectedAdmission(commit.BeforeRun, commit.BeforeTeam, commit.Batch)
-	if err != nil || !reflect.DeepEqual(expected, commit.AfterTeam) {
-		return fmt.Errorf("%w: invalid committed team projection", core.ErrRevision)
-	}
-	if reflect.DeepEqual(current, expected) {
+	if reflect.DeepEqual(current, plan.team) {
 		return nil
 	}
 	if !reflect.DeepEqual(current, commit.BeforeTeam) {
 		return fmt.Errorf("%w: committed team projection conflicts", core.ErrRevision)
 	}
-	_, err = repositories.Teams.CompareAndSwap(ctx, current.ID, current.Revision, expected)
+	_, err = repositories.Teams.CompareAndSwap(ctx, current.ID, current.Revision, plan.team)
 	if err != nil {
-		if observed, readErr := repositories.Teams.Read(ctx, commit.AfterTeam.ID); readErr == nil && reflect.DeepEqual(observed, expected) {
+		if observed, readErr := repositories.Teams.Read(ctx, commit.AfterTeam.ID); readErr == nil && reflect.DeepEqual(observed, plan.team) {
 			return nil
 		}
 	}

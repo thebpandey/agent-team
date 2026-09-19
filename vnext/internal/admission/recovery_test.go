@@ -97,6 +97,51 @@ func TestConflictingRetryConvergesCommittedProjectionBeforeStale(t *testing.T) {
 	assertProjected(t, f, first)
 }
 
+func TestProjectionPreflightRejectsDivergentCanonicalRecordsWithoutWrites(t *testing.T) {
+	for _, target := range []string{"team", "run"} {
+		t.Run(target, func(t *testing.T) {
+			f := testkit.NewAdmissionFixture(t)
+			batch := f.Batch(1)
+			admissionFault = func(point admissionFaultPoint) error {
+				if point == faultAfterCommit {
+					return errors.New("stop after durable commit")
+				}
+				return nil
+			}
+			if _, err := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, batch); err == nil {
+				t.Fatal("interruption succeeded")
+			}
+			admissionFault = nil
+			t.Cleanup(func() { admissionFault = nil })
+			if target == "team" {
+				var team run.TeamRecord
+				if err := f.Store.ReadJSON(teamPath(f.Team), maxRecordBytes, &team); err != nil {
+					t.Fatal(err)
+				}
+				team.Paths = []string{"src/divergent"}
+				if _, err := f.Store.WriteJSON(teamPath(f.Team), team, maxRecordBytes); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				var current run.Run
+				if err := f.Store.ReadJSON(runPath(f.Run), maxRecordBytes, &current); err != nil {
+					t.Fatal(err)
+				}
+				current.State = core.Paused
+				if _, err := f.Store.WriteJSON(runPath(f.Run), current, maxRecordBytes); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := testkit.SnapshotTree(t, f.Store.Root)
+			_, err := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, batch)
+			if !errors.Is(err, core.ErrRevision) {
+				t.Fatalf("divergent %s accepted: %v", target, err)
+			}
+			testkit.RequireNoWrites(t, f.Store.Root, before)
+		})
+	}
+}
+
 func TestCorruptCommitVariantsBlockWithoutProjection(t *testing.T) {
 	mutations := map[string]func(*committedAdmission){
 		"schema":          func(c *committedAdmission) { c.Schema = 2 },
