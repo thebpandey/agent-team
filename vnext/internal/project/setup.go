@@ -13,23 +13,19 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
 const (
-	configPath  = ".agent-team/config.json"
-	receiptPath = ".agent-team/receipts/setup.json"
-	commitPath  = ".agent-team/setup/commit.json"
-	pendingPath = ".agent-team/setup/pending.json"
-	lockPath    = ".agent-team/setup/initialize.lock"
+	configPath = ".agent-team/config.json"
 )
 
 type setupService struct {
 	store     *store.Store
 	writeJSON func(string, any, int64) (store.AtomicResult, error) // test-only fault seam
+	link      func(*os.Root, string, string) error                 // test-only CAS seam
 }
 
 type setupReceipt struct {
@@ -43,26 +39,17 @@ type setupReceipt struct {
 // configRecord deliberately keeps Config's published shape while adding the
 // durable record envelope required to bind it to this project and revision.
 type configRecord struct {
-	Schema    int                `json:"schema"`
-	Project   string             `json:"project"`
-	RunID     core.RunID         `json:"runId"`
-	WrittenAt string             `json:"writtenAt"`
-	Revision  uint64             `json:"revision"`
-	Runtime   core.RuntimeConfig `json:"runtime"`
-	Tracker   core.TrackerConfig `json:"tracker"`
-	Limits    core.Limits        `json:"limits"`
-	Storage   core.StorageLimits `json:"storage"`
-}
-
-type setupCommit struct {
-	InputDigest, ConfigDigest, ReceiptDigest string
-	Revision                                 uint64
-}
-
-type setupPending struct {
-	Config  configRecord
-	Receipt setupReceipt
-	Commit  setupCommit
+	Schema        int                `json:"schema"`
+	Project       string             `json:"project"`
+	RunID         core.RunID         `json:"runId"`
+	WrittenAt     string             `json:"writtenAt"`
+	Revision      uint64             `json:"revision"`
+	Runtime       core.RuntimeConfig `json:"runtime"`
+	Tracker       core.TrackerConfig `json:"tracker"`
+	Limits        core.Limits        `json:"limits"`
+	Storage       core.StorageLimits `json:"storage"`
+	ReceiptPath   string             `json:"receiptPath"`
+	ReceiptDigest string             `json:"receiptDigest"`
 }
 
 // NewSetupService creates a service rooted at the provided canonical store.
@@ -187,14 +174,14 @@ func (s *setupService) Validate(ctx context.Context, input SetupInput) (SetupRes
 	if input.Mode == OneOffMode {
 		return result, nil
 	}
-	var commit setupCommit
-	if err := s.store.ReadJSON(commitPath, result.Config.Storage.CanonicalBytes, &commit); errors.Is(err, os.ErrNotExist) {
-		// Partially published canonical records are intentionally invisible.
+	var config configRecord
+	if err := s.store.ReadJSON(configPath, result.Config.Storage.CanonicalBytes, &config); errors.Is(err, os.ErrNotExist) {
+		// Orphan receipts and staging have no authority without config.json.
 		return result, nil
 	} else if err != nil {
 		return SetupResult{}, err
 	}
-	config, receipt, err := s.readCommitted(result.Project.TopLevel, commit)
+	receipt, err := s.readConfigReceipt(result.Project.TopLevel, config)
 	if err != nil {
 		return SetupResult{}, err
 	}
@@ -206,7 +193,7 @@ func (s *setupService) Validate(ctx context.Context, input SetupInput) (SetupRes
 		return SetupResult{}, fmt.Errorf("%w: setup input or config differs from initialized revision", core.ErrRevision)
 	}
 	result.Config, result.Handoff = config.toConfig(), receipt.Handoff
-	result.ConfigRevision, result.ReceiptPath = receipt.Revision, receiptPath
+	result.ConfigRevision, result.ReceiptPath = receipt.Revision, config.ReceiptPath
 	return result, nil
 }
 
@@ -237,9 +224,6 @@ func (s *setupService) Initialize(ctx context.Context, input SetupInput) (SetupR
 		return SetupResult{}, fmt.Errorf("%w: setup store must be the project root", core.ErrPath)
 	}
 	return s.withLock(ctx, project.Root, func() (SetupResult, error) {
-		if err := s.recoverPending(project.TopLevel); err != nil {
-			return SetupResult{}, err
-		}
 		result, err := ValidateSetup(ctx, input)
 		if err != nil {
 			return SetupResult{}, err
@@ -248,30 +232,32 @@ func (s *setupService) Initialize(ctx context.Context, input SetupInput) (SetupR
 		if err != nil {
 			return SetupResult{}, err
 		}
-		var commit setupCommit
-		if err := s.store.ReadJSON(commitPath, result.Config.Storage.CanonicalBytes, &commit); err == nil {
-			_, receipt, err := s.readCommitted(result.Project.TopLevel, commit)
+		var existing configRecord
+		if err := s.store.ReadJSON(configPath, result.Config.Storage.CanonicalBytes, &existing); err == nil {
+			receipt, err := s.readConfigReceipt(result.Project.TopLevel, existing)
 			if err != nil {
 				return SetupResult{}, err
 			}
 			if receipt.InputDigest != inputDigest {
-				return SetupResult{}, fmt.Errorf("%w: setup is already initialized at revision %d", core.ErrRevision, commit.Revision)
+				return SetupResult{}, fmt.Errorf("%w: setup is already initialized at revision %d", core.ErrRevision, existing.Revision)
 			}
 			return s.Validate(ctx, input)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return SetupResult{}, err
 		}
+		receiptFile := ".agent-team/receipts/setup-" + strings.TrimPrefix(inputDigest, "sha256:") + ".json"
 		record := configFrom(result.Config, result.Project.TopLevel, 1)
-		receipt := setupReceipt{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: result.Project.TopLevel, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano), Revision: 1}, InputDigest: inputDigest, ArtifactDigests: result.ArtifactDigests, Handoff: result.Handoff}
+		receipt := setupReceipt{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: result.Project.TopLevel, WrittenAt: record.WrittenAt, Revision: 1}, InputDigest: inputDigest, ArtifactDigests: result.ArtifactDigests, Handoff: result.Handoff}
+		record.ReceiptPath = receiptFile
+		record.ReceiptDigest = digestReceiptBinding(receipt)
 		receipt.ConfigDigest = digestRecord(record)
-		pending := setupPending{Config: record, Receipt: receipt, Commit: setupCommit{InputDigest: inputDigest, ConfigDigest: digestRecord(record), ReceiptDigest: digestReceipt(receipt), Revision: 1}}
-		if _, err := s.write(pendingPath, pending, result.Config.Storage.CanonicalBytes); err != nil {
+		if err := s.writeImmutableReceipt(receiptFile, receipt); err != nil {
 			return SetupResult{}, err
 		}
-		if err := s.publishPending(pending); err != nil {
+		if err := s.ensureConfig(record); err != nil {
 			return SetupResult{}, err
 		}
-		result.ConfigRevision, result.ReceiptPath = 1, receiptPath
+		result.ConfigRevision, result.ReceiptPath = 1, receiptFile
 		return result, nil
 	})
 }
@@ -313,117 +299,13 @@ func probeInitializeWritable(rootPath string) error {
 	return nil
 }
 
-// withLock is a bounded cross-process initialization CAS. The lock is not a
-// durable authority: a stale lock is reclaimed only after its bounded lease,
-// and the pending bundle below remains the recovery authority after a crash.
+// withLock is retained as a narrow call boundary; publication itself is
+// lock-free and uses a rooted no-replace link as its cross-process CAS.
 func (s *setupService) withLock(ctx context.Context, root string, action func() (SetupResult, error)) (SetupResult, error) {
-	deadline := time.Now().Add(10 * time.Second)
-	rootHandle, err := os.OpenRoot(root)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return SetupResult{}, err
 	}
-	defer rootHandle.Close()
-	if err := rootHandle.MkdirAll(".agent-team/setup", 0o700); err != nil {
-		return SetupResult{}, err
-	}
-	var tokenBytes [16]byte
-	if _, err := rand.Read(tokenBytes[:]); err != nil {
-		return SetupResult{}, err
-	}
-	token := hex.EncodeToString(tokenBytes[:])
-	for {
-		if err := ctx.Err(); err != nil {
-			return SetupResult{}, err
-		}
-		file, err := rootHandle.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_, writeErr := file.WriteString(token)
-			syncErr := file.Sync()
-			closeErr := file.Close()
-			if writeErr != nil || syncErr != nil || closeErr != nil {
-				return SetupResult{}, fmt.Errorf("%w: write setup lock", core.ErrPath)
-			}
-			defer removeVerified(rootHandle, lockPath, token)
-			return action()
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return SetupResult{}, err
-		}
-		if time.Now().After(deadline) {
-			return SetupResult{}, fmt.Errorf("%w: setup initialization is in progress", core.ErrRevision)
-		}
-		select {
-		case <-ctx.Done():
-			return SetupResult{}, ctx.Err()
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-}
-
-func removeVerified(root *os.Root, relative, token string) {
-	file, err := root.Open(relative)
-	if err != nil {
-		return
-	}
-	contents, readErr := io.ReadAll(io.LimitReader(file, 128))
-	_ = file.Close()
-	if readErr == nil && string(contents) == token {
-		_ = root.Remove(relative)
-	}
-}
-
-func (s *setupService) recoverPending(project string) error {
-	var pending setupPending
-	if err := s.store.ReadJSON(pendingPath, core.DefaultConfig().Storage.CanonicalBytes, &pending); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	if pending.Config.Project != project || pending.Config.Revision == 0 || pending.Receipt.Project != project || pending.Receipt.Revision != pending.Config.Revision || pending.Commit.ConfigDigest != digestRecord(pending.Config) || pending.Commit.ReceiptDigest != digestReceipt(pending.Receipt) || pending.Commit.InputDigest != pending.Receipt.InputDigest || pending.Commit.Revision != pending.Config.Revision {
-		return fmt.Errorf("%w: malformed pending setup publication", core.ErrRevision)
-	}
-	return s.publishPending(pending)
-}
-
-// publishPending makes the pair visible at one logical instant: only the
-// commit record makes config+receipt authoritative. Before it appears, readers
-// treat either canonical file as absent. A retained pending bundle lets a later
-// initializer finish the same publication after interruption.
-func (s *setupService) publishPending(pending setupPending) error {
-	if err := s.ensureConfig(pending.Config); err != nil {
-		return err
-	}
-	if err := s.ensureReceipt(pending.Receipt); err != nil {
-		return err
-	}
-	var commit setupCommit
-	if err := s.store.ReadJSON(commitPath, core.DefaultConfig().Storage.CanonicalBytes, &commit); err == nil {
-		if commit != pending.Commit {
-			return fmt.Errorf("%w: conflicting setup commit", core.ErrRevision)
-		}
-	} else if errors.Is(err, os.ErrNotExist) {
-		if _, err := s.write(commitPath, pending.Commit, core.DefaultConfig().Storage.CanonicalBytes); err != nil {
-			return err
-		}
-	} else {
-		return err
-	}
-	// Failure to remove this owned staging file is harmless: commit wins and a
-	// later recovery observes the matching commit without changing it.
-	s.removePendingIfOwned(pending)
-	return nil
-}
-
-func (s *setupService) removePendingIfOwned(want setupPending) {
-	var got setupPending
-	if err := s.store.ReadJSON(pendingPath, core.DefaultConfig().Storage.CanonicalBytes, &got); err != nil || digestPending(got) != digestPending(want) {
-		return
-	}
-	root, err := os.OpenRoot(s.store.Root)
-	if err == nil {
-		_ = root.Remove(pendingPath)
-		_ = root.Close()
-	}
+	return action()
 }
 
 func (s *setupService) ensureConfig(want configRecord) error {
@@ -436,44 +318,80 @@ func (s *setupService) ensureConfig(want configRecord) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	_, err := s.write(configPath, want, core.DefaultConfig().Storage.CanonicalBytes)
-	return err
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return err
+	}
+	temporary := ".agent-team/setup/config-" + hex.EncodeToString(token[:]) + ".json"
+	if _, err := s.write(temporary, want, core.DefaultConfig().Storage.CanonicalBytes); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(s.store.Root)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	var linkErr error
+	if s.link != nil {
+		linkErr = s.link(root, temporary, configPath)
+	} else {
+		linkErr = root.Link(temporary, configPath)
+	}
+	if linkErr != nil {
+		// Destination-exists is a competing CAS winner; compare its immutable
+		// record rather than overwriting it. Other link failures publish nothing.
+		var got configRecord
+		if readErr := s.store.ReadJSON(configPath, core.DefaultConfig().Storage.CanonicalBytes, &got); readErr == nil && digestRecord(got) == digestRecord(want) {
+			s.removeConfigTemp(root, temporary, want)
+			return nil
+		}
+		s.removeConfigTemp(root, temporary, want)
+		return fmt.Errorf("%w: setup config CAS: %v", core.ErrRevision, linkErr)
+	}
+	s.removeConfigTemp(root, temporary, want)
+	return nil
 }
 
-func (s *setupService) ensureReceipt(want setupReceipt) error {
+func (s *setupService) removeConfigTemp(root *os.Root, relative string, want configRecord) {
+	var got configRecord
+	if err := s.store.ReadJSON(relative, core.DefaultConfig().Storage.CanonicalBytes, &got); err == nil && digestRecord(got) == digestRecord(want) {
+		_ = root.Remove(relative)
+	}
+}
+
+func (s *setupService) writeImmutableReceipt(relative string, want setupReceipt) error {
 	var got setupReceipt
-	if err := s.store.ReadJSON(receiptPath, core.DefaultConfig().Storage.CanonicalBytes, &got); err == nil {
-		if digestReceipt(got) != digestReceipt(want) {
-			return fmt.Errorf("%w: conflicting uncommitted receipt", core.ErrRevision)
+	if err := s.store.ReadJSON(relative, core.DefaultConfig().Storage.CanonicalBytes, &got); err == nil {
+		if digestReceiptBinding(got) != digestReceiptBinding(want) || got.ConfigDigest != want.ConfigDigest {
+			return fmt.Errorf("%w: conflicting immutable setup receipt", core.ErrRevision)
 		}
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	_, err := s.write(receiptPath, want, core.DefaultConfig().Storage.CanonicalBytes)
+	_, err := s.write(relative, want, core.DefaultConfig().Storage.CanonicalBytes)
 	return err
 }
 
-func (s *setupService) readCommitted(project string, commit setupCommit) (configRecord, setupReceipt, error) {
-	if commit.Revision == 0 || !validDigest(commit.InputDigest) || !validDigest(commit.ConfigDigest) || !validDigest(commit.ReceiptDigest) {
-		return configRecord{}, setupReceipt{}, fmt.Errorf("%w: malformed setup commit", core.ErrRevision)
+func (s *setupService) readConfigReceipt(project string, config configRecord) (setupReceipt, error) {
+	if config.Schema != 1 || config.Project != project || config.Revision == 0 || config.ReceiptPath == "" || !validDigest(config.ReceiptDigest) {
+		return setupReceipt{}, fmt.Errorf("%w: malformed committed config", core.ErrRevision)
 	}
-	var config configRecord
 	var receipt setupReceipt
-	if err := s.store.ReadJSON(configPath, core.DefaultConfig().Storage.CanonicalBytes, &config); err != nil {
-		return configRecord{}, setupReceipt{}, fmt.Errorf("%w: committed config unavailable", core.ErrRevision)
+	if err := s.store.ReadJSON(config.ReceiptPath, core.DefaultConfig().Storage.CanonicalBytes, &receipt); err != nil {
+		return setupReceipt{}, fmt.Errorf("%w: committed receipt unavailable", core.ErrRevision)
 	}
-	if err := s.store.ReadJSON(receiptPath, core.DefaultConfig().Storage.CanonicalBytes, &receipt); err != nil {
-		return configRecord{}, setupReceipt{}, fmt.Errorf("%w: committed receipt unavailable", core.ErrRevision)
+	if receipt.Project != config.Project || receipt.Revision != config.Revision || receipt.ConfigDigest != digestRecord(config) || digestReceiptBinding(receipt) != config.ReceiptDigest {
+		return setupReceipt{}, fmt.Errorf("%w: committed config/receipt mismatch", core.ErrRevision)
 	}
-	if config.Project != project || config.Schema != 1 || config.Revision != commit.Revision || digestRecord(config) != commit.ConfigDigest || receipt.InputDigest != commit.InputDigest || digestReceipt(receipt) != commit.ReceiptDigest || receipt.ConfigDigest != commit.ConfigDigest || receipt.Revision != config.Revision || receipt.Project != config.Project {
-		return configRecord{}, setupReceipt{}, fmt.Errorf("%w: config and receipt do not match committed revision", core.ErrRevision)
-	}
-	return config, receipt, nil
+	return receipt, nil
 }
 
 func configFrom(config core.Config, project string, revision uint64) configRecord {
-	return configRecord{Schema: 1, Project: project, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano), Revision: revision, Runtime: config.Runtime, Tracker: config.Tracker, Limits: config.Limits, Storage: config.Storage}
+	// The canonical initial configuration is content-addressed. Its timestamp is
+	// deliberately stable so equal concurrent initializers produce byte-identical
+	// CAS candidates; the receipt records the same immutable initial revision.
+	return configRecord{Schema: 1, Project: project, WrittenAt: "1970-01-01T00:00:00Z", Revision: revision, Runtime: config.Runtime, Tracker: config.Tracker, Limits: config.Limits, Storage: config.Storage}
 }
 
 func (record configRecord) toConfig() core.Config {
@@ -489,9 +407,9 @@ func digestReceipt(receipt setupReceipt) string {
 	return digestBytes(encoded)
 }
 
-func digestPending(pending setupPending) string {
-	encoded, _ := json.Marshal(pending)
-	return digestBytes(encoded)
+func digestReceiptBinding(receipt setupReceipt) string {
+	receipt.ConfigDigest = ""
+	return digestReceipt(receipt)
 }
 
 func (s *setupService) write(relative string, value any, limit int64) (store.AtomicResult, error) {

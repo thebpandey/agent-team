@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -255,7 +256,11 @@ func TestSetupConfigAndReceiptHaveOneCommittedRevision(t *testing.T) {
 		t.Fatalf("config is not an envelope-bearing revisioned record: %#v", config)
 	}
 	var receipt map[string]any
-	receiptBytes, err := os.ReadFile(filepath.Join(root, ".agent-team", "receipts", "setup.json"))
+	receiptPath, ok := config["receiptPath"].(string)
+	if !ok {
+		t.Fatalf("config has no immutable receipt path: %#v", config)
+	}
+	receiptBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(receiptPath)))
 	if err != nil || json.Unmarshal(receiptBytes, &receipt) != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +279,7 @@ func TestSetupPublishFailureIsInvisibleAndRecoverable(t *testing.T) {
 	s := store.New(root, core.DefaultConfig().Storage)
 	fail := true
 	svc := &setupService{store: s, writeJSON: func(relative string, value any, max int64) (store.AtomicResult, error) {
-		if relative == receiptPath && fail {
+		if strings.HasPrefix(relative, ".agent-team/receipts/") && fail {
 			fail = false
 			return store.AtomicResult{}, errors.New("injected receipt interruption")
 		}
@@ -323,6 +328,40 @@ func TestConcurrentInitializersUseOneCommittedCAS(t *testing.T) {
 		if err != nil {
 			t.Fatalf("same-input concurrent initializer: %v", err)
 		}
+	}
+}
+
+func TestLinkCASRecoversAbandonedStagingAndFailsSafelyWhenUnsupported(t *testing.T) {
+	root := testkit.GitRepo(t)
+	for name, contents := range map[string]string{"TASKS.md": "# Tasks\n", "DECISIONS.md": "# Decisions\n", "AGENT_TEAM_RULES.md": "# Rules\n"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".agent-team", "setup"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".agent-team", "setup", "abandoned.json"), []byte("staging"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := planInput(root, nil)
+	if _, err := NewSetupService(store.New(root, core.DefaultConfig().Storage)).Initialize(context.Background(), input); err != nil {
+		t.Fatalf("abandoned staging blocked next session: %v", err)
+	}
+
+	unsupported := testkit.GitRepo(t)
+	for name, contents := range map[string]string{"TASKS.md": "# Tasks\n", "DECISIONS.md": "# Decisions\n", "AGENT_TEAM_RULES.md": "# Rules\n"} {
+		if err := os.WriteFile(filepath.Join(unsupported, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := store.New(unsupported, core.DefaultConfig().Storage)
+	svc := &setupService{store: s, link: func(*os.Root, string, string) error { return errors.New("link unsupported") }}
+	if _, err := svc.Initialize(context.Background(), planInput(unsupported, nil)); err == nil {
+		t.Fatal("unsupported link succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(unsupported, ".agent-team", "config.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsupported link published config: %v", err)
 	}
 }
 
