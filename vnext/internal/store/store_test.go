@@ -324,3 +324,39 @@ func TestStoreCreateJSONNeverReplacesAnExistingRecord(t *testing.T) {
 		t.Fatalf("winner changed: %#v, %v", got, err)
 	}
 }
+
+func TestStoreCreateJSONConcurrentAndUnsupportedLink(t *testing.T) {
+	s := New(t.TempDir(), core.StorageLimits{})
+	var wg sync.WaitGroup
+	results := make(chan error, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := s.CreateJSON("commit.json", map[string]string{"winner": "one"}, 128)
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	winners := 0
+	for err := range results {
+		if err == nil {
+			winners++
+		} else if !errors.Is(err, fs.ErrExist) || !errors.Is(err, core.ErrRevision) {
+			t.Fatal(err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("winners=%d", winners)
+	}
+	fail := New(t.TempDir(), core.StorageLimits{})
+	fail.link = func(*os.Root, string, string) error { return errors.New("unsupported hardlink") }
+	if _, err := fail.CreateJSON("commit.json", map[string]string{"no": "publication"}, 128); err == nil {
+		t.Fatal("unsupported link succeeded")
+	}
+	var got map[string]string
+	if err := fail.ReadJSON("commit.json", 128, &got); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canonical publication remains: %v", err)
+	}
+}

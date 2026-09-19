@@ -37,6 +37,7 @@ type Store struct {
 	verify  func(*os.Root, string, int64) (AtomicResult, error)
 	replace func(*os.Root, string, string) error
 	restore func(*os.Root, string, string) error
+	link    func(*os.Root, string, string) error
 }
 
 // AtomicResult describes the fully flushed bytes that replaced a destination.
@@ -157,7 +158,7 @@ func (s *Store) CreateJSON(relative string, value any, maxBytes int64) (AtomicRe
 	if err != nil {
 		return AtomicResult{}, pathError("verify temporary", relative, err)
 	}
-	if err := root.Link(temporary.name, relative); err != nil {
+	if err := s.createLink(root, temporary.name, relative); err != nil {
 		if errors.Is(err, fs.ErrExist) || errors.Is(err, os.ErrExist) {
 			return AtomicResult{}, fmt.Errorf("%w: %s", ErrAlreadyExists, relative)
 		}
@@ -171,6 +172,13 @@ func (s *Store) CreateJSON(relative string, value any, maxBytes int64) (AtomicRe
 		return AtomicResult{}, fmt.Errorf("%w: publication checksum mismatch", core.ErrRevision)
 	}
 	return result, nil
+}
+
+func (s *Store) createLink(root *os.Root, source, destination string) error {
+	if s.link != nil {
+		return s.link(root, source, destination)
+	}
+	return root.Link(source, destination)
 }
 
 // WriteMarkdown atomically persists valid UTF-8 Markdown bytes.
