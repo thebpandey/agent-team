@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -283,7 +284,7 @@ func finalizeRun(r Run) (Run, error) {
 		r.Tasks[i].RecordEnvelope = core.RecordEnvelope{Schema: 1, Project: r.Project, RunID: r.ID, WrittenAt: canonicalWrittenAt, Revision: revision}
 	}
 	for i := range r.Teams {
-		r.Teams[i].ID = core.TeamID(fmt.Sprintf("%s-team-%d", r.ID, i+1))
+		r.Teams[i].ID = canonicalTeamID(r.ID, i+1)
 		r.Teams[i].RecordEnvelope = core.RecordEnvelope{Schema: 1, Project: r.Project, RunID: r.ID, WrittenAt: canonicalWrittenAt, Revision: 1}
 		r.Teams[i].QueueFingerprint = queueFingerprint(r.Teams[i].Queue)
 	}
@@ -724,24 +725,8 @@ func manifestDigest(r Run) (string, error) {
 			}{task.ID, task.Revision})
 		}
 	}
-	type team struct {
-		Queue     []core.TaskID `json:"queue"`
-		Paths     []string      `json:"paths,omitempty"`
-		Resources []string      `json:"resources,omitempty"`
-	}
-	teams := make([]team, len(r.Teams))
-	for i, record := range r.Teams {
-		paths, err := normalizePaths(record.Paths)
-		if err != nil {
-			return "", err
-		}
-		resources, err := normalizeResources(record.Resources)
-		if err != nil {
-			return "", err
-		}
-		teams[i] = team{Queue: append([]core.TaskID(nil), record.Queue...), Paths: paths, Resources: resources}
-	}
 	wire := struct {
+		Schema                int           `json:"schema"`
 		Root                  string        `json:"root"`
 		Project               string        `json:"project"`
 		Mode                  string        `json:"mode"`
@@ -757,8 +742,7 @@ func manifestDigest(r Run) (string, error) {
 			Revision uint64      `json:"revision"`
 		} `json:"taskRefs,omitempty"`
 		Tasks []core.Task `json:"tasks,omitempty"`
-		Teams []team      `json:"teams,omitempty"`
-	}{r.Root, strings.TrimSpace(r.Project), r.Mode, r.OneOffKind, strings.TrimSpace(r.Objective), r.SpecRevision, r.TrackerKind, r.TrackerRevision, r.TrackerSnapshotDigest, taskIDs, taskRefs, tasks, teams}
+	}{r.Schema, r.Root, strings.TrimSpace(r.Project), r.Mode, r.OneOffKind, strings.TrimSpace(r.Objective), r.SpecRevision, r.TrackerKind, r.TrackerRevision, r.TrackerSnapshotDigest, taskIDs, taskRefs, tasks}
 	raw, err := json.Marshal(wire)
 	if err != nil {
 		return "", fmt.Errorf("%w: canonical manifest: %v", core.ErrRevision, err)
@@ -948,9 +932,12 @@ func validateRun(r Run) error {
 		}
 		byID[task.ID] = task
 	}
-	for _, team := range r.Teams {
+	for index, team := range r.Teams {
 		if team.RunID != r.ID || team.Project != r.Project {
 			return fmt.Errorf("%w: team belongs to a different run", core.ErrRevision)
+		}
+		if team.ID != canonicalTeamID(r.ID, index+1) {
+			return fmt.Errorf("%w: noncanonical team slot", core.ErrRevision)
 		}
 		if err := validateTeam(team); err != nil {
 			return err
@@ -1009,6 +996,9 @@ func validateTeam(team TeamRecord) error {
 	if err := validateEnvelope(team.RecordEnvelope, team.RunID); err != nil {
 		return err
 	}
+	if !isCanonicalTeamID(team.ID, team.RunID) {
+		return fmt.Errorf("%w: noncanonical team ID", core.ErrRevision)
+	}
 	if !validTeamState(team.State) || len(team.Queue) > maxTeamQueue {
 		return fmt.Errorf("%w: invalid team record", core.ErrPhase)
 	}
@@ -1035,4 +1025,17 @@ func validateTeam(team TeamRecord) error {
 		}
 	}
 	return nil
+}
+
+func canonicalTeamID(runID core.RunID, ordinal int) core.TeamID {
+	return core.TeamID(fmt.Sprintf("%s-team-%d", runID, ordinal))
+}
+
+func isCanonicalTeamID(teamID core.TeamID, runID core.RunID) bool {
+	prefix := string(runID) + "-team-"
+	if !strings.HasPrefix(string(teamID), prefix) {
+		return false
+	}
+	ordinal, err := strconv.Atoi(strings.TrimPrefix(string(teamID), prefix))
+	return err == nil && ordinal > 0 && string(teamID) == string(canonicalTeamID(runID, ordinal))
 }

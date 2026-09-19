@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -136,7 +137,7 @@ func TestRepositoriesCASAndImmutableOneOff(t *testing.T) {
 		t.Fatalf("last good record=%#v err=%v", got, err)
 	}
 
-	team := TeamRecord{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: root, RunID: saved.ID, WrittenAt: saved.WrittenAt, Revision: 1}, ID: "team-1", State: core.Idle}
+	team := TeamRecord{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: root, RunID: saved.ID, WrittenAt: saved.WrittenAt, Revision: 1}, ID: canonicalTeamID(saved.ID, 1), State: core.Idle}
 	teamSaved, err := repos.Teams.Initialize(ctx, team)
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +242,7 @@ func TestPlanAllowsMoreThanTwoRetainedTeams(t *testing.T) {
 	}
 	plan.Teams = make([]TeamRecord, 3)
 	for i := range plan.Teams {
-		plan.Teams[i] = TeamRecord{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: plan.Project, RunID: plan.ID, WrittenAt: plan.WrittenAt, Revision: 1}, ID: core.TeamID("T-" + string(rune('1'+i))), Queue: []core.TaskID{plan.Tasks[i].ID}, State: core.Working}
+		plan.Teams[i] = TeamRecord{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: plan.Project, RunID: plan.ID, WrittenAt: plan.WrittenAt, Revision: 1}, ID: canonicalTeamID(plan.ID, i+1), Queue: []core.TaskID{plan.Tasks[i].ID}, State: core.Working}
 		plan.Teams[i].QueueFingerprint = queueFingerprint(plan.Teams[i].Queue)
 	}
 	plan.ManifestDigest, err = manifestDigest(plan)
@@ -259,6 +260,64 @@ func TestPlanAllowsMoreThanTwoRetainedTeams(t *testing.T) {
 	if err := validateRun(plan); err != nil {
 		t.Fatalf("plan team capacity was capped here: %v", err)
 	}
+}
+
+func TestPlanCASKeepsManifestIdentityWhileTeamsChange(t *testing.T) {
+	ctx, root := context.Background(), t.TempDir()
+	ref := filepath.Join(root, "TASKS.md")
+	if err := os.WriteFile(ref, []byte("# tasks\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := CreatePlan(ctx, root, trackerStub{ref: ref, page: core.TrackerPage{TrackerRevision: 2, TotalNonArchived: 3, Tasks: []core.Task{oneOffTask("A-1", "one", []string{"src/a"}, nil), oneOffTask("A-2", "two", []string{"src/b"}, nil), oneOffTask("A-3", "three", []string{"src/c"}, nil)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos := NewRepositories(store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}))
+	saved, err := repos.Runs.Initialize(ctx, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted := saved
+	admitted.Teams = []TeamRecord{teamSlot(saved, 1, "A-1"), teamSlot(saved, 2, "A-2"), teamSlot(saved, 3, "A-3")}
+	updated, err := repos.Runs.CompareAndSwap(ctx, saved.ID, saved.Revision, admitted)
+	if err != nil || updated.ID != saved.ID || updated.ManifestDigest != saved.ManifestDigest || len(updated.Teams) != 3 {
+		t.Fatalf("team admission=%#v err=%v", updated, err)
+	}
+	updated.Teams[2].Queue = nil
+	updated.Teams[2].QueueFingerprint = ""
+	updated.Teams[2].State = core.Idle
+	updated.Teams[0].Queue = []core.TaskID{"A-3"}
+	updated.Teams[0].QueueFingerprint = queueFingerprint(updated.Teams[0].Queue)
+	updated.Teams[0].State = core.Paused
+	reused, err := repos.Runs.CompareAndSwap(ctx, updated.ID, updated.Revision, updated)
+	if err != nil || reused.ID != saved.ID || reused.ManifestDigest != saved.ManifestDigest || reused.Teams[0].State != core.Paused {
+		t.Fatalf("team reuse=%#v err=%v", reused, err)
+	}
+	immutable := reused
+	immutable.Objective = "changed"
+	if _, err := repos.Runs.CompareAndSwap(ctx, reused.ID, reused.Revision, immutable); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("immutable mutation accepted: %v", err)
+	}
+	for _, mutate := range []func(*Run){
+		func(v *Run) { v.Teams[1].ID = v.Teams[0].ID }, func(v *Run) { v.Teams[0], v.Teams[1] = v.Teams[1], v.Teams[0] }, func(v *Run) { v.Teams[2].ID = "other-team" },
+	} {
+		changed := reused
+		changed.Teams = append([]TeamRecord(nil), reused.Teams...)
+		mutate(&changed)
+		if _, err := repos.Runs.CompareAndSwap(ctx, reused.ID, reused.Revision, changed); !errors.Is(err, core.ErrRevision) {
+			t.Fatalf("unstable team slots accepted: %#v err=%v", changed.Teams, err)
+		}
+	}
+	wrong := teamSlot(saved, 1, "A-1")
+	wrong.ID = "other-team"
+	if _, err := repos.Teams.Initialize(ctx, wrong); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("team repository accepted noncanonical ID: %v", err)
+	}
+}
+
+func teamSlot(run Run, ordinal int, task core.TaskID) TeamRecord {
+	queue := []core.TaskID{task}
+	return TeamRecord{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: run.Project, RunID: run.ID, WrittenAt: run.WrittenAt, Revision: 1}, ID: core.TeamID(fmt.Sprintf("%s-team-%d", run.ID, ordinal)), Queue: queue, QueueFingerprint: queueFingerprint(queue), State: core.Working}
 }
 
 func TestOneOffRejectsAmbiguousScopesAndNeverMutatesInputs(t *testing.T) {

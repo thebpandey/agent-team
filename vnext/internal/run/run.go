@@ -129,6 +129,9 @@ func (r *runStore) CompareAndSwap(ctx context.Context, id core.RunID, expected u
 	if value.ID != id || value.RunID != id || value.Project != existing.Project || value.Root != existing.Root {
 		return Run{}, fmt.Errorf("%w: run identity changed", core.ErrRevision)
 	}
+	if err := validateTeamSlotChange(existing.Teams, value.Teams, id); err != nil {
+		return Run{}, err
+	}
 	if existing.Mode == "one-off" && !sameImmutableOneOff(existing, value) {
 		return Run{}, fmt.Errorf("%w: one-off manifest fields are immutable", core.ErrRevision)
 	}
@@ -252,19 +255,22 @@ func (r *teamStore) CompareAndSwap(ctx context.Context, id core.TeamID, expected
 }
 
 func sameImmutableOneOff(a, b Run) bool {
-	return a.Root == b.Root && a.Mode == b.Mode && a.OneOffKind == b.OneOffKind && a.Objective == b.Objective && a.TrackerKind == b.TrackerKind && a.TrackerRevision == b.TrackerRevision && a.SpecRevision == b.SpecRevision && a.ManifestDigest == b.ManifestDigest && reflect.DeepEqual(a.Tasks, b.Tasks) && sameTeamManifest(a.Teams, b.Teams)
+	return a.Root == b.Root && a.Mode == b.Mode && a.OneOffKind == b.OneOffKind && a.Objective == b.Objective && a.TrackerKind == b.TrackerKind && a.TrackerRevision == b.TrackerRevision && a.SpecRevision == b.SpecRevision && a.ManifestDigest == b.ManifestDigest && reflect.DeepEqual(a.Tasks, b.Tasks)
 }
 
-func sameTeamManifest(a, b []TeamRecord) bool {
-	if len(a) != len(b) {
-		return false
+func validateTeamSlotChange(existing, next []TeamRecord, runID core.RunID) error {
+	if len(next) < len(existing) {
+		return fmt.Errorf("%w: retained team slot removed", core.ErrRevision)
 	}
-	for i := range a {
-		if a[i].ID != b[i].ID || !reflect.DeepEqual(a[i].Queue, b[i].Queue) || a[i].QueueFingerprint != b[i].QueueFingerprint || !reflect.DeepEqual(a[i].Paths, b[i].Paths) || !reflect.DeepEqual(a[i].Resources, b[i].Resources) {
-			return false
+	for i := range next {
+		if next[i].ID != canonicalTeamID(runID, i+1) {
+			return fmt.Errorf("%w: noncanonical retained team slot", core.ErrRevision)
+		}
+		if i < len(existing) && next[i].ID != existing[i].ID {
+			return fmt.Errorf("%w: retained team slot changed", core.ErrRevision)
 		}
 	}
-	return true
+	return nil
 }
 
 func runPath(id core.RunID) string   { return ".agent-team/runs/" + string(id) + ".json" }
