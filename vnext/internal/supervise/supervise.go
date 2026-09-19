@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,9 +43,11 @@ type Supervisor interface {
 }
 
 const (
-	observationBytes = 64 << 10
+	observationBytes = 48 << 10
 	eventLimit       = 64 << 10
 	interruptTimeout = 2 * time.Second
+	handleFieldBytes = 1024
+	errorBytes       = 1024
 )
 
 type supervisor struct {
@@ -106,11 +110,17 @@ func (s *supervisor) Start(ctx context.Context, packet core.AssignmentPacket) (c
 	if err != nil {
 		return contracts.WorkerHandle{}, err
 	}
+	if err := validRequestCapacity(request); err != nil {
+		return contracts.WorkerHandle{}, err
+	}
 	handle, err := s.adapter.StartWorker(ctx, request)
 	if err != nil {
 		return contracts.WorkerHandle{}, err
 	}
 	if err := validateHandle(packet, handle); err != nil {
+		return contracts.WorkerHandle{}, err
+	}
+	if err := s.bind(request, handle); err != nil {
 		return contracts.WorkerHandle{}, err
 	}
 	return handle, nil
@@ -156,6 +166,78 @@ func validateHandle(packet core.AssignmentPacket, handle contracts.WorkerHandle)
 		handle.Task != packet.Task || handle.PacketDigest != packet.QueueFingerprint || handle.CandidateRevision != packet.SpecRevision {
 		return core.ErrRevision
 	}
+	return validHandleIdentity(handle)
+}
+
+type binding struct {
+	Schema  int                     `json:"schema"`
+	Request contracts.WorkerRequest `json:"request"`
+	Handle  contracts.WorkerHandle  `json:"handle"`
+}
+
+func bindingPath(handle contracts.WorkerHandle) string {
+	return path.Join(".agent-team", "supervision", "bindings", string(handle.Run), string(handle.Team), string(handle.Task)+".json")
+}
+
+func (s *supervisor) bind(request contracts.WorkerRequest, handle contracts.WorkerHandle) error {
+	value := binding{Schema: 1, Request: request, Handle: handle}
+	if err := validBinding(value); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.state.CreateJSON(bindingPath(handle), value, eventLimit); err == nil {
+		return nil
+	} else if !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	var existing binding
+	if err := s.state.ReadJSON(bindingPath(handle), eventLimit, &existing); err != nil {
+		return core.ErrRevision
+	}
+	if !reflect.DeepEqual(existing, value) {
+		return core.ErrRevision
+	}
+	return nil
+}
+
+func validBinding(value binding) error {
+	if value.Schema != 1 || value.Request.Reviewer || value.Request.Packet.RunID != value.Handle.Run ||
+		value.Request.Packet.Team != value.Handle.Team || value.Request.Packet.Task != value.Handle.Task ||
+		value.Request.Packet.QueueFingerprint != value.Handle.PacketDigest || value.Request.Packet.SpecRevision != value.Handle.CandidateRevision ||
+		value.Request.Worktree.Run != value.Handle.Run || value.Request.Worktree.Team != value.Handle.Team ||
+		!reflect.DeepEqual(value.Request.WritablePaths, value.Request.Worktree.WritablePaths) {
+		return core.ErrRevision
+	}
+	if err := validateHandle(value.Request.Packet, value.Handle); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) > eventLimit {
+		return core.ErrLimit
+	}
+	return nil
+}
+
+func validRequestCapacity(request contracts.WorkerRequest) error {
+	encoded, err := json.Marshal(request)
+	if err != nil || len(encoded) > eventLimit-6*handleFieldBytes {
+		return core.ErrLimit
+	}
+	return nil
+}
+
+func (s *supervisor) bindingFor(handle contracts.WorkerHandle) error {
+	if err := validHandleIdentity(handle); err != nil {
+		return err
+	}
+	var value binding
+	if err := s.state.ReadJSON(bindingPath(handle), eventLimit, &value); err != nil {
+		return core.ErrRevision
+	}
+	if err := validBinding(value); err != nil || !reflect.DeepEqual(value.Handle, handle) {
+		return core.ErrRevision
+	}
 	return nil
 }
 
@@ -165,7 +247,7 @@ func (s *supervisor) Turn(ctx context.Context, handle contracts.WorkerHandle) (O
 		// scoped handle and attempted adapter argument worth preserving. Keep the
 		// persistence synchronous and detached only from the caller cancellation.
 		if s != nil && s.state != nil && s.adapter != nil {
-			if handleErr := validHandleIdentity(handle); handleErr != nil {
+			if handleErr := s.bindingFor(handle); handleErr != nil {
 				return "", handleErr
 			}
 			if persistErr := s.interrupt(ctx, handle, "", err); persistErr != nil {
@@ -180,7 +262,7 @@ func (s *supervisor) Turn(ctx context.Context, handle contracts.WorkerHandle) (O
 	if s.adapter == nil {
 		return "", core.ErrCapacity
 	}
-	if err := validHandleIdentity(handle); err != nil {
+	if err := s.bindingFor(handle); err != nil {
 		return "", err
 	}
 	observation, err := s.adapter.Poll(ctx, handle)
@@ -228,6 +310,8 @@ func (s *supervisor) Emit(ctx context.Context, event workflow.Event) error {
 		if err := workflow.Checkpoint(ctx, s.state, event.Run, event.Scope, event.CheckpointDigest); err != nil {
 			return err
 		}
+	} else if err := s.resolveOrdinaryEvent(ctx, event); err != nil {
+		return err
 	}
 	return s.persistEvent(event)
 }
@@ -325,56 +409,126 @@ func (s *supervisor) persistEventEvidence(event workflow.Event, evidence *eventE
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var head eventHead
-	headErr := s.state.ReadJSON(headPath(event), eventLimit, &head)
-	if headErr != nil && !errors.Is(headErr, fs.ErrNotExist) {
-		return headErr
-	}
-	if headErr == nil && !validHead(head, event) {
-		return core.ErrRevision
-	}
-
 	recordPath := eventPath(event, evidence)
-	var record eventRecord
-	readErr := s.state.ReadJSON(recordPath, eventLimit, &record)
-	if readErr == nil {
-		if !validRecord(record, event, evidence) {
-			return core.ErrRevision
-		}
-		if headErr == nil && (head.Sequence > record.Sequence || (head.Sequence == record.Sequence && head.Digest != record.Digest)) {
-			return core.ErrRevision
-		}
-		return s.writeHead(eventHead{Schema: 1, Run: event.Run, Scope: event.Scope, Sequence: record.Sequence, Digest: record.Digest})
-	}
-	if !errors.Is(readErr, fs.ErrNotExist) {
-		return readErr
-	}
-
-	sequence, previous := uint64(1), ""
-	if headErr == nil {
-		sequence, previous = head.Sequence+1, head.Digest
-	}
-	record = eventRecord{Schema: 1, Run: event.Run, Scope: event.Scope, Kind: event.Kind, Key: eventKey(event, evidence), Digest: recordDigest(sequence, previous, event, evidence), CheckpointDigest: event.CheckpointDigest, Sequence: sequence, Previous: previous, Event: event, Evidence: evidence}
-	if _, err := s.state.CreateJSON(recordPath, record, eventLimit); err != nil {
-		if !errors.Is(err, fs.ErrExist) {
+	for attempts := 0; attempts < 2; attempts++ {
+		head, err := s.rebuildHead(event)
+		if err != nil {
 			return err
 		}
 		var existing eventRecord
-		if readErr := s.state.ReadJSON(recordPath, eventLimit, &existing); readErr != nil || !validRecord(existing, event, evidence) {
-			return core.ErrRevision
+		readErr := s.state.ReadJSON(recordPath, eventLimit, &existing)
+		if readErr == nil {
+			if !validRecord(existing, event, evidence) {
+				return core.ErrRevision
+			}
+			// A historical idempotent retry must not roll the canonical head back.
+			return nil
 		}
-		record = existing
+		if !errors.Is(readErr, fs.ErrNotExist) {
+			return readErr
+		}
+
+		sequence, previous := head.Sequence+1, head.Digest
+		record := eventRecord{Schema: 1, Run: event.Run, Scope: event.Scope, Kind: event.Kind, Key: eventKey(event, evidence), Digest: recordDigest(sequence, previous, event, evidence), CheckpointDigest: event.CheckpointDigest, Sequence: sequence, Previous: previous, Event: event, Evidence: evidence}
+		if _, err := s.state.CreateJSON(recordPath, record, eventLimit); err == nil {
+			_, err = s.rebuildHead(event)
+			return err
+		} else if !errors.Is(err, fs.ErrExist) {
+			return err
+		}
 	}
-	return s.writeHead(eventHead{Schema: 1, Run: event.Run, Scope: event.Scope, Sequence: record.Sequence, Digest: record.Digest})
+	return core.ErrRevision
+}
+
+// rebuildHead derives the only permissible head from every immutable record.
+// It repairs an absent or stale projection only after proving a contiguous,
+// single-rooted chain; malformed, forked, and ambiguous histories fail closed.
+func (s *supervisor) rebuildHead(event workflow.Event) (eventHead, error) {
+	records, err := s.records(event)
+	if err != nil {
+		return eventHead{}, err
+	}
+	head := eventHead{Schema: 1, Run: event.Run, Scope: event.Scope}
+	if len(records) > 0 {
+		sort.Slice(records, func(i, j int) bool { return records[i].Sequence < records[j].Sequence })
+		for index, record := range records {
+			if !validStoredRecord(record, event) || record.Sequence != uint64(index+1) {
+				return eventHead{}, core.ErrRevision
+			}
+			if index == 0 {
+				if record.Previous != "" {
+					return eventHead{}, core.ErrRevision
+				}
+			} else if record.Previous != records[index-1].Digest {
+				return eventHead{}, core.ErrRevision
+			}
+		}
+		tail := records[len(records)-1]
+		head.Sequence, head.Digest = tail.Sequence, tail.Digest
+	}
+	var stored eventHead
+	readErr := s.state.ReadJSON(headPath(event), eventLimit, &stored)
+	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
+		// A damaged projection is repairable only after the immutable chain above
+		// has been proven; replace it with the derived projection.
+		readErr = nil
+	}
+	if len(records) == 0 {
+		if readErr == nil && !reflect.DeepEqual(stored, head) {
+			if err := s.writeHead(head); err != nil {
+				return eventHead{}, err
+			}
+		}
+		return head, nil
+	}
+	if readErr != nil || !reflect.DeepEqual(stored, head) {
+		if err := s.writeHead(head); err != nil {
+			return eventHead{}, err
+		}
+	}
+	return head, nil
+}
+
+func (s *supervisor) records(event workflow.Event) ([]eventRecord, error) {
+	root, err := os.OpenRoot(s.state.Root)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	directory := eventDirectory(event)
+	info, err := root.Lstat(directory)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, core.ErrRevision
+	}
+	dir, err := root.Open(directory)
+	if err != nil {
+		return nil, core.ErrRevision
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]eventRecord, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !strings.HasSuffix(entry.Name(), ".json") {
+			return nil, core.ErrRevision
+		}
+		var record eventRecord
+		if err := s.state.ReadJSON(path.Join(directory, entry.Name()), eventLimit, &record); err != nil {
+			return nil, core.ErrRevision
+		}
+		records = append(records, record)
+	}
+	return records, nil
 }
 
 func (s *supervisor) writeHead(head eventHead) error {
 	_, err := s.state.WriteJSON(headPath(workflow.Event{Run: head.Run, Scope: head.Scope}), head, eventLimit)
 	return err
-}
-
-func validHead(head eventHead, event workflow.Event) bool {
-	return head.Schema == 1 && head.Run == event.Run && head.Scope == event.Scope && head.Sequence > 0 && validDigest(head.Digest)
 }
 
 func validRecord(record eventRecord, event workflow.Event, evidence *eventEvidence) bool {
@@ -385,6 +539,27 @@ func validRecord(record eventRecord, event workflow.Event, evidence *eventEviden
 		return false
 	}
 	return event.Kind != workflow.CheckpointEvent || validDigest(record.CheckpointDigest)
+}
+
+func validStoredRecord(record eventRecord, event workflow.Event) bool {
+	if record.Schema != 1 || record.Run != event.Run || record.Scope != event.Scope || record.Sequence == 0 ||
+		record.Key != eventKey(record.Event, record.Evidence) || record.Digest != recordDigest(record.Sequence, record.Previous, record.Event, record.Evidence) ||
+		record.CheckpointDigest != record.Event.CheckpointDigest || !validDigest(record.Digest) ||
+		(record.Sequence == 1 && record.Previous != "") || (record.Sequence > 1 && !validDigest(record.Previous)) {
+		return false
+	}
+	if err := validateEvent(record.Event); err != nil {
+		return false
+	}
+	return record.Kind == record.Event.Kind && (record.Kind != workflow.CheckpointEvent || validDigest(record.CheckpointDigest)) && validEvidence(record.Evidence)
+}
+
+func validEvidence(evidence *eventEvidence) bool {
+	if evidence == nil {
+		return true
+	}
+	return validHandleIdentity(evidence.Handle) == nil && evidence.Argument == "adapter.Poll" &&
+		len(evidence.Observation) <= observationBytes && len(evidence.Error) <= errorBytes
 }
 
 func eventKey(event workflow.Event, evidence *eventEvidence) string {
@@ -413,7 +588,8 @@ func validHandleIdentity(handle contracts.WorkerHandle) error {
 	if err := project.ValidateSegment(string(handle.Run)); err != nil {
 		return core.ErrPath
 	}
-	if err := project.ValidateSegment(string(handle.Team)); err != nil || project.ValidateSegment(string(handle.Task)) != nil || handle.Host == "" || handle.Identity == "" || handle.PacketDigest == "" || handle.Reviewer {
+	if err := project.ValidateSegment(string(handle.Team)); err != nil || project.ValidateSegment(string(handle.Task)) != nil || handle.Host == "" || handle.Identity == "" || handle.PacketDigest == "" || handle.Reviewer ||
+		len(handle.Host) > handleFieldBytes || len(handle.Identity) > handleFieldBytes || len(handle.PacketDigest) > handleFieldBytes || len(handle.CandidateRevision) > handleFieldBytes || handle.Attempt < 0 {
 		return core.ErrRevision
 	}
 	return nil
@@ -427,7 +603,11 @@ func (s *supervisor) interrupt(ctx context.Context, handle contracts.WorkerHandl
 	if err != nil {
 		return err
 	}
-	digest := interruptionDigest(handle, observation, errorText(turnErr))
+	evidence, err := fitEvidence(workflow.Event{Run: handle.Run, Scope: core.Scope{Kind: core.ScopeTask, ID: string(handle.Task)}, Kind: workflow.CheckpointEvent, Reason: "foreground turn interrupted", AdmissionHeld: true, RefillHeld: true}, eventEvidence{Handle: handle, Observation: bounded(observation, observationBytes), Argument: "adapter.Poll", Error: bounded(errorText(turnErr), errorBytes)})
+	if err != nil {
+		return err
+	}
+	digest := interruptionDigest(handle, evidence.Observation, evidence.Error)
 	pointer := "supervision/" + strings.TrimPrefix(digest, "sha256:")
 	if receipt.State == core.Interrupted {
 		if receipt.NextAction == "resume" && contains(receipt.EvidencePointers, pointer) {
@@ -441,7 +621,7 @@ func (s *supervisor) interrupt(ctx context.Context, handle contracts.WorkerHandl
 	if err := workflow.Checkpoint(persistCtx, s.state, event.Run, event.Scope, event.CheckpointDigest); err != nil {
 		return err
 	}
-	if err := s.persistEventEvidence(event, &eventEvidence{Handle: handle, Observation: observation, Argument: "adapter.Poll", Error: bounded(errorText(turnErr), 4096)}); err != nil {
+	if err := s.persistEventEvidence(event, &evidence); err != nil {
 		return err
 	}
 
@@ -469,6 +649,31 @@ func (s *supervisor) interrupt(ctx context.Context, handle contracts.WorkerHandl
 	return knowledge.WriteReceipt(persistCtx, s.state, receipt)
 }
 
+func fitEvidence(event workflow.Event, evidence eventEvidence) (eventEvidence, error) {
+	if !validEvidence(&evidence) {
+		return eventEvidence{}, core.ErrRevision
+	}
+	for {
+		probe := eventRecord{Schema: 1, Run: event.Run, Scope: event.Scope, Kind: event.Kind, Key: "sha256:" + strings.Repeat("0", 64), Digest: "sha256:" + strings.Repeat("0", 64), CheckpointDigest: event.CheckpointDigest, Sequence: 1, Event: event, Evidence: &evidence}
+		encoded, err := json.Marshal(probe)
+		if err != nil {
+			return eventEvidence{}, err
+		}
+		if len(encoded)+1 <= eventLimit {
+			return evidence, nil
+		}
+		if len(evidence.Observation) > 0 {
+			evidence.Observation = evidence.Observation[:len(evidence.Observation)/2]
+			continue
+		}
+		if len(evidence.Error) > 0 {
+			evidence.Error = evidence.Error[:len(evidence.Error)/2]
+			continue
+		}
+		return eventEvidence{}, core.ErrLimit
+	}
+}
+
 func (s *supervisor) receiptFor(ctx context.Context, handle contracts.WorkerHandle) (knowledge.Receipt, run.Run, error) {
 	if s == nil || s.state == nil {
 		return knowledge.Receipt{}, run.Run{}, core.ErrPath
@@ -476,31 +681,78 @@ func (s *supervisor) receiptFor(ctx context.Context, handle contracts.WorkerHand
 	if err := validHandleIdentity(handle); err != nil {
 		return knowledge.Receipt{}, run.Run{}, err
 	}
-	manifest, err := run.NewRepositories(s.state).Runs.Read(ctx, handle.Run)
+	return s.receiptForTask(ctx, handle.Run, handle.Team, handle.Task)
+}
+
+func (s *supervisor) receiptForTask(ctx context.Context, runID core.RunID, teamID core.TeamID, taskID core.TaskID) (knowledge.Receipt, run.Run, error) {
+	manifest, err := run.NewRepositories(s.state).Runs.Read(ctx, runID)
 	if err != nil {
 		return knowledge.Receipt{}, run.Run{}, fmt.Errorf("%w: canonical run: %v", core.ErrRevision, err)
 	}
 	var team run.TeamRecord
 	found := false
 	for _, candidate := range manifest.Teams {
-		if candidate.ID == handle.Team {
+		if candidate.ID == teamID {
 			team, found = candidate, true
 			break
 		}
 	}
-	if !found || !containsTask(team.Queue, handle.Task) {
+	if !found || !containsTask(team.Queue, taskID) {
 		return knowledge.Receipt{}, run.Run{}, core.ErrRevision
 	}
 	var receipt knowledge.Receipt
-	relative := path.Join(".agent-team", "receipts", string(handle.Team)+".json")
+	relative := path.Join(".agent-team", "receipts", string(teamID)+".json")
 	if err := s.state.ReadJSON(relative, eventLimit, &receipt); err != nil {
 		return knowledge.Receipt{}, run.Run{}, fmt.Errorf("%w: receipt: %v", core.ErrRevision, err)
 	}
-	if receipt.Schema != 1 || receipt.Project != manifest.Project || receipt.RunID != handle.Run || receipt.Team != string(handle.Team) ||
-		receipt.Task != string(handle.Task) || receipt.Revision == 0 || receipt.Attempt < 1 || receipt.WrittenAt == "" {
+	if receipt.Schema != 1 || receipt.Project != manifest.Project || receipt.RunID != runID || receipt.Team != string(teamID) ||
+		receipt.Task != string(taskID) || receipt.Revision == 0 || receipt.Attempt < 1 || receipt.WrittenAt == "" {
 		return knowledge.Receipt{}, run.Run{}, core.ErrRevision
 	}
 	return receipt, manifest, nil
+}
+
+func (s *supervisor) resolveOrdinaryEvent(ctx context.Context, event workflow.Event) error {
+	// A foreground ordinary event is meaningful only for one canonical task
+	// receipt. Broader scopes are intentionally not guessed or fanned out.
+	if event.Scope.Kind != core.ScopeTask {
+		return core.ErrRevision
+	}
+	manifest, err := run.NewRepositories(s.state).Runs.Read(ctx, event.Run)
+	if err != nil {
+		return core.ErrRevision
+	}
+	taskID := core.TaskID(event.Scope.ID)
+	foundTask := false
+	for _, task := range manifest.Tasks {
+		if task.ID == taskID {
+			foundTask = true
+			break
+		}
+	}
+	if !foundTask {
+		return core.ErrRevision
+	}
+	var teamID core.TeamID
+	for _, team := range manifest.Teams {
+		if containsTask(team.Queue, taskID) {
+			if teamID != "" {
+				return core.ErrRevision
+			}
+			teamID = team.ID
+		}
+	}
+	if teamID == "" {
+		return core.ErrRevision
+	}
+	receipt, _, err := s.receiptForTask(ctx, event.Run, teamID, taskID)
+	if err != nil {
+		return err
+	}
+	if _, err := workflow.Transition(receipt.State, event); err != nil {
+		return core.ErrRevision
+	}
+	return nil
 }
 
 func containsTask(values []core.TaskID, wanted core.TaskID) bool {

@@ -25,6 +25,18 @@ type adapter struct {
 	handle  contracts.WorkerHandle
 	poll    string
 	pollErr error
+	polls   int
+}
+
+func bindHandle(t *testing.T, state *store.Store, a *adapter, handle contracts.WorkerHandle) supervise.Supervisor {
+	t.Helper()
+	s := supervise.NewSupervisor(state, a, nil)
+	packet := core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: handle.Run}, Team: handle.Team, Task: handle.Task, Worktree: state.Root, Base: "base", Scope: []string{"src"}, QueueFingerprint: handle.PacketDigest, SpecRevision: handle.CandidateRevision}
+	got, err := s.Start(context.Background(), packet)
+	if err != nil || !reflect.DeepEqual(got, handle) {
+		t.Fatalf("bind Start() = %+v, %v", got, err)
+	}
+	return s
 }
 
 func (a *adapter) Probe(context.Context) (contracts.HostCapabilities, error) {
@@ -38,6 +50,7 @@ func (a *adapter) StartReviewer(context.Context, contracts.WorkerRequest, contra
 	return contracts.WorkerHandle{}, core.ErrTransition
 }
 func (a *adapter) Poll(context.Context, contracts.WorkerHandle) (string, error) {
+	a.polls++
 	return a.poll, a.pollErr
 }
 func (a *adapter) Stop(context.Context, contracts.WorkerHandle, core.Scope) error { return nil }
@@ -94,7 +107,7 @@ func TestNilDependenciesFailClosed(t *testing.T) {
 func TestTurnPollsOnceAndBoundsOutput(t *testing.T) {
 	handle := contracts.WorkerHandle{Host: "host", Identity: "worker", Run: "RUN", Team: "TEAM", Task: "TASK", PacketDigest: "packet", CandidateRevision: "spec"}
 	a := &adapter{handle: handle, poll: string(make([]byte, 256<<10))}
-	s := supervise.NewSupervisor(store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}), a, nil)
+	s := bindHandle(t, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}), a, handle)
 	got, err := s.Turn(context.Background(), handle)
 	if err != nil || len(got) == 0 || len(got) >= len(a.poll) {
 		t.Fatalf("Turn() = %d bytes, %v", len(got), err)
@@ -105,7 +118,7 @@ func TestTurnReturnsBoundedPartialOutputOnAdapterError(t *testing.T) {
 	handle := contracts.WorkerHandle{Host: "host", Identity: "worker", Run: "RUN", Team: "TEAM", Task: "TASK", PacketDigest: "packet", CandidateRevision: "spec"}
 	pollErr := errors.New("adapter failed")
 	a := &adapter{handle: handle, poll: string(make([]byte, 256<<10)), pollErr: pollErr}
-	s := supervise.NewSupervisor(store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}), a, nil)
+	s := bindHandle(t, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}), a, handle)
 	got, err := s.Turn(context.Background(), handle)
 	if !errors.Is(err, pollErr) || len(got) == 0 || len(got) >= len(a.poll) {
 		t.Fatalf("Turn() = %d bytes, %v", len(got), err)
@@ -143,7 +156,7 @@ func readReceipt(t *testing.T, state *store.Store, team core.TeamID) knowledge.R
 func TestCancelledTurnPersistsPartialEvidenceAndConverges(t *testing.T) {
 	state, _, handle := interruptionFixture(t)
 	a := &adapter{handle: handle, poll: "partial observation", pollErr: context.Canceled}
-	s := supervise.NewSupervisor(state, a, nil)
+	s := bindHandle(t, state, a, handle)
 	got, err := s.Turn(context.Background(), handle)
 	if got != "partial observation" || !errors.Is(err, core.ErrTransition) {
 		t.Fatalf("Turn() = %q, %v", got, err)
@@ -176,14 +189,88 @@ func TestCancelledTurnPersistsPartialEvidenceAndConverges(t *testing.T) {
 func TestCancellationProvenanceMismatchDoesNotMutateReceipt(t *testing.T) {
 	state, _, handle := interruptionFixture(t)
 	before := readReceipt(t, state, handle.Team)
+	beforeHandle := handle
 	handle.Task = "OTHER"
-	s := supervise.NewSupervisor(state, &adapter{handle: handle, poll: "partial", pollErr: context.Canceled}, nil)
+	a := &adapter{handle: beforeHandle, poll: "partial", pollErr: context.Canceled}
+	s := bindHandle(t, state, a, beforeHandle)
 	if _, err := s.Turn(context.Background(), handle); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("Turn() error = %v, want ErrRevision", err)
 	}
 	after := readReceipt(t, state, core.TeamID(before.Team))
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("mismatched handle mutated receipt: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestTurnRequiresExactDurableBindingBeforePoll(t *testing.T) {
+	state, _, handle := interruptionFixture(t)
+	a := &adapter{handle: handle, poll: "must not poll"}
+	s := bindHandle(t, state, a, handle)
+	forged := handle
+	forged.Sequence++
+	if _, err := s.Turn(context.Background(), forged); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("forged Turn() error = %v", err)
+	}
+	if a.polls != 0 {
+		t.Fatalf("forged handle reached Poll %d times", a.polls)
+	}
+}
+
+func TestStartRejectsConflictingDurableBinding(t *testing.T) {
+	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	handle := contracts.WorkerHandle{Host: "host", Identity: "worker", Run: "RUN", Team: "TEAM", Task: "TASK", PacketDigest: "packet", CandidateRevision: "spec"}
+	a := &adapter{handle: handle}
+	s := bindHandle(t, state, a, handle)
+	packet := core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: handle.Run}, Team: handle.Team, Task: handle.Task, Worktree: t.TempDir(), Base: "base", Scope: []string{"other"}, QueueFingerprint: handle.PacketDigest, SpecRevision: handle.CandidateRevision}
+	if _, err := s.Start(context.Background(), packet); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("conflicting Start() error = %v", err)
+	}
+}
+
+func TestOrdinaryEventRequiresCanonicalReceiptProvenance(t *testing.T) {
+	state, manifest, handle := interruptionFixture(t)
+	if err := os.Remove(filepath.Join(state.Root, ".agent-team", "receipts", string(handle.Team)+".json")); err != nil {
+		t.Fatal(err)
+	}
+	s := supervise.NewSupervisor(state, nil, nil)
+	event := workflow.Event{Run: manifest.ID, Scope: core.Scope{Kind: core.ScopeTask, ID: "TASK"}, Kind: workflow.Pause, From: core.Implementing, Reason: "operator pause", AdmissionHeld: true, RefillHeld: true}
+	if err := s.Emit(context.Background(), event); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("ordinary event without receipt = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(state.Root, ".agent-team", "supervision", "events", string(manifest.ID), "task-TASK")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ordinary event persisted without provenance: %v", err)
+	}
+}
+
+func TestOversizeHandleFailsBeforeBindingOrEvidence(t *testing.T) {
+	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	handle := contracts.WorkerHandle{Host: "host", Identity: string(make([]byte, 1025)), Run: "RUN", Team: "TEAM", Task: "TASK", PacketDigest: "packet"}
+	a := &adapter{handle: handle}
+	s := supervise.NewSupervisor(state, a, nil)
+	packet := core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: "RUN"}, Team: "TEAM", Task: "TASK", Worktree: t.TempDir(), Base: "base", Scope: []string{"src"}, QueueFingerprint: "packet"}
+	if _, err := s.Start(context.Background(), packet); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("oversize handle Start() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(state.Root, ".agent-team", "supervision", "bindings")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oversize handle wrote binding: %v", err)
+	}
+}
+
+func TestCancellationEvidenceAlwaysFitsEventLimit(t *testing.T) {
+	state, _, handle := interruptionFixture(t)
+	a := &adapter{handle: handle, poll: string(make([]byte, 256<<10)), pollErr: context.Canceled}
+	s := bindHandle(t, state, a, handle)
+	if _, err := s.Turn(context.Background(), handle); !errors.Is(err, core.ErrTransition) {
+		t.Fatalf("large cancellation Turn() error = %v", err)
+	}
+	directory := filepath.Join(state.Root, ".agent-team", "supervision", "events", string(handle.Run), "task-TASK")
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("large evidence records = %v, %v", entries, err)
+	}
+	info, err := os.Stat(filepath.Join(directory, entries[0].Name()))
+	if err != nil || info.Size() > 64<<10 {
+		t.Fatalf("event size = %d, %v", info.Size(), err)
 	}
 }
 
@@ -247,10 +334,54 @@ func TestForegroundEventsAreOrderedAndHeadRepairsOnRetry(t *testing.T) {
 	}
 }
 
+func TestHeadRepairRejectsTamperedEarlierRecord(t *testing.T) {
+	state, manifest, _ := interruptionFixture(t)
+	s := supervise.NewSupervisor(state, nil, nil)
+	scope := core.Scope{Kind: core.ScopeTask, ID: "TASK"}
+	first := workflow.Event{Run: manifest.ID, Scope: scope, Kind: workflow.CheckpointEvent, CheckpointDigest: digest, AdmissionHeld: true, RefillHeld: true, Reason: "first chain record"}
+	second := first
+	second.Reason = "second chain record"
+	if err := s.Emit(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Emit(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(state.Root, ".agent-team", "supervision", "events", string(manifest.ID), "task-TASK")
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("event chain = %v, %v", entries, err)
+	}
+	firstName := ""
+	for _, entry := range entries {
+		var record map[string]any
+		if err := state.ReadJSON(filepath.Join(".agent-team", "supervision", "events", string(manifest.ID), "task-TASK", entry.Name()), 64<<10, &record); err != nil {
+			t.Fatal(err)
+		}
+		event, _ := record["event"].(map[string]any)
+		if event["reason"] == first.Reason {
+			firstName = entry.Name()
+		}
+	}
+	if firstName == "" {
+		t.Fatal("first record not found")
+	}
+	if _, err := state.WriteJSON(filepath.Join(".agent-team", "supervision", "events", string(manifest.ID), "task-TASK", firstName), map[string]any{"schema": 1}, 64<<10); err != nil {
+		t.Fatal(err)
+	}
+	head := filepath.Join(state.Root, ".agent-team", "supervision", "heads", string(manifest.ID), "task-TASK.json")
+	if err := os.Remove(head); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Emit(context.Background(), second); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("tampered chain retry = %v, want ErrRevision", err)
+	}
+}
+
 func TestOrdinaryEventDoesNotCreateCanonicalCheckpoint(t *testing.T) {
 	state, manifest, _ := interruptionFixture(t)
 	s := supervise.NewSupervisor(state, nil, nil)
-	event := workflow.Event{Run: manifest.ID, Scope: core.Scope{Kind: core.ScopeTask, ID: "TASK"}, Kind: workflow.Pause, From: core.Working, Reason: "operator pause", AdmissionHeld: true, RefillHeld: true}
+	event := workflow.Event{Run: manifest.ID, Scope: core.Scope{Kind: core.ScopeTask, ID: "TASK"}, Kind: workflow.Pause, From: core.Implementing, Reason: "operator pause", AdmissionHeld: true, RefillHeld: true}
 	if err := s.Emit(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +406,8 @@ func TestMalformedEventFailsBeforeCanonicalWrite(t *testing.T) {
 
 func TestCancelledContextReturnsPromptlyWithoutAdapterCall(t *testing.T) {
 	state, _, handle := interruptionFixture(t)
-	s := supervise.NewSupervisor(state, &adapter{handle: handle, poll: "must not poll"}, nil)
+	a := &adapter{handle: handle, poll: "must not poll"}
+	s := bindHandle(t, state, a, handle)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	started := time.Now()
