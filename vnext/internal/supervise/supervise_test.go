@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -30,9 +31,13 @@ type adapter struct {
 }
 
 func bindHandle(t *testing.T, state *store.Store, a *adapter, handle contracts.WorkerHandle) supervise.Supervisor {
+	return bindHandleAt(t, state, a, handle, state.Root)
+}
+
+func bindHandleAt(t *testing.T, state *store.Store, a *adapter, handle contracts.WorkerHandle, worktree string) supervise.Supervisor {
 	t.Helper()
 	s := supervise.NewSupervisor(state, a, nil)
-	packet := core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: handle.Run}, Team: handle.Team, Task: handle.Task, Worktree: state.Root, Base: "base", Scope: []string{"src"}, QueueFingerprint: handle.PacketDigest, SpecRevision: handle.CandidateRevision}
+	packet := core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: handle.Run}, Team: handle.Team, Task: handle.Task, Worktree: worktree, Base: "base", Scope: []string{"src"}, QueueFingerprint: handle.PacketDigest, SpecRevision: handle.CandidateRevision}
 	got, err := s.Start(context.Background(), packet)
 	if err != nil || !reflect.DeepEqual(got, handle) {
 		t.Fatalf("bind Start() = %+v, %v", got, err)
@@ -357,6 +362,46 @@ func TestConcurrentIdenticalInterruptedTurnsConvergeOnce(t *testing.T) {
 	first.poll = "different partial"
 	if _, err := s1.Turn(context.Background(), handle); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("non-identical retry = %v", err)
+	}
+}
+
+func TestSymlinkAliasSupervisorsShareInterruptionGuard(t *testing.T) {
+	state, _, handle := interruptionFixture(t)
+	alias := filepath.Join(t.TempDir(), "store-alias")
+	if err := os.Symlink(state.Root, alias); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlink privilege unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	aliasState := store.New(alias, core.StorageLimits{CanonicalBytes: 16 << 20})
+	first := &adapter{handle: handle, poll: "same partial", pollErr: context.Canceled}
+	second := &adapter{handle: handle, poll: "same partial", pollErr: context.Canceled}
+	s1 := bindHandle(t, state, first, handle)
+	s2 := bindHandleAt(t, aliasState, second, handle, state.Root)
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wait sync.WaitGroup
+	for _, supervisor := range []supervise.Supervisor{s1, s2} {
+		wait.Add(1)
+		go func(s supervise.Supervisor) {
+			defer wait.Done()
+			<-start
+			_, err := s.Turn(context.Background(), handle)
+			errs <- err
+		}(supervisor)
+	}
+	close(start)
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if !errors.Is(err, core.ErrTransition) {
+			t.Fatalf("alias concurrent Turn() = %v", err)
+		}
+	}
+	receipt := readReceipt(t, state, handle.Team)
+	if receipt.State != core.Interrupted || receipt.Revision != 3 || len(receipt.EvidencePointers) != 2 {
+		t.Fatalf("alias concurrent receipt = %+v", receipt)
 	}
 }
 

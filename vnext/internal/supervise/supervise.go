@@ -56,8 +56,10 @@ type supervisor struct {
 	adapter host.Adapter
 	// runner is retained as the explicit host boundary declared by the Phase 2
 	// contract. Supervision never invokes it: adapter.Poll is the sole turn.
-	runner host.CommandRunner
-	mu     *sync.Mutex
+	runner   host.CommandRunner
+	mu       *sync.Mutex
+	lockRoot string
+	lockErr  error
 }
 
 var locks sync.Map
@@ -67,20 +69,43 @@ func lockFor(root string) *sync.Mutex {
 	return value.(*sync.Mutex)
 }
 
-func interruptLockFor(state *store.Store, handle contracts.WorkerHandle) *sync.Mutex {
-	return lockFor(storeRoot(state) + "\x00" + string(handle.Run) + "\x00task\x00" + string(handle.Task))
+func interruptLockFor(s *supervisor, handle contracts.WorkerHandle) *sync.Mutex {
+	return lockFor(s.lockRoot + "\x00" + string(handle.Run) + "\x00task\x00" + string(handle.Task))
 }
 
 // NewSupervisor creates a foreground-only supervisor.
 func NewSupervisor(state *store.Store, adapter host.Adapter, runner host.CommandRunner) Supervisor {
-	return &supervisor{state: state, adapter: adapter, runner: runner, mu: lockFor(storeRoot(state))}
+	root, err := canonicalStoreRoot(state)
+	if err != nil {
+		root = "<invalid-store-root>"
+	}
+	return &supervisor{state: state, adapter: adapter, runner: runner, mu: lockFor(root), lockRoot: root, lockErr: err}
 }
 
-func storeRoot(state *store.Store) string {
-	if state == nil {
-		return "<nil>"
+func canonicalStoreRoot(state *store.Store) (string, error) {
+	if state == nil || state.Root == "" {
+		return "", core.ErrPath
 	}
-	return state.Root
+	abs, err := filepath.Abs(filepath.Clean(state.Root))
+	if err != nil {
+		return "", core.ErrPath
+	}
+	root, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", core.ErrPath
+	}
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return "", core.ErrPath
+	}
+	return filepath.Clean(root), nil
+}
+
+func (s *supervisor) lockError() error {
+	if s == nil || s.lockErr != nil {
+		return core.ErrPath
+	}
+	return nil
 }
 
 // InterruptedEvent represents the durable checkpoint which precedes a receipt
@@ -107,6 +132,9 @@ func (s *supervisor) Start(ctx context.Context, packet core.AssignmentPacket) (c
 	}
 	if s == nil || s.state == nil {
 		return contracts.WorkerHandle{}, core.ErrPath
+	}
+	if err := s.lockError(); err != nil {
+		return contracts.WorkerHandle{}, err
 	}
 	if s.adapter == nil {
 		return contracts.WorkerHandle{}, core.ErrCapacity
@@ -185,6 +213,9 @@ func bindingPath(handle contracts.WorkerHandle) string {
 }
 
 func (s *supervisor) bind(request contracts.WorkerRequest, handle contracts.WorkerHandle) error {
+	if err := s.lockError(); err != nil {
+		return err
+	}
 	value := binding{Schema: 1, Request: request, Handle: handle}
 	if err := validBinding(value); err != nil {
 		return err
@@ -243,9 +274,14 @@ func validRequestCapacity(request contracts.WorkerRequest) error {
 }
 
 func (s *supervisor) bindingFor(handle contracts.WorkerHandle) error {
+	if err := s.lockError(); err != nil {
+		return err
+	}
 	if err := validHandleIdentity(handle); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var value binding
 	if err := s.state.ReadJSON(bindingPath(handle), eventLimit, &value); err != nil {
 		return core.ErrRevision
@@ -273,6 +309,9 @@ func (s *supervisor) Turn(ctx context.Context, handle contracts.WorkerHandle) (O
 	}
 	if s == nil || s.state == nil {
 		return "", core.ErrPath
+	}
+	if err := s.lockError(); err != nil {
+		return "", err
 	}
 	if s.adapter == nil {
 		return "", core.ErrCapacity
@@ -317,6 +356,9 @@ func (s *supervisor) Checkpoint(ctx context.Context, runID core.RunID, scope cor
 func (s *supervisor) Emit(ctx context.Context, event workflow.Event) error {
 	if s == nil || s.state == nil {
 		return core.ErrPath
+	}
+	if err := s.lockError(); err != nil {
+		return err
 	}
 	if err := validateEvent(event); err != nil {
 		return err
@@ -421,6 +463,9 @@ func (s *supervisor) persistEvent(event workflow.Event) error {
 }
 
 func (s *supervisor) persistEventEvidence(event workflow.Event, evidence *eventEvidence) error {
+	if err := s.lockError(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -611,7 +656,10 @@ func validHandleIdentity(handle contracts.WorkerHandle) error {
 }
 
 func (s *supervisor) interrupt(ctx context.Context, handle contracts.WorkerHandle, observation string, turnErr error) error {
-	guard := interruptLockFor(s.state, handle)
+	if err := s.lockError(); err != nil {
+		return err
+	}
+	guard := interruptLockFor(s, handle)
 	guard.Lock()
 	defer guard.Unlock()
 
