@@ -137,9 +137,15 @@ func TestRepositoriesCASAndImmutableOneOff(t *testing.T) {
 		t.Fatalf("last good record=%#v err=%v", got, err)
 	}
 
-	team := TeamRecord{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: root, RunID: saved.ID, WrittenAt: saved.WrittenAt, Revision: 1}, ID: canonicalTeamID(saved.ID, 1), State: core.Idle}
+	team := saved.Teams[0]
 	teamSaved, err := repos.Teams.Initialize(ctx, team)
 	if err != nil {
+		t.Fatal(err)
+	}
+	parent := updated
+	parent.Teams = append([]TeamRecord(nil), updated.Teams...)
+	parent.Teams[0].Revision = teamSaved.Revision + 1
+	if _, err := repos.Runs.CompareAndSwap(ctx, updated.ID, updated.Revision, parent); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repos.Teams.CompareAndSwap(ctx, team.ID, teamSaved.Revision, teamSaved); err != nil {
@@ -312,6 +318,124 @@ func TestPlanCASKeepsManifestIdentityWhileTeamsChange(t *testing.T) {
 	wrong.ID = "other-team"
 	if _, err := repos.Teams.Initialize(ctx, wrong); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("team repository accepted noncanonical ID: %v", err)
+	}
+}
+
+func TestOneOffCASKeepsOnlyDerivedTeamAuthority(t *testing.T) {
+	ctx, root := context.Background(), t.TempDir()
+	repos := NewRepositories(store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}))
+	feature, err := CreateOneOff(ctx, root, Feature, "feature", []core.Task{oneOffTask("F-1", "one", []string{"src/a"}, []string{"db:read"}), oneOffTask("F-2", "two", []string{"src/b"}, []string{"cache:read"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := repos.Runs.Initialize(ctx, feature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broad := saved
+	broad.Teams = append([]TeamRecord(nil), saved.Teams...)
+	broad.Teams[0].Paths = append(broad.Teams[0].Paths, "src/extra")
+	if _, err := repos.Runs.CompareAndSwap(ctx, saved.ID, saved.Revision, broad); err == nil {
+		t.Fatal("feature team scope broadened")
+	}
+	broadResource := saved
+	broadResource.Teams = append([]TeamRecord(nil), saved.Teams...)
+	broadResource.Teams[0].Resources = append(broadResource.Teams[0].Resources, "cache:write")
+	if _, err := repos.Runs.CompareAndSwap(ctx, saved.ID, saved.Revision, broadResource); err == nil {
+		t.Fatal("feature team resource broadened")
+	}
+	valid := saved
+	valid.Teams = append([]TeamRecord(nil), saved.Teams...)
+	valid.Teams[0].State = core.Paused
+	valid.Teams[0].Queue = []core.TaskID{"F-2", "F-1"}
+	valid.Teams[0].QueueFingerprint = queueFingerprint(valid.Teams[0].Queue)
+	if _, err := repos.Runs.CompareAndSwap(ctx, saved.ID, saved.Revision, valid); err != nil {
+		t.Fatalf("valid state transition failed: %v", err)
+	}
+	audit, err := CreateOneOff(ctx, root, Audit, "audit", []core.Task{oneOffTask("A-1", "audit", []string{"src/a"}, []string{"db:test"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, err = repos.Runs.Initialize(ctx, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := audit
+	write.Teams = append([]TeamRecord(nil), audit.Teams...)
+	write.Teams[0].Paths = []string{"src/a"}
+	if _, err := repos.Runs.CompareAndSwap(ctx, audit.ID, audit.Revision, write); err == nil {
+		t.Fatal("audit write path restored")
+	}
+	writeResource := audit
+	writeResource.Teams = append([]TeamRecord(nil), audit.Teams...)
+	writeResource.Teams[0].Resources = []string{"db:test"}
+	if _, err := repos.Runs.CompareAndSwap(ctx, audit.ID, audit.Revision, writeResource); err == nil {
+		t.Fatal("audit write resource restored")
+	}
+	review, err := CreateOneOff(ctx, root, Review, "review", []core.Task{oneOffTask("R-1", "review", []string{"src/a"}, []string{"db:test"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err = repos.Runs.Initialize(ctx, review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewWrite := review
+	reviewWrite.Teams = append([]TeamRecord(nil), review.Teams...)
+	reviewWrite.Teams[0].Paths = []string{"src/a"}
+	if _, err := repos.Runs.CompareAndSwap(ctx, review.ID, review.Revision, reviewWrite); err == nil {
+		t.Fatal("review write path restored")
+	}
+}
+
+func TestTeamRepositoryRequiresCurrentRunSlot(t *testing.T) {
+	ctx, root := context.Background(), t.TempDir()
+	repos := NewRepositories(store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}))
+	run, err := CreateOneOff(ctx, root, Feature, "feature", []core.Task{oneOffTask("F-1", "feature", []string{"src/a"}, []string{"db:test"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := repos.Runs.Initialize(ctx, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	team := saved.Teams[0]
+	if _, err := repos.Teams.Initialize(ctx, team); err != nil {
+		t.Fatalf("matching team slot rejected: %v", err)
+	}
+
+	orphan := team
+	orphan.RunID = "run-orphan"
+	orphan.ID = canonicalTeamID(orphan.RunID, 1)
+	if _, err := repos.Teams.Initialize(ctx, orphan); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("orphan team accepted: %v", err)
+	}
+	if _, err := repos.Teams.Read(ctx, orphan.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphan write occurred: %v", err)
+	}
+	mismatch := team
+	mismatch.Paths = []string{"src/other"}
+	if _, err := repos.Teams.Initialize(ctx, mismatch); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("mismatched team accepted: %v", err)
+	}
+
+	parent := saved
+	parent.Teams = append([]TeamRecord(nil), saved.Teams...)
+	parent.Teams[0].State = core.Paused
+	parent.Teams[0].Revision = team.Revision + 1
+	parent, err = repos.Runs.CompareAndSwap(ctx, saved.ID, saved.Revision, parent)
+	if err != nil {
+		t.Fatalf("parent transition: %v", err)
+	}
+	next := team
+	next.State = core.Paused
+	if _, err := repos.Teams.CompareAndSwap(ctx, team.ID, team.Revision, next); err != nil {
+		t.Fatalf("matching child transition rejected: %v", err)
+	}
+	wrong := team
+	wrong.State = core.Working
+	if _, err := repos.Teams.CompareAndSwap(ctx, team.ID, team.Revision+1, wrong); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("contradictory child transition accepted: %v", err)
 	}
 }
 

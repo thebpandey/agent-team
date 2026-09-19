@@ -36,7 +36,8 @@ type Repositories struct {
 // shared so a process cannot observe a half-completed compare-and-swap.
 func NewRepositories(st *store.Store) Repositories {
 	mu := &sync.Mutex{}
-	return Repositories{Runs: &runStore{store: st, mu: mu}, Teams: &teamStore{store: st, mu: mu}}
+	runs := &runStore{store: st, mu: mu}
+	return Repositories{Runs: runs, Teams: &teamStore{store: st, runs: runs, mu: mu}}
 }
 
 type runStore struct {
@@ -153,6 +154,7 @@ func (r *runStore) CompareAndSwap(ctx context.Context, id core.RunID, expected u
 
 type teamStore struct {
 	store *store.Store
+	runs  *runStore
 	mu    *sync.Mutex
 }
 
@@ -168,6 +170,9 @@ func (r *teamStore) Initialize(ctx context.Context, value TeamRecord) (TeamRecor
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := r.matchesRunSlot(ctx, value); err != nil {
+		return TeamRecord{}, err
+	}
 	existing, err := r.read(ctx, value.ID)
 	if err == nil {
 		if !reflect.DeepEqual(existing, value) {
@@ -245,6 +250,9 @@ func (r *teamStore) CompareAndSwap(ctx context.Context, id core.TeamID, expected
 	if err := validateTeam(value); err != nil {
 		return TeamRecord{}, err
 	}
+	if err := r.matchesRunSlot(ctx, value); err != nil {
+		return TeamRecord{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return TeamRecord{}, err
 	}
@@ -252,6 +260,28 @@ func (r *teamStore) CompareAndSwap(ctx context.Context, id core.TeamID, expected
 		return TeamRecord{}, err
 	}
 	return value, nil
+}
+
+// matchesRunSlot prevents the standalone team records from becoming a second,
+// contradictory authority ledger. A team write must exactly mirror its current
+// canonical slot in the persisted run.
+func (r *teamStore) matchesRunSlot(ctx context.Context, value TeamRecord) error {
+	if r.runs == nil {
+		return fmt.Errorf("%w: nil run repository", core.ErrSettings)
+	}
+	run, err := r.runs.read(ctx, value.RunID)
+	if err != nil {
+		return fmt.Errorf("%w: team run slot: %v", core.ErrRevision, err)
+	}
+	for _, slot := range run.Teams {
+		if slot.ID == value.ID {
+			if reflect.DeepEqual(slot, value) {
+				return nil
+			}
+			return fmt.Errorf("%w: team differs from run slot", core.ErrRevision)
+		}
+	}
+	return fmt.Errorf("%w: team is not a current run slot", core.ErrRevision)
 }
 
 func sameImmutableOneOff(a, b Run) bool {

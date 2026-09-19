@@ -183,7 +183,7 @@ func CreateOneOff(ctx context.Context, project string, kind OneOffKind, objectiv
 			return Run{}, fmt.Errorf("%w: one-off task %q has no criteria", core.ErrBatch, task.ID)
 		}
 	}
-	teams, err := planOneOffTeams(normalized)
+	teams, err := planOneOffTeams(kind, normalized)
 	if err != nil {
 		return Run{}, err
 	}
@@ -294,7 +294,7 @@ func finalizeRun(r Run) (Run, error) {
 	return r, nil
 }
 
-func planOneOffTeams(tasks []core.Task) ([]TeamRecord, error) {
+func planOneOffTeams(kind OneOffKind, tasks []core.Task) ([]TeamRecord, error) {
 	components := make([][]core.TaskID, 0, len(tasks))
 	used := make([]bool, len(tasks))
 	for i := range tasks {
@@ -339,30 +339,68 @@ func planOneOffTeams(tasks []core.Task) ([]TeamRecord, error) {
 			teams = append(teams, TeamRecord{Queue: append([]core.TaskID(nil), component...), State: core.Working})
 		}
 	}
+	for i := range teams {
+		paths, resources, err := derivedOneOffAuthority(kind, tasks, teams[i].Queue)
+		if err != nil {
+			return nil, err
+		}
+		teams[i].Paths, teams[i].Resources = paths, resources
+	}
+	return teams, nil
+}
+
+// derivedOneOffAuthority is the only source of mutable team scope for a
+// trackerless run. It deliberately derives scope from immutable task details,
+// rather than accepting authority from an admission caller.
+func derivedOneOffAuthority(kind OneOffKind, tasks []core.Task, queue []core.TaskID) ([]string, []string, error) {
 	byID := make(map[core.TaskID]core.Task, len(tasks))
 	for _, task := range tasks {
 		byID[task.ID] = task
 	}
-	for i := range teams {
-		paths, resources := map[string]bool{}, map[string]bool{}
-		for _, id := range teams[i].Queue {
-			for _, value := range byID[id].WritablePaths {
+	paths := map[string]bool{}
+	resources := map[string]bool{}
+	seen := map[core.TaskID]bool{}
+	for _, id := range queue {
+		task, ok := byID[id]
+		if !ok || seen[id] {
+			return nil, nil, fmt.Errorf("%w: invalid one-off team task %q", core.ErrBatch, id)
+		}
+		seen[id] = true
+		if kind == OneOffFeature {
+			for _, value := range task.WritablePaths {
 				paths[value] = true
 			}
-			for _, value := range byID[id].Resources {
+		}
+		for _, value := range task.Resources {
+			if kind == OneOffFeature || readOnlyResource(value) {
 				resources[value] = true
 			}
 		}
-		for value := range paths {
-			teams[i].Paths = append(teams[i].Paths, value)
-		}
-		for value := range resources {
-			teams[i].Resources = append(teams[i].Resources, value)
-		}
-		sort.Strings(teams[i].Paths)
-		sort.Strings(teams[i].Resources)
 	}
-	return teams, nil
+	var pathValues []string
+	if len(paths) > 0 {
+		pathValues = make([]string, 0, len(paths))
+	}
+	for value := range paths {
+		pathValues = append(pathValues, value)
+	}
+	var resourceValues []string
+	if len(resources) > 0 {
+		resourceValues = make([]string, 0, len(resources))
+	}
+	for value := range resources {
+		resourceValues = append(resourceValues, value)
+	}
+	sort.Strings(pathValues)
+	sort.Strings(resourceValues)
+	return pathValues, resourceValues, nil
+}
+
+func readOnlyResource(value string) bool {
+	value = strings.ToLower(value)
+	return strings.HasSuffix(value, ":read") || strings.HasSuffix(value, ":none") ||
+		strings.HasSuffix(value, ":view") || strings.HasSuffix(value, ":list") ||
+		strings.Contains(value, "readonly")
 }
 
 func normalizeTasks(tasks []core.Task) ([]core.Task, error) {
@@ -941,6 +979,12 @@ func validateRun(r Run) error {
 		}
 		if err := validateTeam(team); err != nil {
 			return err
+		}
+		if r.Mode == "one-off" {
+			paths, resources, err := derivedOneOffAuthority(r.OneOffKind, r.Tasks, team.Queue)
+			if err != nil || !reflect.DeepEqual(paths, team.Paths) || !reflect.DeepEqual(resources, team.Resources) {
+				return fmt.Errorf("%w: one-off team authority is not derived from its queue", core.ErrRevision)
+			}
 		}
 		for _, id := range team.Queue {
 			if seen[id] || byID[id].ID == "" {
