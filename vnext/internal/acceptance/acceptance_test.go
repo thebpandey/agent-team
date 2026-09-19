@@ -310,8 +310,18 @@ func TestSchemaOneCanonicalAcceptance(t *testing.T) {
 	if err := knowledge.WriteReceipt(ctx, s, receipt); err != nil {
 		t.Fatal(err)
 	}
+	foreignRoot := testkit.GitRepo(t)
 	conflictingRun := manifest
-	conflictingRun.Project = "conflicting-project"
+	conflictingRun.Tasks = append([]core.Task(nil), manifest.Tasks...)
+	conflictingRun.Teams = append([]run.TeamRecord(nil), manifest.Teams...)
+	conflictingRun.Root = foreignRoot
+	conflictingRun.Project = foreignRoot
+	for i := range conflictingRun.Tasks {
+		conflictingRun.Tasks[i].Project = foreignRoot
+	}
+	for i := range conflictingRun.Teams {
+		conflictingRun.Teams[i].Project = foreignRoot
+	}
 	if _, err := repos.Runs.CompareAndSwap(ctx, manifest.ID, manifest.Revision, conflictingRun); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("conflicting run error=%v, want ErrRevision", err)
 	}
