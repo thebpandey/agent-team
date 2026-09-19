@@ -91,10 +91,13 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 		return AdmissionOutcome{}, err
 	}
 
-	commitPath := admissionPath(teamID, batch.BatchID)
+	commitPath := runCommitPath(runID, expectedRunRevision)
 	if existing, found, err := readCommit(st, commitPath); err != nil {
 		return AdmissionOutcome{}, err
 	} else if found {
+		if err := validateCommit(existing, runID, expectedRunRevision); err != nil {
+			return AdmissionOutcome{}, err
+		}
 		if existing.Batch.Fingerprint != batch.Fingerprint || !reflect.DeepEqual(existing.Batch, batch) {
 			return AdmissionOutcome{}, fmt.Errorf("%w: admission ID %q already has a different fingerprint", core.ErrRevision, batch.BatchID)
 		}
@@ -106,10 +109,6 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 		}
 		return staleOutcome(st, runID, teamID, batch.Fingerprint)
 	}
-	if err := rejectReusedFingerprint(st, teamID, batch); err != nil {
-		return AdmissionOutcome{}, err
-	}
-
 	var currentRun run.Run
 	if err := st.ReadJSON(runPath(runID), maxRecordBytes, &currentRun); err != nil {
 		return AdmissionOutcome{}, err
@@ -118,11 +117,17 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 	if err := st.ReadJSON(teamPath(teamID), maxRecordBytes, &currentTeam); err != nil {
 		return AdmissionOutcome{}, err
 	}
-	if currentRun.ID != runID || currentTeam.ID != teamID || currentTeam.RunID != runID || !teamInRun(currentRun, currentTeam) {
+	if currentRun.ID != runID || currentTeam.ID != teamID {
 		return AdmissionOutcome{}, fmt.Errorf("%w: noncanonical run/team slot", core.ErrRevision)
 	}
 	if currentRun.Revision != expectedRunRevision || currentTeam.Revision != expectedTeamRevision {
 		return outcome(Stale, committedAdmission{Batch: batch, AfterRun: currentRun, AfterTeam: currentTeam}), nil
+	}
+	if err := recoverPrevious(ctx, st, runID, expectedRunRevision); err != nil {
+		return AdmissionOutcome{}, err
+	}
+	if err := rejectReusedFingerprint(st, teamID, batch); err != nil {
+		return AdmissionOutcome{}, err
 	}
 
 	// Exactly one bounded tracker snapshot is taken before any publication.
@@ -130,14 +135,14 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 	if err != nil {
 		return AdmissionOutcome{}, err
 	}
-	if page.Cursor != "" || page.TotalNonArchived != len(page.Tasks) || page.TotalNonArchived < 0 || page.TotalNonArchived > 1000 {
+	if page.TotalNonArchived > 1000 {
+		return AdmissionOutcome{}, fmt.Errorf("%w: tracker capacity", core.ErrCapacity)
+	}
+	if page.Cursor != "" || page.TotalNonArchived != len(page.Tasks) || page.TotalNonArchived < 0 {
 		return AdmissionOutcome{}, fmt.Errorf("%w: incomplete tracker snapshot", core.ErrRevision)
 	}
 	if page.TrackerRevision != expectedTrackerRevision || batch.TrackerRevision != expectedTrackerRevision {
 		return outcome(Stale, committedAdmission{Batch: batch, AfterRun: currentRun, AfterTeam: currentTeam}), nil
-	}
-	if page.TotalNonArchived > 1000 {
-		return AdmissionOutcome{}, fmt.Errorf("%w: tracker capacity", core.ErrCapacity)
 	}
 	selected, err := validateSelectedTasks(page.Tasks, batch, expectedTaskRevisions)
 	if err != nil {
@@ -172,10 +177,31 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 	if err := ctx.Err(); err != nil {
 		return AdmissionOutcome{}, err
 	}
-	if _, err := st.WriteJSON(commitPath, commit, maxRecordBytes); err != nil {
-		return AdmissionOutcome{}, err
+	if _, err := st.CreateJSON(commitPath, commit, maxRecordBytes); err != nil {
+		if !errors.Is(err, fs.ErrExist) {
+			return AdmissionOutcome{}, err
+		}
+		winner, found, readErr := readCommit(st, commitPath)
+		if readErr != nil || !found {
+			return AdmissionOutcome{}, fmt.Errorf("%w: concurrent admission commit unreadable: %v", core.ErrRevision, readErr)
+		}
+		if err := validateCommit(winner, runID, expectedRunRevision); err != nil {
+			return AdmissionOutcome{}, err
+		}
+		if winner.Batch.Fingerprint == batch.Fingerprint && reflect.DeepEqual(winner.Batch, batch) {
+			if err := project(ctx, st, winner); err != nil {
+				return AdmissionOutcome{}, err
+			}
+			return outcome(Duplicate, winner), nil
+		}
+		return staleOutcome(st, runID, teamID, batch.Fingerprint)
 	}
 	if err := project(ctx, st, commit); err != nil {
+		return AdmissionOutcome{}, err
+	}
+	// The per-team record is immutable audit history; it is not read as active
+	// coordination authority and therefore cannot retain released scope.
+	if _, err := st.CreateJSON(admissionPath(teamID, batch.BatchID), commit, maxRecordBytes); err != nil && !errors.Is(err, fs.ErrExist) {
 		return AdmissionOutcome{}, err
 	}
 	return outcome(Created, commit), nil
@@ -256,6 +282,43 @@ func readCommit(st *store.Store, relative string) (committedAdmission, bool, err
 	return commit, true, nil
 }
 
+func recoverPrevious(ctx context.Context, st *store.Store, runID core.RunID, expected uint64) error {
+	if expected == 0 {
+		return nil
+	}
+	commit, found, err := readCommit(st, runCommitPath(runID, expected-1))
+	if err != nil || !found {
+		return err
+	}
+	if err := validateCommit(commit, runID, expected-1); err != nil {
+		return err
+	}
+	var current run.Run
+	if err := st.ReadJSON(runPath(runID), maxRecordBytes, &current); err != nil {
+		return err
+	}
+	if current.Revision == commit.AfterRun.Revision {
+		return project(ctx, st, commit)
+	}
+	return nil
+}
+
+func validateCommit(commit committedAdmission, runID core.RunID, expected uint64) error {
+	if commit.Schema != 1 || commit.ExpectedRunRevision != expected || commit.BeforeRun.ID != runID || commit.AfterRun.ID != runID || commit.Batch.RunID != runID || commit.Batch.Project != commit.BeforeRun.Project || commit.AfterRun.Project != commit.BeforeRun.Project || commit.ExpectedTeamRevision != commit.BeforeTeam.Revision || commit.ExpectedTrackerRevision != commit.Batch.TrackerRevision {
+		return fmt.Errorf("%w: invalid admission commit", core.ErrRevision)
+	}
+	if commit.AfterRun.Revision != commit.BeforeRun.Revision+1 || commit.AfterTeam.Revision != commit.BeforeTeam.Revision+1 || commit.BeforeRun.Revision != expected || commit.BeforeTeam.ID != commit.AfterTeam.ID || commit.BeforeTeam.RunID != runID || commit.AfterTeam.RunID != runID {
+		return fmt.Errorf("%w: invalid admission commit revisions", core.ErrRevision)
+	}
+	if err := validateBatch(commit.Batch, runID, commit.BeforeTeam.ID); err != nil {
+		return err
+	}
+	if !teamInRun(commit.BeforeRun, commit.BeforeTeam) || len(commit.AfterTeam.Queue) != len(commit.BeforeTeam.Queue)+len(commit.Batch.Tasks) || commit.AfterTeam.QueueFingerprint != queueFingerprint(commit.AfterTeam.Queue) {
+		return fmt.Errorf("%w: invalid admission commit projection", core.ErrRevision)
+	}
+	return nil
+}
+
 func rejectReusedFingerprint(st *store.Store, team core.TeamID, batch run.AdmissionBatch) error {
 	directory := filepath.Join(st.Root, ".agent-team", "admissions", string(team))
 	entries, err := os.ReadDir(directory)
@@ -293,41 +356,7 @@ func checkConflicts(st *store.Store, current run.Run, teamID core.TeamID, batch 
 			return fmt.Errorf("%w: active team scope conflict", core.ErrBatch)
 		}
 	}
-	root := filepath.Join(st.Root, ".agent-team", "admissions")
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || filepath.Ext(path) != ".json" {
-			return nil
-		}
-		rel, err := filepath.Rel(filepath.Join(st.Root, ".agent-team", "admissions"), path)
-		if err != nil {
-			return err
-		}
-		parts := strings.Split(filepath.ToSlash(rel), "/")
-		if len(parts) != 2 {
-			return fmt.Errorf("%w: unsafe admission path", core.ErrPath)
-		}
-		id := strings.TrimSuffix(parts[1], ".json")
-		if err := validateID(parts[0]); err != nil {
-			return err
-		}
-		if err := validateID(id); err != nil {
-			return err
-		}
-		commit, found, err := readCommit(st, admissionPath(core.TeamID(parts[0]), id))
-		if err != nil || !found {
-			return err
-		}
-		if commit.Batch.Team != teamID && run.ValidateConflict(batch, commit.Batch) {
-			return fmt.Errorf("%w: active admission scope conflict", core.ErrBatch)
-		}
-		return nil
-	})
+	return nil
 }
 
 func validateSelectedTasks(tasks []core.Task, batch run.AdmissionBatch, expected map[core.TaskID]uint64) ([]core.Task, error) {
@@ -450,7 +479,7 @@ func canonicalRoot(value string) (string, error) {
 }
 func teamInRun(value run.Run, team run.TeamRecord) bool {
 	for _, slot := range value.Teams {
-		if reflect.DeepEqual(slot, team) {
+		if slot.ID == team.ID && slot.RunID == team.RunID && slot.Project == team.Project {
 			return true
 		}
 	}
@@ -476,6 +505,9 @@ func runPath(id core.RunID) string   { return ".agent-team/runs/" + string(id) +
 func teamPath(id core.TeamID) string { return ".agent-team/teams/" + string(id) + ".json" }
 func admissionPath(team core.TeamID, batch string) string {
 	return ".agent-team/admissions/" + string(team) + "/" + batch + ".json"
+}
+func runCommitPath(runID core.RunID, revision uint64) string {
+	return ".agent-team/admissions/by-run/" + string(runID) + "/" + fmt.Sprintf("%d.json", revision)
 }
 func queueFingerprint(queue []core.TaskID) string {
 	raw, _ := json.Marshal(queue)
