@@ -372,9 +372,7 @@ func derivedOneOffAuthority(kind OneOffKind, tasks []core.Task, queue []core.Tas
 			}
 		}
 		for _, value := range task.Resources {
-			if kind == OneOffFeature || readOnlyResource(value) {
-				resources[value] = true
-			}
+			resources[value] = true
 		}
 	}
 	var pathValues []string
@@ -394,13 +392,6 @@ func derivedOneOffAuthority(kind OneOffKind, tasks []core.Task, queue []core.Tas
 	sort.Strings(pathValues)
 	sort.Strings(resourceValues)
 	return pathValues, resourceValues, nil
-}
-
-func readOnlyResource(value string) bool {
-	value = strings.ToLower(value)
-	return strings.HasSuffix(value, ":read") || strings.HasSuffix(value, ":none") ||
-		strings.HasSuffix(value, ":view") || strings.HasSuffix(value, ":list") ||
-		strings.Contains(value, "readonly")
 }
 
 func normalizeTasks(tasks []core.Task) ([]core.Task, error) {
@@ -982,7 +973,10 @@ func validateRun(r Run) error {
 		}
 		if r.Mode == "one-off" {
 			paths, resources, err := derivedOneOffAuthority(r.OneOffKind, r.Tasks, team.Queue)
-			if err != nil || !reflect.DeepEqual(paths, team.Paths) || !reflect.DeepEqual(resources, team.Resources) {
+			if err != nil {
+				return err
+			}
+			if !reflect.DeepEqual(paths, team.Paths) || !reflect.DeepEqual(resources, team.Resources) {
 				return fmt.Errorf("%w: one-off team authority is not derived from its queue", core.ErrRevision)
 			}
 		}
@@ -992,9 +986,6 @@ func validateRun(r Run) error {
 			}
 			seen[id] = true
 		}
-	}
-	if r.Mode == "one-off" && len(seen) != len(r.Tasks) {
-		return fmt.Errorf("%w: one-off task omitted from team", core.ErrBatch)
 	}
 	digest, err := manifestDigest(r)
 	if err != nil {

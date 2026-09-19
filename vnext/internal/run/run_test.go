@@ -369,8 +369,8 @@ func TestOneOffCASKeepsOnlyDerivedTeamAuthority(t *testing.T) {
 	writeResource := audit
 	writeResource.Teams = append([]TeamRecord(nil), audit.Teams...)
 	writeResource.Teams[0].Resources = []string{"db:test"}
-	if _, err := repos.Runs.CompareAndSwap(ctx, audit.ID, audit.Revision, writeResource); err == nil {
-		t.Fatal("audit write resource restored")
+	if _, err := repos.Runs.CompareAndSwap(ctx, audit.ID, audit.Revision, writeResource); err != nil {
+		t.Fatalf("audit resource reservation was not rederived: %v", err)
 	}
 	review, err := CreateOneOff(ctx, root, Review, "review", []core.Task{oneOffTask("R-1", "review", []string{"src/a"}, []string{"db:test"})})
 	if err != nil {
@@ -385,6 +385,76 @@ func TestOneOffCASKeepsOnlyDerivedTeamAuthority(t *testing.T) {
 	reviewWrite.Teams[0].Paths = []string{"src/a"}
 	if _, err := repos.Runs.CompareAndSwap(ctx, review.ID, review.Revision, reviewWrite); err == nil {
 		t.Fatal("review write path restored")
+	}
+}
+
+func TestOneOffQueuesReleaseImmutableTasksAndKeepAuditReservations(t *testing.T) {
+	ctx, root := context.Background(), t.TempDir()
+	repos := NewRepositories(store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}))
+	audit, err := CreateOneOff(ctx, root, Audit, "audit", []core.Task{oneOffTask("A-1", "audit", []string{"src/a"}, []string{"DB:TEST"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := audit.Teams[0]; got.Paths != nil || !reflect.DeepEqual(got.Resources, []string{"db:test"}) {
+		t.Fatalf("audit authority=%#v, want no paths and db:test reservation", got)
+	}
+	saved, err := repos.Runs.Initialize(ctx, audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := saved
+	released.Teams = append([]TeamRecord(nil), saved.Teams...)
+	released.Teams[0].Queue = nil
+	released.Teams[0].QueueFingerprint = ""
+	released.Teams[0].State = core.Idle
+	released.Teams[0].Paths = nil
+	released.Teams[0].Resources = nil
+	released, err = repos.Runs.CompareAndSwap(ctx, saved.ID, saved.Revision, released)
+	if err != nil {
+		t.Fatalf("finished task release rejected: %v", err)
+	}
+	if len(released.Tasks) != 1 || len(released.Teams[0].Queue) != 0 || released.Teams[0].Paths != nil || released.Teams[0].Resources != nil {
+		t.Fatalf("release did not preserve immutable task history with empty authority: %#v", released)
+	}
+	unknown := released
+	unknown.Teams = append([]TeamRecord(nil), released.Teams...)
+	unknown.Teams[0].Queue = []core.TaskID{"A-unknown"}
+	unknown.Teams[0].QueueFingerprint = queueFingerprint(unknown.Teams[0].Queue)
+	unknown.Teams[0].State = core.Working
+	if _, err := repos.Runs.CompareAndSwap(ctx, released.ID, released.Revision, unknown); !errors.Is(err, core.ErrBatch) {
+		t.Fatalf("unknown active task accepted: %v", err)
+	}
+
+	review, err := CreateOneOff(ctx, root, Review, "review", []core.Task{oneOffTask("R-1", "review", []string{"src/r"}, []string{"DB:TEST"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := review.Teams[0]; got.Paths != nil || !reflect.DeepEqual(got.Resources, []string{"db:test"}) {
+		t.Fatalf("review authority=%#v, want no paths and db:test reservation", got)
+	}
+}
+
+func TestOneOffQueuesRejectDuplicateActiveIDs(t *testing.T) {
+	ctx, root := context.Background(), t.TempDir()
+	repos := NewRepositories(store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}))
+	tasks := make([]core.Task, 9)
+	for i := range tasks {
+		tasks[i] = oneOffTask(core.TaskID(fmt.Sprintf("A-%d", i+1)), "audit", nil, nil)
+	}
+	run, err := CreateOneOff(ctx, root, Audit, "audit", tasks)
+	if err != nil || len(run.Teams) != 2 {
+		t.Fatalf("two-team audit=%#v err=%v", run.Teams, err)
+	}
+	saved, err := repos.Runs.Initialize(ctx, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate := saved
+	duplicate.Teams = append([]TeamRecord(nil), saved.Teams...)
+	duplicate.Teams[1].Queue = append(append([]core.TaskID(nil), saved.Teams[1].Queue...), saved.Teams[0].Queue[0])
+	duplicate.Teams[1].QueueFingerprint = queueFingerprint(duplicate.Teams[1].Queue)
+	if _, err := repos.Runs.CompareAndSwap(ctx, saved.ID, saved.Revision, duplicate); !errors.Is(err, core.ErrBatch) {
+		t.Fatalf("duplicate active task accepted: %v", err)
 	}
 }
 
