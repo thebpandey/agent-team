@@ -43,6 +43,12 @@ func ValidateSegment(segment string) error {
 	if segment == "" || segment == "." || segment == ".." || !utf8.ValidString(segment) {
 		return fmt.Errorf("%w: invalid path segment %q", core.ErrPath, segment)
 	}
+	// The standard library intentionally has no Unicode normalization package.
+	// Reject non-ASCII authority segments rather than accepting NFC/NFD aliases
+	// that cannot be compared safely without a platform-dependent dependency.
+	if strings.IndexFunc(segment, func(r rune) bool { return r > 0x7f }) >= 0 {
+		return fmt.Errorf("%w: Unicode-normalization-ambiguous segment %q", core.ErrPath, segment)
+	}
 	if strings.ContainsAny(segment, `/\\<>:"|?*`) || strings.IndexFunc(segment, func(r rune) bool { return r < 0x20 }) >= 0 {
 		return fmt.Errorf("%w: invalid path segment %q", core.ErrPath, segment)
 	}
@@ -103,6 +109,13 @@ func resolveCandidate(candidate string) (string, error) {
 		parent, base := filepath.Dir(current), filepath.Base(current)
 		if parent == current {
 			return "", fmt.Errorf("%w: no existing candidate parent %q", core.ErrPath, candidate)
+		}
+		if entries, readErr := os.ReadDir(parent); readErr == nil {
+			for _, entry := range entries {
+				if entry.Name() != base && strings.EqualFold(entry.Name(), base) {
+					return "", fmt.Errorf("%w: case-folding alias %q", core.ErrPath, candidate)
+				}
+			}
 		}
 		missing = append(missing, base)
 		current = parent

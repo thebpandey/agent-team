@@ -1,20 +1,29 @@
 package project
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
 
+const maxGitOutputBytes = 1 << 20
+
 // Discover returns canonical Git identity and non-mutating filesystem
 // preflight facts for root. It never changes the worktree or index.
 func Discover(ctx context.Context, root string) (Project, error) {
+	// Project preflight is bounded even when the caller supplies no deadline.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	canonicalRoot, err := canonicalDirectory(root)
 	if err != nil {
 		return Project{}, err
@@ -54,17 +63,31 @@ func Discover(ctx context.Context, root string) (Project, error) {
 			return Project{}, fmt.Errorf("%w: determine branch: %v", core.ErrGit, branchErr)
 		}
 	}
-	info, err := os.Stat(canonicalRoot)
-	if err != nil {
-		return Project{}, fmt.Errorf("%w: stat project root: %v", core.ErrPath, err)
-	}
-	mode := info.Mode().Perm()
+	readable, writable := access(canonicalRoot)
 	return Project{
 		Root: canonicalRoot, TopLevel: topLevel, CommonDir: commonDir, Head: head,
 		Dirty: strings.TrimSpace(status) != "", Detached: detached,
-		Readable: mode&0o444 != 0, Writable: mode&0o222 != 0,
+		Readable: readable, Writable: writable,
 		FreeBytes: freeBytes(ctx, canonicalRoot),
 	}, nil
+}
+
+func access(root string) (readable, writable bool) {
+	if directory, err := os.Open(root); err == nil {
+		_, readErr := directory.ReadDir(1)
+		_ = directory.Close()
+		readable = readErr == nil || errors.Is(readErr, io.EOF)
+	}
+	// Permission bits are advisory across ACL filesystems. A bounded owned
+	// create/remove probe gives the caller's actual access without retaining a
+	// project artifact; failure is conservatively reported as not writable.
+	if temporary, err := os.CreateTemp(root, ".agent-team-access-"); err == nil {
+		name := temporary.Name()
+		if temporary.Close() == nil && os.Remove(name) == nil {
+			writable = true
+		}
+	}
+	return readable, writable
 }
 
 func git(ctx context.Context, root string, args ...string) (string, error) {
@@ -80,11 +103,34 @@ func git(ctx context.Context, root string, args ...string) (string, error) {
 
 func gitAllowEmpty(ctx context.Context, root string, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
-	output, err := command.Output()
+	var output boundedOutput
+	command.Stdout = &output
+	command.Stderr = io.Discard
+	err := command.Run()
+	if output.overflow {
+		return "", fmt.Errorf("%w: git %s output exceeds %d bytes", core.ErrLimit, strings.Join(args, " "), maxGitOutputBytes)
+	}
 	if err != nil {
 		return "", fmt.Errorf("%w: git %s: %v", core.ErrGit, strings.Join(args, " "), err)
 	}
-	return strings.TrimSpace(string(output)), nil
+	return strings.TrimSpace(output.String()), nil
+}
+
+type boundedOutput struct {
+	bytes.Buffer
+	overflow bool
+}
+
+func (output *boundedOutput) Write(value []byte) (int, error) {
+	if output.Len()+len(value) > maxGitOutputBytes {
+		remaining := maxGitOutputBytes - output.Len()
+		if remaining > 0 {
+			_, _ = output.Buffer.Write(value[:remaining])
+		}
+		output.overflow = true
+		return len(value), nil
+	}
+	return output.Buffer.Write(value)
 }
 
 func freeBytes(ctx context.Context, root string) int64 {
