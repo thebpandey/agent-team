@@ -10,9 +10,11 @@ import (
 	"os"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/gate"
 	"github.com/thebpandey/agent-team/vnext/internal/project"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
@@ -47,6 +49,13 @@ type evidenceRecord struct {
 	Candidate   contracts.Candidate  `json:"candidate"`
 	Gate        contracts.GateResult `json:"gate"`
 	Integration Integration          `json:"integration"`
+	Digest      string               `json:"digest"`
+}
+
+type intentRecord struct {
+	Candidate contracts.Candidate  `json:"candidate"`
+	Gate      contracts.GateResult `json:"gate"`
+	Stage     string               `json:"stage"`
 }
 
 // NewIntegrator creates a foreground serial integrator. It delegates all Git
@@ -55,23 +64,37 @@ func NewIntegrator(project project.Project, state *store.Store, manager contract
 	return &serialIntegrator{project: project, store: state, manager: manager}
 }
 
-func (i *serialIntegrator) Integrate(ctx context.Context, candidate contracts.Candidate, gate contracts.GateResult) (Integration, error) {
+func (i *serialIntegrator) Integrate(ctx context.Context, candidate contracts.Candidate, gateResult contracts.GateResult) (Integration, error) {
 	if ctx == nil || ctx.Err() != nil {
 		return Integration{}, core.ErrTransition
 	}
 	if i == nil || i.store == nil || i.manager == nil {
 		return Integration{}, core.ErrPath
 	}
-	if err := i.validate(candidate, gate); err != nil {
+	if err := i.validate(candidate, gateResult); err != nil {
+		return Integration{}, err
+	}
+	if err := gate.ValidateEvidence(i.store, candidate, gateResult); err != nil {
 		return Integration{}, err
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	pointer := integrationPointer(candidate)
-	if existing, found, err := i.existing(pointer, candidate, gate); err != nil {
+	if existing, found, err := i.existing(pointer, candidate, gateResult); err != nil {
 		return Integration{}, err
 	} else if found {
 		return existing, nil
+	}
+	intentPointer := "integrations/intents/" + integrationFingerprint(candidate) + ".json"
+	intent := intentRecord{Candidate: candidate, Gate: gateResult, Stage: "intent"}
+	if _, err := i.store.CreateJSON(intentPointer, intent, evidenceLimit); err != nil {
+		if !errors.Is(err, store.ErrAlreadyExists) {
+			return Integration{}, err
+		}
+		var persisted intentRecord
+		if readErr := i.store.ReadJSON(intentPointer, evidenceLimit, &persisted); readErr != nil || persisted.Candidate != candidate || !reflect.DeepEqual(persisted.Gate, gateResult) || persisted.Stage != "integrated" {
+			return Integration{}, core.ErrTransition
+		}
 	}
 
 	inspected, err := i.manager.Inspect(ctx, candidate.Worktree)
@@ -88,21 +111,28 @@ func (i *serialIntegrator) Integrate(ctx context.Context, candidate contracts.Ca
 	if integrated != candidate {
 		return Integration{}, core.ErrRevision
 	}
+	if inspected, err = i.manager.Inspect(ctx, candidate.Worktree); err != nil || inspected != candidate.Worktree {
+		return Integration{}, core.ErrRevision
+	}
 	i.next++
 	result := Integration{
-		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: i.project.Root, RunID: candidate.Worktree.Run, Revision: uint64(i.next)},
+		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: i.project.Root, RunID: candidate.Worktree.Run, Revision: uint64(i.next), WrittenAt: "1970-01-01T00:00:00Z"},
 		Task:           candidate.Task, Base: candidate.Base, Candidate: candidate.Revision, Commit: integrated.Revision,
 		Order: i.next, EvidencePointer: pointer,
 	}
-	record := evidenceRecord{Candidate: candidate, Gate: gate, Integration: result}
+	record := evidenceRecord{Candidate: candidate, Gate: gateResult, Integration: result}
+	record.Digest = evidenceDigest(record)
 	if _, err := i.store.CreateJSON(pointer, record, evidenceLimit); err == nil {
+		if _, err := i.store.WriteJSON(intentPointer, intentRecord{Candidate: candidate, Gate: gateResult, Stage: "integrated"}, evidenceLimit); err != nil {
+			return Integration{}, err
+		}
 		return result, nil
 	} else if !errors.Is(err, store.ErrAlreadyExists) {
 		return Integration{}, err
 	}
 	// A concurrent foreground caller may have persisted the same accepted work
 	// after the manager completed. Recover only the exact durable record.
-	existing, found, err := i.existing(pointer, candidate, gate)
+	existing, found, err := i.existing(pointer, candidate, gateResult)
 	if err != nil || !found {
 		return Integration{}, core.ErrRevision
 	}
@@ -139,10 +169,16 @@ func (i *serialIntegrator) existing(pointer string, candidate contracts.Candidat
 	if err != nil {
 		return Integration{}, false, err
 	}
-	if record.Candidate != candidate || !reflect.DeepEqual(record.Gate, gate) ||
+	if record.Digest != evidenceDigest(record) || record.Candidate != candidate || !reflect.DeepEqual(record.Gate, gate) ||
 		record.Integration.Task != candidate.Task || record.Integration.Base != candidate.Base ||
 		record.Integration.Candidate != candidate.Revision || record.Integration.Commit != candidate.Revision ||
-		record.Integration.EvidencePointer != pointer || record.Integration.Order < 1 {
+		record.Integration.EvidencePointer != pointer || record.Integration.Order < 1 ||
+		record.Integration.Schema != 1 || record.Integration.Project != i.project.Root ||
+		record.Integration.RunID != candidate.Worktree.Run || record.Integration.Revision != uint64(record.Integration.Order) ||
+		record.Integration.WrittenAt == "" {
+		return Integration{}, false, core.ErrRevision
+	}
+	if _, err := time.Parse(time.RFC3339, record.Integration.WrittenAt); err != nil {
 		return Integration{}, false, core.ErrRevision
 	}
 	if record.Integration.Order > i.next {
@@ -151,11 +187,22 @@ func (i *serialIntegrator) existing(pointer string, candidate contracts.Candidat
 	return record.Integration, true, nil
 }
 
+func evidenceDigest(record evidenceRecord) string {
+	record.Digest = ""
+	canonical, _ := json.Marshal(record)
+	sum := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 func integrationPointer(candidate contracts.Candidate) string {
+	return "integrations/" + integrationFingerprint(candidate) + ".json"
+}
+
+func integrationFingerprint(candidate contracts.Candidate) string {
 	canonical, _ := json.Marshal(struct {
 		Run  core.RunID  `json:"run"`
 		Task core.TaskID `json:"task"`
 	}{Run: candidate.Worktree.Run, Task: candidate.Task})
 	sum := sha256.Sum256(canonical)
-	return "integrations/" + hex.EncodeToString(sum[:]) + ".json"
+	return hex.EncodeToString(sum[:])
 }

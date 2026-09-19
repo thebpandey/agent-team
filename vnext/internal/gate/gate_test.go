@@ -2,19 +2,24 @@ package gate_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/gate"
+	"github.com/thebpandey/agent-team/vnext/internal/knowledge"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
 func TestGateRejectsDirtyAndPersistsDeterministicCleanEvidence(t *testing.T) {
 	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
-	g := gate.NewGate(nil, state)
+	g := gate.NewGateWithAuthority(nil, state, testAuthority{})
 	dirty := validInput()
 	dirty.WorktreeDirty = true
 	if _, err := g.Check(context.Background(), dirty); !errors.Is(err, core.ErrTransition) {
@@ -35,7 +40,7 @@ func TestGateRejectsDirtyAndPersistsDeterministicCleanEvidence(t *testing.T) {
 }
 
 func TestGateRejectsUnboundOrMutatedInputs(t *testing.T) {
-	g := gate.NewGate(nil, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}))
+	g := gate.NewGateWithAuthority(nil, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}), testAuthority{})
 	for _, mutate := range []struct {
 		name string
 		edit func(*contracts.GateInput)
@@ -63,10 +68,64 @@ func TestGateRejectsUnboundOrMutatedInputs(t *testing.T) {
 func TestGateRejectsInterruptedContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	g := gate.NewGate(nil, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}))
+	g := gate.NewGateWithAuthority(nil, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}), testAuthority{})
 	if _, err := g.Check(ctx, validInput()); !errors.Is(err, core.ErrTransition) {
 		t.Fatalf("interrupted Check() error = %v, want ErrTransition", err)
 	}
+}
+
+func TestDefaultGateRejectsCallerOnlyEvidence(t *testing.T) {
+	g := gate.NewGate(nil, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}))
+	if _, err := g.Check(context.Background(), validInput()); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("Check without durable receipt/review/check evidence = %v, want ErrRevision", err)
+	}
+}
+
+func TestDefaultGateValidatesDurableReceiptAndPassedChecks(t *testing.T) {
+	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	input := durableInput(t, state)
+	if _, err := gate.NewGate(nil, state).Check(context.Background(), input); err != nil {
+		t.Fatalf("durable gate error = %v", err)
+	}
+	var receipt knowledge.Receipt
+	if err := state.ReadJSON(".agent-team/receipts/TEAM.json", 64<<10, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	receipt.Head = "tampered"
+	if _, err := state.WriteJSON(".agent-team/receipts/TEAM.json", receipt, 64<<10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gate.NewGate(nil, state).Check(context.Background(), input); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("tampered receipt error = %v, want ErrRevision", err)
+	}
+}
+
+func durableInput(t *testing.T, state *store.Store) contracts.GateInput {
+	t.Helper()
+	envelope := core.RecordEnvelope{Schema: 1, Project: "project", RunID: "RUN", WrittenAt: "2026-09-19T00:00:00Z", Revision: 1}
+	evidence := knowledge.Evidence{RecordEnvelope: envelope, Task: "TASK", Attempt: 1, Exit: 0, InputFingerprint: "check-a"}
+	if err := knowledge.WriteEvidence(context.Background(), state, evidence); err != nil {
+		t.Fatal(err)
+	}
+	receipt := knowledge.Receipt{RecordEnvelope: envelope, Team: "TEAM", Task: "TASK", Attempt: 1, State: core.Clean, Base: "base", Head: "candidate", Review: "review-digest", EvidencePointers: []string{".agent-team/evidence/TASK/1/evidence.json"}, NextAction: "integrate"}
+	if err := knowledge.WriteReceipt(context.Background(), state, receipt); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(encoded)
+	input := validInput()
+	input.RequiredCheckFingerprints = []string{"check-a"}
+	input.ReceiptDigest = "sha256:" + hex.EncodeToString(sum[:])
+	return input
+}
+
+type testAuthority struct{}
+
+func (testAuthority) Validate(context.Context, contracts.GateInput) (core.RecordEnvelope, error) {
+	return core.RecordEnvelope{Schema: 1, Project: "project", RunID: "RUN", Revision: 1, WrittenAt: time.Now().UTC().Format(time.RFC3339)}, nil
 }
 
 func validInput() contracts.GateInput {

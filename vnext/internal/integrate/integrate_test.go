@@ -5,9 +5,11 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/gate"
 	"github.com/thebpandey/agent-team/vnext/internal/integrate"
 	"github.com/thebpandey/agent-team/vnext/internal/project"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
@@ -15,22 +17,23 @@ import (
 
 func TestIntegratorUsesExactWorktreeProvenanceSeriallyAndIdempotently(t *testing.T) {
 	manager := &recordingManager{}
-	integrator := integrate.NewIntegrator(project.Project{Root: "project", Head: "base", Readable: true, Writable: true}, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}), manager)
+	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	integrator := integrate.NewIntegrator(project.Project{Root: "project", Head: "base", Readable: true, Writable: true}, state, manager)
 	firstCandidate := validCandidate("TASK-1", "candidate-1")
-	first, err := integrator.Integrate(context.Background(), firstCandidate, validGate(firstCandidate))
+	first, err := integrator.Integrate(context.Background(), firstCandidate, durableGate(t, state, firstCandidate))
 	if err != nil || first.Order != 1 || first.Task != "TASK-1" || first.Candidate != "candidate-1" || first.EvidencePointer == "" {
 		t.Fatalf("first integration = %+v, %v", first, err)
 	}
-	retry, err := integrator.Integrate(context.Background(), firstCandidate, validGate(firstCandidate))
+	retry, err := integrator.Integrate(context.Background(), firstCandidate, durableGate(t, state, firstCandidate))
 	if err != nil || !reflect.DeepEqual(retry, first) || manager.integrations != 1 {
 		t.Fatalf("retry = %+v, %v; manager integrations = %d", retry, err, manager.integrations)
 	}
 	secondCandidate := validCandidate("TASK-2", "candidate-2")
-	second, err := integrator.Integrate(context.Background(), secondCandidate, validGate(secondCandidate))
+	second, err := integrator.Integrate(context.Background(), secondCandidate, durableGate(t, state, secondCandidate))
 	if err != nil || second.Order != 2 || manager.integrations != 2 {
 		t.Fatalf("second integration = %+v, %v; manager integrations = %d", second, err, manager.integrations)
 	}
-	if !reflect.DeepEqual(manager.order, []string{"inspect:RUN", "integrate:TASK-1", "inspect:RUN", "integrate:TASK-2"}) {
+	if !reflect.DeepEqual(manager.order, []string{"inspect:RUN", "integrate:TASK-1", "inspect:RUN", "inspect:RUN", "integrate:TASK-2", "inspect:RUN"}) {
 		t.Fatalf("worktree call order = %#v", manager.order)
 	}
 }
@@ -45,16 +48,21 @@ func TestIntegratorFailsClosedBeforeMutatingWorktree(t *testing.T) {
 		inspectOut contracts.Worktree
 		want       error
 	}{
-		{"dirty project", project.Project{Root: "project", Head: "base", Dirty: true}, candidate, validGate(candidate), contracts.Worktree{}, core.ErrTransition},
-		{"wrong base", project.Project{Root: "project", Head: "other-base"}, candidate, validGate(candidate), contracts.Worktree{}, core.ErrRevision},
-		{"dirty candidate", project.Project{Root: "project", Head: "base"}, dirtyCandidate(candidate), validGate(candidate), contracts.Worktree{}, core.ErrTransition},
+		{"dirty project", project.Project{Root: "project", Head: "base", Dirty: true}, candidate, contracts.GateResult{}, contracts.Worktree{}, core.ErrTransition},
+		{"wrong base", project.Project{Root: "project", Head: "other-base"}, candidate, contracts.GateResult{}, contracts.Worktree{}, core.ErrRevision},
+		{"dirty candidate", project.Project{Root: "project", Head: "base"}, dirtyCandidate(candidate), contracts.GateResult{Result: "CLEAN", Revision: "candidate", Evidence: "gate", CleanEvidence: "review"}, contracts.Worktree{}, core.ErrTransition},
 		{"wrong gate revision", project.Project{Root: "project", Head: "base"}, candidate, contracts.GateResult{Result: "CLEAN", Revision: "other", CleanEvidence: "review"}, contracts.Worktree{}, core.ErrRevision},
-		{"mutated inspection", project.Project{Root: "project", Head: "base"}, candidate, validGate(candidate), contracts.Worktree{Run: "RUN", Team: "TEAM", Path: "/tmp/task", Branch: "branch", Base: "other-base"}, core.ErrRevision},
+		{"mutated inspection", project.Project{Root: "project", Head: "base"}, candidate, contracts.GateResult{}, contracts.Worktree{Run: "RUN", Team: "TEAM", Path: "/tmp/task", Branch: "branch", Base: "other-base"}, core.ErrRevision},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager := &recordingManager{inspectOut: tc.inspectOut}
-			integrator := integrate.NewIntegrator(tc.project, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}), manager)
-			if _, err := integrator.Integrate(context.Background(), tc.candidate, tc.gate); !errors.Is(err, tc.want) {
+			state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+			integrator := integrate.NewIntegrator(tc.project, state, manager)
+			actualGate := tc.gate
+			if actualGate.Result == "" {
+				actualGate = durableGate(t, state, tc.candidate)
+			}
+			if _, err := integrator.Integrate(context.Background(), tc.candidate, actualGate); !errors.Is(err, tc.want) {
 				t.Fatalf("Integrate() error = %v, want %v", err, tc.want)
 			}
 			if manager.integrations != 0 {
@@ -69,8 +77,9 @@ func TestIntegratorRejectsInterruptedContextBeforeWorktreeMutation(t *testing.T)
 	cancel()
 	manager := &recordingManager{}
 	candidate := validCandidate("TASK", "candidate")
-	integrator := integrate.NewIntegrator(project.Project{Root: "project", Head: "base"}, store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}), manager)
-	if _, err := integrator.Integrate(ctx, candidate, validGate(candidate)); !errors.Is(err, core.ErrTransition) {
+	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	integrator := integrate.NewIntegrator(project.Project{Root: "project", Head: "base"}, state, manager)
+	if _, err := integrator.Integrate(ctx, candidate, durableGate(t, state, candidate)); !errors.Is(err, core.ErrTransition) {
 		t.Fatalf("interrupted Integrate() error = %v, want ErrTransition", err)
 	}
 	if manager.integrations != 0 || len(manager.order) != 0 {
@@ -87,8 +96,20 @@ func dirtyCandidate(candidate contracts.Candidate) contracts.Candidate {
 	return candidate
 }
 
-func validGate(candidate contracts.Candidate) contracts.GateResult {
-	return contracts.GateResult{Revision: candidate.Revision, Result: "CLEAN", Evidence: "gate-evidence", CleanEvidence: "review"}
+func durableGate(t *testing.T, state *store.Store, candidate contracts.Candidate) contracts.GateResult {
+	t.Helper()
+	input := contracts.GateInput{Run: candidate.Worktree.Run, Task: candidate.Task, Candidate: candidate, TrackerRevision: 1, ReceiptRevision: 1, ScopeFingerprint: "scope", ReceiptDigest: "receipt", ReviewDigest: "review"}
+	result, err := gate.NewGateWithAuthority(nil, state, integrationAuthority{}).Check(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+type integrationAuthority struct{}
+
+func (integrationAuthority) Validate(context.Context, contracts.GateInput) (core.RecordEnvelope, error) {
+	return core.RecordEnvelope{Schema: 1, Project: "project", RunID: "RUN", Revision: 1, WrittenAt: time.Now().UTC().Format(time.RFC3339)}, nil
 }
 
 type recordingManager struct {
