@@ -18,6 +18,11 @@ type supervisor struct {
 	events      []workflow.Event
 	checkpoints int
 	err         error
+	failAt      int
+}
+
+func packetFor(manifest run.Run) core.AssignmentPacket {
+	return core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: manifest.ID}, Team: manifest.Teams[0].ID, Task: manifest.Teams[0].Queue[0]}
 }
 
 func (s *supervisor) Start(context.Context, core.AssignmentPacket) (contracts.WorkerHandle, error) {
@@ -28,7 +33,10 @@ func (s *supervisor) Turn(context.Context, contracts.WorkerHandle) (supervise.Ob
 }
 func (s *supervisor) Emit(_ context.Context, event workflow.Event) error {
 	s.events = append(s.events, event)
-	return s.err
+	if s.err != nil && (s.failAt == 0 || len(s.events) == s.failAt) {
+		return s.err
+	}
+	return nil
 }
 func (s *supervisor) Checkpoint(context.Context, core.RunID, core.Scope, string) error {
 	s.checkpoints++
@@ -162,13 +170,13 @@ func TestRunBarrierEmitsAndBlocksAdmission(t *testing.T) {
 	if len(sup.events) != 1 || sup.events[0].Kind != workflow.Pause || sup.events[0].Run != manifest.ID {
 		t.Fatalf("events=%+v", sup.events)
 	}
-	if err := lifecycle.AdmissionAllowed(context.Background(), s, manifest.ID); !errors.Is(err, core.ErrTransition) {
+	if err := lifecycle.AdmissionAllowed(context.Background(), s, packetFor(manifest)); !errors.Is(err, core.ErrTransition) {
 		t.Fatal(err)
 	}
 	if err := l.Resume(context.Background(), scope); err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.AdmissionAllowed(context.Background(), s, manifest.ID); err != nil {
+	if err := lifecycle.AdmissionAllowed(context.Background(), s, packetFor(manifest)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -186,7 +194,39 @@ func TestSupervisorFailureDoesNotPublishBarrier(t *testing.T) {
 	if err := l.Pause(context.Background(), core.Scope{Kind: core.ScopeRun, ID: string(manifest.ID)}, "user"); !errors.Is(err, core.ErrCapacity) {
 		t.Fatal(err)
 	}
-	if err := lifecycle.AdmissionAllowed(context.Background(), s, manifest.ID); err != nil {
+	if err := lifecycle.AdmissionAllowed(context.Background(), s, packetFor(manifest)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScopedAdmissionRejectsTeamTaskAndForgedPacket(t *testing.T) {
+	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	manifest, err := run.CreateOneOff(context.Background(), t.TempDir(), run.OneOffFeature, "x", []core.Task{{ID: "T1", Objective: "x", State: core.Ready, Criteria: []string{"done"}, WritablePaths: []string{"x"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.NewRepositories(s).Runs.Initialize(context.Background(), manifest); err != nil {
+		t.Fatal(err)
+	}
+	packet := packetFor(manifest)
+	l := lifecycle.New(s, &supervisor{})
+	if err := l.Pause(context.Background(), core.Scope{Kind: core.ScopeTeam, ID: string(packet.Team)}, "user"); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.AdmissionAllowed(context.Background(), s, packet); !errors.Is(err, core.ErrTransition) {
+		t.Fatal(err)
+	}
+	if err := l.Resume(context.Background(), core.Scope{Kind: core.ScopeTeam, ID: string(packet.Team)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Pause(context.Background(), core.Scope{Kind: core.ScopeTask, ID: string(packet.Task)}, "user"); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.AdmissionAllowed(context.Background(), s, packet); !errors.Is(err, core.ErrTransition) {
+		t.Fatal(err)
+	}
+	packet.RunID = "forged"
+	if err := lifecycle.AdmissionAllowed(context.Background(), s, packet); !errors.Is(err, core.ErrTransition) {
 		t.Fatal(err)
 	}
 }
@@ -194,7 +234,7 @@ func TestSupervisorFailureDoesNotPublishBarrier(t *testing.T) {
 func TestProjectScopeResolvesAllCanonicalRuns(t *testing.T) {
 	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
 	projectRoot := t.TempDir()
-	var ids []core.RunID
+	var packets []core.AssignmentPacket
 	for _, objective := range []string{"x", "y"} {
 		manifest, err := run.CreateOneOff(context.Background(), projectRoot, run.OneOffFeature, objective, []core.Task{{ID: core.TaskID("T" + objective), Objective: objective, State: core.Ready, Criteria: []string{"done"}, WritablePaths: []string{"x"}}})
 		if err != nil {
@@ -203,18 +243,50 @@ func TestProjectScopeResolvesAllCanonicalRuns(t *testing.T) {
 		if _, err := run.NewRepositories(s).Runs.Initialize(context.Background(), manifest); err != nil {
 			t.Fatal(err)
 		}
-		ids = append(ids, manifest.ID)
+		packets = append(packets, packetFor(manifest))
 	}
 	sup := &supervisor{}
 	if err := lifecycle.New(s, sup).Pause(context.Background(), core.Scope{Kind: core.ScopeProject, ID: projectRoot}, "user"); err != nil {
 		t.Fatal(err)
 	}
-	if len(sup.events) != len(ids) {
+	if len(sup.events) != len(packets) {
 		t.Fatalf("events=%+v", sup.events)
 	}
-	for _, id := range ids {
-		if err := lifecycle.AdmissionAllowed(context.Background(), s, id); !errors.Is(err, core.ErrTransition) {
-			t.Fatalf("run=%s err=%v", id, err)
+	for _, packet := range packets {
+		if err := lifecycle.AdmissionAllowed(context.Background(), s, packet); !errors.Is(err, core.ErrTransition) {
+			t.Fatalf("run=%s err=%v", packet.RunID, err)
+		}
+	}
+}
+
+func TestRestrictiveProjectFailureKeepsEarlierBarrier(t *testing.T) {
+	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	projectRoot := t.TempDir()
+	var packets []core.AssignmentPacket
+	for _, objective := range []string{"x", "y"} {
+		manifest, err := run.CreateOneOff(context.Background(), projectRoot, run.OneOffFeature, objective, []core.Task{{ID: core.TaskID("T" + objective), Objective: objective, State: core.Ready, Criteria: []string{"done"}, WritablePaths: []string{"x"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := run.NewRepositories(s).Runs.Initialize(context.Background(), manifest); err != nil {
+			t.Fatal(err)
+		}
+		packets = append(packets, packetFor(manifest))
+	}
+	sup := &supervisor{err: core.ErrCapacity, failAt: 2}
+	if err := lifecycle.New(s, sup).Pause(context.Background(), core.Scope{Kind: core.ScopeProject, ID: projectRoot}, "user"); !errors.Is(err, core.ErrCapacity) {
+		t.Fatal(err)
+	}
+	if len(sup.events) != 2 {
+		t.Fatalf("events=%+v", sup.events)
+	}
+	for _, packet := range packets {
+		err := lifecycle.AdmissionAllowed(context.Background(), s, packet)
+		if packet.RunID == sup.events[0].Run && !errors.Is(err, core.ErrTransition) {
+			t.Fatalf("first=%v", err)
+		}
+		if packet.RunID != sup.events[0].Run && err != nil {
+			t.Fatalf("later=%v", err)
 		}
 	}
 }

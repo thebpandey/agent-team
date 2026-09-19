@@ -55,6 +55,7 @@ type controller struct {
 	store      *store.Store
 	supervisor supervise.Supervisor
 	mu         *sync.Mutex
+	err        error
 }
 
 type target struct {
@@ -66,12 +67,15 @@ var locks sync.Map
 
 // New creates a lifecycle controller. All work remains in the calling goroutine.
 func New(state *store.Store, supervisor supervise.Supervisor) Lifecycle {
-	key := "<nil>"
-	if state != nil {
-		key = filepath.Clean(state.Root)
+	key, err := canonicalStoreRoot(state)
+	if err != nil {
+		key = "<invalid-store-root>"
 	}
 	value, _ := locks.LoadOrStore(key, &sync.Mutex{})
-	return &controller{store: state, supervisor: supervisor, mu: value.(*sync.Mutex)}
+	if err != nil {
+		return &controller{supervisor: supervisor, mu: value.(*sync.Mutex), err: err}
+	}
+	return &controller{store: store.New(key, state.Limits), supervisor: supervisor, mu: value.(*sync.Mutex)}
 }
 
 // NewLifecycle is retained as the explicit constructor named by the plan.
@@ -81,21 +85,42 @@ func NewLifecycle(state *store.Store, supervisor supervise.Supervisor) Lifecycle
 
 // AdmissionAllowed reads the run and project barriers that can prevent a new
 // assignment before a caller constructs any host request.
-func AdmissionAllowed(ctx context.Context, state *store.Store, id core.RunID) error {
-	if ctx == nil || ctx.Err() != nil || state == nil {
+func AdmissionAllowed(ctx context.Context, state *store.Store, packet core.AssignmentPacket) error {
+	if ctx == nil || ctx.Err() != nil || state == nil || packet.RunID == "" || packet.Team == "" || packet.Task == "" {
 		return core.ErrTransition
 	}
-	manifest, err := run.NewRepositories(state).Runs.Read(ctx, id)
+	root, err := canonicalStoreRoot(state)
+	if err != nil {
+		return core.ErrPath
+	}
+	state = store.New(root, state.Limits)
+	manifest, err := run.NewRepositories(state).Runs.Read(ctx, packet.RunID)
 	if err != nil {
 		return core.ErrTransition
 	}
-	for _, scope := range []core.Scope{{Kind: core.ScopeRun, ID: string(id)}, {Kind: core.ScopeProject, ID: manifest.Project}} {
+	teamOK, taskOK := false, false
+	for _, team := range manifest.Teams {
+		if team.ID != packet.Team {
+			continue
+		}
+		teamOK = true
+		for _, task := range team.Queue {
+			if task == packet.Task {
+				taskOK = true
+				break
+			}
+		}
+	}
+	if !teamOK || !taskOK {
+		return core.ErrTransition
+	}
+	for _, scope := range []core.Scope{{Kind: core.ScopeProject, ID: manifest.Project}, {Kind: core.ScopeRun, ID: string(packet.RunID)}, {Kind: core.ScopeTeam, ID: string(packet.Team)}, {Kind: core.ScopeTask, ID: string(packet.Task)}} {
 		var barrier record
-		err := state.ReadJSON(recordPath(id, scope), 64<<10, &barrier)
+		err := state.ReadJSON(recordPath(packet.RunID, scope), 64<<10, &barrier)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		if err != nil || barrier.Run != id || barrier.Scope != scope || barrier.Revision == 0 {
+		if err != nil || barrier.Run != packet.RunID || barrier.Scope != scope || barrier.Revision == 0 {
 			return core.ErrRevision
 		}
 		switch barrier.State {
@@ -133,7 +158,13 @@ func (c *controller) Checkpoint(ctx context.Context, scope core.Scope, digest st
 }
 
 func (c *controller) transition(ctx context.Context, scope core.Scope, event workflow.Event) error {
-	if ctx == nil || ctx.Err() != nil || c == nil || c.store == nil {
+	if ctx == nil || ctx.Err() != nil || c == nil {
+		return core.ErrTransition
+	}
+	if c.err != nil {
+		return c.err
+	}
+	if c.store == nil {
 		return core.ErrTransition
 	}
 	targets, err := c.resolve(scope)
@@ -176,7 +207,8 @@ func (c *controller) transition(ctx context.Context, scope core.Scope, event wor
 	}
 	// Emit before publishing a resume barrier so a failed supervisor call can
 	// never reopen admission. All calls are synchronous foreground work.
-	for _, target := range targets {
+	restrictive := event.Kind == workflow.Pause || event.Kind == workflow.Stop || event.Kind == workflow.Cancel
+	for i, target := range targets {
 		event.Run, event.Scope = target.run, target.scope
 		if err := c.supervisor.Emit(ctx, event); err != nil {
 			return err
@@ -186,6 +218,14 @@ func (c *controller) transition(ctx context.Context, scope core.Scope, event wor
 				return err
 			}
 		}
+		if restrictive {
+			if _, err := c.store.WriteJSON(recordPath(next[i].Run, next[i].Scope), next[i], 64<<10); err != nil {
+				return err
+			}
+		}
+	}
+	if restrictive {
+		return nil
 	}
 	for _, value := range next {
 		if _, err := c.store.WriteJSON(recordPath(value.Run, value.Scope), value, 64<<10); err != nil {
@@ -193,6 +233,25 @@ func (c *controller) transition(ctx context.Context, scope core.Scope, event wor
 		}
 	}
 	return nil
+}
+
+func canonicalStoreRoot(state *store.Store) (string, error) {
+	if state == nil || state.Root == "" {
+		return "", core.ErrPath
+	}
+	abs, err := filepath.Abs(filepath.Clean(state.Root))
+	if err != nil {
+		return "", core.ErrPath
+	}
+	root, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", core.ErrPath
+	}
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return "", core.ErrPath
+	}
+	return filepath.Clean(root), nil
 }
 
 // resolve binds team/task scope only to one complete canonical run. The
