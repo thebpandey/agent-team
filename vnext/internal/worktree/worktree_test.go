@@ -427,6 +427,20 @@ func TestCreateRejectsMalformedBaseResolutionBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestParseResolvedOIDIsByteStrict(t *testing.T) {
+	oid := strings.Repeat("a", 40)
+	for _, output := range []string{oid, oid + "\n", oid + "\r\n"} {
+		if got, err := parseResolvedOID(output); err != nil || got != oid {
+			t.Fatalf("parse(%q) = %q, %v", output, got, err)
+		}
+	}
+	for _, output := range []string{oid + "\n\n", oid + "\r\n\r\n", " " + oid, oid + " ", "\t" + oid, oid + "\t"} {
+		if _, err := parseResolvedOID(output); !errors.Is(err, core.ErrRevision) {
+			t.Fatalf("parse(%q) = %v", output, err)
+		}
+	}
+}
+
 type gitRunner struct {
 	calls       [][]string
 	result      tracker.CommandResult

@@ -428,8 +428,20 @@ func (m *Manager) resolveBase(ctx context.Context, repo, supplied string) (strin
 	if err != nil {
 		return "", err
 	}
-	oid := strings.ToLower(strings.TrimSpace(output))
-	if !singleLine(output) || !fullOID(oid) {
+	return parseResolvedOID(output)
+}
+
+func parseResolvedOID(output string) (string, error) {
+	if strings.HasSuffix(output, "\r\n") {
+		output = strings.TrimSuffix(output, "\r\n")
+	} else if strings.HasSuffix(output, "\n") {
+		output = strings.TrimSuffix(output, "\n")
+	}
+	if strings.ContainsAny(output, "\r\n\t ") {
+		return "", core.ErrRevision
+	}
+	oid := strings.ToLower(output)
+	if !fullOID(oid) {
 		return "", core.ErrRevision
 	}
 	return oid, nil
