@@ -310,6 +310,15 @@ func TestSchemaOneCanonicalAcceptance(t *testing.T) {
 	if err := knowledge.WriteReceipt(ctx, s, receipt); err != nil {
 		t.Fatal(err)
 	}
+	conflictingRun := manifest
+	conflictingRun.Project = "conflicting-project"
+	if _, err := repos.Runs.CompareAndSwap(ctx, manifest.ID, manifest.Revision, conflictingRun); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("conflicting run error=%v, want ErrRevision", err)
+	}
+	lastGood, err := repos.Runs.Read(ctx, manifest.ID)
+	if err != nil || lastGood.Project != manifest.Project || lastGood.Root != manifest.Root || lastGood.Revision != manifest.Revision || lastGood.ManifestDigest != manifest.ManifestDigest {
+		t.Fatalf("conflicting run changed last-good=%#v error=%v", lastGood, err)
+	}
 
 	badRun := manifest
 	badRun.Schema = 2
