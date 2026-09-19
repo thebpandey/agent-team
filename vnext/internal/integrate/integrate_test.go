@@ -39,6 +39,21 @@ func TestIntegratorUsesExactWorktreeProvenanceSeriallyAndIdempotently(t *testing
 	}
 }
 
+func TestIntegratorRestoresOrderFromCanonicalHistory(t *testing.T) {
+	manager := &recordingManager{}
+	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	project := project.Project{Root: "project", Head: "base", Readable: true, Writable: true}
+	first := validCandidate("TASK-1", "candidate-1")
+	if _, err := integrate.NewIntegrator(project, state, manager).Integrate(context.Background(), first, durableGate(t, state, first)); err != nil {
+		t.Fatal(err)
+	}
+	second := validCandidate("TASK-2", "candidate-2")
+	got, err := integrate.NewIntegrator(project, state, manager).Integrate(context.Background(), second, durableGate(t, state, second))
+	if err != nil || got.Order != 2 {
+		t.Fatalf("restart order = %+v, %v", got, err)
+	}
+}
+
 func TestIntegratorFailsClosedBeforeMutatingWorktree(t *testing.T) {
 	candidate := validCandidate("TASK", "candidate")
 	for _, tc := range []struct {
@@ -175,13 +190,16 @@ func (m *concurrentManager) Inspect(_ context.Context, worktree contracts.Worktr
 }
 func (m *concurrentManager) Integrate(_ context.Context, candidate contracts.Candidate) (contracts.Candidate, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.active++
 	if m.active > m.max {
 		m.max = m.active
 	}
 	m.integrations++
+	m.mu.Unlock()
+	time.Sleep(5 * time.Millisecond)
+	m.mu.Lock()
 	m.active--
+	m.mu.Unlock()
 	return candidate, nil
 }
 func (m *concurrentManager) Cleanup(context.Context, core.TeamID) error {

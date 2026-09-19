@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/gate"
 	"github.com/thebpandey/agent-team/vnext/internal/knowledge"
+	"github.com/thebpandey/agent-team/vnext/internal/run"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
@@ -100,15 +102,38 @@ func TestDefaultGateValidatesDurableReceiptAndPassedChecks(t *testing.T) {
 	}
 }
 
-func durableInput(t *testing.T, state *store.Store) contracts.GateInput {
+func TestDefaultGateRejectsCallerDownscopedCanonicalChecks(t *testing.T) {
+	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	input := canonicalDurableInput(t, state, []core.Check{{Name: "first", Command: []string{"first"}}, {Name: "second", Command: []string{"second"}}}, []string{"first"})
+	if _, err := gate.NewGate(nil, state).Check(context.Background(), input); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("downscoped canonical checks error = %v, want ErrRevision", err)
+	}
+}
+
+func canonicalDurableInput(t *testing.T, state *store.Store, checks []core.Check, evidenceChecks []string) contracts.GateInput {
 	t.Helper()
-	envelope := core.RecordEnvelope{Schema: 1, Project: "project", RunID: "RUN", WrittenAt: "2026-09-19T00:00:00Z", Revision: 1}
-	evidence := knowledge.Evidence{RecordEnvelope: envelope, Task: "TASK", Attempt: 1, Exit: 0, InputFingerprint: "check-a"}
-	if err := knowledge.WriteEvidence(context.Background(), state, evidence); err != nil {
+	ctx := context.Background()
+	manifest, err := run.CreateOneOff(ctx, t.TempDir(), run.Feature, "objective", []core.Task{{ID: "TASK", Objective: "objective", State: core.Ready, Criteria: []string{"criterion"}, Checks: checks, WritablePaths: []string{"vnext"}}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	receipt := knowledge.Receipt{RecordEnvelope: envelope, Team: "TEAM", Task: "TASK", Attempt: 1, State: core.Clean, Base: "base", Head: "candidate", Review: "review-digest", EvidencePointers: []string{".agent-team/evidence/TASK/1/evidence.json"}, NextAction: "integrate"}
-	if err := knowledge.WriteReceipt(context.Background(), state, receipt); err != nil {
+	if _, err := run.NewRepositories(state).Runs.Initialize(ctx, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if evidenceChecks == nil {
+		evidenceChecks = testCheckFingerprints(checks)
+	}
+	envelope := core.RecordEnvelope{Schema: 1, Project: manifest.Project, RunID: manifest.ID, WrittenAt: "2026-09-19T00:00:00Z", Revision: 1}
+	pointers := make([]string, 0, len(evidenceChecks))
+	for attempt, name := range evidenceChecks {
+		evidence := knowledge.Evidence{RecordEnvelope: envelope, Task: "TASK", Attempt: attempt + 1, Exit: 0, InputFingerprint: name}
+		if err := knowledge.WriteEvidence(ctx, state, evidence); err != nil {
+			t.Fatal(err)
+		}
+		pointers = append(pointers, ".agent-team/evidence/TASK/"+string(rune('1'+attempt))+"/evidence.json")
+	}
+	receipt := knowledge.Receipt{RecordEnvelope: envelope, Team: "TEAM", Task: "TASK", Attempt: 1, State: core.Clean, Base: "base", Head: "candidate", Review: "review-digest", EvidencePointers: pointers, NextAction: "integrate"}
+	if err := knowledge.WriteReceipt(ctx, state, receipt); err != nil {
 		t.Fatal(err)
 	}
 	encoded, err := json.Marshal(receipt)
@@ -116,10 +141,23 @@ func durableInput(t *testing.T, state *store.Store) contracts.GateInput {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(encoded)
-	input := validInput()
-	input.RequiredCheckFingerprints = []string{"check-a"}
-	input.ReceiptDigest = "sha256:" + hex.EncodeToString(sum[:])
-	return input
+	return contracts.GateInput{Run: manifest.ID, Task: "TASK", Candidate: contracts.Candidate{Task: "TASK", Revision: "candidate", Base: "base", Worktree: contracts.Worktree{Run: manifest.ID, Team: "TEAM", Path: "/tmp/task", Branch: "branch", Base: "base", Candidate: "candidate"}}, TrackerRevision: manifest.TrackerRevision, ReceiptRevision: 1, RequiredCheckFingerprints: evidenceChecks, ScopeFingerprint: "scope", ReceiptDigest: "sha256:" + hex.EncodeToString(sum[:]), ReviewDigest: "review-digest"}
+}
+
+func durableInput(t *testing.T, state *store.Store) contracts.GateInput {
+	t.Helper()
+	return canonicalDurableInput(t, state, []core.Check{{Name: "check", Command: []string{"check"}}}, nil)
+}
+
+func testCheckFingerprints(checks []core.Check) []string {
+	result := make([]string, len(checks))
+	for index, check := range checks {
+		encoded, _ := json.Marshal(check)
+		sum := sha256.Sum256(encoded)
+		result[index] = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	sort.Strings(result)
+	return result
 }
 
 type testAuthority struct{}
