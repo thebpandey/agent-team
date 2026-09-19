@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -315,6 +316,47 @@ func TestInterruptedRetryRepairsMissingEventAndRejectsTampering(t *testing.T) {
 	}
 	if _, err := s.Turn(context.Background(), handle); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("tampered-event retry = %v", err)
+	}
+}
+
+func TestConcurrentIdenticalInterruptedTurnsConvergeOnce(t *testing.T) {
+	state, _, handle := interruptionFixture(t)
+	first := &adapter{handle: handle, poll: "same partial", pollErr: context.Canceled}
+	second := &adapter{handle: handle, poll: "same partial", pollErr: context.Canceled}
+	s1 := bindHandle(t, state, first, handle)
+	s2 := bindHandle(t, state, second, handle)
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wait sync.WaitGroup
+	for _, supervisor := range []supervise.Supervisor{s1, s2} {
+		wait.Add(1)
+		go func(s supervise.Supervisor) {
+			defer wait.Done()
+			<-start
+			_, err := s.Turn(context.Background(), handle)
+			errs <- err
+		}(supervisor)
+	}
+	close(start)
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if !errors.Is(err, core.ErrTransition) {
+			t.Fatalf("concurrent Turn() = %v", err)
+		}
+	}
+	receipt := readReceipt(t, state, handle.Team)
+	if receipt.State != core.Interrupted || receipt.Revision != 3 || len(receipt.EvidencePointers) != 2 {
+		t.Fatalf("concurrent receipt = %+v", receipt)
+	}
+	directory := filepath.Join(state.Root, ".agent-team", "supervision", "events", string(handle.Run), "task-TASK")
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("concurrent events = %v, %v", entries, err)
+	}
+	first.poll = "different partial"
+	if _, err := s1.Turn(context.Background(), handle); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("non-identical retry = %v", err)
 	}
 }
 

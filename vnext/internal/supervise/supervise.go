@@ -67,6 +67,10 @@ func lockFor(root string) *sync.Mutex {
 	return value.(*sync.Mutex)
 }
 
+func interruptLockFor(state *store.Store, handle contracts.WorkerHandle) *sync.Mutex {
+	return lockFor(storeRoot(state) + "\x00" + string(handle.Run) + "\x00task\x00" + string(handle.Task))
+}
+
 // NewSupervisor creates a foreground-only supervisor.
 func NewSupervisor(state *store.Store, adapter host.Adapter, runner host.CommandRunner) Supervisor {
 	return &supervisor{state: state, adapter: adapter, runner: runner, mu: lockFor(storeRoot(state))}
@@ -607,6 +611,10 @@ func validHandleIdentity(handle contracts.WorkerHandle) error {
 }
 
 func (s *supervisor) interrupt(ctx context.Context, handle contracts.WorkerHandle, observation string, turnErr error) error {
+	guard := interruptLockFor(s.state, handle)
+	guard.Lock()
+	defer guard.Unlock()
+
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), interruptTimeout)
 	defer cancel()
 
