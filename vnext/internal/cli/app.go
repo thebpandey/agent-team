@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -50,22 +51,36 @@ func Run(_ context.Context, args []string, deps core.Dependencies) int {
 	}
 	message := action.Name + " " + status
 	if action.JSON {
-		return writeBoundedJSON(stdout, outcome{Schema: 1, Action: action.Name, Status: status, Message: message})
+		if code := writeBoundedJSON(stdout, outcome{Schema: 1, Action: action.Name, Status: status, Message: message}); code != 0 {
+			return code
+		}
+		return outcomeExit(status)
 	}
 	if _, err := fmt.Fprintln(stdout, message); err != nil {
 		return 1
 	}
+	return outcomeExit(status)
+}
+
+func outcomeExit(status string) int {
 	if status == "deferred" || status == "rejected" {
-		return 2
+		return phaseExit(core.ErrPhase)
 	}
 	return 0
+}
+
+func phaseExit(err error) int {
+	if errors.Is(err, core.ErrPhase) {
+		return 2
+	}
+	return 1
 }
 
 func deferred(action Action) bool {
 	if action.Name == "start" || action.Name == "cleanup" || action.Name == "deploy" {
 		return true
 	}
-	return action.Name == "task add" && len(action.Args) == 1 && action.Args[0] == "--execute"
+	return action.Name == "task add" && len(action.Args) >= 1 && action.Args[0] == "--execute"
 }
 
 func writeFailure(stdout, stderr io.Writer, args []string, err error) int {
@@ -88,12 +103,12 @@ func writeFailure(stdout, stderr io.Writer, args []string, err error) int {
 		if code := writeBoundedJSON(stdout, outcome{Schema: 1, Action: actionName, Status: "rejected", Message: message}); code != 0 {
 			return code
 		}
-		return 2
+		return phaseExit(err)
 	}
 	if _, writeErr := fmt.Fprintln(stderr, message); writeErr != nil {
 		return 1
 	}
-	return 2
+	return phaseExit(err)
 }
 
 func writeBoundedJSON(w io.Writer, value any) int {

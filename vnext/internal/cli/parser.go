@@ -48,49 +48,74 @@ func Parse(args []string) (Action, error) {
 			return Action{}, core.ErrPhase
 		}
 	case "setup":
-		if err := parseSetupArgs(args[1:]); err != nil {
+		var err error
+		actionArgs, err = parseSetupArgs(args[1:])
+		if err != nil {
 			return Action{}, err
 		}
-		actionArgs = args[1:]
-	case "settings", "inspect", "cleanup":
-		if len(args) != 1 {
-			return Action{}, core.ErrPhase
+	case "settings":
+		var err error
+		actionArgs, err = parseSettingsArgs(args[1:])
+		if err != nil {
+			return Action{}, err
 		}
 	case "status":
-		if err := parseSingleSelector(args[1:], "--run"); err != nil {
+		var err error
+		actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true}, false)
+		if err != nil {
 			return Action{}, err
 		}
-		actionArgs = args[1:]
 	case "start":
-		if err := parseSingleSelector(args[1:], "--task"); err != nil {
+		var err error
+		actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true, "--task": true}, true)
+		if err != nil {
 			return Action{}, err
 		}
-		actionArgs = args[1:]
 	case "task":
-		if len(args) < 3 || args[1] != "add" || (args[2] != "--queue" && args[2] != "--execute") {
+		if len(args) < 4 || args[1] != "add" || (args[2] != "--queue" && args[2] != "--execute") {
 			return Action{}, core.ErrPhase
 		}
-		if len(args) > 3 {
+		objective := strings.TrimSpace(strings.Join(args[3:], " "))
+		if objective == "" {
 			return Action{}, core.ErrPhase
 		}
 		name = "task add"
-		actionArgs = args[2:]
+		actionArgs = []string{args[2], objective}
 	case "one-off":
-		if len(args) != 4 || (args[1] != "feature" && args[1] != "audit" && args[1] != "review") || args[2] != "--objective" || strings.TrimSpace(args[3]) == "" {
+		if len(args) < 3 || (args[1] != "feature" && args[1] != "audit" && args[1] != "review") {
+			return Action{}, core.ErrPhase
+		}
+		if args[2] == "--objective" {
+			return Action{}, core.ErrPhase
+		}
+		objective := strings.TrimSpace(strings.Join(args[2:], " "))
+		if objective == "" {
 			return Action{}, core.ErrPhase
 		}
 		name = "one-off " + args[1]
-		actionArgs = args[2:]
-	case "pause":
-		if err := parseScope(args[1:]); err != nil {
+		actionArgs = []string{objective}
+	case "pause", "stop", "cancel", "resume":
+		allowed := map[string]bool{"--run": true, "--team": true, "--task": true}
+		if name == "pause" || name == "stop" {
+			allowed["--project"] = true
+		}
+		var err error
+		actionArgs, err = parseSelectors(args[1:], allowed, false)
+		if err != nil {
 			return Action{}, err
 		}
-		actionArgs = args[1:]
+	case "inspect", "cleanup":
+		var err error
+		actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true, "--team": true, "--task": true}, false)
+		if err != nil {
+			return Action{}, err
+		}
 	case "deploy":
-		if err := parseDeployArgs(args[1:]); err != nil {
+		var err error
+		actionArgs, err = parseDeployArgs(args[1:])
+		if err != nil {
 			return Action{}, err
 		}
-		actionArgs = args[1:]
 	default:
 		return Action{}, core.ErrPhase
 	}
@@ -98,59 +123,105 @@ func Parse(args []string) (Action, error) {
 	return Action{Name: name, Args: append([]string(nil), actionArgs...), JSON: jsonOutput}, nil
 }
 
-func parseSetupArgs(args []string) error {
-	if len(args) > 1 {
-		return core.ErrPhase
-	}
-	if len(args) == 1 && args[0] != "--approve-kickoff" && args[0] != "--refuse-kickoff" {
-		return core.ErrPhase
-	}
-	return nil
-}
-
-func parseSingleSelector(args []string, flag string) error {
-	if len(args) == 0 {
-		return nil
-	}
-	if len(args) != 2 || args[0] != flag || strings.TrimSpace(args[1]) == "" {
-		return core.ErrPhase
-	}
-	return nil
-}
-
-func parseScope(args []string) error {
-	if len(args) != 2 || args[0] != "--scope" {
-		return core.ErrPhase
-	}
-	scope := strings.TrimSpace(args[1])
-	kind, id, ok := strings.Cut(scope, ":")
-	if !ok || id == "" || (kind != "project" && kind != "run" && kind != "team" && kind != "task") {
-		return core.ErrPhase
-	}
-	return nil
-}
-
-func parseDeployArgs(args []string) error {
-	seen := map[string]bool{}
-	for i := 0; i < len(args); i += 2 {
-		if i+1 >= len(args) || seen[args[i]] || strings.TrimSpace(args[i+1]) == "" {
-			return core.ErrPhase
-		}
-		seen[args[i]] = true
+func parseSetupArgs(args []string) ([]string, error) {
+	var out []string
+	seenMode, seenApprove, seenRefuse := false, false, false
+	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--mode":
+			if seenMode || i+1 >= len(args) {
+				return nil, core.ErrPhase
+			}
+			mode := strings.TrimSpace(args[i+1])
+			if mode != "plan" && mode != "one-off" {
+				return nil, core.ErrPhase
+			}
+			seenMode = true
+			out = append(out, "--mode", mode)
+			i++
+		case "--approve-kickoff":
+			if seenApprove || seenRefuse {
+				return nil, core.ErrPhase
+			}
+			seenApprove = true
+			out = append(out, args[i])
+		case "--refuse-kickoff":
+			if seenRefuse || seenApprove {
+				return nil, core.ErrPhase
+			}
+			seenRefuse = true
+			out = append(out, args[i])
+		default:
+			return nil, core.ErrPhase
+		}
+	}
+	return out, nil
+}
+
+func parseSettingsArgs(args []string) ([]string, error) {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		key, value, ok := strings.Cut(arg, "=")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if !ok || key == "" || value == "" || strings.HasPrefix(key, "-") {
+			return nil, core.ErrPhase
+		}
+		out = append(out, key+"="+value)
+	}
+	return out, nil
+}
+
+func parseSelectors(args []string, allowed map[string]bool, repeatTask bool) ([]string, error) {
+	if len(args)%2 != 0 {
+		return nil, core.ErrPhase
+	}
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i += 2 {
+		flag, value := args[i], strings.TrimSpace(args[i+1])
+		if !allowed[flag] || value == "" || (seen[flag] && !(repeatTask && flag == "--task")) {
+			return nil, core.ErrPhase
+		}
+		seen[flag] = true
+		out = append(out, flag, value)
+	}
+	return out, nil
+}
+
+func parseDeployArgs(args []string) ([]string, error) {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i += 2 {
+		if i+1 >= len(args) || seen[args[i]] {
+			return nil, core.ErrPhase
+		}
+		flag, value := args[i], strings.TrimSpace(args[i+1])
+		if value == "" {
+			return nil, core.ErrPhase
+		}
+		switch flag {
 		case "--run", "--target":
 		case "--batch-size":
-			for _, char := range args[i+1] {
-				if char < '0' || char > '9' {
-					return core.ErrPhase
-				}
-			}
-			if args[i+1] == "0" {
-				return core.ErrPhase
+			if !canonicalPositiveDecimal(value) {
+				return nil, core.ErrPhase
 			}
 		default:
-			return core.ErrPhase
+			return nil, core.ErrPhase
+		}
+		seen[flag] = true
+		out = append(out, flag, value)
+	}
+	return out, nil
+}
+
+func canonicalPositiveDecimal(value string) bool {
+	if value == "" || value[0] < '1' || value[0] > '9' {
+		return false
+	}
+	for _, char := range value[1:] {
+		if char < '0' || char > '9' {
+			return false
 		}
 	}
-	return nil
+	return true
 }

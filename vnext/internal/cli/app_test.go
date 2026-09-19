@@ -64,23 +64,28 @@ func TestVersionParserAcceptsOnlyExactForms(t *testing.T) {
 
 func TestCanonicalActions(t *testing.T) {
 	accepted := [][]string{
-		{"setup"},
-		{"settings"},
+		{"setup", "--mode", "plan"},
+		{"settings", "runtime.kind=go", "tracker.kind=tasks-md"},
 		{"status"},
-		{"start"},
-		{"task", "add", "--queue"},
-		{"task", "add", "--execute"},
-		{"one-off", "feature", "--objective", "inspect feature"},
-		{"one-off", "audit", "--objective", "inspect config"},
-		{"one-off", "review", "--objective", "review change"},
-		{"pause", "--scope", "team:TEAM-1"},
+		{"start", "--run", "R-1", "--task", "T-1", "--task", "T-2"},
+		{"task", "add", "--queue", "inspect feature"},
+		{"task", "add", "--execute", "inspect feature"},
+		{"one-off", "feature", "inspect feature"},
+		{"one-off", "audit", "inspect config"},
+		{"one-off", "review", "review change"},
+		{"pause", "--team", "TEAM-1"},
+		{"stop", "--run", "R-1"},
+		{"cancel", "--task", "T-1"},
+		{"resume", "--run", "R-1"},
+		{"inspect", "--run", "R-1"},
+		{"cleanup", "--team", "TEAM-1"},
 		{"inspect"},
-		{"cleanup"},
 		{"deploy"},
 	}
 	rejected := [][]string{
 		{"review"}, {"gate"}, {"integrate"}, {"reconcile"}, {"checkpoint"},
-		{"list"}, {"archive"}, {"plan"},
+		{"list"}, {"archive"}, {"plan"}, {"task", "add", "--queue"},
+		{"one-off", "feature", "--objective", "inspect feature"},
 	}
 	for _, args := range accepted {
 		if _, err := cli.Parse(args); err != nil {
@@ -99,8 +104,8 @@ func TestCanonicalActionsRetainArgumentsAndJSON(t *testing.T) {
 		args []string
 		want cli.Action
 	}{
-		{[]string{"task", "add", "--queue", "--json"}, cli.Action{Name: "task add", Args: []string{"--queue"}, JSON: true}},
-		{[]string{"one-off", "feature", "--objective", "inspect feature", "--json"}, cli.Action{Name: "one-off feature", Args: []string{"--objective", "inspect feature"}, JSON: true}},
+		{[]string{"task", "add", "--queue", "inspect feature", "--json"}, cli.Action{Name: "task add", Args: []string{"--queue", "inspect feature"}, JSON: true}},
+		{[]string{"one-off", "feature", "inspect feature", "--json"}, cli.Action{Name: "one-off feature", Args: []string{"inspect feature"}, JSON: true}},
 		{[]string{"status", "--run", "RUN-1"}, cli.Action{Name: "status", Args: []string{"--run", "RUN-1"}}},
 	}
 	for _, tc := range cases {
@@ -121,7 +126,7 @@ func TestRunReportsCanonicalTextAndJSONOutcomes(t *testing.T) {
 		{"settings text", []string{"settings"}, 0, "settings accepted"},
 		{"status json", []string{"status", "--json"}, 0, `"action":"status"`},
 		{"start deferred", []string{"start"}, 2, "start deferred"},
-		{"execute deferred", []string{"task", "add", "--execute"}, 2, "task add deferred"},
+		{"execute deferred", []string{"task", "add", "--execute", "inspect feature"}, 2, "task add deferred"},
 		{"invalid", []string{"gate"}, 2, "phase"},
 	}
 	for _, tc := range cases {
@@ -132,6 +137,60 @@ func TestRunReportsCanonicalTextAndJSONOutcomes(t *testing.T) {
 				t.Fatalf("args=%v code=%d output=%q want code=%d containing %q", tc.args, code, out.String(), tc.wantCode, tc.wantText)
 			}
 		})
+	}
+}
+
+func TestCanonicalSelectorsNormalizeAndRepeat(t *testing.T) {
+	cases := []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"start", "--run", " R-1 ", "--task", " T-1 ", "--task", " T-2 "}, []string{"--run", "R-1", "--task", "T-1", "--task", "T-2"}},
+		{[]string{"inspect", "--run", " R-1 "}, []string{"--run", "R-1"}},
+		{[]string{"cleanup", "--team", " TEAM-1 "}, []string{"--team", "TEAM-1"}},
+		{[]string{"deploy", "--batch-size", " 1 "}, []string{"--batch-size", "1"}},
+	}
+	for _, tc := range cases {
+		got, err := cli.Parse(tc.args)
+		if err != nil || !equalStrings(got.Args, tc.want) {
+			t.Fatalf("args=%v got=%+v err=%v want args=%v", tc.args, got, err, tc.want)
+		}
+	}
+}
+
+func TestCanonicalRejectsMalformedArguments(t *testing.T) {
+	for _, args := range [][]string{
+		{"settings", "runtime.kind="},
+		{"start", "--run"},
+		{"start", "--task"},
+		{"inspect", "--team"},
+		{"cleanup", "--team"},
+		{"deploy", "--batch-size", "00"},
+		{"deploy", "--batch-size", "01"},
+		{"deploy", "--batch-size", "-1"},
+	} {
+		if _, err := cli.Parse(args); !errors.Is(err, core.ErrPhase) {
+			t.Fatalf("args=%v accepted: %v", args, err)
+		}
+	}
+}
+
+func TestDeferredJSONOutcomesRetainPhaseExit(t *testing.T) {
+	for _, args := range [][]string{
+		{"start", "--json"},
+		{"cleanup", "--team", "TEAM-1", "--json"},
+		{"deploy", "--json"},
+		{"task", "add", "--execute", "inspect feature", "--json"},
+		{"setup", "--refuse-kickoff", "--json"},
+	} {
+		var out bytes.Buffer
+		if code := cli.Run(context.Background(), args, core.Dependencies{Stdout: &out, Stderr: &out}); code != 2 {
+			t.Fatalf("args=%v code=%d output=%q", args, code, out.String())
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal(out.Bytes(), &envelope); err != nil || envelope["status"] == "accepted" {
+			t.Fatalf("args=%v output=%q err=%v", args, out.String(), err)
+		}
 	}
 }
 
