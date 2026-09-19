@@ -49,6 +49,30 @@ func checkpointFixture(t *testing.T) (*store.Store, run.Run, core.Scope) {
 	return s, manifest, core.Scope{Kind: core.ScopeTask, ID: "TASK-1"}
 }
 
+func checkpointTwoTeamFixture(t *testing.T) (*store.Store, run.Run) {
+	t.Helper()
+	ctx := context.Background()
+	tasks := make([]core.Task, 9)
+	for i := range tasks {
+		tasks[i] = core.Task{ID: core.TaskID("TASK-" + string(rune('A'+i))), Objective: "fixture", State: core.Ready, Criteria: []string{"done"}, WritablePaths: []string{"src/" + string(rune('a'+i))}}
+	}
+	manifest, err := run.CreateOneOff(ctx, t.TempDir(), run.OneOffFeature, "two-team checkpoint fixture", tasks)
+	if err != nil || len(manifest.Teams) != 2 {
+		t.Fatalf("manifest teams=%d err=%v", len(manifest.Teams), err)
+	}
+	s := store.New(manifest.Root, core.StorageLimits{CanonicalBytes: 16 << 20})
+	if _, err := run.NewRepositories(s).Runs.Initialize(ctx, manifest); err != nil {
+		t.Fatal(err)
+	}
+	for _, team := range manifest.Teams {
+		receipt := knowledge.Receipt{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: manifest.Project, RunID: manifest.ID, WrittenAt: manifest.WrittenAt, Revision: 1}, Team: string(team.ID), Task: string(team.Queue[0]), Attempt: 1, State: core.Implementing, NextAction: "continue"}
+		if err := knowledge.WriteReceipt(ctx, s, receipt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s, manifest
+}
+
 func TestCheckpointRecordCarriesStrictProvenanceAndReceiptProjection(t *testing.T) {
 	record := CheckpointRecord{
 		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: "project", RunID: "RUN-1", WrittenAt: "2026-09-19T00:00:00Z", Revision: 7},
@@ -240,6 +264,38 @@ func TestCheckpointRetryRepairsCommittedReceiptProjection(t *testing.T) {
 	}
 	if receipt.Revision != 2 || len(receipt.EvidencePointers) != 1 {
 		t.Fatalf("repaired receipt = %#v", receipt)
+	}
+}
+
+func TestCheckpointRejectsDuplicateReceiptProjectionWithoutMutation(t *testing.T) {
+	s, manifest := checkpointTwoTeamFixture(t)
+	scope := core.Scope{Kind: core.ScopeRun, ID: string(manifest.ID)}
+	if err := Checkpoint(context.Background(), s, manifest.ID, scope, testDigest); err != nil {
+		t.Fatal(err)
+	}
+	checkpointRelative := ".agent-team/checkpoints/" + string(manifest.ID) + "/run-" + string(manifest.ID) + ".json"
+	var record CheckpointRecord
+	if err := s.ReadJSON(checkpointRelative, 16<<20, &record); err != nil {
+		t.Fatal(err)
+	}
+	if len(record.Receipts) != 2 {
+		t.Fatalf("receipt projections = %d, want 2", len(record.Receipts))
+	}
+	firstPath, secondPath := record.Receipts[0].Path, record.Receipts[1].Path
+	var firstBefore, secondBefore []byte
+	firstBefore, _ = os.ReadFile(filepath.Join(s.Root, filepath.FromSlash(firstPath)))
+	secondBefore, _ = os.ReadFile(filepath.Join(s.Root, filepath.FromSlash(secondPath)))
+	record.Receipts[1] = record.Receipts[0]
+	if _, err := s.WriteJSON(checkpointRelative, record, 16<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := Checkpoint(context.Background(), s, manifest.ID, scope, testDigest); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("duplicate projection error = %v, want ErrRevision", err)
+	}
+	firstAfter, _ := os.ReadFile(filepath.Join(s.Root, filepath.FromSlash(firstPath)))
+	secondAfter, _ := os.ReadFile(filepath.Join(s.Root, filepath.FromSlash(secondPath)))
+	if !reflect.DeepEqual(firstBefore, firstAfter) || !reflect.DeepEqual(secondBefore, secondAfter) {
+		t.Fatal("malformed checkpoint mutated a receipt")
 	}
 }
 

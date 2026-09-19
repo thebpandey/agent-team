@@ -393,9 +393,49 @@ func validateRecord(record CheckpointRecord, manifest run.Run, scope core.Scope,
 		}
 		expected[relative] = true
 	}
+	seen := make(map[string]bool, len(record.Receipts))
 	for _, projection := range record.Receipts {
-		if !expected[projection.Path] || path.Clean(projection.Path) != projection.Path || !strings.HasPrefix(projection.Path, ".agent-team/receipts/") || strings.Contains(projection.Path, "\\") || !validDigest(projection.BeforeDigest) || !validDigest(projection.AfterDigest) || len(projection.BeforeIdentity) > 4096 || len(projection.AfterIdentity) > 4096 || projection.BeforeIdentity == "" || projection.AfterIdentity == "" {
+		if seen[projection.Path] || !expected[projection.Path] || path.Clean(projection.Path) != projection.Path || !strings.HasPrefix(projection.Path, ".agent-team/receipts/") || strings.Contains(projection.Path, "\\") || !validDigest(projection.BeforeDigest) || !validDigest(projection.AfterDigest) || len(projection.BeforeIdentity) > 4096 || len(projection.AfterIdentity) > 4096 || projection.BeforeIdentity == "" || projection.AfterIdentity == "" {
 			return fmt.Errorf("%w: invalid receipt projection", core.ErrRevision)
+		}
+		seen[projection.Path] = true
+	}
+	if len(seen) != len(expected) {
+		return fmt.Errorf("%w: checkpoint receipt projection set is incomplete", core.ErrRevision)
+	}
+	return nil
+}
+
+func validateStoredProjections(ctx context.Context, s *store.Store, manifest run.Run, record CheckpointRecord) error {
+	for _, projection := range record.Receipts {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var receipt knowledge.Receipt
+		if err := s.ReadJSON(projection.Path, maxReceiptBytes, &receipt); err != nil {
+			return err
+		}
+		beforeDigest, err := receiptDigest(receipt)
+		if err != nil {
+			return err
+		}
+		beforeIdentity := receiptIdentity(receipt)
+		if beforeIdentity == projection.AfterIdentity && beforeDigest == projection.AfterDigest {
+			continue
+		}
+		if beforeIdentity != projection.BeforeIdentity || beforeDigest != projection.BeforeDigest {
+			return fmt.Errorf("%w: receipt projection provenance changed", core.ErrRevision)
+		}
+		candidate := receipt
+		candidate.EvidencePointers = append([]string(nil), candidate.EvidencePointers...)
+		candidate.EvidencePointers = append(candidate.EvidencePointers, checkpointPath(manifest.ID, record.Scope))
+		candidate.Revision++
+		afterDigest, digestErr := receiptDigest(candidate)
+		if digestErr != nil {
+			return digestErr
+		}
+		if receiptIdentity(candidate) != projection.AfterIdentity || afterDigest != projection.AfterDigest {
+			return fmt.Errorf("%w: receipt projection after-state conflict", core.ErrRevision)
 		}
 	}
 	return nil
@@ -477,6 +517,9 @@ func Checkpoint(ctx context.Context, s *store.Store, runID core.RunID, scope cor
 		return readErr
 	}
 	if err := validateRecord(existing, manifest, scope, digest); err != nil {
+		return err
+	}
+	if err := validateStoredProjections(ctx, s, manifest, existing); err != nil {
 		return err
 	}
 	return publishReceipts(ctx, s, manifest, existing, nil)
