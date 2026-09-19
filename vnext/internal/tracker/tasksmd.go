@@ -321,6 +321,9 @@ func parseTasksMD(data []byte) ([]core.Task, error) {
 			current.Objective = value
 		case "state":
 			current.State = core.TaskState(value)
+			if !knownTaskState(current.State) {
+				return nil, fmt.Errorf("%w: unknown TASKS.md state %q", core.ErrPath, value)
+			}
 		case "archived":
 			current.Archived = strings.EqualFold(value, "true")
 		case "dependencies":
@@ -406,35 +409,61 @@ func appendTaskList(task *core.Task, section, value string) error {
 }
 
 func parseTasksJSON(data []byte) ([]core.Task, error) {
-	var list []core.Task
-	if err := json.Unmarshal(data, &list); err == nil {
-		for _, task := range list {
-			if err := validateTask(task); err != nil {
-				return nil, err
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil, fmt.Errorf("%w: null tracker JSON", core.ErrPath)
+	}
+	var records []json.RawMessage
+	if err := json.Unmarshal(data, &records); err != nil || records == nil {
+		return nil, fmt.Errorf("%w: tracker JSON must be a non-null task array", core.ErrPath)
+	}
+	tasks := make([]core.Task, 0, len(records))
+	seen := map[core.TaskID]bool{}
+	for _, raw := range records {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return nil, fmt.Errorf("%w: null tracker task", core.ErrPath)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+			return nil, fmt.Errorf("%w: malformed tracker task", core.ErrPath)
+		}
+		for key, value := range fields {
+			if !knownTaskJSONField(key) || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return nil, fmt.Errorf("%w: invalid tracker field %q", core.ErrPath, key)
 			}
 		}
-		return list, nil
-	}
-	var wrapped struct {
-		Tasks  []core.Task `json:"tasks"`
-		Issues []core.Task `json:"issues"`
-	}
-	if err := json.Unmarshal(data, &wrapped); err != nil {
-		return nil, fmt.Errorf("%w: malformed tracker JSON: %v", core.ErrPath, err)
-	}
-	if wrapped.Tasks != nil {
-		list = wrapped.Tasks
-	} else if wrapped.Issues != nil {
-		list = wrapped.Issues
-	} else {
-		return nil, fmt.Errorf("%w: tracker JSON has no tasks", core.ErrPath)
-	}
-	for _, task := range list {
-		if err := validateTask(task); err != nil {
-			return nil, err
+		for _, required := range []string{"id", "objective", "state"} {
+			if _, ok := fields[required]; !ok {
+				return nil, fmt.Errorf("%w: tracker task missing %s", core.ErrPath, required)
+			}
 		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		var task core.Task
+		if err := decoder.Decode(&task); err != nil {
+			return nil, fmt.Errorf("%w: malformed tracker task", core.ErrPath)
+		}
+		if err := validateTask(task); err != nil || !knownTaskState(task.State) {
+			return nil, fmt.Errorf("%w: invalid tracker task state", core.ErrPath)
+		}
+		if seen[task.ID] {
+			return nil, fmt.Errorf("%w: duplicate task ID %q", core.ErrPath, task.ID)
+		}
+		seen[task.ID] = true
+		tasks = append(tasks, task)
 	}
-	return list, nil
+	return tasks, nil
+}
+
+func knownTaskJSONField(key string) bool {
+	return map[string]bool{"schema": true, "project": true, "runId": true, "writtenAt": true, "revision": true, "id": true, "objective": true, "state": true, "dependencies": true, "criteria": true, "checks": true, "writablePaths": true, "resources": true, "evidencePointers": true, "archived": true}[key]
+}
+
+func knownTaskState(state core.TaskState) bool {
+	switch state {
+	case core.Ready, core.Idle, core.Working, core.Implementing, core.Reviewing, core.Fix, core.Clean, core.Gated, core.Integrated, core.Paused, core.Blocked, core.Interrupted, core.Cancelled, core.Archived:
+		return true
+	}
+	return false
 }
 
 func renderTasks(tasks []core.Task) []byte {

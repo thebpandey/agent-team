@@ -130,6 +130,9 @@ func (b *beads) Create(ctx context.Context, task core.Task, expected uint64) (co
 	if task.State == "" {
 		task.State = core.Ready
 	}
+	if task.State != core.Ready {
+		return core.Task{}, fmt.Errorf("%w: Beads create only supports ready tasks", core.ErrSettings)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -207,12 +210,17 @@ func (b *beads) Archive(ctx context.Context, id core.TaskID, reason string, expe
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_, revision, err := b.snapshot(ctx)
+	tasks, revision, err := b.snapshot(ctx)
 	if err != nil {
 		return err
 	}
 	if err := requireRevision(expected, revision); err != nil {
 		return err
+	}
+	for _, task := range tasks {
+		if task.ID == id && task.Archived {
+			return nil
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err

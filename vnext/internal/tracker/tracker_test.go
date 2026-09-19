@@ -147,6 +147,7 @@ func TestTasksMDRejectsAmbiguousHeadingsDuplicateIDsAndDuplicateFields(t *testin
 		{name: "level three heading", body: "# Tasks\n\n### T-1\nObjective: x\n"},
 		{name: "duplicate ID", body: "# Tasks\n\n## T-1\nObjective: x\n\n## T-1\nObjective: y\n"},
 		{name: "duplicate field", body: "# Tasks\n\n## T-1\nObjective: x\nObjective: y\n"},
+		{name: "unknown state", body: "# Tasks\n\n## T-1\nObjective: x\nState: mystery\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parseTasksMD([]byte(tc.body))
@@ -258,6 +259,46 @@ func TestMutationsRespectCancellationAfterLockAcquisition(t *testing.T) {
 			t.Fatalf("cancelled Beads mutation ran commands: %#v", calls)
 		}
 	})
+}
+
+func TestTasksJSONRejectsNullDuplicateUnknownAndUnknownState(t *testing.T) {
+	valid := `{"id":"J-1","objective":"json","state":"ready","dependencies":[],"criteria":[],"checks":[],"writablePaths":[],"resources":[],"evidencePointers":[],"archived":false}`
+	for _, tc := range []struct{ name, body string }{
+		{name: "null", body: `null`},
+		{name: "duplicate ID", body: `[` + valid + `,` + valid + `]`},
+		{name: "unknown field", body: `[{"id":"J-1","objective":"json","state":"ready","surprise":true}]`},
+		{name: "unknown state", body: `[{"id":"J-1","objective":"json","state":"mystery"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := NewTasksMD(writeTracker(t, tc.body), store.New(t.TempDir(), core.StorageLimits{TrackerBytes: 2 << 20}))
+			if _, err := tr.Page(context.Background(), "", 8); !errors.Is(err, core.ErrPath) {
+				t.Fatalf("Page error = %v, want ErrPath", err)
+			}
+		})
+	}
+}
+
+func TestBeadsCreateRejectsUnsupportedStateBeforeMutation(t *testing.T) {
+	runner := &scriptedRunner{}
+	tr := NewBeads(runner)
+	if _, err := tr.Create(context.Background(), core.Task{ID: "B-9", Objective: "review", State: core.Reviewing}, 1); !errors.Is(err, core.ErrSettings) {
+		t.Fatalf("Create error = %v, want ErrSettings", err)
+	}
+	if calls := runner.Calls(); len(calls) != 0 {
+		t.Fatalf("unsupported state ran Beads command: %#v", calls)
+	}
+}
+
+func TestBeadsArchiveReusesAlreadyArchivedTask(t *testing.T) {
+	body := `[{"id":"B-closed","title":"done","status":"closed"}]`
+	runner := &scriptedRunner{results: []CommandResult{{Stdout: []byte(body)}}}
+	tr := NewBeads(runner)
+	if err := tr.Archive(context.Background(), "B-closed", "done", trackerRevision([]byte(body))); err != nil {
+		t.Fatal(err)
+	}
+	if calls := runner.Calls(); len(calls) != 1 || !containsArgs(calls[0], "list", "--json") {
+		t.Fatalf("archived task should only snapshot, calls=%#v", calls)
+	}
 }
 
 type scriptedRunner struct {
