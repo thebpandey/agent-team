@@ -255,11 +255,16 @@ func TestOrdinaryEventsResolveEachCanonicalScope(t *testing.T) {
 		{Kind: core.ScopeTask, ID: "TASK"},
 		{Kind: core.ScopeTeam, ID: string(handle.Team)},
 		{Kind: core.ScopeRun, ID: string(manifest.ID)},
-		{Kind: core.ScopeProject, ID: filepath.Base(manifest.Project)},
+		{Kind: core.ScopeProject, ID: manifest.Project},
 	} {
 		event := workflow.Event{Run: manifest.ID, Scope: scope, Kind: workflow.Pause, From: core.Implementing, Reason: "operator pause", AdmissionHeld: true, RefillHeld: true, Confirmed: scope.Kind == core.ScopeProject}
 		if err := s.Emit(context.Background(), event); err != nil {
 			t.Fatalf("Emit(%+v) = %v", scope, err)
+		}
+		if scope.Kind == core.ScopeProject {
+			if err := s.Emit(context.Background(), event); err != nil {
+				t.Fatalf("project Emit retry = %v", err)
+			}
 		}
 	}
 }

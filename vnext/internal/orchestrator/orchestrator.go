@@ -9,6 +9,7 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/dispatch"
 	"github.com/thebpandey/agent-team/vnext/internal/gate"
 	"github.com/thebpandey/agent-team/vnext/internal/integrate"
+	"github.com/thebpandey/agent-team/vnext/internal/lifecycle"
 	"github.com/thebpandey/agent-team/vnext/internal/review"
 	"github.com/thebpandey/agent-team/vnext/internal/run"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
@@ -62,8 +63,16 @@ func (o *foreground) control(ctx context.Context, id core.RunID, resume bool) er
 	if manifest.ID != id || manifest.State == core.Cancelled || manifest.State == core.Archived || (!resume && (manifest.State == core.Paused || manifest.State == core.Interrupted)) {
 		return core.ErrTransition
 	}
+	if !resume {
+		if err := lifecycle.AdmissionAllowed(ctx, o.store, id); err != nil {
+			return err
+		}
+	}
+	if o.supervisor == nil || o.dispatch == nil || o.reviewer == nil || o.gate == nil || o.integrator == nil {
+		return core.ErrPhase
+	}
 	// Task assignment and candidate construction are owned by the later
 	// acceptance layer. This control surface deliberately does not fabricate
 	// packets, worktrees, or evidence to bypass those boundaries.
-	return nil
+	return core.ErrPhase
 }

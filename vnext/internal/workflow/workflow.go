@@ -76,12 +76,26 @@ func transitionError(format string, args ...any) error {
 
 func validScope(scope core.Scope) error {
 	switch scope.Kind {
-	case core.ScopeProject, core.ScopeRun, core.ScopeTeam, core.ScopeTask:
+	case core.ScopeProject:
+		canonical, err := project.Contain(scope.ID, scope.ID)
+		if err != nil || canonical != scope.ID {
+			return transitionError("invalid project scope ID")
+		}
+	case core.ScopeRun, core.ScopeTeam, core.ScopeTask:
 	default:
 		return transitionError("unknown scope kind %q", scope.Kind)
 	}
-	if err := project.ValidateSegment(scope.ID); err != nil {
-		return transitionError("invalid scope ID: %v", err)
+	if scope.Kind != core.ScopeProject {
+		if err := project.ValidateSegment(scope.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validCheckpointScope(scope core.Scope) error {
+	if err := validScope(scope); err != nil {
+		return err
 	}
 	return nil
 }
@@ -123,7 +137,7 @@ func Transition(state core.TaskState, event Event) (core.TaskState, error) {
 		return "", err
 	}
 	if err := validScope(event.Scope); err != nil {
-		return "", err
+		return "", transitionError("invalid scope: %v", err)
 	}
 	if event.Scope.Kind == core.ScopeRun && event.Run != "" && event.Scope.ID != string(event.Run) {
 		return "", transitionError("run scope %q does not match event run %q", event.Scope.ID, event.Run)
@@ -193,7 +207,12 @@ func Transition(state core.TaskState, event Event) (core.TaskState, error) {
 }
 
 func checkpointPath(id core.RunID, scope core.Scope) string {
-	return path.Join(".agent-team", "checkpoints", string(id), string(scope.Kind)+"-"+scope.ID+".json")
+	leaf := string(scope.Kind) + "-" + scope.ID
+	if scope.Kind == core.ScopeProject {
+		sum := sha256.Sum256([]byte(scope.ID))
+		leaf = string(scope.Kind) + "-" + hex.EncodeToString(sum[:])
+	}
+	return path.Join(".agent-team", "checkpoints", string(id), leaf+".json")
 }
 
 func checkpointLimit(s *store.Store) int64 {
@@ -208,15 +227,6 @@ func receiptPath(team core.TeamID) (string, error) {
 		return "", err
 	}
 	return path.Join(".agent-team", "receipts", string(team)+".json"), nil
-}
-
-func validCheckpointScope(scope core.Scope) error {
-	switch scope.Kind {
-	case core.ScopeProject, core.ScopeRun, core.ScopeTeam, core.ScopeTask:
-	default:
-		return fmt.Errorf("%w: unknown scope kind", core.ErrTransition)
-	}
-	return project.ValidateSegment(scope.ID)
 }
 
 func receiptIdentity(receipt knowledge.Receipt) string {

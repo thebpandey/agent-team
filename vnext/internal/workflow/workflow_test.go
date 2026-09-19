@@ -107,7 +107,7 @@ func TestEventSurfaceMatchesPlan(t *testing.T) {
 
 func TestTransitionTable(t *testing.T) {
 	scopeTask := core.Scope{Kind: core.ScopeTask, ID: "TASK-1"}
-	scopeProject := core.Scope{Kind: core.ScopeProject, ID: "PROJECT-1"}
+	scopeProject := core.Scope{Kind: core.ScopeProject, ID: t.TempDir()}
 	tests := []struct {
 		name    string
 		state   core.TaskState
@@ -382,5 +382,27 @@ func TestCheckpointRejectsUnsafeSegments(t *testing.T) {
 				t.Fatalf("error = %v, want ErrPath", err)
 			}
 		})
+	}
+}
+
+func TestProjectScopeRequiresCanonicalRoot(t *testing.T) {
+	root := t.TempDir()
+	event := Event{Scope: core.Scope{Kind: core.ScopeProject, ID: root}, Kind: Pause, Reason: "user", Confirmed: true, AdmissionHeld: true, RefillHeld: true}
+	if got, err := Transition(core.Working, event); err != nil || got != core.Paused {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+	for _, id := range []string{".", "PROJECT", root + "/."} {
+		event.Scope.ID = id
+		if _, err := Transition(core.Working, event); !errors.Is(err, core.ErrTransition) {
+			t.Fatalf("scope=%q err=%v", id, err)
+		}
+	}
+}
+
+func TestCheckpointAcceptsCanonicalProjectScope(t *testing.T) {
+	s, manifest, _ := checkpointFixture(t)
+	scope := core.Scope{Kind: core.ScopeProject, ID: manifest.Project}
+	if err := Checkpoint(context.Background(), s, manifest.ID, scope, testDigest); err != nil {
+		t.Fatal(err)
 	}
 }

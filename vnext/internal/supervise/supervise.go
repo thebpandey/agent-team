@@ -383,7 +383,12 @@ func validateEvent(event workflow.Event) error {
 	if event.Scope.Kind != core.ScopeProject && event.Scope.Kind != core.ScopeRun && event.Scope.Kind != core.ScopeTeam && event.Scope.Kind != core.ScopeTask {
 		return core.ErrTransition
 	}
-	if err := project.ValidateSegment(event.Scope.ID); err != nil {
+	if event.Scope.Kind == core.ScopeProject {
+		canonical, err := project.Contain(event.Scope.ID, event.Scope.ID)
+		if err != nil || canonical != event.Scope.ID {
+			return core.ErrPath
+		}
+	} else if err := project.ValidateSegment(event.Scope.ID); err != nil {
 		return core.ErrPath
 	}
 	if event.Scope.Kind == core.ScopeRun && event.Scope.ID != string(event.Run) {
@@ -447,7 +452,7 @@ type eventHead struct {
 }
 
 func eventDirectory(event workflow.Event) string {
-	return path.Join(".agent-team", "supervision", "events", string(event.Run), string(event.Scope.Kind)+"-"+event.Scope.ID)
+	return path.Join(".agent-team", "supervision", "events", string(event.Run), scopeStorageLeaf(event.Scope))
 }
 
 func eventPath(event workflow.Event, evidence *eventEvidence) string {
@@ -455,7 +460,17 @@ func eventPath(event workflow.Event, evidence *eventEvidence) string {
 }
 
 func headPath(event workflow.Event) string {
-	return path.Join(".agent-team", "supervision", "heads", string(event.Run), string(event.Scope.Kind)+"-"+event.Scope.ID+".json")
+	return path.Join(".agent-team", "supervision", "heads", string(event.Run), scopeStorageLeaf(event.Scope)+".json")
+}
+
+// scopeStorageLeaf keeps canonical project roots out of filesystem path
+// segments while event records retain the exact scope for validation.
+func scopeStorageLeaf(scope core.Scope) string {
+	if scope.Kind != core.ScopeProject {
+		return string(scope.Kind) + "-" + scope.ID
+	}
+	sum := sha256.Sum256([]byte(string(scope.Kind) + "\x00" + scope.ID))
+	return string(scope.Kind) + "-" + hex.EncodeToString(sum[:])
 }
 
 func (s *supervisor) persistEvent(event workflow.Event) error {
@@ -855,7 +870,7 @@ func (s *supervisor) resolveOrdinaryEvent(ctx context.Context, event workflow.Ev
 func ordinaryTeams(manifest run.Run, scope core.Scope) ([]run.TeamRecord, error) {
 	switch scope.Kind {
 	case core.ScopeProject:
-		if scope.ID != filepath.Base(manifest.Project) {
+		if scope.ID != manifest.Project {
 			return nil, core.ErrRevision
 		}
 	case core.ScopeRun:

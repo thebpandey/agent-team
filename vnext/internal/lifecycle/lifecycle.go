@@ -57,6 +57,11 @@ type controller struct {
 	mu         *sync.Mutex
 }
 
+type target struct {
+	run   core.RunID
+	scope core.Scope
+}
+
 var locks sync.Map
 
 // New creates a lifecycle controller. All work remains in the calling goroutine.
@@ -72,6 +77,33 @@ func New(state *store.Store, supervisor supervise.Supervisor) Lifecycle {
 // NewLifecycle is retained as the explicit constructor named by the plan.
 func NewLifecycle(state *store.Store, supervisor supervise.Supervisor) Lifecycle {
 	return New(state, supervisor)
+}
+
+// AdmissionAllowed reads the run and project barriers that can prevent a new
+// assignment before a caller constructs any host request.
+func AdmissionAllowed(ctx context.Context, state *store.Store, id core.RunID) error {
+	if ctx == nil || ctx.Err() != nil || state == nil {
+		return core.ErrTransition
+	}
+	manifest, err := run.NewRepositories(state).Runs.Read(ctx, id)
+	if err != nil {
+		return core.ErrTransition
+	}
+	for _, scope := range []core.Scope{{Kind: core.ScopeRun, ID: string(id)}, {Kind: core.ScopeProject, ID: manifest.Project}} {
+		var barrier record
+		err := state.ReadJSON(recordPath(id, scope), 64<<10, &barrier)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || barrier.Run != id || barrier.Scope != scope || barrier.Revision == 0 {
+			return core.ErrRevision
+		}
+		switch barrier.State {
+		case core.Paused, core.Interrupted, core.Cancelled:
+			return core.ErrTransition
+		}
+	}
+	return nil
 }
 
 func (c *controller) Pause(ctx context.Context, scope core.Scope, reason string) error {
@@ -94,11 +126,6 @@ func (c *controller) Checkpoint(ctx context.Context, scope core.Scope, digest st
 	if !validDigest(digest) {
 		return core.ErrRevision
 	}
-	if scope.Kind == core.ScopeRun && c.supervisor != nil {
-		if err := c.supervisor.Checkpoint(ctx, core.RunID(scope.ID), scope, digest); err != nil {
-			return err
-		}
-	}
 	if err := c.transition(ctx, scope, workflow.Event{Scope: scope, Kind: workflow.CheckpointEvent, CheckpointDigest: digest, AdmissionHeld: true, RefillHeld: true}); err != nil {
 		return err
 	}
@@ -109,79 +136,91 @@ func (c *controller) transition(ctx context.Context, scope core.Scope, event wor
 	if ctx == nil || ctx.Err() != nil || c == nil || c.store == nil {
 		return core.ErrTransition
 	}
-	if err := validScope(scope); err != nil {
-		return err
-	}
-	bound, err := c.resolve(scope)
+	targets, err := c.resolve(scope)
 	if err != nil {
 		return err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	path := recordPath(scope)
-	current := record{Scope: scope, State: core.Working}
-	err = c.store.ReadJSON(path, 64<<10, &current)
-	exists := err == nil
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if exists && (current.Scope != scope || current.Run != bound || current.Revision == 0) {
-		return core.ErrRevision
-	}
-	if exists && sameTransition(current, event) {
-		return nil
-	}
-	next, err := workflow.Transition(current.State, event)
-	if err != nil {
-		return err
-	}
-	current.State = next
-	current.Run = bound
-	current.Reason = event.Reason
-	if event.Kind == workflow.CheckpointEvent {
-		if current.CheckpointDigest != "" && current.CheckpointDigest != event.CheckpointDigest {
-			return core.ErrRevision
+	next := make([]record, len(targets))
+	for i, target := range targets {
+		current, exists, err := c.read(target)
+		if err != nil {
+			return err
 		}
-		current.CheckpointDigest = event.CheckpointDigest
+		if exists && sameTransition(current, event) {
+			next[i] = current
+			continue
+		}
+		event.Run, event.Scope = target.run, target.scope
+		state, err := workflow.Transition(current.State, event)
+		if err != nil {
+			return err
+		}
+		current.State, current.Run, current.Scope, current.Reason = state, target.run, target.scope, event.Reason
+		if event.Kind == workflow.CheckpointEvent {
+			if current.CheckpointDigest != "" && current.CheckpointDigest != event.CheckpointDigest {
+				return core.ErrRevision
+			}
+			current.CheckpointDigest = event.CheckpointDigest
+		}
+		if exists {
+			current.Revision++
+		} else {
+			current.Revision = 1
+		}
+		next[i] = current
 	}
-	if exists {
-		current.Revision++
-	} else {
-		current.Revision = 1
+	if c.supervisor == nil {
+		return core.ErrCapacity
 	}
-	_, err = c.store.WriteJSON(path, current, 64<<10)
-	return err
+	// Emit before publishing a resume barrier so a failed supervisor call can
+	// never reopen admission. All calls are synchronous foreground work.
+	for _, target := range targets {
+		event.Run, event.Scope = target.run, target.scope
+		if err := c.supervisor.Emit(ctx, event); err != nil {
+			return err
+		}
+		if event.Kind == workflow.CheckpointEvent {
+			if err := c.supervisor.Checkpoint(ctx, target.run, target.scope, event.CheckpointDigest); err != nil {
+				return err
+			}
+		}
+	}
+	for _, value := range next {
+		if _, err := c.store.WriteJSON(recordPath(value.Run, value.Scope), value, 64<<10); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // resolve binds team/task scope only to one complete canonical run. The
 // Store is project-scoped; arbitrary task identifiers are never authority.
-func (c *controller) resolve(scope core.Scope) (core.RunID, error) {
-	if scope.Kind == core.ScopeProject {
-		return "", nil
-	}
-	if scope.Kind == core.ScopeRun {
-		return core.RunID(scope.ID), nil
+func (c *controller) resolve(scope core.Scope) ([]target, error) {
+	if err := validScope(scope); err != nil {
+		return nil, err
 	}
 	root, err := os.OpenRoot(c.store.Root)
 	if err != nil {
-		return "", fmt.Errorf("%w: open canonical store root: %v", core.ErrTransition, err)
+		return nil, fmt.Errorf("%w: open canonical store root: %v", core.ErrTransition, err)
 	}
 	defer root.Close()
 	const directory = ".agent-team/runs"
 	info, err := root.Lstat(directory)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return "", fmt.Errorf("%w: canonical run directory: %v", core.ErrTransition, err)
+		return nil, fmt.Errorf("%w: canonical run directory: %v", core.ErrTransition, err)
 	}
 	dir, err := root.Open(directory)
 	if err != nil {
-		return "", fmt.Errorf("%w: open canonical run directory: %v", core.ErrTransition, err)
+		return nil, fmt.Errorf("%w: open canonical run directory: %v", core.ErrTransition, err)
 	}
 	defer dir.Close()
 	entries, err := dir.ReadDir(-1)
 	if err != nil || len(entries) > 64 {
-		return "", fmt.Errorf("%w: list canonical runs: %v", core.ErrTransition, err)
+		return nil, fmt.Errorf("%w: list canonical runs: %v", core.ErrTransition, err)
 	}
-	var found core.RunID
+	var found []target
 	for _, entry := range entries {
 		// Store's same-directory atomicity probe can leave its owned destination
 		// marker behind after an interrupted probe. It is not a canonical record.
@@ -189,15 +228,27 @@ func (c *controller) resolve(scope core.Scope) (core.RunID, error) {
 			continue
 		}
 		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !strings.HasSuffix(entry.Name(), ".json") {
-			return "", fmt.Errorf("%w: malformed canonical run entry %q", core.ErrTransition, entry.Name())
+			return nil, fmt.Errorf("%w: malformed canonical run entry %q", core.ErrTransition, entry.Name())
 		}
 		id := strings.TrimSuffix(entry.Name(), ".json")
 		if err := project.ValidateSegment(id); err != nil {
-			return "", fmt.Errorf("%w: invalid canonical run ID", core.ErrTransition)
+			return nil, fmt.Errorf("%w: invalid canonical run ID", core.ErrTransition)
 		}
 		manifest, err := run.NewRepositories(c.store).Runs.Read(context.Background(), core.RunID(id))
 		if err != nil {
-			return "", fmt.Errorf("%w: invalid canonical run: %v", core.ErrTransition, err)
+			return nil, fmt.Errorf("%w: invalid canonical run: %v", core.ErrTransition, err)
+		}
+		if scope.Kind == core.ScopeRun {
+			if manifest.ID == core.RunID(scope.ID) {
+				found = append(found, target{run: manifest.ID, scope: scope})
+			}
+			continue
+		}
+		if scope.Kind == core.ScopeProject {
+			if manifest.Project == scope.ID {
+				found = append(found, target{run: manifest.ID, scope: scope})
+			}
+			continue
 		}
 		match := false
 		if scope.Kind == core.ScopeTeam {
@@ -215,18 +266,29 @@ func (c *controller) resolve(scope core.Scope) (core.RunID, error) {
 				}
 			}
 		}
-		if !match {
-			continue
+		if match {
+			found = append(found, target{run: manifest.ID, scope: scope})
 		}
-		if found != "" {
-			return "", core.ErrTransition
-		}
-		found = manifest.ID
 	}
-	if found == "" {
-		return "", core.ErrTransition
+	if len(found) == 0 || (scope.Kind != core.ScopeProject && len(found) != 1) {
+		return nil, core.ErrTransition
 	}
 	return found, nil
+}
+
+func (c *controller) read(target target) (record, bool, error) {
+	current := record{Scope: target.scope, Run: target.run, State: core.Working}
+	err := c.store.ReadJSON(recordPath(target.run, target.scope), 64<<10, &current)
+	if errors.Is(err, os.ErrNotExist) {
+		return current, false, nil
+	}
+	if err != nil {
+		return record{}, false, err
+	}
+	if current.Scope != target.scope || current.Run != target.run || current.Revision == 0 {
+		return record{}, false, core.ErrRevision
+	}
+	return current, true, nil
 }
 
 func sameTransition(current record, event workflow.Event) bool {
@@ -248,7 +310,13 @@ func sameTransition(current record, event workflow.Event) bool {
 
 func validScope(scope core.Scope) error {
 	switch scope.Kind {
-	case core.ScopeProject, core.ScopeRun, core.ScopeTeam, core.ScopeTask:
+	case core.ScopeProject:
+		canonical, err := project.Contain(scope.ID, scope.ID)
+		if err != nil || canonical != scope.ID {
+			return core.ErrTransition
+		}
+		return nil
+	case core.ScopeRun, core.ScopeTeam, core.ScopeTask:
 	default:
 		return core.ErrTransition
 	}
@@ -258,8 +326,9 @@ func validScope(scope core.Scope) error {
 	return nil
 }
 
-func recordPath(scope core.Scope) string {
-	return ".agent-team/lifecycle/" + string(scope.Kind) + "-" + scope.ID + ".json"
+func recordPath(run core.RunID, scope core.Scope) string {
+	sum := sha256.Sum256([]byte(string(scope.Kind) + "\x00" + scope.ID))
+	return ".agent-team/lifecycle/" + string(run) + "/" + string(scope.Kind) + "-" + hex.EncodeToString(sum[:]) + ".json"
 }
 
 func validDigest(value string) bool {

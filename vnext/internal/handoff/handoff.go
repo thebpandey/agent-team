@@ -39,6 +39,7 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 		return nil, fmt.Errorf("%w: canonical run: %v", core.ErrRevision, err)
 	}
 	snapshot := knowledge.HandoffSnapshot{RecordEnvelope: manifest.RecordEnvelope, NextAction: "resume", Freshness: "canonical run revision"}
+	receipts := make([]knowledge.Receipt, 0, len(manifest.Teams))
 	for _, team := range manifest.Teams {
 		if err := project.ValidateSegment(string(team.ID)); err != nil {
 			return nil, core.ErrRevision
@@ -54,6 +55,8 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 		if snapshot.Team == "" {
 			snapshot.Team = receipt.Team
 		}
+		receipts = append(receipts, receipt)
+		snapshot.Resources.External = append(snapshot.Resources.External, team.Resources...)
 		if receipt.Gate != "" {
 			snapshot.Gates = append(snapshot.Gates, receipt.Gate)
 		}
@@ -66,6 +69,16 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 	}
 	snapshot.Gates = unique(snapshot.Gates)
 	snapshot.Reviews = unique(snapshot.Reviews)
+	snapshot.Resources.External = unique(snapshot.Resources.External)
+	blockers, err := knowledge.NewProjectionWriter(s.store).RegenerateBlockers(ctx, nil, receipts, snapshot.Resources)
+	if err != nil {
+		return nil, err
+	}
+	for _, blocker := range blockers {
+		if blocker.RunID == manifest.ID {
+			snapshot.Blockers = append(snapshot.Blockers, blocker)
+		}
+	}
 	return knowledge.NewProjectionWriter(s.store).WriteHandoff(ctx, snapshot)
 }
 
