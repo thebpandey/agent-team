@@ -8,8 +8,38 @@ import (
 
 	"github.com/thebpandey/agent-team/vnext/internal/admission"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/run"
 	"github.com/thebpandey/agent-team/vnext/internal/testkit"
 )
+
+func TestAdmissionCorruptCommittedRecordBlocksWithoutMutation(t *testing.T) {
+	f := testkit.NewAdmissionFixture(t)
+	path := ".agent-team/admissions/by-run/" + string(f.Run) + "/1.json"
+	if _, err := f.Store.CreateJSON(path, map[string]any{"schema": 99}, 1024); err != nil {
+		t.Fatal(err)
+	}
+	before := testkit.SnapshotTree(t, f.Store.Root)
+	_, err := admission.AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, f.Batch(1))
+	if !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("corrupt commit accepted: %v", err)
+	}
+	testkit.RequireNoWrites(t, f.Store.Root, before)
+}
+
+func TestAdmissionRejectsEnvelopeAndTaskRevisionWithoutWrites(t *testing.T) {
+	for _, mutate := range []func(*testkit.AdmissionFixture, *run.AdmissionBatch){
+		func(_ *testkit.AdmissionFixture, b *run.AdmissionBatch) { b.Schema = 2 },
+		func(f *testkit.AdmissionFixture, _ *run.AdmissionBatch) { f.TaskRevisions["T-0001"]++ },
+	} {
+		f := testkit.NewAdmissionFixture(t)
+		batch := f.Batch(1)
+		mutate(&f, &batch)
+		before := testkit.SnapshotTree(t, f.Store.Root)
+		_, err := admission.AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, batch)
+		if err == nil { t.Fatal("invalid admission accepted") }
+		testkit.RequireNoWrites(t, f.Store.Root, before)
+	}
+}
 
 func TestAdmissionOutcomes(t *testing.T) {
 	f := testkit.NewAdmissionFixture(t)
