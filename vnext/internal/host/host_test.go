@@ -150,6 +150,46 @@ func TestAssignmentScopedStableIdentitiesAndCrossHostReview(t *testing.T) {
 	}
 }
 
+func TestIdentityEncodingSeparatesEmbeddedNULFields(t *testing.T) {
+	runner := &recordingRunner{result: tracker.CommandResult{Stdout: []byte("available")}}
+	adapter := host.NewCodex(runner)
+	firstRequest := validRequest()
+	firstRequest.Packet.RunID = "R\x00T"
+	firstRequest.Packet.Team = "E"
+	firstRequest.Worktree.Run = firstRequest.Packet.RunID
+	firstRequest.Worktree.Team = firstRequest.Packet.Team
+	secondRequest := validRequest()
+	secondRequest.Packet.RunID = "R"
+	secondRequest.Packet.Team = "T\x00E"
+	secondRequest.Worktree.Run = secondRequest.Packet.RunID
+	secondRequest.Worktree.Team = secondRequest.Packet.Team
+
+	first, err := adapter.StartWorker(context.Background(), firstRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := adapter.StartWorker(context.Background(), secondRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := adapter.StartWorker(context.Background(), firstRequest)
+	if err != nil || retry.Identity != first.Identity {
+		t.Fatalf("stable retry = %+v, %v", retry, err)
+	}
+	if first.Identity == second.Identity {
+		t.Fatalf("ambiguous packets produced one identity %q", first.Identity)
+	}
+	if err := adapter.Stop(context.Background(), first, core.Scope{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Stop(context.Background(), second, core.Scope{}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls[3][3] == runner.calls[4][3] {
+		t.Fatalf("stop targets collide: %#v", runner.calls[3:])
+	}
+}
+
 func TestAdapterMapsRunnerFailuresToTypedCapacity(t *testing.T) {
 	for _, result := range []tracker.CommandResult{
 		{Transport: errors.New("unavailable"), Exit: -1},

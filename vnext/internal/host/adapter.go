@@ -1,8 +1,10 @@
 package host
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"runtime"
 	"strings"
@@ -171,8 +173,15 @@ func (a *harnessAdapter) identity(reviewer bool, packet AssignmentPacket) string
 		role = "review"
 	}
 	parts := []string{a.name, role, string(packet.RunID), string(packet.Team), string(packet.Task), packet.SpecRevision, packet.QueueFingerprint}
-	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-	return a.name + ":" + role + ":" + hex.EncodeToString(sum[:12])
+	var encoded bytes.Buffer
+	for _, part := range parts {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
+		_, _ = encoded.Write(length[:])
+		_, _ = encoded.WriteString(part)
+	}
+	sum := sha256.Sum256(encoded.Bytes())
+	return a.name + ":" + role + ":" + hex.EncodeToString(sum[:])
 }
 
 func unavailable(result tracker.CommandResult) bool {
