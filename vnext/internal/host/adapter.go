@@ -2,9 +2,12 @@ package host
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"runtime"
 	"strings"
 
+	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/tracker"
 )
@@ -14,6 +17,8 @@ type harnessAdapter struct {
 	executable string
 	runner     CommandRunner
 }
+
+var _ contracts.HostAdapter = (*harnessAdapter)(nil)
 
 // NewCodex creates the explicit Codex foreground adapter.
 func NewCodex(runner CommandRunner) Adapter {
@@ -53,13 +58,20 @@ func (a *harnessAdapter) StartReviewer(ctx context.Context, request WorkerReques
 	if a == nil || a.runner == nil {
 		return WorkerHandle{}, core.ErrCapacity
 	}
-	if author.Identity == "" {
+	if !validRequest(request) || author.Identity == "" {
 		return WorkerHandle{}, core.ErrPath
 	}
-	if author.Host != a.name || author.Reviewer || author.Identity != a.identity(false) ||
+	if author.Host == "" || author.Reviewer ||
 		author.Run != request.Packet.RunID || author.Team != request.Packet.Team ||
-		author.Task != request.Packet.Task || author.PacketDigest != request.Packet.QueueFingerprint {
+		author.Task != request.Packet.Task || author.PacketDigest != request.Packet.QueueFingerprint ||
+		author.CandidateRevision != request.Packet.SpecRevision ||
+		author.Identity == a.identity(true, request.Packet) {
 		return WorkerHandle{}, core.ErrRevision
+	}
+	if author.Host == a.name {
+		if err := a.validateHandle(author); err != nil {
+			return WorkerHandle{}, err
+		}
 	}
 	return a.start(ctx, request, true)
 }
@@ -68,11 +80,10 @@ func (a *harnessAdapter) start(ctx context.Context, request WorkerRequest, revie
 	if a == nil || a.runner == nil || a.executable == "" {
 		return WorkerHandle{}, core.ErrCapacity
 	}
-	packet, worktree := request.Packet, request.Worktree
-	if packet.RunID == "" || packet.Team == "" || packet.Task == "" || packet.QueueFingerprint == "" ||
-		worktree.Root == "" || worktree.Run != packet.RunID || worktree.Team != packet.Team {
+	if !validRequest(request) {
 		return WorkerHandle{}, core.ErrPath
 	}
+	packet, worktree := request.Packet, request.Worktree
 	role := "worker"
 	if reviewer {
 		role = "review"
@@ -89,7 +100,7 @@ func (a *harnessAdapter) start(ctx context.Context, request WorkerRequest, revie
 	}
 	return WorkerHandle{
 		Host:              a.name,
-		Identity:          a.identity(reviewer),
+		Identity:          a.identity(reviewer, packet),
 		PacketDigest:      packet.QueueFingerprint,
 		CandidateRevision: packet.SpecRevision,
 		Run:               packet.RunID,
@@ -135,18 +146,33 @@ func (a *harnessAdapter) validateHandle(handle WorkerHandle) error {
 		return core.ErrPath
 	}
 	if handle.Host != a.name ||
-		(handle.Reviewer && handle.Identity != a.identity(true)) ||
-		(!handle.Reviewer && handle.Identity != a.identity(false)) {
+		handle.Run == "" || handle.Team == "" || handle.Task == "" || handle.PacketDigest == "" ||
+		handle.Identity != a.identity(handle.Reviewer, AssignmentPacket{
+			RecordEnvelope:   core.RecordEnvelope{RunID: handle.Run},
+			Team:             handle.Team,
+			Task:             handle.Task,
+			SpecRevision:     handle.CandidateRevision,
+			QueueFingerprint: handle.PacketDigest,
+		}) {
 		return core.ErrRevision
 	}
 	return nil
 }
 
-func (a *harnessAdapter) identity(reviewer bool) string {
+func validRequest(request WorkerRequest) bool {
+	packet, worktree := request.Packet, request.Worktree
+	return packet.RunID != "" && packet.Team != "" && packet.Task != "" && packet.QueueFingerprint != "" &&
+		worktree.Root != "" && worktree.Run == packet.RunID && worktree.Team == packet.Team
+}
+
+func (a *harnessAdapter) identity(reviewer bool, packet AssignmentPacket) string {
+	role := "worker"
 	if reviewer {
-		return a.name + ":review"
+		role = "review"
 	}
-	return a.name + ":worker"
+	parts := []string{a.name, role, string(packet.RunID), string(packet.Team), string(packet.Task), packet.SpecRevision, packet.QueueFingerprint}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return a.name + ":" + role + ":" + hex.EncodeToString(sum[:12])
 }
 
 func unavailable(result tracker.CommandResult) bool {

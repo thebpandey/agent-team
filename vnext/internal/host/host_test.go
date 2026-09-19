@@ -6,11 +6,14 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/host"
 	"github.com/thebpandey/agent-team/vnext/internal/model"
 	"github.com/thebpandey/agent-team/vnext/internal/tracker"
 )
+
+var _ contracts.HostAdapter = host.NewCodex(nil)
 
 func TestConcreteAdaptersUseExactArgumentArrays(t *testing.T) {
 	for _, tc := range []struct {
@@ -26,15 +29,15 @@ func TestConcreteAdaptersUseExactArgumentArrays(t *testing.T) {
 			req := validRequest()
 
 			capabilities, err := adapter.Probe(context.Background())
-			if err != nil || capabilities.Host != tc.name || !reflect.DeepEqual(capabilities.Models, []string{"default"}) {
+			if err != nil || capabilities.Host != tc.name || capabilities.Servers != 0 || capabilities.Browsers != 0 || !reflect.DeepEqual(capabilities.Models, []string{"default"}) {
 				t.Fatalf("Probe() = %+v, %v", capabilities, err)
 			}
 			worker, err := adapter.StartWorker(context.Background(), req)
-			if err != nil || worker.Identity != tc.name+":worker" || worker.Reviewer {
+			if err != nil || worker.Identity == "" || worker.Reviewer {
 				t.Fatalf("StartWorker() = %+v, %v", worker, err)
 			}
 			reviewer, err := adapter.StartReviewer(context.Background(), req, worker)
-			if err != nil || reviewer.Identity != tc.name+":review" || !reviewer.Reviewer || reviewer.Identity == worker.Identity {
+			if err != nil || reviewer.Identity == "" || !reviewer.Reviewer || reviewer.Identity == worker.Identity {
 				t.Fatalf("StartReviewer() = %+v, %v", reviewer, err)
 			}
 			if _, err := adapter.Poll(context.Background(), worker); err != nil {
@@ -52,8 +55,8 @@ func TestConcreteAdaptersUseExactArgumentArrays(t *testing.T) {
 				{tc.name, "--version"},
 				{tc.name, "worker", "--run", "RUN", "--team", "TEAM", "--task", "TASK", "--worktree", "/tmp/task"},
 				{tc.name, "review", "--run", "RUN", "--team", "TEAM", "--task", "TASK", "--worktree", "/tmp/task"},
-				{tc.name, "poll", "--identity", tc.name + ":worker"},
-				{tc.name, "stop", "--identity", tc.name + ":worker"},
+				{tc.name, "poll", "--identity", worker.Identity},
+				{tc.name, "stop", "--identity", worker.Identity},
 			}
 			if !reflect.DeepEqual(runner.calls, want) {
 				t.Fatalf("commands = %#v, want %#v", runner.calls, want)
@@ -79,10 +82,6 @@ func TestAdapterRejectsInvalidInputsAndIdentityMismatch(t *testing.T) {
 	if _, err := adapter.StartReviewer(context.Background(), req, author); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("StartReviewer(same identity) error = %v, want ErrRevision", err)
 	}
-	author.Identity = "different:worker"
-	if _, err := adapter.StartReviewer(context.Background(), req, author); !errors.Is(err, core.ErrRevision) {
-		t.Fatalf("StartReviewer(foreign host) error = %v, want ErrRevision", err)
-	}
 	author = host.WorkerHandle{Host: "codex", Identity: "codex:worker", Reviewer: true, Run: "RUN", Team: "TEAM", Task: "TASK", PacketDigest: "digest"}
 	if _, err := adapter.StartReviewer(context.Background(), req, author); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("StartReviewer(role mismatch) error = %v, want ErrRevision", err)
@@ -99,6 +98,55 @@ func TestAdapterRejectsInvalidInputsAndIdentityMismatch(t *testing.T) {
 	mismatched := host.WorkerHandle{Host: "codex", Identity: "codex:worker", Reviewer: true}
 	if _, err := adapter.ReadIdentity(context.Background(), mismatched); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("ReadIdentity(role mismatch) error = %v", err)
+	}
+}
+
+func TestAssignmentScopedStableIdentitiesAndCrossHostReview(t *testing.T) {
+	codexRunner := &recordingRunner{result: tracker.CommandResult{Stdout: []byte("available")}}
+	codex := host.NewCodex(codexRunner)
+	first, err := codex.StartWorker(context.Background(), validRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := codex.StartWorker(context.Background(), validRequest())
+	if err != nil || retry.Identity != first.Identity {
+		t.Fatalf("stable retry = %+v, %v", retry, err)
+	}
+	otherRequest := validRequest()
+	otherRequest.Packet.Team = "OTHER"
+	otherRequest.Worktree.Team = "OTHER"
+	other, err := codex.StartWorker(context.Background(), otherRequest)
+	if err != nil || other.Identity == first.Identity {
+		t.Fatalf("distinct assignment = %+v, %v", other, err)
+	}
+	if _, err := codex.Poll(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := codex.Poll(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := codexRunner.calls[3][3], first.Identity; got != want {
+		t.Fatalf("first poll identity = %q, want %q", got, want)
+	}
+	if got, want := codexRunner.calls[4][3], other.Identity; got != want {
+		t.Fatalf("other poll identity = %q, want %q", got, want)
+	}
+	forged := first
+	forged.Team = "FORGED"
+	if _, err := codex.Poll(context.Background(), forged); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("Poll(forged) error = %v, want ErrRevision", err)
+	}
+	if err := codex.Stop(context.Background(), forged, core.Scope{}); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("Stop(forged) error = %v, want ErrRevision", err)
+	}
+	if _, err := codex.ReadIdentity(context.Background(), forged); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("ReadIdentity(forged) error = %v, want ErrRevision", err)
+	}
+
+	claude := host.NewClaude(&recordingRunner{result: tracker.CommandResult{Stdout: []byte("available")}})
+	reviewer, err := claude.StartReviewer(context.Background(), validRequest(), first)
+	if err != nil || reviewer.Identity == first.Identity || !reviewer.Reviewer {
+		t.Fatalf("cross-host reviewer = %+v, %v", reviewer, err)
 	}
 }
 
@@ -123,7 +171,7 @@ func TestAdapterMapsRunnerFailuresToTypedCapacity(t *testing.T) {
 }
 
 func TestRouteModelRequiresExactCapability(t *testing.T) {
-	got, err := model.RouteModel(host.Capabilities{Models: []string{"small", "large"}}, model.Codex, "small", true)
+	got, err := model.RouteModel(contracts.HostCapabilities{Models: []string{"small", "large"}}, model.Codex, "small", true)
 	if err != nil || got.Harness != model.Codex || got.Requested != "small" || got.Resolved != "small" || !got.Reviewer {
 		t.Fatalf("RouteModel() = %+v, %v", got, err)
 	}
