@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Agent-Team 7.3.1 — current architecture",
+    "quality_profile": "showcase",
+    "viewBox": [1640, 840]
+  },
+  "components": [
+    { "id": "host", "type": "external", "label": "Codex or Claude Code", "pos": [36, 330], "size": [180, 74] },
+    { "id": "skill", "type": "frontend", "label": "Agent-Team skill", "pos": [270, 330], "size": [180, 74] },
+    { "id": "orchestrator", "type": "backend", "label": "Orchestrator", "pos": [504, 330], "size": [180, 74] },
+    { "id": "developer", "type": "backend", "label": "Developer team", "pos": [738, 330], "size": [180, 74] },
+    { "id": "verifier", "type": "security", "label": "Verifier", "pos": [972, 330], "size": [180, 74] },
+    { "id": "reviewer", "type": "security", "label": "Independent reviewer", "pos": [1206, 330], "size": [180, 74] },
+    { "id": "delivery", "type": "cloud", "label": "Integration / release", "pos": [1440, 330], "size": [180, 74] },
+    { "id": "tracker", "type": "database", "label": "Canonical tracker", "pos": [504, 96], "size": [180, 74] },
+    { "id": "lanes", "type": "database", "label": "Lane records", "pos": [738, 96], "size": [180, 74] },
+    { "id": "hooks", "type": "messagebus", "label": "Lifecycle hooks", "pos": [504, 564], "size": [180, 74] },
+    { "id": "worktree", "type": "database", "label": "Git worktrees", "pos": [738, 564], "size": [180, 74] }
+  ],
+  "connections": [
+    { "from": "host", "to": "skill", "variant": "emphasis" },
+    { "from": "skill", "to": "orchestrator", "variant": "emphasis" },
+    { "from": "orchestrator", "to": "developer", "variant": "emphasis" },
+    { "from": "developer", "to": "verifier", "variant": "emphasis" },
+    { "from": "verifier", "to": "reviewer", "variant": "emphasis" },
+    { "from": "reviewer", "to": "delivery", "variant": "emphasis" },
+    { "from": "tracker", "to": "orchestrator" },
+    { "from": "tracker", "to": "lanes" },
+    { "from": "lanes", "to": "developer" },
+    { "from": "orchestrator", "to": "hooks" },
+    { "from": "developer", "to": "worktree" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Execution path", "items": ["Host supplies agents and messaging", "Orchestrator refills capacity and integrates accepted tasks", "Developer → verifier → reviewer → repair → delivery"] },
+    { "dot": "violet", "title": "Persistent state", "items": ["Beads or TASKS.md owns task status", "Lane records store ordered queues and handovers", "Git worktrees and evidence bind revisions"] },
+    { "dot": "amber", "title": "Companion layer", "items": ["Node CLI and lifecycle hooks enforce gates", "Setup can prepare selected external tools", "Full dependency inventory is in the audit report"] }
+  ]
+}
