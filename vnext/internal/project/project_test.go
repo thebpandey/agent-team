@@ -117,6 +117,29 @@ func TestNoKickoffIsAbsentAndBeadsIsExplicitTracker(t *testing.T) {
 	}
 }
 
+func TestBeadsTraversalRejectsNestedLink(t *testing.T) {
+	root := testkit.GitRepo(t)
+	for name, contents := range map[string]string{"DECISIONS.md": "# Decisions\n", "AGENT_TEAM_RULES.md": "# Rules\n"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".beads", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, ".beads", "nested", "outside")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	input := SetupInput{Root: root, Mode: PlanMode, Artifacts: []ArtifactDecision{
+		{Path: ".beads", Mode: ExistingArtifact, Confirmation: Approved},
+		{Path: "DECISIONS.md", Mode: ExistingArtifact, Confirmation: Approved},
+		{Path: "AGENT_TEAM_RULES.md", Mode: ExistingArtifact, Confirmation: Approved},
+	}}
+	if _, err := ValidateSetup(context.Background(), input); err == nil {
+		t.Fatal("nested Beads symlink was accepted")
+	}
+}
+
 func TestValidateAndRefusalLeaveFilesystemUntouched(t *testing.T) {
 	root := testkit.GitRepo(t)
 	before := testkit.SnapshotTree(t, root)
@@ -362,6 +385,39 @@ func TestLinkCASRecoversAbandonedStagingAndFailsSafelyWhenUnsupported(t *testing
 	}
 	if _, err := os.Stat(filepath.Join(unsupported, ".agent-team", "config.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unsupported link published config: %v", err)
+	}
+}
+
+func TestCommittedConfigRejectsAlternateReceiptPathAndBadEnvelope(t *testing.T) {
+	root := testkit.GitRepo(t)
+	for name, contents := range map[string]string{"TASKS.md": "# Tasks\n", "DECISIONS.md": "# Decisions\n", "AGENT_TEAM_RULES.md": "# Rules\n"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	input := planInput(root, nil)
+	result, err := ValidateSetup(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputDigest, err := setupDigest(result, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := configFrom(result.Config, result.Project.TopLevel, 1)
+	record.ReceiptPath = ".agent-team/receipts/not-content-addressed.json"
+	receipt := setupReceipt{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: result.Project.TopLevel, WrittenAt: record.WrittenAt, Revision: 1}, InputDigest: inputDigest}
+	record.ReceiptDigest = digestReceiptBinding(receipt)
+	receipt.ConfigDigest = digestRecord(record)
+	s := store.New(root, core.DefaultConfig().Storage)
+	if _, err := s.WriteJSON(record.ReceiptPath, receipt, core.DefaultConfig().Storage.CanonicalBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteJSON(configPath, record, core.DefaultConfig().Storage.CanonicalBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSetupService(s).Validate(context.Background(), input); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("alternate receipt path error = %v, want ErrRevision", err)
 	}
 }
 

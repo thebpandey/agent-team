@@ -374,14 +374,18 @@ func (s *setupService) writeImmutableReceipt(relative string, want setupReceipt)
 }
 
 func (s *setupService) readConfigReceipt(project string, config configRecord) (setupReceipt, error) {
-	if config.Schema != 1 || config.Project != project || config.Revision == 0 || config.ReceiptPath == "" || !validDigest(config.ReceiptDigest) {
+	if config.Schema != 1 || config.Project != project || config.Revision == 0 || config.WrittenAt == "" || config.ReceiptPath == "" || !validDigest(config.ReceiptDigest) {
 		return setupReceipt{}, fmt.Errorf("%w: malformed committed config", core.ErrRevision)
 	}
 	var receipt setupReceipt
 	if err := s.store.ReadJSON(config.ReceiptPath, core.DefaultConfig().Storage.CanonicalBytes, &receipt); err != nil {
 		return setupReceipt{}, fmt.Errorf("%w: committed receipt unavailable", core.ErrRevision)
 	}
-	if receipt.Project != config.Project || receipt.Revision != config.Revision || receipt.ConfigDigest != digestRecord(config) || digestReceiptBinding(receipt) != config.ReceiptDigest {
+	if err := validateReceipt(receipt, config.Project); err != nil {
+		return setupReceipt{}, err
+	}
+	expectedPath := ".agent-team/receipts/setup-" + strings.TrimPrefix(receipt.InputDigest, "sha256:") + ".json"
+	if config.ReceiptPath != expectedPath || receipt.RunID != config.RunID || receipt.Project != config.Project || receipt.Revision != config.Revision || receipt.ConfigDigest != digestRecord(config) || digestReceiptBinding(receipt) != config.ReceiptDigest {
 		return setupReceipt{}, fmt.Errorf("%w: committed config/receipt mismatch", core.ErrRevision)
 	}
 	return receipt, nil
@@ -452,37 +456,63 @@ func digestArtifact(root, relative, full string, limit int64) (string, error) {
 		if relative != ".beads" {
 			return "", fmt.Errorf("directory artifact is not a tracker authority")
 		}
-		return digestDirectory(full, limit)
+		return digestDirectory(root, relative, limit)
 	}
 	return digestFile(root, relative, limit)
 }
 
-func digestDirectory(root string, limit int64) (string, error) {
+func digestDirectory(rootPath, relative string, limit int64) (string, error) {
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
 	hash := sha256.New()
 	var used int64
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+	var walk func(string) error
+	walk = func(directory string) error {
+		file, err := root.Open(directory)
 		if err != nil {
 			return err
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symbolic link in tracker")
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		body, err := readBounded(path, limit-used)
+		entries, err := file.ReadDir(-1)
+		_ = file.Close()
 		if err != nil {
 			return err
 		}
-		used += int64(len(body))
-		if used > limit {
-			return fmt.Errorf("%w: tracker exceeds %d bytes", core.ErrLimit, limit)
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		for _, entry := range entries {
+			child := filepath.ToSlash(filepath.Join(directory, entry.Name()))
+			info, err := root.Lstat(child)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("symbolic link in tracker")
+			}
+			if info.IsDir() {
+				if err := walk(child); err != nil {
+					return err
+				}
+				continue
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("non-regular tracker artifact")
+			}
+			body, err := readBoundedContained(rootPath, child, limit-used)
+			if err != nil {
+				return err
+			}
+			used += int64(len(body))
+			if used > limit {
+				return fmt.Errorf("%w: tracker exceeds %d bytes", core.ErrLimit, limit)
+			}
+			_, _ = io.WriteString(hash, filepath.ToSlash(child)+"\x00")
+			_, _ = hash.Write(body)
 		}
-		relative, _ := filepath.Rel(root, path)
-		_, _ = io.WriteString(hash, filepath.ToSlash(relative)+"\x00")
-		_, _ = hash.Write(body)
 		return nil
-	})
+	}
+	err = walk(relative)
 	if err != nil {
 		return "", err
 	}
@@ -509,6 +539,10 @@ func readBoundedContained(rootPath, relative string, limit int64) ([]byte, error
 		return nil, err
 	}
 	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return nil, fmt.Errorf("artifact identity changed")
+	}
 	return readBoundedFile(file, limit)
 }
 
