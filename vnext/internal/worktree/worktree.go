@@ -432,15 +432,11 @@ func (m *Manager) resolveBase(ctx context.Context, repo, supplied string) (strin
 }
 
 func parseResolvedOID(output string) (string, error) {
-	if strings.HasSuffix(output, "\r\n") {
-		output = strings.TrimSuffix(output, "\r\n")
-	} else if strings.HasSuffix(output, "\n") {
-		output = strings.TrimSuffix(output, "\n")
-	}
-	if strings.ContainsAny(output, "\r\n\t ") {
+	line, err := parseRawLine(output)
+	if err != nil {
 		return "", core.ErrRevision
 	}
-	oid := strings.ToLower(output)
+	oid := strings.ToLower(line)
 	if !fullOID(oid) {
 		return "", core.ErrRevision
 	}
@@ -475,7 +471,8 @@ func (m *Manager) worktreePresent(ctx context.Context, repo string, identity Wor
 		return false, core.ErrGit
 	}
 	head, err := m.output(ctx, exact, "symbolic-ref", "-q", "HEAD")
-	if err != nil || !singleLine(head) || strings.TrimSpace(head) != "refs/heads/"+identity.Branch {
+	head, parseErr := parseRawLine(head)
+	if err != nil || parseErr != nil || head != "refs/heads/"+identity.Branch {
 		return false, core.ErrGit
 	}
 	return true, nil
@@ -529,16 +526,23 @@ func advance(identity *WorktreeIdentity, next lifecycle, isRemoved bool) error {
 }
 
 func canonicalGitPath(output string) (string, error) {
-	value := strings.TrimSpace(output)
-	if value == "" || strings.Contains(value, "\n") {
-		return "", core.ErrPath
+	value, err := parseRawLine(output)
+	if err != nil {
+		return "", err
 	}
 	return canonicalExisting(filepath.FromSlash(value))
 }
 
-func singleLine(output string) bool {
-	value := strings.TrimSpace(output)
-	return value != "" && !strings.Contains(value, "\n")
+func parseRawLine(output string) (string, error) {
+	if strings.HasSuffix(output, "\r\n") {
+		output = strings.TrimSuffix(output, "\r\n")
+	} else if strings.HasSuffix(output, "\n") {
+		output = strings.TrimSuffix(output, "\n")
+	}
+	if output == "" || strings.ContainsAny(output, "\r\n\t ") {
+		return "", core.ErrPath
+	}
+	return output, nil
 }
 
 func fullOID(value string) bool {

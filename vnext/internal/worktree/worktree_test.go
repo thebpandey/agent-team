@@ -441,18 +441,72 @@ func TestParseResolvedOIDIsByteStrict(t *testing.T) {
 	}
 }
 
+func TestExactProbeRejectsNonStrictAuthoritativeLines(t *testing.T) {
+	for _, field := range []string{"top", "common", "symbolic"} {
+		for _, suffix := range []string{"\n\n", " ", "\t"} {
+			t.Run(field+strings.ReplaceAll(suffix, "\n", "_"), func(t *testing.T) {
+				repo := testkit.GitRepo(t)
+				runner := &gitRunner{}
+				manager := NewManager(repo, "project", store.New(repo, core.StorageLimits{CanonicalBytes: 16 << 20}), runner)
+				w, err := manager.Create(context.Background(), worktreeSpec("run", "team", filepath.Join(repo, ".agent-team", "worktrees", "task")))
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch field {
+				case "top":
+					runner.topOutput[w.Path] = w.Path + suffix
+				case "common":
+					runner.commonOutput[w.Path] = filepath.Join(repo, ".git") + suffix
+				case "symbolic":
+					runner.symbolicOutput[w.Path] = "refs/heads/" + w.Branch + suffix
+				}
+				before := len(mutations(runner.calls))
+				if err := manager.RemoveExact(context.Background(), w); !errors.Is(err, core.ErrGit) {
+					t.Fatalf("RemoveExact error = %v", err)
+				}
+				if len(mutations(runner.calls)) != before {
+					t.Fatalf("non-strict %s mutated: %#v", field, runner.calls)
+				}
+			})
+		}
+	}
+}
+
+func TestExactProbeAcceptsSingleTerminalLineEnding(t *testing.T) {
+	for _, suffix := range []string{"\n", "\r\n"} {
+		t.Run(strings.ReplaceAll(suffix, "\n", "_"), func(t *testing.T) {
+			repo := testkit.GitRepo(t)
+			runner := &gitRunner{}
+			manager := NewManager(repo, "project", store.New(repo, core.StorageLimits{CanonicalBytes: 16 << 20}), runner)
+			w, err := manager.Create(context.Background(), worktreeSpec("run", "team", filepath.Join(repo, ".agent-team", "worktrees", "task")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner.topOutput[w.Path] = w.Path + suffix
+			runner.commonOutput[w.Path] = filepath.Join(repo, ".git") + suffix
+			runner.symbolicOutput[w.Path] = "refs/heads/" + w.Branch + suffix
+			if err := manager.RemoveExact(context.Background(), w); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 type gitRunner struct {
-	calls       [][]string
-	result      tracker.CommandResult
-	branches    map[string]bool
-	worktrees   map[string]string
-	heads       map[string]string
-	fail        map[string]int
-	common      map[string]string
-	symbolic    map[string]string
-	symbolicSet map[string]bool
-	base        string
-	baseOutput  string
+	calls          [][]string
+	result         tracker.CommandResult
+	branches       map[string]bool
+	worktrees      map[string]string
+	heads          map[string]string
+	fail           map[string]int
+	common         map[string]string
+	symbolic       map[string]string
+	symbolicSet    map[string]bool
+	base           string
+	baseOutput     string
+	topOutput      map[string]string
+	commonOutput   map[string]string
+	symbolicOutput map[string]string
 }
 
 func (r *gitRunner) Run(_ context.Context, name string, args ...string) tracker.CommandResult {
@@ -468,6 +522,9 @@ func (r *gitRunner) Run(_ context.Context, name string, args ...string) tracker.
 		r.common = map[string]string{}
 		r.symbolic = map[string]string{}
 		r.symbolicSet = map[string]bool{}
+		r.topOutput = map[string]string{}
+		r.commonOutput = map[string]string{}
+		r.symbolicOutput = map[string]string{}
 	}
 	if r.fail[strings.Join(command, " ")] > 0 {
 		r.fail[strings.Join(command, " ")]--
@@ -477,6 +534,9 @@ func (r *gitRunner) Run(_ context.Context, name string, args ...string) tracker.
 	case len(command) == 4 && command[0] == "show-ref":
 		return tracker.CommandResult{Exit: map[bool]int{true: 0, false: 1}[r.branches[strings.TrimPrefix(command[3], "refs/heads/")]]}
 	case len(command) == 2 && command[0] == "rev-parse" && command[1] == "--show-toplevel":
+		if output, ok := r.topOutput[args[1]]; ok {
+			return tracker.CommandResult{Stdout: []byte(output)}
+		}
 		return tracker.CommandResult{Stdout: []byte(args[1])}
 	case len(command) == 3 && command[0] == "rev-parse" && command[1] == "--verify":
 		if r.baseOutput != "" {
@@ -492,9 +552,15 @@ func (r *gitRunner) Run(_ context.Context, name string, args ...string) tracker.
 		if common == "" {
 			common = filepath.Join(args[1], ".git")
 		}
+		if output, ok := r.commonOutput[args[1]]; ok {
+			return tracker.CommandResult{Stdout: []byte(output)}
+		}
 		return tracker.CommandResult{Stdout: []byte(common)}
 	case len(command) == 3 && command[0] == "symbolic-ref":
 		head := r.symbolic[args[1]]
+		if output, ok := r.symbolicOutput[args[1]]; ok {
+			return tracker.CommandResult{Stdout: []byte(output)}
+		}
 		if head == "" && !r.symbolicSet[args[1]] {
 			head = "refs/heads/" + r.worktrees[args[1]]
 		}
