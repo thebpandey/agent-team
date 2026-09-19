@@ -25,7 +25,7 @@ const maxStorageBytes int64 = 16 << 20
 // ErrAlreadyExists marks a no-replace create whose canonical destination was
 // already published. It also wraps fs.ErrExist for callers using standard
 // filesystem error matching.
-var ErrAlreadyExists = fmt.Errorf("already exists: %w", fs.ErrExist)
+var ErrAlreadyExists = fmt.Errorf("already exists: %w", errors.Join(fs.ErrExist, core.ErrRevision))
 
 // Store is a root-relative, bounded persistence store.
 type Store struct {

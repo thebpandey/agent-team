@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -315,6 +316,8 @@ func TestStoreCreateJSONNeverReplacesAnExistingRecord(t *testing.T) {
 	}
 	if _, err := s.CreateJSON("commits/one.json", map[string]string{"winner": "second"}, 1024); !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf("second create = %v, want ErrAlreadyExists", err)
+	} else if !errors.Is(err, fs.ErrExist) || !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("second create error chain = %v, want fs.ErrExist and core.ErrRevision", err)
 	}
 	var got map[string]string
 	if err := s.ReadJSON("commits/one.json", 1024, &got); err != nil || got["winner"] != "first" {
