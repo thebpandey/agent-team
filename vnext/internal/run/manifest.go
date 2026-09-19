@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -46,15 +47,13 @@ type TeamRecord struct {
 	Queue            []core.TaskID  `json:"queue"`
 	QueueFingerprint string         `json:"queueFingerprint"`
 	State            core.TaskState `json:"state"`
-	Worktree         string         `json:"worktree,omitempty"`
-	Base             string         `json:"base,omitempty"`
 	Paths            []string       `json:"paths,omitempty"`
 	Resources        []string       `json:"resources,omitempty"`
 }
 
 // Run is the schema-1 authority for either a selected tracker snapshot or a
-// trackerless one-off request. Plan runs retain only a snapshot digest, never
-// copied tracker task payloads; Tasks belongs exclusively to one-off manifests.
+// trackerless one-off request. Plan runs retain only minimal task references,
+// never copied tracker task payloads or criteria.
 type Run struct {
 	core.RecordEnvelope
 	ID                    core.RunID     `json:"id"`
@@ -78,14 +77,14 @@ type Run struct {
 // validated canonical payload.
 type AdmissionBatch struct {
 	core.RecordEnvelope
-	BatchID         string      `json:"batchId"`
-	Fingerprint     string      `json:"fingerprint"`
-	Tasks           []core.Task `json:"tasks"`
-	Team            core.TeamID `json:"team"`
-	Sequence        uint64      `json:"sequence"`
-	TrackerRevision uint64      `json:"trackerRevision"`
-	Paths           []string    `json:"paths"`
-	Resources       []string    `json:"resources"`
+	BatchID         string        `json:"batchId"`
+	Fingerprint     string        `json:"fingerprint"`
+	Tasks           []core.TaskID `json:"tasks"`
+	Team            core.TeamID   `json:"team"`
+	Sequence        uint64        `json:"sequence"`
+	TrackerRevision uint64        `json:"trackerRevision"`
+	Paths           []string      `json:"paths"`
+	Resources       []string      `json:"resources"`
 }
 
 // CreatePlan snapshots exactly one selected tracker. The returned ID and
@@ -94,7 +93,8 @@ func CreatePlan(ctx context.Context, project string, selected tracker.Tracker) (
 	if err := ctx.Err(); err != nil {
 		return Run{}, err
 	}
-	if err := validateProject(project); err != nil {
+	root, err := canonicalRoot(project)
+	if err != nil {
 		return Run{}, err
 	}
 	if selected == nil {
@@ -105,7 +105,9 @@ func CreatePlan(ctx context.Context, project string, selected tracker.Tracker) (
 		return Run{}, fmt.Errorf("%w: tracker lacks canonical authority metadata", core.ErrSettings)
 	}
 	metadata := authority.AuthorityMetadata()
-	if metadata.Kind != "tasks-md" && metadata.Kind != "beads" || metadata.Ref == "" || metadata.Ref != canonicalTrackerRef(project, metadata.Kind) {
+	ref, refErr := canonicalAuthorityRef(root, metadata.Kind, metadata.Ref)
+	expectedRef, expectedErr := canonicalTrackerRef(root, metadata.Kind)
+	if metadata.Kind != "tasks-md" && metadata.Kind != "beads" || refErr != nil || expectedErr != nil || ref != expectedRef {
 		return Run{}, fmt.Errorf("%w: invalid tracker authority metadata", core.ErrSettings)
 	}
 	page, err := selected.Page(ctx, "", 1000)
@@ -128,8 +130,8 @@ func CreatePlan(ctx context.Context, project string, selected tracker.Tracker) (
 	}
 	refs := planTaskReferences(normalized, page.TrackerRevision)
 	r := Run{
-		RecordEnvelope:        core.RecordEnvelope{Schema: 1, Project: strings.TrimSpace(project), WrittenAt: canonicalWrittenAt, Revision: 1},
-		Root:                  project,
+		RecordEnvelope:        core.RecordEnvelope{Schema: 1, Project: root, WrittenAt: canonicalWrittenAt, Revision: 1},
+		Root:                  root,
 		Mode:                  "plan",
 		TrackerKind:           metadata.Kind,
 		TrackerRevision:       page.TrackerRevision,
@@ -137,7 +139,7 @@ func CreatePlan(ctx context.Context, project string, selected tracker.Tracker) (
 		State:                 core.Ready,
 		Tasks:                 refs,
 	}
-	r.SpecRevision = planSpecRevision(r.Root, metadata.Kind, metadata.Ref, page.TrackerRevision, refs, snapshotDigest)
+	r.SpecRevision = planSpecRevision(r.Root, metadata.Kind, ref, page.TrackerRevision, refs, snapshotDigest)
 	return finalizeRun(r)
 }
 
@@ -147,7 +149,8 @@ func CreateOneOff(ctx context.Context, project string, kind OneOffKind, objectiv
 	if err := ctx.Err(); err != nil {
 		return Run{}, err
 	}
-	if err := validateProject(project); err != nil {
+	root, err := canonicalRoot(project)
+	if err != nil {
 		return Run{}, err
 	}
 	objective = strings.TrimSpace(objective)
@@ -184,8 +187,8 @@ func CreateOneOff(ctx context.Context, project string, kind OneOffKind, objectiv
 		return Run{}, err
 	}
 	r := Run{
-		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: strings.TrimSpace(project), WrittenAt: canonicalWrittenAt, Revision: 1},
-		Root:           project,
+		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: root, WrittenAt: canonicalWrittenAt, Revision: 1},
+		Root:           root,
 		Mode:           "one-off",
 		OneOffKind:     kind,
 		Objective:      objective,
@@ -201,13 +204,6 @@ func CreateOneOff(ctx context.Context, project string, kind OneOffKind, objectiv
 // independently. Unsafe paths/resources are conflicts too: callers fail
 // closed before assigning different teams.
 func ValidateConflict(a, b AdmissionBatch) bool {
-	for _, left := range a.Tasks {
-		for _, right := range b.Tasks {
-			if taskConflict(left, right) {
-				return true
-			}
-		}
-	}
 	return pathsOrResourcesConflict(a.Paths, a.Resources, b.Paths, b.Resources)
 }
 
@@ -440,11 +436,54 @@ func planSpecRevision(root, kind, ref string, trackerRevision uint64, tasks []co
 	return digest
 }
 
-func canonicalTrackerRef(root, kind string) string {
+func canonicalTrackerRef(root, kind string) (string, error) {
+	leaf := "TASKS.md"
 	if kind == "beads" {
-		return ".beads"
+		leaf = ".beads"
 	}
-	return filepath.ToSlash(filepath.Clean(filepath.Join(root, "TASKS.md")))
+	if kind != "tasks-md" && kind != "beads" {
+		return "", fmt.Errorf("%w: unknown tracker kind", core.ErrSettings)
+	}
+	return canonicalAuthorityRef(root, kind, leaf)
+}
+
+func canonicalRoot(root string) (string, error) {
+	if strings.TrimSpace(root) == "" {
+		return "", fmt.Errorf("%w: empty root", core.ErrPath)
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("%w: root: %v", core.ErrPath, err)
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(abs))
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve root: %v", core.ErrPath, err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("%w: root is not a directory", core.ErrPath)
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func canonicalAuthorityRef(root, kind, ref string) (string, error) {
+	if ref == "" {
+		return "", fmt.Errorf("%w: empty tracker ref", core.ErrPath)
+	}
+	candidate := ref
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(root, filepath.FromSlash(candidate))
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(candidate))
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve tracker ref: %v", core.ErrPath, err)
+	}
+	relative, err := filepath.Rel(root, resolved)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: tracker ref escapes root", core.ErrPath)
+	}
+	_ = kind
+	return filepath.Clean(resolved), nil
 }
 
 func cloneTasks(tasks []core.Task) []core.Task {
@@ -743,6 +782,18 @@ func digestJSON(value any) (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
+func admissionFingerprint(batch AdmissionBatch) string {
+	value := struct {
+		Schema, Revision                         uint64
+		Project, RunID, WrittenAt, BatchID, Team string
+		Sequence, TrackerRevision                uint64
+		Tasks                                    []core.TaskID
+		Paths, Resources                         []string
+	}{uint64(batch.Schema), batch.Revision, batch.Project, string(batch.RunID), batch.WrittenAt, batch.BatchID, string(batch.Team), batch.Sequence, batch.TrackerRevision, batch.Tasks, batch.Paths, batch.Resources}
+	digest, _ := digestJSON(value)
+	return digest
+}
+
 func validateProject(project string) error {
 	project = strings.TrimSpace(project)
 	if project == "" || !utf8.ValidString(project) || len(project) > 4096 || strings.ContainsAny(project, "\x00\r\n") {
@@ -790,9 +841,6 @@ func validateAdmission(batch AdmissionBatch) error {
 	if len(batch.Tasks) == 0 || len(batch.Tasks) > maxTeamQueue {
 		return fmt.Errorf("%w: admission has %d tasks", core.ErrBatch, len(batch.Tasks))
 	}
-	if !validDigest(batch.Fingerprint) {
-		return fmt.Errorf("%w: invalid admission fingerprint", core.ErrRevision)
-	}
 	paths, err := normalizePaths(batch.Paths)
 	if err != nil || !reflect.DeepEqual(paths, batch.Paths) {
 		return fmt.Errorf("%w: invalid admission paths", core.ErrPath)
@@ -801,8 +849,14 @@ func validateAdmission(batch AdmissionBatch) error {
 	if err != nil || !reflect.DeepEqual(resources, batch.Resources) {
 		return fmt.Errorf("%w: invalid admission resources", core.ErrPath)
 	}
-	_, err = normalizeTasks(batch.Tasks)
-	return err
+	tasks, err := normalizeIDs(batch.Tasks)
+	if err != nil || !reflect.DeepEqual(tasks, batch.Tasks) {
+		return fmt.Errorf("%w: invalid admission tasks", core.ErrBatch)
+	}
+	if batch.Fingerprint != admissionFingerprint(batch) {
+		return fmt.Errorf("%w: admission fingerprint mismatch", core.ErrRevision)
+	}
+	return nil
 }
 
 func validDigest(value string) bool {
@@ -830,8 +884,9 @@ func validateEnvelope(envelope core.RecordEnvelope, id core.RunID) error {
 }
 
 func validateRun(r Run) error {
-	if err := validateProject(r.Root); err != nil {
-		return err
+	root, err := canonicalRoot(r.Root)
+	if err != nil || root != r.Root || r.Project != r.Root {
+		return fmt.Errorf("%w: noncanonical run root", core.ErrRevision)
 	}
 	if err := validateID(string(r.ID)); err != nil {
 		return err
@@ -871,11 +926,12 @@ func validateRun(r Run) error {
 				return fmt.Errorf("%w: plan task reference is not minimal", core.ErrRevision)
 			}
 		}
-		if r.SpecRevision != planSpecRevision(r.Root, r.TrackerKind, canonicalTrackerRef(r.Root, r.TrackerKind), r.TrackerRevision, r.Tasks, r.TrackerSnapshotDigest) {
+		ref, err := canonicalTrackerRef(r.Root, r.TrackerKind)
+		if err != nil || r.SpecRevision != planSpecRevision(r.Root, r.TrackerKind, ref, r.TrackerRevision, r.Tasks, r.TrackerSnapshotDigest) {
 			return fmt.Errorf("%w: plan authority binding mismatch", core.ErrRevision)
 		}
 	}
-	if len(r.Teams) > maxOneOffTeams {
+	if r.Mode == "one-off" && len(r.Teams) > maxOneOffTeams {
 		return fmt.Errorf("%w: too many teams", core.ErrBatch)
 	}
 	if r.Mode == "one-off" && len(r.Teams) == 0 {
@@ -887,10 +943,13 @@ func validateRun(r Run) error {
 		if err := validateEnvelope(task.RecordEnvelope, r.ID); err != nil {
 			return fmt.Errorf("%w: task envelope: %v", core.ErrRevision, err)
 		}
+		if task.Project != r.Project || task.RunID != r.ID {
+			return fmt.Errorf("%w: task belongs to another run", core.ErrRevision)
+		}
 		byID[task.ID] = task
 	}
 	for _, team := range r.Teams {
-		if team.RunID != r.ID {
+		if team.RunID != r.ID || team.Project != r.Project {
 			return fmt.Errorf("%w: team belongs to a different run", core.ErrRevision)
 		}
 		if err := validateTeam(team); err != nil {
@@ -953,6 +1012,14 @@ func validateTeam(team TeamRecord) error {
 	if !validTeamState(team.State) || len(team.Queue) > maxTeamQueue {
 		return fmt.Errorf("%w: invalid team record", core.ErrPhase)
 	}
+	paths, err := normalizePaths(team.Paths)
+	if err != nil || !reflect.DeepEqual(paths, team.Paths) {
+		return fmt.Errorf("%w: invalid team writable paths", core.ErrPath)
+	}
+	resources, err := normalizeResources(team.Resources)
+	if err != nil || !reflect.DeepEqual(resources, team.Resources) {
+		return fmt.Errorf("%w: invalid team resources", core.ErrPath)
+	}
 	if len(team.Queue) == 0 {
 		if team.State != core.Idle || (team.QueueFingerprint != "" && team.QueueFingerprint != queueFingerprint(nil)) {
 			return fmt.Errorf("%w: invalid empty team queue", core.ErrRevision)
@@ -961,14 +1028,6 @@ func validateTeam(team TeamRecord) error {
 	}
 	if team.QueueFingerprint != queueFingerprint(team.Queue) {
 		return fmt.Errorf("%w: invalid team queue", core.ErrRevision)
-	}
-	paths, err := normalizePaths(team.Paths)
-	if err != nil || !reflect.DeepEqual(paths, team.Paths) {
-		return fmt.Errorf("%w: invalid team writable paths", core.ErrPath)
-	}
-	resources, err := normalizeResources(team.Resources)
-	if err != nil || !reflect.DeepEqual(resources, team.Resources) {
-		return fmt.Errorf("%w: invalid team resources", core.ErrPath)
 	}
 	for _, id := range team.Queue {
 		if err := validateID(string(id)); err != nil {
