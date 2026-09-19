@@ -1,48 +1,36 @@
-// Package workflow contains the small, deterministic state machine used by
-// vNext lifecycle operations. It deliberately has no process, lease, or host
-// liveness authority.
+// Package workflow contains the deterministic, scoped lifecycle state
+// machine and its bounded recovery checkpoint transaction.
 package workflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"path"
-	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/knowledge"
 	"github.com/thebpandey/agent-team/vnext/internal/project"
+	"github.com/thebpandey/agent-team/vnext/internal/run"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
-// EventKind is one explicit, durable lifecycle fact.
 type EventKind string
 
 const (
-	Pause  EventKind = "pause"
-	Stop   EventKind = "stop"
-	Cancel EventKind = "cancel"
-	Resume EventKind = "resume"
-
-	// Checkpoint is the function below; these aliases provide the checkpoint
-	// event kind without colliding with that required Go API.
-	EventCheckpoint EventKind = "checkpoint"
-	CheckpointEvent EventKind = EventCheckpoint
-	CheckpointKind  EventKind = EventCheckpoint
-	EventPause      EventKind = Pause
-	EventStop       EventKind = Stop
-	EventCancel     EventKind = Cancel
-	EventResume     EventKind = Resume
+	Pause           EventKind = "pause"
+	Stop            EventKind = "stop"
+	Cancel          EventKind = "cancel"
+	Resume          EventKind = "resume"
+	CheckpointEvent EventKind = "checkpoint"
 )
 
-// Event is a scoped state transition proposal. Run is optional for the pure
-// transition helper (callers that have a run must supply it); Checkpoint uses
-// the explicit run argument and validates it before writing.
 type Event struct {
 	Run              core.RunID     `json:"runId,omitempty"`
 	Scope            core.Scope     `json:"scope"`
@@ -51,32 +39,36 @@ type Event struct {
 	To               core.TaskState `json:"to,omitempty"`
 	Reason           string         `json:"reason,omitempty"`
 	CheckpointDigest string         `json:"checkpointDigest,omitempty"`
-	// Digest is retained as a compatibility spelling for callers that use the
-	// shorter field; new records are always serialized with CheckpointDigest.
-	Digest        string `json:"-"`
-	Revision      uint64 `json:"revision,omitempty"`
-	Confirmed     bool   `json:"confirmed,omitempty"`
-	AdmissionHeld bool   `json:"admissionHeld,omitempty"`
-	RefillHeld    bool   `json:"refillHeld,omitempty"`
+	Confirmed        bool           `json:"confirmed,omitempty"`
+	AdmissionHeld    bool           `json:"admissionHeld,omitempty"`
+	RefillHeld       bool           `json:"refillHeld,omitempty"`
 }
 
-// CheckpointRecord is canonical, bounded recovery state. It is factual only:
-// it contains no claims about ownership, process liveness, leases, or hooks.
+// ReceiptProjection is the exact receipt identity and digest observed before
+// and after the checkpoint transaction. It allows a committed checkpoint to
+// repair an interrupted receipt projection without inventing authority.
+type ReceiptProjection struct {
+	Path           string `json:"path"`
+	BeforeIdentity string `json:"beforeIdentity"`
+	BeforeDigest   string `json:"beforeDigest"`
+	AfterIdentity  string `json:"afterIdentity"`
+	AfterDigest    string `json:"afterDigest"`
+}
+
 type CheckpointRecord struct {
-	Schema    int        `json:"schema"`
-	RunID     core.RunID `json:"runId"`
-	Scope     core.Scope `json:"scope"`
-	Revision  uint64     `json:"revision"`
-	Digest    string     `json:"digest"`
-	WrittenAt string     `json:"writtenAt"`
+	core.RecordEnvelope
+	Scope         core.Scope          `json:"scope"`
+	Digest        string              `json:"digest"`
+	AdmissionHeld bool                `json:"admissionHeld"`
+	RefillHeld    bool                `json:"refillHeld"`
+	Receipts      []ReceiptProjection `json:"receipts"`
 }
 
-var checkpointLocks sync.Map // map[string]*sync.Mutex, keyed by canonical file
-
-func lockFor(path string) *sync.Mutex {
-	value, _ := checkpointLocks.LoadOrStore(path, &sync.Mutex{})
-	return value.(*sync.Mutex)
-}
+const (
+	maxReceiptProjections = 8
+	maxReceiptBytes       = 1 << 20
+	maxReceiptTotalBytes  = 8 << 20
+)
 
 func transitionError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", core.ErrTransition, fmt.Sprintf(format, args...))
@@ -94,11 +86,11 @@ func validScope(scope core.Scope) error {
 	return nil
 }
 
-func validRun(run core.RunID) error {
-	if run == "" {
+func validRun(id core.RunID) error {
+	if id == "" {
 		return nil
 	}
-	if err := project.ValidateSegment(string(run)); err != nil {
+	if err := project.ValidateSegment(string(id)); err != nil {
 		return transitionError("invalid run ID: %v", err)
 	}
 	return nil
@@ -106,41 +98,23 @@ func validRun(run core.RunID) error {
 
 func knownState(state core.TaskState) bool {
 	switch state {
-	case core.Ready, core.Idle, core.Working, core.Implementing,
-		core.Reviewing, core.Fix, core.Clean, core.Gated, core.Integrated,
-		core.Paused, core.Blocked, core.Interrupted, core.Cancelled, core.Archived:
+	case core.Ready, core.Idle, core.Working, core.Implementing, core.Reviewing,
+		core.Fix, core.Clean, core.Gated, core.Integrated, core.Paused,
+		core.Blocked, core.Interrupted, core.Cancelled, core.Archived:
 		return true
 	default:
 		return false
 	}
 }
 
-func digestValue(event Event) string {
-	if event.CheckpointDigest != "" {
-		return event.CheckpointDigest
-	}
-	return event.Digest
-}
-
 func validDigest(value string) bool {
-	if !strings.HasPrefix(value, "sha256:") {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+64 {
 		return false
 	}
-	hexValue := strings.TrimPrefix(value, "sha256:")
-	if len(hexValue) != 64 {
-		return false
-	}
-	for _, r := range hexValue {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
-			return false
-		}
-	}
-	return true
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil
 }
 
-// Transition validates and applies one event. It does not inspect or mutate
-// any other scope: scope isolation is therefore structural rather than an
-// inferred side effect.
 func Transition(state core.TaskState, event Event) (core.TaskState, error) {
 	if !knownState(state) {
 		return "", transitionError("unknown current state %q", state)
@@ -154,16 +128,14 @@ func Transition(state core.TaskState, event Event) (core.TaskState, error) {
 	if event.Scope.Kind == core.ScopeRun && event.Run != "" && event.Scope.ID != string(event.Run) {
 		return "", transitionError("run scope %q does not match event run %q", event.Scope.ID, event.Run)
 	}
-	if event.From != "" {
-		if !knownState(event.From) || event.From != state {
-			return "", transitionError("from state %q does not match current state %q", event.From, state)
-		}
+	if event.From != "" && (!knownState(event.From) || event.From != state) {
+		return "", transitionError("from state %q does not match current state %q", event.From, state)
 	}
 	if event.To != "" && !knownState(event.To) {
 		return "", transitionError("unknown target state %q", event.To)
 	}
 
-	var want core.TaskState
+	var next core.TaskState
 	switch event.Kind {
 	case Pause:
 		if !event.AdmissionHeld || !event.RefillHeld {
@@ -178,7 +150,7 @@ func Transition(state core.TaskState, event Event) (core.TaskState, error) {
 		if state == core.Clean || state == core.Integrated || state == core.Cancelled || state == core.Archived {
 			return "", transitionError("state %q cannot be paused", state)
 		}
-		want = core.Paused
+		next = core.Paused
 	case Stop:
 		if !event.AdmissionHeld || !event.RefillHeld {
 			return "", transitionError("stop requires admission and refill holds")
@@ -192,7 +164,7 @@ func Transition(state core.TaskState, event Event) (core.TaskState, error) {
 		if state == core.Clean || state == core.Integrated || state == core.Cancelled || state == core.Archived {
 			return "", transitionError("state %q cannot be stopped", state)
 		}
-		want = core.Interrupted
+		next = core.Interrupted
 	case Cancel:
 		if !event.Confirmed || strings.TrimSpace(event.Reason) == "" {
 			return "", transitionError("cancel requires explicit confirmation and a reason")
@@ -200,33 +172,28 @@ func Transition(state core.TaskState, event Event) (core.TaskState, error) {
 		if state == core.Cancelled || state == core.Archived || state == core.Integrated {
 			return "", transitionError("state %q cannot be cancelled", state)
 		}
-		want = core.Cancelled
+		next = core.Cancelled
 	case Resume:
 		if state != core.Paused && state != core.Blocked && state != core.Interrupted {
 			return "", transitionError("state %q cannot be resumed", state)
 		}
-		want = core.Ready
-	case EventCheckpoint:
-		if !event.AdmissionHeld || !event.RefillHeld {
-			return "", transitionError("checkpoint requires admission and refill holds")
+		next = core.Ready
+	case CheckpointEvent:
+		if !event.AdmissionHeld || !event.RefillHeld || !validDigest(event.CheckpointDigest) {
+			return "", transitionError("checkpoint requires holds and a valid digest")
 		}
-		if event.Revision == 0 || !validDigest(digestValue(event)) {
-			return "", transitionError("checkpoint requires a valid digest and revision")
-		}
-		// A checkpoint is evidence, not a hidden lifecycle mutation. In
-		// particular, interrupted remains interrupted until an explicit resume.
-		want = state
+		next = state
 	default:
 		return "", transitionError("unknown event kind %q", event.Kind)
 	}
-	if event.To != "" && event.To != want {
+	if event.To != "" && event.To != next {
 		return "", transitionError("target state %q does not match event %q", event.To, event.Kind)
 	}
-	return want, nil
+	return next, nil
 }
 
-func checkpointPath(run core.RunID, scope core.Scope) string {
-	return path.Join(".agent-team", "checkpoints", string(run), string(scope.Kind)+"-"+scope.ID+".json")
+func checkpointPath(id core.RunID, scope core.Scope) string {
+	return path.Join(".agent-team", "checkpoints", string(id), string(scope.Kind)+"-"+scope.ID+".json")
 }
 
 func checkpointLimit(s *store.Store) int64 {
@@ -236,140 +203,310 @@ func checkpointLimit(s *store.Store) int64 {
 	return 16 << 20
 }
 
-func validateCheckpointRecord(record CheckpointRecord, run core.RunID, scope core.Scope) error {
-	if record.Schema != 1 || record.RunID != run || record.Scope != scope || record.Revision != 1 || !validDigest(record.Digest) {
-		return fmt.Errorf("%w: invalid checkpoint record", core.ErrRevision)
+func receiptPath(team core.TeamID) (string, error) {
+	if err := project.ValidateSegment(string(team)); err != nil {
+		return "", err
 	}
-	if _, err := time.Parse(time.RFC3339Nano, record.WrittenAt); err != nil {
-		return fmt.Errorf("%w: invalid checkpoint timestamp", core.ErrRevision)
+	return path.Join(".agent-team", "receipts", string(team)+".json"), nil
+}
+
+func validCheckpointScope(scope core.Scope) error {
+	switch scope.Kind {
+	case core.ScopeProject, core.ScopeRun, core.ScopeTeam, core.ScopeTask:
+	default:
+		return fmt.Errorf("%w: unknown scope kind", core.ErrTransition)
+	}
+	return project.ValidateSegment(scope.ID)
+}
+
+func receiptIdentity(receipt knowledge.Receipt) string {
+	return fmt.Sprintf("project=%s;run=%s;team=%s;task=%s;attempt=%d;state=%s;revision=%d", receipt.Project, receipt.RunID, receipt.Team, receipt.Task, receipt.Attempt, receipt.State, receipt.Revision)
+}
+
+func receiptDigest(receipt knowledge.Receipt) (string, error) {
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func readReceipt(ctx context.Context, s *store.Store, team run.TeamRecord, manifest run.Run) (knowledge.Receipt, string, error) {
+	if err := ctx.Err(); err != nil {
+		return knowledge.Receipt{}, "", err
+	}
+	relative, err := receiptPath(team.ID)
+	if err != nil {
+		return knowledge.Receipt{}, "", err
+	}
+	var receipt knowledge.Receipt
+	if err := s.ReadJSON(relative, maxReceiptBytes, &receipt); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return knowledge.Receipt{}, "", fmt.Errorf("%w: missing receipt %s", core.ErrRevision, relative)
+		}
+		return knowledge.Receipt{}, "", err
+	}
+	if receipt.Schema != 1 || receipt.Project != manifest.Project || receipt.RunID != manifest.ID || receipt.Team != string(team.ID) || receipt.Task == "" || receipt.Attempt < 1 || receipt.State == "" || receipt.NextAction == "" || receipt.Revision == 0 {
+		return knowledge.Receipt{}, "", fmt.Errorf("%w: inconsistent receipt %s", core.ErrRevision, relative)
+	}
+	if err := project.ValidateSegment(receipt.Task); err != nil || len(receipt.EvidencePointers) > 128 || len(receipt.NextAction) > 4096 {
+		return knowledge.Receipt{}, "", fmt.Errorf("%w: invalid receipt bounds", core.ErrRevision)
+	}
+	for _, pointer := range receipt.EvidencePointers {
+		if !validPointer(pointer) {
+			return knowledge.Receipt{}, "", fmt.Errorf("%w: invalid receipt evidence pointer", core.ErrRevision)
+		}
+	}
+	queued := false
+	for _, task := range team.Queue {
+		if string(task) == receipt.Task {
+			queued = true
+			break
+		}
+	}
+	if !queued {
+		return knowledge.Receipt{}, "", fmt.Errorf("%w: receipt task is not queued by team", core.ErrRevision)
+	}
+	if _, err := time.Parse(time.RFC3339, receipt.WrittenAt); err != nil {
+		return knowledge.Receipt{}, "", fmt.Errorf("%w: invalid receipt timestamp", core.ErrRevision)
+	}
+	digest, err := receiptDigest(receipt)
+	return receipt, digest, err
+}
+
+func validPointer(pointer string) bool {
+	if pointer == "" || len(pointer) > 4096 || strings.HasPrefix(pointer, "/") || strings.Contains(pointer, "\\") || path.Clean(pointer) != pointer {
+		return false
+	}
+	for _, segment := range strings.Split(pointer, "/") {
+		if err := project.ValidateSegment(segment); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func teamsForScope(manifest run.Run, scope core.Scope) ([]run.TeamRecord, error) {
+	if len(manifest.Teams) > maxReceiptProjections {
+		return nil, fmt.Errorf("%w: receipt projection bound exceeded", core.ErrLimit)
+	}
+	if scope.Kind == core.ScopeTeam {
+		for _, team := range manifest.Teams {
+			if string(team.ID) == scope.ID {
+				return []run.TeamRecord{team}, nil
+			}
+		}
+		return nil, fmt.Errorf("%w: team is not in run", core.ErrRevision)
+	}
+	if scope.Kind == core.ScopeTask {
+		found := false
+		for _, task := range manifest.Tasks {
+			if string(task.ID) == scope.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("%w: task is not in run", core.ErrRevision)
+		}
+		for _, team := range manifest.Teams {
+			for _, task := range team.Queue {
+				if string(task) == scope.ID {
+					return []run.TeamRecord{team}, nil
+				}
+			}
+		}
+		return nil, fmt.Errorf("%w: task has no canonical team", core.ErrRevision)
+	}
+	if scope.Kind != core.ScopeRun && scope.Kind != core.ScopeProject {
+		return nil, fmt.Errorf("%w: invalid checkpoint scope", core.ErrTransition)
+	}
+	if len(manifest.Teams) == 0 {
+		return nil, fmt.Errorf("%w: run has no receipt authority", core.ErrRevision)
+	}
+	return append([]run.TeamRecord(nil), manifest.Teams...), nil
+}
+
+func projectionFor(ctx context.Context, s *store.Store, manifest run.Run, team run.TeamRecord, checkpoint string) (ReceiptProjection, knowledge.Receipt, error) {
+	receipt, beforeDigest, err := readReceipt(ctx, s, team, manifest)
+	if err != nil {
+		return ReceiptProjection{}, knowledge.Receipt{}, err
+	}
+	relative, _ := receiptPath(team.ID)
+	before := receiptIdentity(receipt)
+	afterReceipt := receipt
+	found := false
+	for _, pointer := range afterReceipt.EvidencePointers {
+		if pointer == checkpoint {
+			found = true
+			break
+		}
+	}
+	if !found {
+		afterReceipt.EvidencePointers = append(afterReceipt.EvidencePointers, checkpoint)
+		afterReceipt.Revision++
+	}
+	afterDigest, err := receiptDigest(afterReceipt)
+	if err != nil {
+		return ReceiptProjection{}, knowledge.Receipt{}, err
+	}
+	return ReceiptProjection{Path: relative, BeforeIdentity: before, BeforeDigest: beforeDigest, AfterIdentity: receiptIdentity(afterReceipt), AfterDigest: afterDigest}, afterReceipt, nil
+}
+
+func buildRecord(ctx context.Context, s *store.Store, manifest run.Run, scope core.Scope, digest string) (CheckpointRecord, []knowledge.Receipt, error) {
+	teams, err := teamsForScope(manifest, scope)
+	if err != nil {
+		return CheckpointRecord{}, nil, err
+	}
+	record := CheckpointRecord{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: manifest.Project, RunID: manifest.ID, WrittenAt: manifest.WrittenAt, Revision: manifest.Revision}, Scope: scope, Digest: digest, AdmissionHeld: true, RefillHeld: true, Receipts: make([]ReceiptProjection, 0, len(teams))}
+	receipts := make([]knowledge.Receipt, 0, len(teams))
+	var total int64
+	for _, team := range teams {
+		projection, after, err := projectionFor(ctx, s, manifest, team, checkpointPath(manifest.ID, scope))
+		if err != nil {
+			return CheckpointRecord{}, nil, err
+		}
+		record.Receipts = append(record.Receipts, projection)
+		receipts = append(receipts, after)
+		total += int64(len(projection.BeforeIdentity) + len(projection.AfterIdentity) + len(projection.BeforeDigest) + len(projection.AfterDigest) + len(projection.Path))
+		if total > maxReceiptTotalBytes {
+			return CheckpointRecord{}, nil, fmt.Errorf("%w: receipt projection bytes exceeded", core.ErrLimit)
+		}
+	}
+	return record, receipts, nil
+}
+
+func validateRecord(record CheckpointRecord, manifest run.Run, scope core.Scope, digest string) error {
+	if record.Schema != 1 || record.Project != manifest.Project || record.RunID != manifest.ID || record.WrittenAt != manifest.WrittenAt || record.Revision != manifest.Revision || record.Scope != scope || record.Digest != digest || !validDigest(record.Digest) || !record.AdmissionHeld || !record.RefillHeld || len(record.Receipts) == 0 || len(record.Receipts) > maxReceiptProjections {
+		return fmt.Errorf("%w: checkpoint provenance conflict", core.ErrRevision)
+	}
+	teams, err := teamsForScope(manifest, scope)
+	if err != nil || len(teams) != len(record.Receipts) {
+		return fmt.Errorf("%w: checkpoint receipt authority changed", core.ErrRevision)
+	}
+	expected := make(map[string]bool, len(teams))
+	for _, team := range teams {
+		relative, pathErr := receiptPath(team.ID)
+		if pathErr != nil {
+			return fmt.Errorf("%w: checkpoint receipt path", core.ErrRevision)
+		}
+		expected[relative] = true
+	}
+	for _, projection := range record.Receipts {
+		if !expected[projection.Path] || path.Clean(projection.Path) != projection.Path || !strings.HasPrefix(projection.Path, ".agent-team/receipts/") || strings.Contains(projection.Path, "\\") || !validDigest(projection.BeforeDigest) || !validDigest(projection.AfterDigest) || len(projection.BeforeIdentity) > 4096 || len(projection.AfterIdentity) > 4096 || projection.BeforeIdentity == "" || projection.AfterIdentity == "" {
+			return fmt.Errorf("%w: invalid receipt projection", core.ErrRevision)
+		}
 	}
 	return nil
 }
 
-// Checkpoint atomically records one bounded checkpoint. Existing identical
-// bytes are idempotent; a changed digest is a revision conflict. The function
-// only updates receipts that already exist and match the supplied run/scope.
-func Checkpoint(ctx context.Context, s *store.Store, run core.RunID, scope core.Scope, digest string) error {
+func convergeReceipt(ctx context.Context, s *store.Store, projection ReceiptProjection, manifest run.Run, scope core.Scope) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var current knowledge.Receipt
+	if err := s.ReadJSON(projection.Path, maxReceiptBytes, &current); err != nil {
+		return err
+	}
+	digest, err := receiptDigest(current)
+	if err != nil {
+		return err
+	}
+	identity := receiptIdentity(current)
+	if identity == projection.AfterIdentity && digest == projection.AfterDigest {
+		return nil
+	}
+	if identity != projection.BeforeIdentity || digest != projection.BeforeDigest {
+		return fmt.Errorf("%w: receipt changed during checkpoint recovery", core.ErrRevision)
+	}
+	current.EvidencePointers = append(current.EvidencePointers, checkpointPath(manifest.ID, scope))
+	current.Revision++
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return knowledge.WriteReceipt(ctx, s, current)
+}
+
+// Checkpoint commits exactly one no-replace checkpoint record, then converges
+// the already-existing receipts named by that record. A projection failure
+// leaves the checkpoint as recoverable durable evidence for the next retry.
+func Checkpoint(ctx context.Context, s *store.Store, runID core.RunID, scope core.Scope, digest string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if s == nil {
 		return fmt.Errorf("%w: nil store", core.ErrPath)
 	}
-	if err := project.ValidateSegment(string(run)); err != nil {
+	if err := project.ValidateSegment(string(runID)); err != nil {
 		return err
 	}
-	if err := validScopeForCheckpoint(scope); err != nil {
+	if err := validCheckpointScope(scope); err != nil {
 		return err
 	}
-	if scope.Kind == core.ScopeRun && scope.ID != string(run) {
+	if scope.Kind == core.ScopeRun && scope.ID != string(runID) {
 		return fmt.Errorf("%w: run scope does not match run", core.ErrTransition)
 	}
 	if !validDigest(digest) {
 		return fmt.Errorf("%w: invalid checkpoint digest", core.ErrRevision)
 	}
-	relative := checkpointPath(run, scope)
-	mutex := lockFor(filepath.Join(filepath.Clean(s.Root), filepath.FromSlash(relative)))
-	mutex.Lock()
-	defer mutex.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	var previous CheckpointRecord
-	err := s.ReadJSON(relative, checkpointLimit(s), &previous)
-	if err == nil {
-		if validateErr := validateCheckpointRecord(previous, run, scope); validateErr != nil {
-			return validateErr
-		}
-		if previous.Digest != digest {
-			return fmt.Errorf("%w: checkpoint digest changed", core.ErrRevision)
-		}
-		return nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	record := CheckpointRecord{Schema: 1, RunID: run, Scope: scope, Revision: 1, Digest: digest, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	if _, err := s.WriteJSON(relative, record, checkpointLimit(s)); err != nil {
-		return err
-	}
-	if err := updateExistingReceipts(ctx, s, run, scope, relative); err != nil {
-		return err
-	}
-	return nil
-}
-
-func validScopeForCheckpoint(scope core.Scope) error {
-	switch scope.Kind {
-	case core.ScopeProject, core.ScopeRun, core.ScopeTeam, core.ScopeTask:
-	default:
-		return fmt.Errorf("%w: unknown scope kind", core.ErrTransition)
-	}
-	if err := project.ValidateSegment(scope.ID); err != nil {
-		return err
-	}
-	return nil
-}
-
-func updateExistingReceipts(ctx context.Context, s *store.Store, run core.RunID, scope core.Scope, checkpoint string) error {
-	receiptRoot := filepath.Join(s.Root, ".agent-team", "receipts")
-	entries, err := os.ReadDir(receiptRoot)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+	manifest, err := run.NewRepositories(s).Runs.Read(ctx, runID)
 	if err != nil {
-		return fmt.Errorf("%w: read receipts: %v", core.ErrPath, err)
+		return fmt.Errorf("%w: canonical run: %v", core.ErrRevision, err)
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		name := strings.TrimSuffix(entry.Name(), ".json")
-		if err := project.ValidateSegment(name); err != nil {
-			continue
-		}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	relative := checkpointPath(runID, scope)
+	record, receipts, err := buildRecord(ctx, s, manifest, scope, digest)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err = s.CreateJSON(relative, record, checkpointLimit(s))
+	if err == nil {
+		return publishReceipts(ctx, s, manifest, record, receipts)
+	}
+	if !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	var existing CheckpointRecord
+	if readErr := s.ReadJSON(relative, checkpointLimit(s), &existing); readErr != nil {
+		return readErr
+	}
+	if err := validateRecord(existing, manifest, scope, digest); err != nil {
+		return err
+	}
+	return publishReceipts(ctx, s, manifest, existing, nil)
+}
+
+func publishReceipts(ctx context.Context, s *store.Store, manifest run.Run, record CheckpointRecord, desired []knowledge.Receipt) error {
+	for index, projection := range record.Receipts {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		relative := path.Join(".agent-team", "receipts", entry.Name())
-		var receipt knowledge.Receipt
-		if err := s.ReadJSON(relative, checkpointLimit(s), &receipt); err != nil {
-			return err
-		}
-		if receipt.RunID != run || !receiptApplies(receipt, scope) {
-			continue
-		}
-		found := false
-		for _, pointer := range receipt.EvidencePointers {
-			if pointer == checkpoint {
-				found = true
-				break
+		if desired != nil && index < len(desired) {
+			var current knowledge.Receipt
+			if err := s.ReadJSON(projection.Path, maxReceiptBytes, &current); err != nil {
+				return err
 			}
-		}
-		if found {
+			currentDigest, digestErr := receiptDigest(current)
+			if digestErr != nil {
+				return digestErr
+			}
+			if receiptIdentity(current) == projection.AfterIdentity && currentDigest == projection.AfterDigest {
+				continue
+			}
+			if err := knowledge.WriteReceipt(ctx, s, desired[index]); err != nil {
+				return err
+			}
 			continue
 		}
-		receipt.EvidencePointers = append(receipt.EvidencePointers, checkpoint)
-		receipt.Revision++
-		if err := knowledge.WriteReceipt(ctx, s, receipt); err != nil {
+		if err := convergeReceipt(ctx, s, projection, manifest, record.Scope); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func receiptApplies(receipt knowledge.Receipt, scope core.Scope) bool {
-	switch scope.Kind {
-	case core.ScopeTask:
-		return receipt.Task == scope.ID
-	case core.ScopeTeam:
-		return receipt.Team == scope.ID
-	case core.ScopeRun, core.ScopeProject:
-		return true
-	default:
-		return false
-	}
 }

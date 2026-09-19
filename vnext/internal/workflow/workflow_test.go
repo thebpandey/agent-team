@@ -8,10 +8,10 @@ import (
 	"reflect"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/knowledge"
+	"github.com/thebpandey/agent-team/vnext/internal/run"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
@@ -31,6 +31,56 @@ func lifecycleEvent(kind EventKind, scope core.Scope, state core.TaskState) Even
 const testDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 const otherTestDigest = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 
+func checkpointFixture(t *testing.T) (*store.Store, run.Run, core.Scope) {
+	t.Helper()
+	ctx := context.Background()
+	manifest, err := run.CreateOneOff(ctx, t.TempDir(), run.OneOffFeature, "checkpoint fixture", []core.Task{{ID: "TASK-1", Objective: "fixture", State: core.Ready, Criteria: []string{"done"}, WritablePaths: []string{"src"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := store.New(manifest.Root, core.StorageLimits{CanonicalBytes: 16 << 20})
+	if _, err := run.NewRepositories(s).Runs.Initialize(ctx, manifest); err != nil {
+		t.Fatal(err)
+	}
+	receipt := knowledge.Receipt{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: manifest.Project, RunID: manifest.ID, WrittenAt: manifest.WrittenAt, Revision: 1}, Team: string(manifest.Teams[0].ID), Task: "TASK-1", Attempt: 1, State: core.Implementing, NextAction: "continue"}
+	if err := knowledge.WriteReceipt(ctx, s, receipt); err != nil {
+		t.Fatal(err)
+	}
+	return s, manifest, core.Scope{Kind: core.ScopeTask, ID: "TASK-1"}
+}
+
+func TestCheckpointRecordCarriesStrictProvenanceAndReceiptProjection(t *testing.T) {
+	record := CheckpointRecord{
+		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: "project", RunID: "RUN-1", WrittenAt: "2026-09-19T00:00:00Z", Revision: 7},
+		Scope:          core.Scope{Kind: core.ScopeTeam, ID: "TEAM-1"},
+		Digest:         testDigest,
+		AdmissionHeld:  true,
+		RefillHeld:     true,
+		Receipts: []ReceiptProjection{{
+			Path:           ".agent-team/receipts/TEAM-1.json",
+			BeforeIdentity: "project=project;run=RUN-1;team=TEAM-1;task=TASK-1;attempt=1;state=implementing;revision=3",
+			BeforeDigest:   testDigest,
+			AfterIdentity:  "project=project;run=RUN-1;team=TEAM-1;task=TASK-1;attempt=1;state=implementing;revision=4",
+			AfterDigest:    otherTestDigest,
+		}},
+	}
+	if record.RecordEnvelope.Schema != 1 || record.Revision != 7 || len(record.Receipts) != 1 {
+		t.Fatalf("record = %#v", record)
+	}
+}
+
+func TestEventSurfaceMatchesPlan(t *testing.T) {
+	typ := reflect.TypeOf(Event{})
+	for _, name := range []string{"Digest", "Revision"} {
+		if _, ok := typ.FieldByName(name); ok {
+			t.Fatalf("Event unexpectedly exposes undeclared field %s", name)
+		}
+	}
+	if CheckpointEvent != EventKind("checkpoint") {
+		t.Fatalf("checkpoint event kind = %q", CheckpointEvent)
+	}
+}
+
 func TestTransitionTable(t *testing.T) {
 	scopeTask := core.Scope{Kind: core.ScopeTask, ID: "TASK-1"}
 	scopeProject := core.Scope{Kind: core.ScopeProject, ID: "PROJECT-1"}
@@ -48,9 +98,8 @@ func TestTransitionTable(t *testing.T) {
 		{name: "paused resume", state: core.Paused, event: lifecycleEvent(Resume, scopeTask, core.Paused), want: core.Ready},
 		{name: "interrupted resume", state: core.Interrupted, event: lifecycleEvent(Resume, scopeTask, core.Interrupted), want: core.Ready},
 		{name: "checkpoint preserves interrupted", state: core.Interrupted, event: func() Event {
-			e := lifecycleEvent(EventCheckpoint, scopeTask, core.Interrupted)
+			e := lifecycleEvent(CheckpointEvent, scopeTask, core.Interrupted)
 			e.CheckpointDigest = testDigest
-			e.Revision = 1
 			return e
 		}(), want: core.Interrupted},
 		{name: "project pause requires confirmation", state: core.Working, event: func() Event { e := lifecycleEvent(Pause, scopeProject, core.Working); e.Confirmed = true; return e }(), want: core.Paused},
@@ -87,14 +136,13 @@ func TestTransitionTable(t *testing.T) {
 }
 
 func TestTransitionRejectsInvalidCheckpointCombinations(t *testing.T) {
-	base := lifecycleEvent(EventCheckpoint, core.Scope{Kind: core.ScopeTask, ID: "TASK-1"}, core.Working)
+	base := lifecycleEvent(CheckpointEvent, core.Scope{Kind: core.ScopeTask, ID: "TASK-1"}, core.Working)
 	for _, tc := range []struct {
 		name   string
 		mutate func(*Event)
 	}{
 		{name: "missing digest", mutate: func(e *Event) { e.CheckpointDigest = "" }},
-		{name: "missing revision", mutate: func(e *Event) { e.Revision = 0; e.CheckpointDigest = testDigest }},
-		{name: "invalid target", mutate: func(e *Event) { e.To = core.Paused; e.CheckpointDigest = testDigest; e.Revision = 1 }},
+		{name: "invalid target", mutate: func(e *Event) { e.To = core.Paused; e.CheckpointDigest = testDigest }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := base
@@ -107,79 +155,104 @@ func TestTransitionRejectsInvalidCheckpointCombinations(t *testing.T) {
 }
 
 func TestCheckpointAtomicIdempotentAndConflictingDigest(t *testing.T) {
-	root := t.TempDir()
-	s := store.New(root, core.StorageLimits{CanonicalBytes: 16 << 20})
-	scope := core.Scope{Kind: core.ScopeTask, ID: "TASK-1"}
+	s, manifest, scope := checkpointFixture(t)
 	ctx := context.Background()
-	if err := Checkpoint(ctx, s, "RUN-1", scope, testDigest); err != nil {
+	if err := Checkpoint(ctx, s, manifest.ID, scope, testDigest); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ".agent-team", "checkpoints", "RUN-1", "task-TASK-1.json")
+	path := filepath.Join(s.Root, ".agent-team", "checkpoints", string(manifest.ID), "task-TASK-1.json")
 	first, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Checkpoint(ctx, s, "RUN-1", scope, testDigest); err != nil {
+	var record CheckpointRecord
+	if err := s.ReadJSON(".agent-team/checkpoints/"+string(manifest.ID)+"/task-TASK-1.json", 16<<20, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Project != manifest.Project || record.RunID != manifest.ID || record.Revision != manifest.Revision || !record.AdmissionHeld || !record.RefillHeld || len(record.Receipts) != 1 {
+		t.Fatalf("checkpoint provenance = %#v", record)
+	}
+	if err := Checkpoint(ctx, s, manifest.ID, scope, testDigest); err != nil {
 		t.Fatal(err)
 	}
 	second, err := os.ReadFile(path)
 	if err != nil || !reflect.DeepEqual(first, second) {
 		t.Fatalf("repeat changed checkpoint: %v", err)
 	}
-	if err := Checkpoint(ctx, s, "RUN-1", scope, otherTestDigest); !errors.Is(err, core.ErrRevision) {
+	if err := Checkpoint(ctx, s, manifest.ID, scope, otherTestDigest); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("conflicting digest error = %v, want ErrRevision", err)
 	}
 }
 
 func TestCheckpointContextCancellationDoesNotWrite(t *testing.T) {
-	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	s, manifest, _ := checkpointFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := Checkpoint(ctx, s, "RUN-1", core.Scope{Kind: core.ScopeRun, ID: "RUN-1"}, testDigest); !errors.Is(err, context.Canceled) {
+	if err := Checkpoint(ctx, s, manifest.ID, core.Scope{Kind: core.ScopeRun, ID: string(manifest.ID)}, testDigest); !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
 	}
-	if _, err := os.Stat(filepath.Join(s.Root, ".agent-team")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(s.Root, ".agent-team", "checkpoints")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cancelled checkpoint wrote state: %v", err)
 	}
 }
 
 func TestCheckpointUpdatesExistingApplicableReceiptOnly(t *testing.T) {
-	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
-	receipt := knowledge.Receipt{
-		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: "project", RunID: "RUN-1", WrittenAt: time.Now().UTC().Format(time.RFC3339Nano), Revision: 1},
-		Team:           "TEAM-1", Task: "TASK-1", Attempt: 1, State: core.Implementing, NextAction: "continue",
-	}
-	if err := knowledge.WriteReceipt(context.Background(), s, receipt); err != nil {
-		t.Fatal(err)
-	}
-	if err := Checkpoint(context.Background(), s, "RUN-1", core.Scope{Kind: core.ScopeTeam, ID: "TEAM-1"}, testDigest); err != nil {
+	s, manifest, _ := checkpointFixture(t)
+	team := string(manifest.Teams[0].ID)
+	if err := Checkpoint(context.Background(), s, manifest.ID, core.Scope{Kind: core.ScopeTeam, ID: team}, testDigest); err != nil {
 		t.Fatal(err)
 	}
 	var got knowledge.Receipt
-	if err := s.ReadJSON(".agent-team/receipts/TEAM-1.json", 16<<20, &got); err != nil {
+	if err := s.ReadJSON(".agent-team/receipts/"+team+".json", 16<<20, &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Revision != 2 || len(got.EvidencePointers) != 1 {
 		t.Fatalf("receipt = %#v, want revision 2 and one checkpoint pointer", got)
 	}
-	if err := Checkpoint(context.Background(), s, "RUN-1", core.Scope{Kind: core.ScopeTask, ID: "TASK-2"}, otherTestDigest); err != nil {
-		t.Fatal(err)
+	if err := Checkpoint(context.Background(), s, manifest.ID, core.Scope{Kind: core.ScopeTask, ID: "TASK-2"}, otherTestDigest); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("missing task authority error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(s.Root, ".agent-team", "receipts", "TASK-2.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("checkpoint fabricated receipt: %v", err)
 	}
 }
 
+func TestCheckpointRetryRepairsCommittedReceiptProjection(t *testing.T) {
+	s, manifest, scope := checkpointFixture(t)
+	if err := Checkpoint(context.Background(), s, manifest.ID, scope, testDigest); err != nil {
+		t.Fatal(err)
+	}
+	team := string(manifest.Teams[0].ID)
+	var receipt knowledge.Receipt
+	if err := s.ReadJSON(".agent-team/receipts/"+team+".json", 16<<20, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	receipt.EvidencePointers = nil
+	receipt.Revision = 1
+	if _, err := s.WriteJSON(".agent-team/receipts/"+team+".json", receipt, 16<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := Checkpoint(context.Background(), s, manifest.ID, scope, testDigest); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReadJSON(".agent-team/receipts/"+team+".json", 16<<20, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Revision != 2 || len(receipt.EvidencePointers) != 1 {
+		t.Fatalf("repaired receipt = %#v", receipt)
+	}
+}
+
 func TestCheckpointConcurrentIdenticalWriters(t *testing.T) {
-	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
-	scope := core.Scope{Kind: core.ScopeRun, ID: "RUN-1"}
+	s, manifest, _ := checkpointFixture(t)
+	scope := core.Scope{Kind: core.ScopeRun, ID: string(manifest.ID)}
 	var wg sync.WaitGroup
 	errs := make(chan error, 16)
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- Checkpoint(context.Background(), s, "RUN-1", scope, testDigest)
+			errs <- Checkpoint(context.Background(), s, manifest.ID, scope, testDigest)
 		}()
 	}
 	wg.Wait()
