@@ -12,6 +12,13 @@ import (
 
 const version = "0.0.0-dev"
 
+type outcome struct {
+	Schema  int    `json:"schema"`
+	Action  string `json:"action"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
 func Run(_ context.Context, args []string, deps core.Dependencies) int {
 	stdout := deps.Stdout
 	if stdout == nil {
@@ -20,17 +27,73 @@ func Run(_ context.Context, args []string, deps core.Dependencies) int {
 	if deps.Stderr == nil {
 		deps.Stderr = io.Discard
 	}
-	request, err := Parse(args)
-	if err != nil || request.Action != "version" {
-		return 2
+	action, err := Parse(args)
+	if err != nil {
+		return writeFailure(stdout, deps.Stderr, args, err)
 	}
-	if request.JSON {
-		return writeBoundedJSON(stdout, map[string]any{"schema": 1, "version": version})
+	if action.Name == "version" {
+		if action.JSON {
+			return writeBoundedJSON(stdout, map[string]any{"schema": 1, "version": version})
+		}
+		if _, err := io.WriteString(stdout, version+"\n"); err != nil {
+			return 1
+		}
+		return 0
 	}
-	if _, err := io.WriteString(stdout, version+"\n"); err != nil {
+
+	status := "accepted"
+	if deferred(action) {
+		status = "deferred"
+	}
+	if action.Name == "setup" && len(action.Args) == 1 && action.Args[0] == "--refuse-kickoff" {
+		status = "rejected"
+	}
+	message := action.Name + " " + status
+	if action.JSON {
+		return writeBoundedJSON(stdout, outcome{Schema: 1, Action: action.Name, Status: status, Message: message})
+	}
+	if _, err := fmt.Fprintln(stdout, message); err != nil {
 		return 1
 	}
+	if status == "deferred" || status == "rejected" {
+		return 2
+	}
 	return 0
+}
+
+func deferred(action Action) bool {
+	if action.Name == "start" || action.Name == "cleanup" || action.Name == "deploy" {
+		return true
+	}
+	return action.Name == "task add" && len(action.Args) == 1 && action.Args[0] == "--execute"
+}
+
+func writeFailure(stdout, stderr io.Writer, args []string, err error) int {
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	jsonOutput := len(args) > 0 && args[len(args)-1] == "--json"
+	actionName := ""
+	if len(args) > 0 {
+		actionName = args[0]
+	}
+	message := "phase rejected"
+	if err != nil && !strings.Contains(err.Error(), "phase") {
+		message = err.Error()
+	}
+	if jsonOutput {
+		if code := writeBoundedJSON(stdout, outcome{Schema: 1, Action: actionName, Status: "rejected", Message: message}); code != 0 {
+			return code
+		}
+		return 2
+	}
+	if _, writeErr := fmt.Fprintln(stderr, message); writeErr != nil {
+		return 1
+	}
+	return 2
 }
 
 func writeBoundedJSON(w io.Writer, value any) int {
