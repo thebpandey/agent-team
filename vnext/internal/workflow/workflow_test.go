@@ -299,6 +299,52 @@ func TestCheckpointRejectsDuplicateReceiptProjectionWithoutMutation(t *testing.T
 	}
 }
 
+func TestCheckpointRejectsForeignReceiptProjectionWithoutMutation(t *testing.T) {
+	s, manifest, scope := checkpointFixture(t)
+	if err := Checkpoint(context.Background(), s, manifest.ID, scope, testDigest); err != nil {
+		t.Fatal(err)
+	}
+	checkpointRelative := ".agent-team/checkpoints/" + string(manifest.ID) + "/task-TASK-1.json"
+	team := manifest.Teams[0]
+	receiptRelative := ".agent-team/receipts/" + string(team.ID) + ".json"
+	var record CheckpointRecord
+	if err := s.ReadJSON(checkpointRelative, 16<<20, &record); err != nil {
+		t.Fatal(err)
+	}
+	foreign := knowledge.Receipt{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: "foreign-project", RunID: "foreign-run", WrittenAt: manifest.WrittenAt, Revision: 9}, Team: string(team.ID), Task: "TASK-1", Attempt: 1, State: core.Implementing, NextAction: "foreign"}
+	foreignDigest, err := receiptDigest(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignAfter := foreign
+	foreignAfter.EvidencePointers = []string{checkpointPath(manifest.ID, scope)}
+	foreignAfter.Revision++
+	foreignAfterDigest, err := receiptDigest(foreignAfter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Receipts[0] = ReceiptProjection{Path: receiptRelative, BeforeIdentity: receiptIdentity(foreign), BeforeDigest: foreignDigest, AfterIdentity: receiptIdentity(foreignAfter), AfterDigest: foreignAfterDigest}
+	if _, err := s.WriteJSON(receiptRelative, foreign, 16<<20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteJSON(checkpointRelative, record, 16<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStoredProjections(context.Background(), s, manifest, record); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("foreign projection preflight error = %v, want ErrRevision", err)
+	}
+	receiptBefore, _ := os.ReadFile(filepath.Join(s.Root, filepath.FromSlash(receiptRelative)))
+	recordBefore, _ := os.ReadFile(filepath.Join(s.Root, filepath.FromSlash(checkpointRelative)))
+	if err := Checkpoint(context.Background(), s, manifest.ID, scope, testDigest); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("foreign projection error = %v, want ErrRevision", err)
+	}
+	receiptAfter, _ := os.ReadFile(filepath.Join(s.Root, filepath.FromSlash(receiptRelative)))
+	recordAfter, _ := os.ReadFile(filepath.Join(s.Root, filepath.FromSlash(checkpointRelative)))
+	if !reflect.DeepEqual(receiptBefore, receiptAfter) || !reflect.DeepEqual(recordBefore, recordAfter) {
+		t.Fatal("foreign projection mutated durable state")
+	}
+}
+
 func TestCheckpointConcurrentIdenticalWriters(t *testing.T) {
 	s, manifest, _ := checkpointFixture(t)
 	scope := core.Scope{Kind: core.ScopeRun, ID: string(manifest.ID)}

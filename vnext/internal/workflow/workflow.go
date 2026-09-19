@@ -328,6 +328,20 @@ func teamsForScope(manifest run.Run, scope core.Scope) ([]run.TeamRecord, error)
 	return append([]run.TeamRecord(nil), manifest.Teams...), nil
 }
 
+func teamForProjection(manifest run.Run, scope core.Scope, relative string) (run.TeamRecord, error) {
+	teams, err := teamsForScope(manifest, scope)
+	if err != nil {
+		return run.TeamRecord{}, err
+	}
+	for _, team := range teams {
+		teamPath, pathErr := receiptPath(team.ID)
+		if pathErr == nil && teamPath == relative {
+			return team, nil
+		}
+	}
+	return run.TeamRecord{}, fmt.Errorf("%w: receipt projection is not canonical", core.ErrRevision)
+}
+
 func projectionFor(ctx context.Context, s *store.Store, manifest run.Run, team run.TeamRecord, checkpoint string) (ReceiptProjection, knowledge.Receipt, error) {
 	receipt, beforeDigest, err := readReceipt(ctx, s, team, manifest)
 	if err != nil {
@@ -411,11 +425,11 @@ func validateStoredProjections(ctx context.Context, s *store.Store, manifest run
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		var receipt knowledge.Receipt
-		if err := s.ReadJSON(projection.Path, maxReceiptBytes, &receipt); err != nil {
+		team, err := teamForProjection(manifest, record.Scope, projection.Path)
+		if err != nil {
 			return err
 		}
-		beforeDigest, err := receiptDigest(receipt)
+		receipt, beforeDigest, err := readReceipt(ctx, s, team, manifest)
 		if err != nil {
 			return err
 		}
@@ -445,11 +459,11 @@ func convergeReceipt(ctx context.Context, s *store.Store, projection ReceiptProj
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	var current knowledge.Receipt
-	if err := s.ReadJSON(projection.Path, maxReceiptBytes, &current); err != nil {
+	team, err := teamForProjection(manifest, scope, projection.Path)
+	if err != nil {
 		return err
 	}
-	digest, err := receiptDigest(current)
+	current, digest, err := readReceipt(ctx, s, team, manifest)
 	if err != nil {
 		return err
 	}
@@ -531,13 +545,13 @@ func publishReceipts(ctx context.Context, s *store.Store, manifest run.Run, reco
 			return err
 		}
 		if desired != nil && index < len(desired) {
-			var current knowledge.Receipt
-			if err := s.ReadJSON(projection.Path, maxReceiptBytes, &current); err != nil {
-				return err
+			team, teamErr := teamForProjection(manifest, record.Scope, projection.Path)
+			if teamErr != nil {
+				return teamErr
 			}
-			currentDigest, digestErr := receiptDigest(current)
-			if digestErr != nil {
-				return digestErr
+			current, currentDigest, readErr := readReceipt(ctx, s, team, manifest)
+			if readErr != nil {
+				return readErr
 			}
 			if receiptIdentity(current) == projection.AfterIdentity && currentDigest == projection.AfterDigest {
 				continue
