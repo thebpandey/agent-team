@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -211,6 +212,16 @@ func validBinding(value binding) error {
 	}
 	if err := validateHandle(value.Request.Packet, value.Handle); err != nil {
 		return err
+	}
+	// Re-run the same packet/worktree authority check used by Start, then
+	// derive the request again. A persisted request is never trusted merely
+	// because its handle fields happen to agree.
+	if err := dispatch.ValidatePacket(value.Request.Packet, value.Request.Worktree); err != nil {
+		return err
+	}
+	expected, err := workerRequest(value.Request.Packet)
+	if err != nil || !reflect.DeepEqual(expected, value.Request) {
+		return core.ErrRevision
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil || len(encoded) > eventLimit {
@@ -609,15 +620,21 @@ func (s *supervisor) interrupt(ctx context.Context, handle contracts.WorkerHandl
 	}
 	digest := interruptionDigest(handle, evidence.Observation, evidence.Error)
 	pointer := "supervision/" + strings.TrimPrefix(digest, "sha256:")
+	event := InterruptedEvent(handle)
+	event.CheckpointDigest = digest
+	event.Reason = "foreground turn interrupted"
 	if receipt.State == core.Interrupted {
 		if receipt.NextAction == "resume" && contains(receipt.EvidencePointers, pointer) {
+			if err := s.convergeInterruptedCheckpoint(persistCtx, event, manifest); err != nil {
+				return err
+			}
+			if err := s.persistEventEvidence(event, &evidence); err != nil {
+				return err
+			}
 			return nil
 		}
 		return core.ErrRevision
 	}
-	event := InterruptedEvent(handle)
-	event.CheckpointDigest = digest
-	event.Reason = "foreground turn interrupted"
 	if err := workflow.Checkpoint(persistCtx, s.state, event.Run, event.Scope, event.CheckpointDigest); err != nil {
 		return err
 	}
@@ -647,6 +664,44 @@ func (s *supervisor) interrupt(ctx context.Context, handle contracts.WorkerHandl
 		return core.ErrLimit
 	}
 	return knowledge.WriteReceipt(persistCtx, s.state, receipt)
+}
+
+func checkpointRecordPath(event workflow.Event) string {
+	return path.Join(".agent-team", "checkpoints", string(event.Run), string(event.Scope.Kind)+"-"+event.Scope.ID+".json")
+}
+
+// convergeInterruptedCheckpoint verifies the already-committed canonical
+// checkpoint after an interrupted receipt has advanced. If a crash removed the
+// checkpoint record, Phase 1 can safely recreate it from the current receipt.
+func (s *supervisor) convergeInterruptedCheckpoint(ctx context.Context, event workflow.Event, manifest run.Run) error {
+	var record workflow.CheckpointRecord
+	err := s.state.ReadJSON(checkpointRecordPath(event), eventLimit, &record)
+	if errors.Is(err, fs.ErrNotExist) {
+		return workflow.Checkpoint(ctx, s.state, event.Run, event.Scope, event.CheckpointDigest)
+	}
+	if err != nil {
+		return core.ErrRevision
+	}
+	teams, teamErr := ordinaryTeams(manifest, event.Scope)
+	if teamErr != nil || record.Schema != 1 || record.Project != manifest.Project || record.RunID != manifest.ID ||
+		record.WrittenAt != manifest.WrittenAt || record.Revision != manifest.Revision || record.Scope != event.Scope ||
+		record.Digest != event.CheckpointDigest || !record.AdmissionHeld || !record.RefillHeld || len(record.Receipts) != len(teams) || len(teams) == 0 {
+		return core.ErrRevision
+	}
+	expected := make(map[string]bool, len(teams))
+	for _, team := range teams {
+		expected[path.Join(".agent-team", "receipts", string(team.ID)+".json")] = true
+	}
+	for _, projection := range record.Receipts {
+		if !expected[projection.Path] || !validDigest(projection.BeforeDigest) || !validDigest(projection.AfterDigest) || projection.BeforeIdentity == "" || projection.AfterIdentity == "" {
+			return core.ErrRevision
+		}
+		delete(expected, projection.Path)
+	}
+	if len(expected) != 0 {
+		return core.ErrRevision
+	}
+	return nil
 }
 
 func fitEvidence(event workflow.Event, evidence eventEvidence) (eventEvidence, error) {
@@ -700,59 +755,96 @@ func (s *supervisor) receiptForTask(ctx context.Context, runID core.RunID, teamI
 	if !found || !containsTask(team.Queue, taskID) {
 		return knowledge.Receipt{}, run.Run{}, core.ErrRevision
 	}
-	var receipt knowledge.Receipt
-	relative := path.Join(".agent-team", "receipts", string(teamID)+".json")
-	if err := s.state.ReadJSON(relative, eventLimit, &receipt); err != nil {
-		return knowledge.Receipt{}, run.Run{}, fmt.Errorf("%w: receipt: %v", core.ErrRevision, err)
-	}
-	if receipt.Schema != 1 || receipt.Project != manifest.Project || receipt.RunID != runID || receipt.Team != string(teamID) ||
-		receipt.Task != string(taskID) || receipt.Revision == 0 || receipt.Attempt < 1 || receipt.WrittenAt == "" {
+	receipt, err := s.receiptForTeam(ctx, manifest, team)
+	if err != nil || receipt.Task != string(taskID) {
 		return knowledge.Receipt{}, run.Run{}, core.ErrRevision
 	}
 	return receipt, manifest, nil
 }
 
-func (s *supervisor) resolveOrdinaryEvent(ctx context.Context, event workflow.Event) error {
-	// A foreground ordinary event is meaningful only for one canonical task
-	// receipt. Broader scopes are intentionally not guessed or fanned out.
-	if event.Scope.Kind != core.ScopeTask {
-		return core.ErrRevision
+func (s *supervisor) receiptForTeam(ctx context.Context, manifest run.Run, team run.TeamRecord) (knowledge.Receipt, error) {
+	var receipt knowledge.Receipt
+	relative := path.Join(".agent-team", "receipts", string(team.ID)+".json")
+	if err := s.state.ReadJSON(relative, eventLimit, &receipt); err != nil {
+		return knowledge.Receipt{}, fmt.Errorf("%w: receipt: %v", core.ErrRevision, err)
 	}
+	if receipt.Schema != 1 || receipt.Project != manifest.Project || receipt.RunID != manifest.ID || receipt.Team != string(team.ID) ||
+		receipt.Task == "" || receipt.Revision == 0 || receipt.Attempt < 1 || receipt.WrittenAt == "" || !containsTask(team.Queue, core.TaskID(receipt.Task)) {
+		return knowledge.Receipt{}, core.ErrRevision
+	}
+	return receipt, nil
+}
+
+func (s *supervisor) resolveOrdinaryEvent(ctx context.Context, event workflow.Event) error {
 	manifest, err := run.NewRepositories(s.state).Runs.Read(ctx, event.Run)
 	if err != nil {
 		return core.ErrRevision
 	}
-	taskID := core.TaskID(event.Scope.ID)
-	foundTask := false
-	for _, task := range manifest.Tasks {
-		if task.ID == taskID {
-			foundTask = true
-			break
-		}
-	}
-	if !foundTask {
-		return core.ErrRevision
-	}
-	var teamID core.TeamID
-	for _, team := range manifest.Teams {
-		if containsTask(team.Queue, taskID) {
-			if teamID != "" {
-				return core.ErrRevision
-			}
-			teamID = team.ID
-		}
-	}
-	if teamID == "" {
-		return core.ErrRevision
-	}
-	receipt, _, err := s.receiptForTask(ctx, event.Run, teamID, taskID)
+	teams, err := ordinaryTeams(manifest, event.Scope)
 	if err != nil {
 		return err
 	}
-	if _, err := workflow.Transition(receipt.State, event); err != nil {
-		return core.ErrRevision
+	for _, team := range teams {
+		receipt, err := s.receiptForTeam(ctx, manifest, team)
+		if err != nil {
+			return err
+		}
+		if _, err := workflow.Transition(receipt.State, event); err != nil {
+			return core.ErrRevision
+		}
 	}
 	return nil
+}
+
+func ordinaryTeams(manifest run.Run, scope core.Scope) ([]run.TeamRecord, error) {
+	switch scope.Kind {
+	case core.ScopeProject:
+		if scope.ID != filepath.Base(manifest.Project) {
+			return nil, core.ErrRevision
+		}
+	case core.ScopeRun:
+		if scope.ID != string(manifest.ID) {
+			return nil, core.ErrRevision
+		}
+	case core.ScopeTeam:
+		for _, team := range manifest.Teams {
+			if string(team.ID) == scope.ID {
+				return []run.TeamRecord{team}, nil
+			}
+		}
+		return nil, core.ErrRevision
+	case core.ScopeTask:
+		taskID := core.TaskID(scope.ID)
+		foundTask := false
+		for _, task := range manifest.Tasks {
+			if task.ID == taskID {
+				foundTask = true
+				break
+			}
+		}
+		if !foundTask {
+			return nil, core.ErrRevision
+		}
+		var owner *run.TeamRecord
+		for index := range manifest.Teams {
+			if containsTask(manifest.Teams[index].Queue, taskID) {
+				if owner != nil {
+					return nil, core.ErrRevision
+				}
+				owner = &manifest.Teams[index]
+			}
+		}
+		if owner == nil {
+			return nil, core.ErrRevision
+		}
+		return []run.TeamRecord{*owner}, nil
+	default:
+		return nil, core.ErrRevision
+	}
+	if len(manifest.Teams) == 0 {
+		return nil, core.ErrRevision
+	}
+	return append([]run.TeamRecord(nil), manifest.Teams...), nil
 }
 
 func containsTask(values []core.TaskID, wanted core.TaskID) bool {

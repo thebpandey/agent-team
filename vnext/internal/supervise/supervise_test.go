@@ -242,6 +242,82 @@ func TestOrdinaryEventRequiresCanonicalReceiptProvenance(t *testing.T) {
 	}
 }
 
+func TestOrdinaryEventsResolveEachCanonicalScope(t *testing.T) {
+	state, manifest, handle := interruptionFixture(t)
+	s := supervise.NewSupervisor(state, nil, nil)
+	for _, scope := range []core.Scope{
+		{Kind: core.ScopeTask, ID: "TASK"},
+		{Kind: core.ScopeTeam, ID: string(handle.Team)},
+		{Kind: core.ScopeRun, ID: string(manifest.ID)},
+		{Kind: core.ScopeProject, ID: filepath.Base(manifest.Project)},
+	} {
+		event := workflow.Event{Run: manifest.ID, Scope: scope, Kind: workflow.Pause, From: core.Implementing, Reason: "operator pause", AdmissionHeld: true, RefillHeld: true, Confirmed: scope.Kind == core.ScopeProject}
+		if err := s.Emit(context.Background(), event); err != nil {
+			t.Fatalf("Emit(%+v) = %v", scope, err)
+		}
+	}
+}
+
+func TestTamperedBindingFailsBeforePoll(t *testing.T) {
+	state, _, handle := interruptionFixture(t)
+	a := &adapter{handle: handle, poll: "must not poll"}
+	s := bindHandle(t, state, a, handle)
+	relative := filepath.Join(".agent-team", "supervision", "bindings", string(handle.Run), string(handle.Team), string(handle.Task)+".json")
+	var value map[string]any
+	if err := state.ReadJSON(relative, 64<<10, &value); err != nil {
+		t.Fatal(err)
+	}
+	request := value["request"].(map[string]any)
+	worktree := request["Worktree"]
+	if worktree == nil {
+		worktree = request["worktree"]
+	}
+	worktree.(map[string]any)["Base"] = "forged"
+	if _, err := state.WriteJSON(relative, value, 64<<10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Turn(context.Background(), handle); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("tampered binding Turn() = %v", err)
+	}
+	if a.polls != 0 {
+		t.Fatalf("tampered binding reached Poll %d times", a.polls)
+	}
+}
+
+func TestInterruptedRetryRepairsMissingEventAndRejectsTampering(t *testing.T) {
+	state, _, handle := interruptionFixture(t)
+	a := &adapter{handle: handle, poll: "partial", pollErr: context.Canceled}
+	s := bindHandle(t, state, a, handle)
+	if _, err := s.Turn(context.Background(), handle); !errors.Is(err, core.ErrTransition) {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(state.Root, ".agent-team", "supervision", "events", string(handle.Run), "task-TASK")
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("initial event = %v, %v", entries, err)
+	}
+	if err := os.Remove(filepath.Join(directory, entries[0].Name())); err != nil {
+		t.Fatal(err)
+	}
+	head := filepath.Join(state.Root, ".agent-team", "supervision", "heads", string(handle.Run), "task-TASK.json")
+	if err := os.Remove(head); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Turn(context.Background(), handle); !errors.Is(err, core.ErrTransition) {
+		t.Fatalf("missing-event retry = %v", err)
+	}
+	entries, err = os.ReadDir(directory)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("repaired event = %v, %v", entries, err)
+	}
+	if _, err := state.WriteJSON(filepath.Join(".agent-team", "supervision", "events", string(handle.Run), "task-TASK", entries[0].Name()), map[string]any{"schema": 1}, 64<<10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Turn(context.Background(), handle); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("tampered-event retry = %v", err)
+	}
+}
+
 func TestOversizeHandleFailsBeforeBindingOrEvidence(t *testing.T) {
 	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
 	handle := contracts.WorkerHandle{Host: "host", Identity: string(make([]byte, 1025)), Run: "RUN", Team: "TEAM", Task: "TASK", PacketDigest: "packet"}
