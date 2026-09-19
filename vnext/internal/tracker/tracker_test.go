@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
@@ -98,7 +100,7 @@ func TestBeadsFailuresAndSnapshot(t *testing.T) {
 		}
 	}
 
-	data := []byte(`[{"id":"B-1","objective":"ship","state":"ready","dependencies":["B-0"],"criteria":["works"],"checks":[{"name":"unit","command":["go","test","./..."]}],"writablePaths":["internal/tracker/**"],"resources":["browser:1"],"evidencePointers":["receipt:B-1"]}]`)
+	data := []byte(`[{"id":"B-1","objective":"ship","status":"open","dependencies":["B-0"],"criteria":["works"],"checks":[{"name":"unit","command":["go","test","./..."]}],"writablePaths":["internal/tracker/**"],"resources":["browser:1"],"evidencePointers":["receipt:B-1"]}]`)
 	tr := NewBeads(NewFakeRunner(CommandResult{Stdout: data}))
 	page, err := tr.Page(context.Background(), "", 8)
 	if err != nil || page.TrackerRevision == 0 || len(page.Tasks) != 1 || len(page.Tasks[0].Checks) != 1 {
@@ -135,6 +137,188 @@ func TestBoundedCaptureRetainsOnlyLimitWithoutShortWrite(t *testing.T) {
 	if err != nil || written != 6 || string(capture.Bytes()) != "abc" {
 		t.Fatalf("Write = %d, %v; bytes = %q", written, err, capture.Bytes())
 	}
+}
+
+func TestTasksMDRejectsAmbiguousHeadingsDuplicateIDsAndDuplicateFields(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "level three heading", body: "# Tasks\n\n### T-1\nObjective: x\n"},
+		{name: "duplicate ID", body: "# Tasks\n\n## T-1\nObjective: x\n\n## T-1\nObjective: y\n"},
+		{name: "duplicate field", body: "# Tasks\n\n## T-1\nObjective: x\nObjective: y\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseTasksMD([]byte(tc.body))
+			if !errors.Is(err, core.ErrPath) {
+				t.Fatalf("parseTasksMD error = %v, want ErrPath", err)
+			}
+		})
+	}
+}
+
+func TestBeadsRejectsNullUnknownStatusAndDuplicateIDs(t *testing.T) {
+	valid := `{"id":"B-1","title":"ship","status":"open","dependencies":[],"criteria":[],"checks":[],"writablePaths":[],"resources":[],"evidencePointers":[]}`
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "null result", body: `null`},
+		{name: "null title", body: `[{"id":"B-1","title":null,"status":"open"}]`},
+		{name: "unknown status", body: `[{"id":"B-1","title":"ship","status":"mystery"}]`},
+		{name: "duplicate ID", body: "[" + valid + "," + valid + "]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := NewBeads(NewFakeRunner(CommandResult{Stdout: []byte(tc.body)}))
+			_, err := tr.Page(context.Background(), "", 8)
+			if !errors.Is(err, core.ErrPath) {
+				t.Fatalf("Page error = %v, want ErrPath", err)
+			}
+		})
+	}
+	closed := NewBeads(NewFakeRunner(CommandResult{Stdout: []byte(`[{"id":"B-2","title":"closed","status":"closed"}]`)}))
+	page, err := closed.Page(context.Background(), "", 8)
+	if err != nil || len(page.Tasks) != 0 {
+		t.Fatalf("closed page = %#v, %v", page, err)
+	}
+	task, err := closed.Get(context.Background(), "B-2", trackerRevision([]byte(`[{"id":"B-2","title":"closed","status":"closed"}]`)))
+	if err != nil || task.State != core.Archived || !task.Archived {
+		t.Fatalf("closed task = %#v, %v", task, err)
+	}
+}
+
+func TestBeadsCreateReturnsVerifiedTaskAndReusesIdenticalID(t *testing.T) {
+	initial := `[{"id":"B-1","title":"existing","status":"open"}]`
+	created := `{"id":"B-2","title":"new","status":"open","dependencies":["B-1"],"metadata":{"criteria":["works"],"checks":[{"name":"unit","command":["go","test","./..."]}],"writablePaths":["internal/tracker/**"],"resources":["browser:1"],"evidencePointers":["receipt:B-2"]}}`
+	final := strings.TrimSuffix(initial, "]") + `,` + created + `]`
+	runner := &scriptedRunner{results: []CommandResult{{Stdout: []byte(initial)}, {Stdout: []byte(initial)}, {Stdout: []byte(created)}, {Stdout: []byte(final)}}}
+	tr := NewBeads(runner)
+	page, err := tr.Page(context.Background(), "", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := core.Task{ID: "B-2", Objective: "new", State: core.Ready, Dependencies: []core.TaskID{"B-1"}, Criteria: []string{"works"}, Checks: []core.Check{{Name: "unit", Command: []string{"go", "test", "./..."}}}, WritablePaths: []string{"internal/tracker/**"}, Resources: []string{"browser:1"}, EvidencePointers: []string{"receipt:B-2"}}
+	got, err := tr.Create(context.Background(), want, page.TrackerRevision)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Create = %#v, %v", got, err)
+	}
+	if calls := runner.Calls(); len(calls) != 4 || strings.Join(calls[2], " ") == "" || !containsArgs(calls[2], "--id", "B-2") {
+		t.Fatalf("unsafe or incomplete create calls: %#v", calls)
+	}
+
+	reuseRunner := &scriptedRunner{results: []CommandResult{{Stdout: []byte(final)}}}
+	reuse := NewBeads(reuseRunner)
+	reused, err := reuse.Create(context.Background(), want, trackerRevision([]byte(final)))
+	if err != nil || !reflect.DeepEqual(reused, want) || len(reuseRunner.Calls()) != 1 {
+		t.Fatalf("idempotent Create = %#v, %v, calls=%#v", reused, err, reuseRunner.Calls())
+	}
+}
+
+func TestMutationsRespectCancellationAfterLockAcquisition(t *testing.T) {
+	t.Run("TASKS", func(t *testing.T) {
+		path := writeTracker(t, taskDocument(1))
+		concrete := NewTasksMD(path, store.New(filepath.Dir(path), core.StorageLimits{TrackerBytes: 2 << 20})).(*tasksMD)
+		page, err := concrete.Page(context.Background(), "", 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		concrete.mu.Lock()
+		ctx := newStagedContext()
+		done := make(chan error, 1)
+		go func() { done <- concrete.Archive(ctx, "T-0001", "done", page.TrackerRevision) }()
+		<-ctx.first
+		ctx.Cancel()
+		concrete.mu.Unlock()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("Archive error = %v, want context.Canceled", err)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil || string(after) != string(before) {
+			t.Fatalf("cancelled TASKS mutation changed file: %v", err)
+		}
+	})
+	t.Run("Beads", func(t *testing.T) {
+		runner := &scriptedRunner{}
+		concrete := NewBeads(runner).(*beads)
+		concrete.mu.Lock()
+		ctx := newStagedContext()
+		done := make(chan error, 1)
+		go func() { done <- concrete.Archive(ctx, "B-1", "done", 1) }()
+		<-ctx.first
+		ctx.Cancel()
+		concrete.mu.Unlock()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("Archive error = %v, want context.Canceled", err)
+		}
+		if calls := runner.Calls(); len(calls) != 0 {
+			t.Fatalf("cancelled Beads mutation ran commands: %#v", calls)
+		}
+	})
+}
+
+type scriptedRunner struct {
+	mu      sync.Mutex
+	results []CommandResult
+	calls   [][]string
+}
+
+func (r *scriptedRunner) Run(_ context.Context, name string, args ...string) CommandResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, append([]string{name}, args...))
+	if len(r.results) == 0 {
+		return CommandResult{Transport: errors.New("unexpected command")}
+	}
+	result := r.results[0]
+	r.results = r.results[1:]
+	return result
+}
+
+func (r *scriptedRunner) Calls() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]string(nil), r.calls...)
+}
+
+type stagedContext struct {
+	context.Context
+	mu        sync.Mutex
+	cancelled bool
+	first     chan struct{}
+	once      sync.Once
+}
+
+func newStagedContext() *stagedContext {
+	return &stagedContext{Context: context.Background(), first: make(chan struct{})}
+}
+
+func (c *stagedContext) Err() error {
+	c.once.Do(func() { close(c.first) })
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cancelled {
+		return context.Canceled
+	}
+	return nil
+}
+
+func (c *stagedContext) Cancel() {
+	c.mu.Lock()
+	c.cancelled = true
+	c.mu.Unlock()
+}
+
+func containsArgs(args []string, want ...string) bool {
+	for i := 0; i+len(want) <= len(args); i++ {
+		if strings.Join(args[i:i+len(want)], "\x00") == strings.Join(want, "\x00") {
+			return true
+		}
+	}
+	return false
 }
 
 func writeTracker(t *testing.T, body string) string {

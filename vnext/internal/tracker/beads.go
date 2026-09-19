@@ -127,8 +127,14 @@ func (b *beads) Create(ctx context.Context, task core.Task, expected uint64) (co
 	if err := validateTask(task); err != nil {
 		return core.Task{}, err
 	}
+	if task.State == "" {
+		task.State = core.Ready
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return core.Task{}, err
+	}
 	tasks, revision, err := b.snapshot(ctx)
 	if err != nil {
 		return core.Task{}, err
@@ -136,13 +142,57 @@ func (b *beads) Create(ctx context.Context, task core.Task, expected uint64) (co
 	if err := requireRevision(expected, revision); err != nil {
 		return core.Task{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return core.Task{}, err
+	}
+	for _, existing := range tasks {
+		if existing.ID == task.ID {
+			if sameTask(existing, task) {
+				return existing, nil
+			}
+			return core.Task{}, fmt.Errorf("%w: conflicting task ID %q", core.ErrPath, task.ID)
+		}
+	}
 	if !task.Archived && nonArchived(tasks) >= capacity {
 		return core.Task{}, fmt.Errorf("%w: creation would exceed %d tasks", core.ErrCapacity, capacity)
 	}
-	if result := b.runner.Run(ctx, "bd", "create", "--title", task.Objective, "--json"); commandResultError(result) != nil {
-		return core.Task{}, commandResultError(result)
+	metadata, err := json.Marshal(struct {
+		Criteria         []string     `json:"criteria"`
+		Checks           []core.Check `json:"checks"`
+		WritablePaths    []string     `json:"writablePaths"`
+		Resources        []string     `json:"resources"`
+		EvidencePointers []string     `json:"evidencePointers"`
+	}{task.Criteria, task.Checks, task.WritablePaths, task.Resources, task.EvidencePointers})
+	if err != nil {
+		return core.Task{}, fmt.Errorf("%w: encode Beads metadata: %v", core.ErrPath, err)
 	}
-	return task, nil
+	args := []string{"create", "--id", string(task.ID), "--title", task.Objective, "--description", task.Objective, "--type", "task", "--metadata", string(metadata), "--json"}
+	if len(task.Dependencies) > 0 {
+		deps := make([]string, len(task.Dependencies))
+		for i, dependency := range task.Dependencies {
+			deps[i] = string(dependency)
+		}
+		args = append(args, "--deps", strings.Join(deps, ","))
+	}
+	if err := ctx.Err(); err != nil {
+		return core.Task{}, err
+	}
+	if err := commandResultError(b.runner.Run(ctx, "bd", args...)); err != nil {
+		return core.Task{}, err
+	}
+	updated, _, err := b.snapshot(ctx)
+	if err != nil {
+		return core.Task{}, err
+	}
+	for _, created := range updated {
+		if created.ID == task.ID {
+			if !sameTask(created, task) {
+				return core.Task{}, fmt.Errorf("%w: Beads did not preserve task %q metadata", core.ErrPath, task.ID)
+			}
+			return created, nil
+		}
+	}
+	return core.Task{}, fmt.Errorf("%w: created Beads task %q was not found", core.ErrPath, task.ID)
 }
 
 func (b *beads) Archive(ctx context.Context, id core.TaskID, reason string, expected uint64) error {
@@ -154,11 +204,17 @@ func (b *beads) Archive(ctx context.Context, id core.TaskID, reason string, expe
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	_, revision, err := b.snapshot(ctx)
 	if err != nil {
 		return err
 	}
 	if err := requireRevision(expected, revision); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return commandResultError(b.runner.Run(ctx, "bd", "close", string(id), "--reason", reason))
@@ -190,43 +246,79 @@ func commandResultError(result CommandResult) error {
 }
 
 type beadTask struct {
-	ID               core.TaskID    `json:"id"`
-	Objective        string         `json:"objective"`
-	Title            string         `json:"title"`
-	Description      string         `json:"description"`
-	State            core.TaskState `json:"state"`
-	Status           string         `json:"status"`
-	Dependencies     []core.TaskID  `json:"dependencies"`
-	DependencyIDs    []core.TaskID  `json:"dependency_ids"`
-	Criteria         []string       `json:"criteria"`
-	Checks           []core.Check   `json:"checks"`
-	WritablePaths    []string       `json:"writablePaths"`
-	Resources        []string       `json:"resources"`
-	EvidencePointers []string       `json:"evidencePointers"`
-	Archived         bool           `json:"archived"`
+	ID               core.TaskID     `json:"id"`
+	Objective        string          `json:"objective"`
+	Title            string          `json:"title"`
+	Description      string          `json:"description"`
+	State            core.TaskState  `json:"state"`
+	Status           string          `json:"status"`
+	Dependencies     []core.TaskID   `json:"dependencies"`
+	DependencyIDs    []core.TaskID   `json:"dependency_ids"`
+	Criteria         []string        `json:"criteria"`
+	Checks           []core.Check    `json:"checks"`
+	WritablePaths    []string        `json:"writablePaths"`
+	Resources        []string        `json:"resources"`
+	EvidencePointers []string        `json:"evidencePointers"`
+	Metadata         json.RawMessage `json:"metadata"`
+	Archived         bool            `json:"archived"`
 }
 
 func parseBeads(data []byte) ([]core.Task, error) {
 	data = bytes.TrimSpace(data)
-	var raw []beadTask
-	if err := json.Unmarshal(data, &raw); err != nil {
-		var wrapped struct {
-			Issues []beadTask `json:"issues"`
-			Tasks  []beadTask `json:"tasks"`
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		return nil, fmt.Errorf("%w: null Beads result", core.ErrPath)
+	}
+	var raw []json.RawMessage
+	if data[0] == '[' {
+		if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
+			return nil, fmt.Errorf("%w: malformed Beads array", core.ErrPath)
 		}
-		if wrappedErr := json.Unmarshal(data, &wrapped); wrappedErr != nil {
-			return nil, fmt.Errorf("%w: malformed Beads JSON: %v", core.ErrPath, err)
+	} else {
+		var wrapper map[string]json.RawMessage
+		if err := json.Unmarshal(data, &wrapper); err != nil || wrapper == nil {
+			return nil, fmt.Errorf("%w: malformed Beads JSON", core.ErrPath)
 		}
-		if wrapped.Issues != nil {
-			raw = wrapped.Issues
-		} else if wrapped.Tasks != nil {
-			raw = wrapped.Tasks
+		if item, ok := wrapper["id"]; ok {
+			raw = []json.RawMessage{data}
+			_ = item
+		} else if items, ok := wrapper["issues"]; ok && !bytes.Equal(items, []byte("null")) {
+			if err := json.Unmarshal(items, &raw); err != nil || raw == nil {
+				return nil, fmt.Errorf("%w: malformed Beads issues", core.ErrPath)
+			}
+		} else if items, ok := wrapper["tasks"]; ok && !bytes.Equal(items, []byte("null")) {
+			if err := json.Unmarshal(items, &raw); err != nil || raw == nil {
+				return nil, fmt.Errorf("%w: malformed Beads tasks", core.ErrPath)
+			}
 		} else {
 			return nil, fmt.Errorf("%w: Beads JSON has no issues", core.ErrPath)
 		}
 	}
 	tasks := make([]core.Task, 0, len(raw))
-	for _, item := range raw {
+	seen := map[core.TaskID]bool{}
+	for _, encoded := range raw {
+		if bytes.Equal(bytes.TrimSpace(encoded), []byte("null")) {
+			return nil, fmt.Errorf("%w: null Beads issue", core.ErrPath)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &fields); err != nil || fields == nil {
+			return nil, fmt.Errorf("%w: malformed Beads issue", core.ErrPath)
+		}
+		allowed := map[string]bool{"id": true, "objective": true, "title": true, "description": true, "state": true, "status": true, "dependencies": true, "dependency_ids": true, "criteria": true, "checks": true, "writablePaths": true, "resources": true, "evidencePointers": true, "metadata": true, "archived": true}
+		for key, value := range fields {
+			if !allowed[key] || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return nil, fmt.Errorf("%w: invalid Beads field %q", core.ErrPath, key)
+			}
+		}
+		if _, ok := fields["id"]; !ok {
+			return nil, fmt.Errorf("%w: Beads issue has no ID", core.ErrPath)
+		}
+		if _, ok := fields["status"]; !ok {
+			return nil, fmt.Errorf("%w: Beads issue has no status", core.ErrPath)
+		}
+		var item beadTask
+		if err := json.Unmarshal(encoded, &item); err != nil {
+			return nil, fmt.Errorf("%w: malformed Beads issue", core.ErrPath)
+		}
 		objective := item.Objective
 		if objective == "" {
 			objective = item.Title
@@ -234,20 +326,79 @@ func parseBeads(data []byte) ([]core.Task, error) {
 		if objective == "" {
 			objective = item.Description
 		}
-		state := item.State
-		if state == "" {
-			state = core.TaskState(item.Status)
+		state, archived, ok := beadsState(item.Status)
+		if !ok {
+			return nil, fmt.Errorf("%w: unknown Beads status %q", core.ErrPath, item.Status)
 		}
-		archived := item.Archived || state == "closed" || state == "archived"
+		archived = archived || item.Archived
 		dependencies := item.Dependencies
 		if dependencies == nil {
 			dependencies = item.DependencyIDs
+		}
+		if len(item.Metadata) > 0 {
+			var metadata struct {
+				Criteria         []string     `json:"criteria"`
+				Checks           []core.Check `json:"checks"`
+				WritablePaths    []string     `json:"writablePaths"`
+				Resources        []string     `json:"resources"`
+				EvidencePointers []string     `json:"evidencePointers"`
+			}
+			if err := json.Unmarshal(item.Metadata, &metadata); err != nil {
+				return nil, fmt.Errorf("%w: malformed Beads metadata", core.ErrPath)
+			}
+			if item.Criteria == nil {
+				item.Criteria = metadata.Criteria
+			}
+			if item.Checks == nil {
+				item.Checks = metadata.Checks
+			}
+			if item.WritablePaths == nil {
+				item.WritablePaths = metadata.WritablePaths
+			}
+			if item.Resources == nil {
+				item.Resources = metadata.Resources
+			}
+			if item.EvidencePointers == nil {
+				item.EvidencePointers = metadata.EvidencePointers
+			}
 		}
 		task := core.Task{ID: item.ID, Objective: objective, State: state, Dependencies: dependencies, Criteria: item.Criteria, Checks: item.Checks, WritablePaths: item.WritablePaths, Resources: item.Resources, EvidencePointers: item.EvidencePointers, Archived: archived}
 		if err := validateTask(task); err != nil {
 			return nil, err
 		}
+		if seen[task.ID] {
+			return nil, fmt.Errorf("%w: duplicate Beads ID %q", core.ErrPath, task.ID)
+		}
+		seen[task.ID] = true
 		tasks = append(tasks, task)
 	}
 	return tasks, nil
+}
+
+func beadsState(status string) (core.TaskState, bool, bool) {
+	switch status {
+	case "open", "ready":
+		return core.Ready, false, true
+	case "in_progress", "working":
+		return core.Working, false, true
+	case "implementing":
+		return core.Implementing, false, true
+	case "reviewing":
+		return core.Reviewing, false, true
+	case "blocked":
+		return core.Blocked, false, true
+	case "paused":
+		return core.Paused, false, true
+	case "closed", "archived":
+		return core.Archived, true, true
+	default:
+		return "", false, false
+	}
+}
+
+func sameTask(a, b core.Task) bool {
+	a.RecordEnvelope, b.RecordEnvelope = core.RecordEnvelope{}, core.RecordEnvelope{}
+	left, _ := json.Marshal(a)
+	right, _ := json.Marshal(b)
+	return bytes.Equal(left, right)
 }

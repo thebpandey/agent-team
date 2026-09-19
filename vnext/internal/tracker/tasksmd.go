@@ -105,6 +105,9 @@ func (t *tasksMD) Create(ctx context.Context, task core.Task, expected uint64) (
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return core.Task{}, err
+	}
 	tasks, revision, err := t.snapshot()
 	if err != nil {
 		return core.Task{}, err
@@ -124,6 +127,9 @@ func (t *tasksMD) Create(ctx context.Context, task core.Task, expected uint64) (
 		task.State = core.Ready
 	}
 	tasks = append(tasks, task)
+	if err := ctx.Err(); err != nil {
+		return core.Task{}, err
+	}
 	if err := t.write(renderTasks(tasks)); err != nil {
 		return core.Task{}, err
 	}
@@ -145,6 +151,9 @@ func (t *tasksMD) Archive(ctx context.Context, id core.TaskID, reason string, ex
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	tasks, revision, err := t.snapshot()
 	if err != nil {
 		return err
@@ -163,6 +172,9 @@ func (t *tasksMD) Archive(ctx context.Context, id core.TaskID, reason string, ex
 	}
 	if !found {
 		return fmt.Errorf("%w: task %q", core.ErrPath, id)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := t.write(renderTasks(tasks)); err != nil {
 		return err
@@ -194,28 +206,23 @@ func (t *tasksMD) write(data []byte) error {
 	if int64(len(data)) > t.limit() {
 		return fmt.Errorf("%w: TASKS.md exceeds %d bytes", core.ErrLimit, t.limit())
 	}
-	dir := filepath.Dir(t.path)
-	temp, err := os.CreateTemp(dir, ".TASKS.md-*")
+	if t.store == nil {
+		return fmt.Errorf("%w: TASKS.md mutation requires a store", core.ErrPath)
+	}
+	root, err := filepath.Abs(t.store.Root)
 	if err != nil {
-		return fmt.Errorf("%w: create TASKS.md temporary: %v", core.ErrPath, err)
+		return fmt.Errorf("%w: store root: %v", core.ErrPath, err)
 	}
-	tempName := temp.Name()
-	defer os.Remove(tempName)
-	if _, err := temp.Write(data); err != nil {
-		temp.Close()
-		return fmt.Errorf("%w: write TASKS.md temporary: %v", core.ErrPath, err)
+	source, err := filepath.Abs(t.path)
+	if err != nil {
+		return fmt.Errorf("%w: TASKS.md path: %v", core.ErrPath, err)
 	}
-	if err := temp.Sync(); err != nil {
-		temp.Close()
-		return fmt.Errorf("%w: sync TASKS.md temporary: %v", core.ErrPath, err)
+	relative, err := filepath.Rel(root, source)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%w: TASKS.md is outside store root", core.ErrPath)
 	}
-	if err := temp.Close(); err != nil {
-		return fmt.Errorf("%w: close TASKS.md temporary: %v", core.ErrPath, err)
-	}
-	if err := os.Rename(tempName, t.path); err != nil {
-		return fmt.Errorf("%w: replace TASKS.md: %v", core.ErrPath, err)
-	}
-	return nil
+	_, err = t.store.WriteMarkdown(relative, data, t.limit())
+	return err
 }
 
 func readBounded(path string, limit int64) ([]byte, error) {
@@ -252,6 +259,8 @@ func parseTasksMD(data []byte) ([]core.Task, error) {
 	var tasks []core.Task
 	var current *core.Task
 	section := ""
+	seenIDs := map[core.TaskID]bool{}
+	seenFields := map[string]bool{}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 1024), int(maxTrackerBytes))
 	for scanner.Scan() {
@@ -259,8 +268,14 @@ func parseTasksMD(data []byte) ([]core.Task, error) {
 		if line == "" || strings.HasPrefix(line, "<!--") {
 			continue
 		}
+		if strings.HasPrefix(line, "###") {
+			return nil, fmt.Errorf("%w: TASKS.md task headings must use exactly ##", core.ErrPath)
+		}
 		if strings.HasPrefix(line, "##") {
-			id := strings.TrimSpace(strings.TrimLeft(line, "#"))
+			if !strings.HasPrefix(line, "## ") {
+				return nil, fmt.Errorf("%w: malformed TASKS.md task heading", core.ErrPath)
+			}
+			id := strings.TrimSpace(strings.TrimPrefix(line, "## "))
 			if id == "" {
 				return nil, fmt.Errorf("%w: TASKS.md task heading has no ID", core.ErrPath)
 			}
@@ -271,6 +286,11 @@ func parseTasksMD(data []byte) ([]core.Task, error) {
 			if err := validateTaskID(current.ID); err != nil {
 				return nil, err
 			}
+			if seenIDs[current.ID] {
+				return nil, fmt.Errorf("%w: duplicate task ID %q", core.ErrPath, current.ID)
+			}
+			seenIDs[current.ID] = true
+			seenFields = map[string]bool{}
 			section = ""
 			continue
 		}
@@ -291,6 +311,10 @@ func parseTasksMD(data []byte) ([]core.Task, error) {
 			return nil, fmt.Errorf("%w: malformed TASKS.md line %q", core.ErrPath, line)
 		}
 		section = normalizeField(key)
+		if seenFields[section] {
+			return nil, fmt.Errorf("%w: duplicate TASKS.md field %q", core.ErrPath, key)
+		}
+		seenFields[section] = true
 		value = strings.TrimSpace(value)
 		switch section {
 		case "objective":
