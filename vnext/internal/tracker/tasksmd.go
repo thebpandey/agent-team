@@ -38,6 +38,12 @@ func (t *tasksMD) Warning() string {
 	return t.warning
 }
 
+// AuthorityMetadata identifies the selected TASKS.md file without reading or
+// altering it. The run layer verifies this canonical reference against Root.
+func (t *tasksMD) AuthorityMetadata() AuthorityMetadata {
+	return AuthorityMetadata{Kind: "tasks-md", Ref: filepath.ToSlash(filepath.Clean(t.path))}
+}
+
 func (t *tasksMD) Page(ctx context.Context, cursor string, limit int) (core.TrackerPage, error) {
 	if err := ctx.Err(); err != nil {
 		return core.TrackerPage{}, err

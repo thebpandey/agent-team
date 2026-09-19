@@ -4,11 +4,27 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
+	"github.com/thebpandey/agent-team/vnext/internal/tracker"
 )
+
+// These literals are compile-time API contracts from the Phase 1 plan. Keep
+// them here so changing the public wire shape cannot silently strand admission.
+var _ = TeamRecord{Queue: []core.TaskID{"T-1"}, QueueFingerprint: "sha256:0000000000000000000000000000000000000000000000000000000000000000", State: core.Working, Paths: []string{"src"}, Resources: []string{"db:test"}}
+var _ = Run{Root: "project-root"}
+var _ = AdmissionBatch{RecordEnvelope: core.RecordEnvelope{Schema: 1}, BatchID: "B-1", Fingerprint: "sha256:0000000000000000000000000000000000000000000000000000000000000000", Tasks: []core.Task{oneOffTask("T-1", "task", []string{"src"}, nil)}, Team: "team-1", Sequence: 1, TrackerRevision: 1, Paths: []string{"src"}, Resources: []string{"db:test"}}
+
+func TestAdmissionBatchConflictContract(t *testing.T) {
+	a := AdmissionBatch{Tasks: []core.Task{oneOffTask("T-1", "task", []string{"src/api"}, []string{"db:test"})}}
+	b := AdmissionBatch{Tasks: []core.Task{oneOffTask("T-2", "task", []string{"src/api/handlers"}, []string{"DB:TEST"})}}
+	if !ValidateConflict(a, b) {
+		t.Fatal("ancestor and resource conflict was not detected")
+	}
+}
 
 func TestCreateOneOffCanonicalReadOnlyAndConflicts(t *testing.T) {
 	ctx := context.Background()
@@ -42,7 +58,7 @@ func TestCreateOneOffCanonicalReadOnlyAndConflicts(t *testing.T) {
 
 	a := oneOffTask("F-1", "change one", []string{"src/api"}, []string{"db:test"})
 	b := oneOffTask("F-2", "change two", []string{"src/api/handlers"}, []string{"DB:TEST"})
-	if !ValidateConflict(a, b) {
+	if !ValidateConflict(AdmissionBatch{Tasks: []core.Task{a}}, AdmissionBatch{Tasks: []core.Task{b}}) {
 		t.Fatal("ancestor path/resource overlap was admitted")
 	}
 	serial, err := CreateOneOff(ctx, "project-a", OneOffFeature, "feature", []core.Task{a, b})
@@ -61,11 +77,18 @@ func TestCreatePlanSnapshotsOnlySelectedTracker(t *testing.T) {
 		oneOffTask("P-1", "first", []string{"src/one"}, []string{"db:one"}),
 	}}}
 	plan, err := CreatePlan(context.Background(), "project-a", tr)
-	if err != nil || plan.Mode != "plan" || plan.TrackerKind != "selected" || plan.TrackerRevision != 41 || plan.TrackerSnapshotDigest == "" || len(plan.Tasks) != 0 {
+	if err != nil || plan.Mode != "plan" || plan.Root != "project-a" || plan.TrackerKind != "tasks-md" || plan.TrackerRevision != 41 || plan.TrackerSnapshotDigest == "" || plan.SpecRevision == "" || len(plan.Tasks) != 2 || plan.Tasks[0].Objective != "" {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
 	if plan.ID == "" || plan.ManifestDigest == "" {
 		t.Fatal("plan was not canonicalized")
+	}
+}
+
+func TestCreatePlanRejectsTrackerWithoutAuthorityMetadata(t *testing.T) {
+	bare := noMetadataTracker{Tracker: trackerStub{page: core.TrackerPage{TrackerRevision: 1}}}
+	if _, err := CreatePlan(context.Background(), "project-a", bare); !errors.Is(err, core.ErrSettings) {
+		t.Fatalf("unknown tracker authority accepted: %v", err)
 	}
 }
 
@@ -147,11 +170,50 @@ func TestOneOffTeamAndAdmissionBounds(t *testing.T) {
 	if _, err := CreateOneOff(context.Background(), "p", OneOffFeature, "feature", append(tasks, oneOffTask("F-Z", "feature", []string{"src/z"}, nil), oneOffTask("F-Y", "feature", []string{"src/y"}, nil), oneOffTask("F-X", "feature", []string{"src/x"}, nil), oneOffTask("F-W", "feature", []string{"src/w"}, nil), oneOffTask("F-V", "feature", []string{"src/v"}, nil), oneOffTask("F-U", "feature", []string{"src/u"}, nil), oneOffTask("F-T", "feature", []string{"src/t"}, nil), oneOffTask("F-S", "feature", []string{"src/s"}, nil))); !errors.Is(err, core.ErrBatch) {
 		t.Fatalf("more than two bounded teams accepted: %v", err)
 	}
-	if err := validateAdmission(AdmissionBatch{BatchID: "batch-1", TeamID: "team-1", TaskIDs: []core.TaskID{"A"}}); err != nil {
+	batch := AdmissionBatch{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: "p", RunID: "R-1", WrittenAt: "2026-09-19T00:00:00Z", Revision: 1}, BatchID: "batch-1", Fingerprint: "sha256:0000000000000000000000000000000000000000000000000000000000000000", Team: "team-1", Tasks: []core.Task{oneOffTask("A", "task", []string{"src/a"}, nil)}}
+	if err := validateAdmission(batch); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateAdmission(AdmissionBatch{BatchID: "batch-1", TeamID: "team-1", TaskIDs: make([]core.TaskID, 9)}); !errors.Is(err, core.ErrBatch) {
+	batch.Tasks = make([]core.Task, 9)
+	if err := validateAdmission(batch); !errors.Is(err, core.ErrBatch) {
 		t.Fatalf("unbounded batch accepted: %v", err)
+	}
+}
+
+func TestOneOffTeamsAndAdmissionsCarryCanonicalScopes(t *testing.T) {
+	run, err := CreateOneOff(context.Background(), "p", Feature, "feature", []core.Task{oneOffTask("F-1", "feature", []string{"SRC/api"}, []string{"DB:TEST"})})
+	if err != nil || len(run.Teams) != 1 || !reflect.DeepEqual(run.Teams[0].Paths, []string{"src/api"}) || !reflect.DeepEqual(run.Teams[0].Resources, []string{"db:test"}) {
+		t.Fatalf("team scopes=%#v err=%v", run.Teams, err)
+	}
+	batch := AdmissionBatch{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: "p", RunID: run.ID, WrittenAt: run.WrittenAt, Revision: 1}, BatchID: "batch-1", Fingerprint: run.ManifestDigest, Team: run.Teams[0].ID, Tasks: []core.Task{oneOffTask("F-1", "feature", []string{"src/api"}, []string{"db:test"})}, Paths: []string{"src/api"}, Resources: []string{"db:test"}}
+	if err := validateAdmission(batch); err != nil {
+		t.Fatal(err)
+	}
+	batch.Schema = 2
+	if err := validateAdmission(batch); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("malformed admission envelope accepted: %v", err)
+	}
+}
+
+func TestOneOffRejectsAmbiguousScopesAndNeverMutatesInputs(t *testing.T) {
+	for _, scope := range []string{"src/CON", "src/file.txt:zone", "src/trailing. ", "src/trailing ", "src/COM1"} {
+		if _, err := CreateOneOff(context.Background(), "p", Feature, "feature", []core.Task{oneOffTask("F-1", "feature", []string{scope}, nil)}); !errors.Is(err, core.ErrPath) {
+			t.Fatalf("unsafe scope %q accepted: %v", scope, err)
+		}
+	}
+	input := oneOffTask("A-1", "audit", []string{"src"}, nil)
+	before := append([]string(nil), input.WritablePaths...)
+	if _, err := CreateOneOff(context.Background(), "p", Audit, "audit", []core.Task{input}); err != nil || !reflect.DeepEqual(input.WritablePaths, before) {
+		t.Fatalf("caller input mutated or audit failed: paths=%#v err=%v", input.WritablePaths, err)
+	}
+	missing := oneOffTask("F-1", "feature", []string{"src"}, nil)
+	missing.Criteria = nil
+	if _, err := CreateOneOff(context.Background(), "p", Feature, "feature", []core.Task{missing}); !errors.Is(err, core.ErrBatch) || missing.WritablePaths[0] != "src" {
+		t.Fatalf("criteria failure did not preserve input: %#v err=%v", missing, err)
+	}
+	over := oneOffTask("F-2", strings.Repeat("x", 256<<10), []string{"src"}, nil)
+	if _, err := CreateOneOff(context.Background(), "p", Feature, "feature", []core.Task{over}); !errors.Is(err, core.ErrLimit) {
+		t.Fatalf("aggregate limit was not enforced: %v", err)
 	}
 }
 
@@ -160,6 +222,12 @@ func oneOffTask(id core.TaskID, objective string, writable, resources []string) 
 }
 
 type trackerStub struct{ page core.TrackerPage }
+
+type noMetadataTracker struct{ tracker.Tracker }
+
+func (s trackerStub) AuthorityMetadata() tracker.AuthorityMetadata {
+	return tracker.AuthorityMetadata{Kind: "tasks-md", Ref: "project-a/TASKS.md"}
+}
 
 func (s trackerStub) Page(context.Context, string, int) (core.TrackerPage, error) { return s.page, nil }
 func (s trackerStub) Get(context.Context, core.TaskID, uint64) (core.Task, error) {

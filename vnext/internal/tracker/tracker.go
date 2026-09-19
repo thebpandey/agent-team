@@ -30,6 +30,20 @@ type Tracker interface {
 	Archive(ctx context.Context, id core.TaskID, reason string, expectedTrackerRevision uint64) error
 }
 
+// AuthorityMetadata is the immutable identity of one built-in tracker. It is
+// deliberately read-only: run creation may record it, but never configures or
+// mutates the tracker.
+type AuthorityMetadata struct {
+	Kind string
+	Ref  string
+}
+
+// AuthorityMetadataProvider is implemented by native tracker adapters. A run
+// rejects adapters without this identity rather than inventing an authority.
+type AuthorityMetadataProvider interface {
+	AuthorityMetadata() AuthorityMetadata
+}
+
 func trackerRevision(data []byte) uint64 {
 	sum := sha256.Sum256(data)
 	revision := binary.BigEndian.Uint64(sum[:8])

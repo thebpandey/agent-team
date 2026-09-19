@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -41,14 +42,14 @@ const (
 // TeamRecord is the durable bounded queue assigned to one retained team.
 type TeamRecord struct {
 	core.RecordEnvelope
-	ID               core.TeamID           `json:"teamId"`
-	Queue            []core.TaskID         `json:"queue"`
-	QueueFingerprint string                `json:"queueFingerprint"`
-	State            core.TaskState        `json:"state"`
-	Worktree         string                `json:"worktree,omitempty"`
-	Base             string                `json:"base,omitempty"`
-	WritablePaths    []string              `json:"writablePaths,omitempty"`
-	ResourceRefs     core.ResourceSnapshot `json:"resourceRefs,omitempty"`
+	ID               core.TeamID    `json:"teamId"`
+	Queue            []core.TaskID  `json:"queue"`
+	QueueFingerprint string         `json:"queueFingerprint"`
+	State            core.TaskState `json:"state"`
+	Worktree         string         `json:"worktree,omitempty"`
+	Base             string         `json:"base,omitempty"`
+	Paths            []string       `json:"paths,omitempty"`
+	Resources        []string       `json:"resources,omitempty"`
 }
 
 // Run is the schema-1 authority for either a selected tracker snapshot or a
@@ -57,6 +58,7 @@ type TeamRecord struct {
 type Run struct {
 	core.RecordEnvelope
 	ID                    core.RunID     `json:"id"`
+	Root                  string         `json:"root"`
 	Mode                  string         `json:"mode"`
 	OneOffKind            OneOffKind     `json:"oneOffKind,omitempty"`
 	Objective             string         `json:"objective,omitempty"`
@@ -75,13 +77,15 @@ type Run struct {
 // admission service owns the append-only history; this value is only its
 // validated canonical payload.
 type AdmissionBatch struct {
-	BatchID                  string        `json:"batchId"`
-	TeamID                   core.TeamID   `json:"teamId"`
-	TaskIDs                  []core.TaskID `json:"taskIds"`
-	PreviousQueueFingerprint string        `json:"previousQueueFingerprint,omitempty"`
-	QueueFingerprint         string        `json:"queueFingerprint,omitempty"`
-	TrackerRevision          uint64        `json:"trackerRevision"`
-	AdmittedAt               string        `json:"admittedAt,omitempty"`
+	core.RecordEnvelope
+	BatchID         string      `json:"batchId"`
+	Fingerprint     string      `json:"fingerprint"`
+	Tasks           []core.Task `json:"tasks"`
+	Team            core.TeamID `json:"team"`
+	Sequence        uint64      `json:"sequence"`
+	TrackerRevision uint64      `json:"trackerRevision"`
+	Paths           []string    `json:"paths"`
+	Resources       []string    `json:"resources"`
 }
 
 // CreatePlan snapshots exactly one selected tracker. The returned ID and
@@ -96,6 +100,14 @@ func CreatePlan(ctx context.Context, project string, selected tracker.Tracker) (
 	if selected == nil {
 		return Run{}, fmt.Errorf("%w: selected tracker is required", core.ErrSettings)
 	}
+	authority, ok := selected.(tracker.AuthorityMetadataProvider)
+	if !ok {
+		return Run{}, fmt.Errorf("%w: tracker lacks canonical authority metadata", core.ErrSettings)
+	}
+	metadata := authority.AuthorityMetadata()
+	if metadata.Kind != "tasks-md" && metadata.Kind != "beads" || metadata.Ref == "" || metadata.Ref != canonicalTrackerRef(project, metadata.Kind) {
+		return Run{}, fmt.Errorf("%w: invalid tracker authority metadata", core.ErrSettings)
+	}
 	page, err := selected.Page(ctx, "", 1000)
 	if err != nil {
 		return Run{}, err
@@ -106,21 +118,26 @@ func CreatePlan(ctx context.Context, project string, selected tracker.Tracker) (
 	if page.TrackerRevision == 0 || page.TotalNonArchived < 0 || page.TotalNonArchived > 1000 || page.Cursor != "" || len(page.Tasks) != page.TotalNonArchived {
 		return Run{}, fmt.Errorf("%w: incomplete selected tracker snapshot", core.ErrRevision)
 	}
-	snapshotDigest, err := taskSnapshotDigest(page.Tasks)
+	normalized, err := normalizeTasks(page.Tasks)
 	if err != nil {
 		return Run{}, err
 	}
+	snapshotDigest, err := digestJSON(normalized)
+	if err != nil {
+		return Run{}, err
+	}
+	refs := planTaskReferences(normalized, page.TrackerRevision)
 	r := Run{
 		RecordEnvelope:        core.RecordEnvelope{Schema: 1, Project: strings.TrimSpace(project), WrittenAt: canonicalWrittenAt, Revision: 1},
+		Root:                  project,
 		Mode:                  "plan",
-		TrackerKind:           selectedTrackerKind(selected),
+		TrackerKind:           metadata.Kind,
 		TrackerRevision:       page.TrackerRevision,
 		TrackerSnapshotDigest: snapshotDigest,
 		State:                 core.Ready,
+		Tasks:                 refs,
 	}
-	if r.TrackerKind == "" || r.TrackerKind == "none" {
-		return Run{}, fmt.Errorf("%w: unknown selected tracker", core.ErrSettings)
-	}
+	r.SpecRevision = planSpecRevision(r.Root, metadata.Kind, metadata.Ref, page.TrackerRevision, refs, snapshotDigest)
 	return finalizeRun(r)
 }
 
@@ -140,6 +157,7 @@ func CreateOneOff(ctx context.Context, project string, kind OneOffKind, objectiv
 	if !validOneOffKind(kind) {
 		return Run{}, fmt.Errorf("%w: unsupported one-off kind %q", core.ErrSettings, kind)
 	}
+	tasks = cloneTasks(tasks)
 	if len(tasks) == 0 || len(tasks) > maxOneOffTeams*maxTeamQueue {
 		return Run{}, fmt.Errorf("%w: one-off contains %d tasks", core.ErrBatch, len(tasks))
 	}
@@ -156,12 +174,18 @@ func CreateOneOff(ctx context.Context, project string, kind OneOffKind, objectiv
 	if err != nil {
 		return Run{}, err
 	}
+	for _, task := range normalized {
+		if len(task.Criteria) == 0 {
+			return Run{}, fmt.Errorf("%w: one-off task %q has no criteria", core.ErrBatch, task.ID)
+		}
+	}
 	teams, err := planOneOffTeams(normalized)
 	if err != nil {
 		return Run{}, err
 	}
 	r := Run{
 		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: strings.TrimSpace(project), WrittenAt: canonicalWrittenAt, Revision: 1},
+		Root:           project,
 		Mode:           "one-off",
 		OneOffKind:     kind,
 		Objective:      objective,
@@ -173,9 +197,21 @@ func CreateOneOff(ctx context.Context, project string, kind OneOffKind, objectiv
 	return finalizeRun(r)
 }
 
-// ValidateConflict reports whether two task scopes cannot run independently.
-// Unsafe paths/resources are conflicts too: callers must fail closed.
-func ValidateConflict(a, b core.Task) bool {
+// ValidateConflict reports whether two proposed admissions cannot run
+// independently. Unsafe paths/resources are conflicts too: callers fail
+// closed before assigning different teams.
+func ValidateConflict(a, b AdmissionBatch) bool {
+	for _, left := range a.Tasks {
+		for _, right := range b.Tasks {
+			if taskConflict(left, right) {
+				return true
+			}
+		}
+	}
+	return pathsOrResourcesConflict(a.Paths, a.Resources, b.Paths, b.Resources)
+}
+
+func taskConflict(a, b core.Task) bool {
 	na, err := normalizeTask(a)
 	if err != nil {
 		return true
@@ -201,6 +237,40 @@ func ValidateConflict(a, b core.Task) bool {
 	return false
 }
 
+func pathsOrResourcesConflict(leftPaths, leftResources, rightPaths, rightResources []string) bool {
+	leftPaths, err := normalizePaths(leftPaths)
+	if err != nil {
+		return true
+	}
+	rightPaths, err = normalizePaths(rightPaths)
+	if err != nil {
+		return true
+	}
+	leftResources, err = normalizeResources(leftResources)
+	if err != nil {
+		return true
+	}
+	rightResources, err = normalizeResources(rightResources)
+	if err != nil {
+		return true
+	}
+	for _, left := range leftPaths {
+		for _, right := range rightPaths {
+			if pathsOverlap(left, right) {
+				return true
+			}
+		}
+	}
+	for _, left := range leftResources {
+		for _, right := range rightResources {
+			if left == right {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func finalizeRun(r Run) (Run, error) {
 	digest, err := manifestDigest(r)
 	if err != nil {
@@ -210,7 +280,11 @@ func finalizeRun(r Run) (Run, error) {
 	r.ID = core.RunID("run-" + strings.TrimPrefix(digest, "sha256:")[:24])
 	r.RunID = r.ID
 	for i := range r.Tasks {
-		r.Tasks[i].RecordEnvelope = core.RecordEnvelope{Schema: 1, Project: r.Project, RunID: r.ID, WrittenAt: canonicalWrittenAt, Revision: 1}
+		revision := uint64(1)
+		if r.Mode == "plan" && r.Tasks[i].Revision != 0 {
+			revision = r.Tasks[i].Revision
+		}
+		r.Tasks[i].RecordEnvelope = core.RecordEnvelope{Schema: 1, Project: r.Project, RunID: r.ID, WrittenAt: canonicalWrittenAt, Revision: revision}
 	}
 	for i := range r.Teams {
 		r.Teams[i].ID = core.TeamID(fmt.Sprintf("%s-team-%d", r.ID, i+1))
@@ -234,7 +308,7 @@ func planOneOffTeams(tasks []core.Task) ([]TeamRecord, error) {
 		component := []int{i}
 		for cursor := 0; cursor < len(component); cursor++ {
 			for j := range tasks {
-				if !used[j] && ValidateConflict(tasks[component[cursor]], tasks[j]) {
+				if !used[j] && taskConflict(tasks[component[cursor]], tasks[j]) {
 					used[j] = true
 					component = append(component, j)
 				}
@@ -268,6 +342,29 @@ func planOneOffTeams(tasks []core.Task) ([]TeamRecord, error) {
 			teams = append(teams, TeamRecord{Queue: append([]core.TaskID(nil), component...), State: core.Working})
 		}
 	}
+	byID := make(map[core.TaskID]core.Task, len(tasks))
+	for _, task := range tasks {
+		byID[task.ID] = task
+	}
+	for i := range teams {
+		paths, resources := map[string]bool{}, map[string]bool{}
+		for _, id := range teams[i].Queue {
+			for _, value := range byID[id].WritablePaths {
+				paths[value] = true
+			}
+			for _, value := range byID[id].Resources {
+				resources[value] = true
+			}
+		}
+		for value := range paths {
+			teams[i].Paths = append(teams[i].Paths, value)
+		}
+		for value := range resources {
+			teams[i].Resources = append(teams[i].Resources, value)
+		}
+		sort.Strings(teams[i].Paths)
+		sort.Strings(teams[i].Resources)
+	}
 	return teams, nil
 }
 
@@ -289,18 +386,82 @@ func normalizeTasks(tasks []core.Task) ([]core.Task, error) {
 			return nil, fmt.Errorf("%w: duplicate task ID %q", core.ErrBatch, normalized[i].ID)
 		}
 	}
+	var total int
+	for _, task := range normalized {
+		total += len(task.Objective)
+		for _, value := range task.Criteria {
+			total += len(value)
+		}
+		for _, check := range task.Checks {
+			total += len(check.Name)
+			for _, arg := range check.Command {
+				total += len(arg)
+			}
+		}
+		for _, value := range task.WritablePaths {
+			total += len(value)
+		}
+		for _, value := range task.Resources {
+			total += len(value)
+		}
+		for _, value := range task.EvidencePointers {
+			total += len(value)
+		}
+	}
+	if total > 256<<10 {
+		return nil, fmt.Errorf("%w: aggregate task manifest input exceeds 256 KiB", core.ErrLimit)
+	}
 	return normalized, nil
 }
 
-func taskSnapshotDigest(tasks []core.Task) (string, error) {
-	if len(tasks) == 0 {
-		return digestJSON([]core.Task{})
+func planTaskReferences(tasks []core.Task, trackerRevision uint64) []core.Task {
+	refs := make([]core.Task, len(tasks))
+	for i, task := range tasks {
+		revision := task.Revision
+		if revision == 0 {
+			revision = trackerRevision
+		}
+		refs[i] = core.Task{RecordEnvelope: core.RecordEnvelope{Schema: 1, Revision: revision}, ID: task.ID}
 	}
-	normalized, err := normalizeTasks(tasks)
-	if err != nil {
-		return "", err
+	return refs
+}
+
+func planSpecRevision(root, kind, ref string, trackerRevision uint64, tasks []core.Task, snapshotDigest string) string {
+	ids := make([]core.TaskID, len(tasks))
+	for i, task := range tasks {
+		ids[i] = task.ID
 	}
-	return digestJSON(normalized)
+	value := struct {
+		Root, Kind, Ref, Snapshot string
+		Revision                  uint64
+		Tasks                     []core.TaskID
+	}{root, kind, ref, snapshotDigest, trackerRevision, ids}
+	digest, _ := digestJSON(value)
+	return digest
+}
+
+func canonicalTrackerRef(root, kind string) string {
+	if kind == "beads" {
+		return ".beads"
+	}
+	return filepath.ToSlash(filepath.Clean(filepath.Join(root, "TASKS.md")))
+}
+
+func cloneTasks(tasks []core.Task) []core.Task {
+	out := make([]core.Task, len(tasks))
+	for i, task := range tasks {
+		out[i] = task
+		out[i].Dependencies = append([]core.TaskID(nil), task.Dependencies...)
+		out[i].Criteria = append([]string(nil), task.Criteria...)
+		out[i].Checks = append([]core.Check(nil), task.Checks...)
+		for j := range out[i].Checks {
+			out[i].Checks[j].Command = append([]string(nil), task.Checks[j].Command...)
+		}
+		out[i].WritablePaths = append([]string(nil), task.WritablePaths...)
+		out[i].Resources = append([]string(nil), task.Resources...)
+		out[i].EvidencePointers = append([]string(nil), task.EvidencePointers...)
+	}
+	return out
 }
 
 func normalizeTask(task core.Task) (core.Task, error) {
@@ -431,7 +592,10 @@ func normalizePaths(values []string) ([]string, error) {
 }
 
 func normalizePath(value string) (string, error) {
-	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	value = strings.ReplaceAll(value, "\\", "/")
+	if strings.TrimSpace(value) != value {
+		return "", fmt.Errorf("%w: unsafe writable path", core.ErrPath)
+	}
 	if value == "" || !utf8.ValidString(value) || len(value) > 4096 || strings.HasPrefix(value, "/") || strings.ContainsRune(value, 0) || (len(value) > 1 && value[1] == ':') {
 		return "", fmt.Errorf("%w: unsafe writable path", core.ErrPath)
 	}
@@ -445,7 +609,7 @@ func normalizePath(value string) (string, error) {
 		return "", fmt.Errorf("%w: unsafe writable path %q", core.ErrPath, value)
 	}
 	for _, part := range strings.Split(clean, "/") {
-		if part == "" || part == "." || part == ".." {
+		if !safePathSegment(part) {
 			return "", fmt.Errorf("%w: unsafe writable path %q", core.ErrPath, value)
 		}
 	}
@@ -455,13 +619,31 @@ func normalizePath(value string) (string, error) {
 	return strings.ToLower(clean), nil
 }
 
+func safePathSegment(part string) bool {
+	if part == "" || part == "." || part == ".." || strings.TrimRight(part, ". ") != part || strings.ContainsAny(part, ":<>\"|?*") {
+		return false
+	}
+	upper := strings.ToUpper(strings.Split(part, ".")[0])
+	if upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL" || upper == "CLOCK$" {
+		return false
+	}
+	if len(upper) == 4 && (strings.HasPrefix(upper, "COM") || strings.HasPrefix(upper, "LPT")) && upper[3] >= '1' && upper[3] <= '9' {
+		return false
+	}
+	return true
+}
+
 func normalizeResources(values []string) ([]string, error) {
 	if len(values) == 0 {
 		return nil, nil
 	}
 	out := make([]string, len(values))
 	for i, value := range values {
-		value = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(value, "\\", "/")))
+		value = strings.ReplaceAll(value, "\\", "/")
+		if strings.TrimSpace(value) != value {
+			return nil, fmt.Errorf("%w: unsafe resource", core.ErrPath)
+		}
+		value = strings.ToLower(value)
 		if value == "" || !utf8.ValidString(value) || len(value) > 4096 || strings.ContainsAny(value, "\x00\r\n") || value == "." || value == ".." || strings.Contains(value, "../") {
 			return nil, fmt.Errorf("%w: unsafe resource", core.ErrPath)
 		}
@@ -483,38 +665,61 @@ func pathsOverlap(a, b string) bool {
 
 func manifestDigest(r Run) (string, error) {
 	tasks := []core.Task(nil)
+	taskIDs := []core.TaskID(nil)
+	taskRefs := []struct {
+		ID       core.TaskID `json:"id"`
+		Revision uint64      `json:"revision"`
+	}(nil)
 	if r.Mode == "one-off" {
 		var err error
 		tasks, err = normalizeTasks(r.Tasks)
 		if err != nil {
 			return "", err
 		}
+	} else {
+		for _, task := range r.Tasks {
+			taskIDs = append(taskIDs, task.ID)
+			taskRefs = append(taskRefs, struct {
+				ID       core.TaskID `json:"id"`
+				Revision uint64      `json:"revision"`
+			}{task.ID, task.Revision})
+		}
 	}
 	type team struct {
-		Queue         []core.TaskID         `json:"queue"`
-		WritablePaths []string              `json:"writablePaths,omitempty"`
-		Resources     core.ResourceSnapshot `json:"resources,omitempty"`
+		Queue     []core.TaskID `json:"queue"`
+		Paths     []string      `json:"paths,omitempty"`
+		Resources []string      `json:"resources,omitempty"`
 	}
 	teams := make([]team, len(r.Teams))
 	for i, record := range r.Teams {
-		paths, err := normalizePaths(record.WritablePaths)
+		paths, err := normalizePaths(record.Paths)
 		if err != nil {
 			return "", err
 		}
-		teams[i] = team{Queue: append([]core.TaskID(nil), record.Queue...), WritablePaths: paths, Resources: normalizeSnapshot(record.ResourceRefs)}
+		resources, err := normalizeResources(record.Resources)
+		if err != nil {
+			return "", err
+		}
+		teams[i] = team{Queue: append([]core.TaskID(nil), record.Queue...), Paths: paths, Resources: resources}
 	}
 	wire := struct {
-		Project               string      `json:"project"`
-		Mode                  string      `json:"mode"`
-		OneOffKind            OneOffKind  `json:"oneOffKind,omitempty"`
-		Objective             string      `json:"objective,omitempty"`
-		SpecRevision          string      `json:"specRevision,omitempty"`
-		TrackerKind           string      `json:"trackerKind"`
-		TrackerRevision       uint64      `json:"trackerRevision"`
-		TrackerSnapshotDigest string      `json:"trackerSnapshotDigest,omitempty"`
-		Tasks                 []core.Task `json:"tasks,omitempty"`
-		Teams                 []team      `json:"teams,omitempty"`
-	}{strings.TrimSpace(r.Project), r.Mode, r.OneOffKind, strings.TrimSpace(r.Objective), r.SpecRevision, r.TrackerKind, r.TrackerRevision, r.TrackerSnapshotDigest, tasks, teams}
+		Root                  string        `json:"root"`
+		Project               string        `json:"project"`
+		Mode                  string        `json:"mode"`
+		OneOffKind            OneOffKind    `json:"oneOffKind,omitempty"`
+		Objective             string        `json:"objective,omitempty"`
+		SpecRevision          string        `json:"specRevision,omitempty"`
+		TrackerKind           string        `json:"trackerKind"`
+		TrackerRevision       uint64        `json:"trackerRevision"`
+		TrackerSnapshotDigest string        `json:"trackerSnapshotDigest,omitempty"`
+		TaskIDs               []core.TaskID `json:"taskIds,omitempty"`
+		TaskRefs              []struct {
+			ID       core.TaskID `json:"id"`
+			Revision uint64      `json:"revision"`
+		} `json:"taskRefs,omitempty"`
+		Tasks []core.Task `json:"tasks,omitempty"`
+		Teams []team      `json:"teams,omitempty"`
+	}{r.Root, strings.TrimSpace(r.Project), r.Mode, r.OneOffKind, strings.TrimSpace(r.Objective), r.SpecRevision, r.TrackerKind, r.TrackerRevision, r.TrackerSnapshotDigest, taskIDs, taskRefs, tasks, teams}
 	raw, err := json.Marshal(wire)
 	if err != nil {
 		return "", fmt.Errorf("%w: canonical manifest: %v", core.ErrRevision, err)
@@ -536,32 +741,6 @@ func digestJSON(value any) (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
-}
-
-func normalizeSnapshot(snapshot core.ResourceSnapshot) core.ResourceSnapshot {
-	for _, part := range []*[]string{&snapshot.Servers, &snapshot.Browsers, &snapshot.External} {
-		values := *part
-		for i := range values {
-			values[i] = strings.ToLower(strings.TrimSpace(values[i]))
-		}
-		sort.Strings(values)
-		*part = values
-	}
-	return snapshot
-}
-
-func selectedTrackerKind(selected tracker.Tracker) string {
-	name := strings.ToLower(fmt.Sprintf("%T", selected))
-	switch {
-	case strings.Contains(name, "beads"):
-		return "beads"
-	case strings.Contains(name, "tasksmd") || strings.Contains(name, "tasks_md"):
-		return "tasks-md"
-	default:
-		// A future selected adapter still represents exactly one authority. Do
-		// not persist its Go type spelling, which is not a stable contract.
-		return "selected"
-	}
 }
 
 func validateProject(project string) error {
@@ -599,27 +778,30 @@ func validTeamState(state core.TaskState) bool {
 }
 
 func validateAdmission(batch AdmissionBatch) error {
+	if err := validateEnvelope(batch.RecordEnvelope, batch.RunID); err != nil {
+		return err
+	}
 	if err := validateID(batch.BatchID); err != nil {
 		return err
 	}
-	if err := validateID(string(batch.TeamID)); err != nil {
+	if err := validateID(string(batch.Team)); err != nil {
 		return err
 	}
-	if len(batch.TaskIDs) == 0 || len(batch.TaskIDs) > maxTeamQueue {
-		return fmt.Errorf("%w: admission has %d tasks", core.ErrBatch, len(batch.TaskIDs))
+	if len(batch.Tasks) == 0 || len(batch.Tasks) > maxTeamQueue {
+		return fmt.Errorf("%w: admission has %d tasks", core.ErrBatch, len(batch.Tasks))
 	}
-	if batch.PreviousQueueFingerprint != "" && !validDigest(batch.PreviousQueueFingerprint) {
-		return fmt.Errorf("%w: invalid prior queue fingerprint", core.ErrRevision)
+	if !validDigest(batch.Fingerprint) {
+		return fmt.Errorf("%w: invalid admission fingerprint", core.ErrRevision)
 	}
-	if batch.QueueFingerprint != "" && !validDigest(batch.QueueFingerprint) {
-		return fmt.Errorf("%w: invalid queue fingerprint", core.ErrRevision)
+	paths, err := normalizePaths(batch.Paths)
+	if err != nil || !reflect.DeepEqual(paths, batch.Paths) {
+		return fmt.Errorf("%w: invalid admission paths", core.ErrPath)
 	}
-	if batch.AdmittedAt != "" {
-		if _, err := time.Parse(time.RFC3339, batch.AdmittedAt); err != nil {
-			return fmt.Errorf("%w: invalid admission timestamp", core.ErrRevision)
-		}
+	resources, err := normalizeResources(batch.Resources)
+	if err != nil || !reflect.DeepEqual(resources, batch.Resources) {
+		return fmt.Errorf("%w: invalid admission resources", core.ErrPath)
 	}
-	_, err := normalizeIDs(batch.TaskIDs)
+	_, err = normalizeTasks(batch.Tasks)
 	return err
 }
 
@@ -648,6 +830,9 @@ func validateEnvelope(envelope core.RecordEnvelope, id core.RunID) error {
 }
 
 func validateRun(r Run) error {
+	if err := validateProject(r.Root); err != nil {
+		return err
+	}
 	if err := validateID(string(r.ID)); err != nil {
 		return err
 	}
@@ -657,7 +842,7 @@ func validateRun(r Run) error {
 	if !validTaskState(r.State) || (r.Mode != "plan" && r.Mode != "one-off") {
 		return fmt.Errorf("%w: invalid run state or mode", core.ErrPhase)
 	}
-	if r.Mode == "plan" && (r.TrackerKind == "" || r.TrackerKind == "none" || r.TrackerRevision == 0 || !validDigest(r.TrackerSnapshotDigest) || r.OneOffKind != "" || len(r.Tasks) != 0) {
+	if r.Mode == "plan" && (r.TrackerKind != "tasks-md" && r.TrackerKind != "beads" || r.TrackerRevision == 0 || !validDigest(r.TrackerSnapshotDigest) || !validDigest(r.SpecRevision) || r.OneOffKind != "") {
 		return fmt.Errorf("%w: invalid plan tracker authority", core.ErrRevision)
 	}
 	if r.Mode == "one-off" && (r.TrackerKind != "none" || r.TrackerRevision != 0 || r.TrackerSnapshotDigest != "" || !validOneOffKind(r.OneOffKind) || strings.TrimSpace(r.Objective) == "") {
@@ -672,6 +857,22 @@ func validateRun(r Run) error {
 			if !reflect.DeepEqual(tasks[i], withoutEnvelope(r.Tasks[i])) {
 				return fmt.Errorf("%w: noncanonical task manifest", core.ErrRevision)
 			}
+		}
+	}
+	if r.Mode == "plan" {
+		for i, task := range r.Tasks {
+			if err := validateID(string(task.ID)); err != nil {
+				return err
+			}
+			if err := validateEnvelope(task.RecordEnvelope, r.ID); err != nil {
+				return fmt.Errorf("%w: plan task envelope: %v", core.ErrRevision, err)
+			}
+			if task.Objective != "" || task.State != "" || len(task.Dependencies) != 0 || len(task.Criteria) != 0 || len(task.Checks) != 0 || len(task.WritablePaths) != 0 || len(task.Resources) != 0 || len(task.EvidencePointers) != 0 || task.Archived || (i > 0 && r.Tasks[i-1].ID >= task.ID) {
+				return fmt.Errorf("%w: plan task reference is not minimal", core.ErrRevision)
+			}
+		}
+		if r.SpecRevision != planSpecRevision(r.Root, r.TrackerKind, canonicalTrackerRef(r.Root, r.TrackerKind), r.TrackerRevision, r.Tasks, r.TrackerSnapshotDigest) {
+			return fmt.Errorf("%w: plan authority binding mismatch", core.ErrRevision)
 		}
 	}
 	if len(r.Teams) > maxOneOffTeams {
@@ -761,15 +962,13 @@ func validateTeam(team TeamRecord) error {
 	if team.QueueFingerprint != queueFingerprint(team.Queue) {
 		return fmt.Errorf("%w: invalid team queue", core.ErrRevision)
 	}
-	paths, err := normalizePaths(team.WritablePaths)
-	if err != nil || !reflect.DeepEqual(paths, team.WritablePaths) {
+	paths, err := normalizePaths(team.Paths)
+	if err != nil || !reflect.DeepEqual(paths, team.Paths) {
 		return fmt.Errorf("%w: invalid team writable paths", core.ErrPath)
 	}
-	for _, values := range [][]string{team.ResourceRefs.Servers, team.ResourceRefs.Browsers, team.ResourceRefs.External} {
-		resources, err := normalizeResources(values)
-		if err != nil || !reflect.DeepEqual(resources, values) {
-			return fmt.Errorf("%w: invalid team resources", core.ErrPath)
-		}
+	resources, err := normalizeResources(team.Resources)
+	if err != nil || !reflect.DeepEqual(resources, team.Resources) {
+		return fmt.Errorf("%w: invalid team resources", core.ErrPath)
 	}
 	for _, id := range team.Queue {
 		if err := validateID(string(id)); err != nil {

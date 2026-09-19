@@ -126,7 +126,7 @@ func (r *runStore) CompareAndSwap(ctx context.Context, id core.RunID, expected u
 	if expected != existing.Revision {
 		return Run{}, fmt.Errorf("%w: expected run revision %d, current %d", core.ErrRevision, expected, existing.Revision)
 	}
-	if value.ID != id || value.RunID != id || value.Project != existing.Project {
+	if value.ID != id || value.RunID != id || value.Project != existing.Project || value.Root != existing.Root {
 		return Run{}, fmt.Errorf("%w: run identity changed", core.ErrRevision)
 	}
 	if existing.Mode == "one-off" && !sameImmutableOneOff(existing, value) {
@@ -252,7 +252,7 @@ func (r *teamStore) CompareAndSwap(ctx context.Context, id core.TeamID, expected
 }
 
 func sameImmutableOneOff(a, b Run) bool {
-	return a.Mode == b.Mode && a.OneOffKind == b.OneOffKind && a.Objective == b.Objective && a.TrackerKind == b.TrackerKind && a.TrackerRevision == b.TrackerRevision && a.SpecRevision == b.SpecRevision && a.ManifestDigest == b.ManifestDigest && reflect.DeepEqual(a.Tasks, b.Tasks) && sameTeamManifest(a.Teams, b.Teams)
+	return a.Root == b.Root && a.Mode == b.Mode && a.OneOffKind == b.OneOffKind && a.Objective == b.Objective && a.TrackerKind == b.TrackerKind && a.TrackerRevision == b.TrackerRevision && a.SpecRevision == b.SpecRevision && a.ManifestDigest == b.ManifestDigest && reflect.DeepEqual(a.Tasks, b.Tasks) && sameTeamManifest(a.Teams, b.Teams)
 }
 
 func sameTeamManifest(a, b []TeamRecord) bool {
@@ -260,7 +260,7 @@ func sameTeamManifest(a, b []TeamRecord) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].ID != b[i].ID || !reflect.DeepEqual(a[i].Queue, b[i].Queue) || a[i].QueueFingerprint != b[i].QueueFingerprint || !reflect.DeepEqual(a[i].WritablePaths, b[i].WritablePaths) || !reflect.DeepEqual(a[i].ResourceRefs, b[i].ResourceRefs) {
+		if a[i].ID != b[i].ID || !reflect.DeepEqual(a[i].Queue, b[i].Queue) || a[i].QueueFingerprint != b[i].QueueFingerprint || !reflect.DeepEqual(a[i].Paths, b[i].Paths) || !reflect.DeepEqual(a[i].Resources, b[i].Resources) {
 			return false
 		}
 	}

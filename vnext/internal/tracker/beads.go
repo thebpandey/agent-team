@@ -62,6 +62,12 @@ func (b *beads) Warning() string {
 	return b.warning
 }
 
+// AuthorityMetadata identifies the project-local Beads authority. It is only
+// descriptive and deliberately does not invoke bd or touch tracker state.
+func (b *beads) AuthorityMetadata() AuthorityMetadata {
+	return AuthorityMetadata{Kind: "beads", Ref: ".beads"}
+}
+
 func (b *beads) Page(ctx context.Context, cursor string, limit int) (core.TrackerPage, error) {
 	if err := ctx.Err(); err != nil {
 		return core.TrackerPage{}, err
