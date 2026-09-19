@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
@@ -19,18 +20,19 @@ import (
 func TestReviewerImmutableAttemptsAndFreshReplay(t *testing.T) {
 	state := reviewStore(t)
 	adapter := &reviewAdapter{}
-	r := NewReviewer(adapter, nil, state)
-	first := validInput(t, state.Root, "rev-1", "sha256:first")
+	r := NewReviewer(adapter, &checkRunner{}, state)
+	first := validInput(t, state, "rev-1", "sha256:first")
 	got, err := r.Review(context.Background(), first)
 	if err != nil || got.Verdict != CLEAN {
 		t.Fatalf("first Review() = %#v, %v", got, err)
 	}
-	again, err := NewReviewer(adapter, nil, state).Review(context.Background(), first)
+	again, err := NewReviewer(adapter, &checkRunner{}, state).Review(context.Background(), first)
 	if err != nil || !reflect.DeepEqual(again, got) || adapter.startCount() != 1 {
 		t.Fatalf("fresh replay = %#v, %v; starts=%d", again, err, adapter.startCount())
 	}
-	repaired := validInput(t, state.Root, "rev-2", "sha256:repaired")
+	repaired := validInput(t, state, "rev-2", "sha256:repaired")
 	repaired.Candidate.Worktree.Path, repaired.Candidate.Worktree.Canonical = first.Candidate.Worktree.Path, first.Candidate.Worktree.Canonical
+	persistWorktree(t, state, repaired.Candidate.Worktree)
 	gotRepair, err := r.Review(context.Background(), repaired)
 	if err != nil || gotRepair.EvidencePointer == got.EvidencePointer || adapter.startCount() != 2 {
 		t.Fatalf("repaired Review() = %#v, %v; starts=%d", gotRepair, err, adapter.startCount())
@@ -39,7 +41,7 @@ func TestReviewerImmutableAttemptsAndFreshReplay(t *testing.T) {
 
 func TestReviewerConcurrentPublicationReturnsOneImmutableReceipt(t *testing.T) {
 	state := reviewStore(t)
-	in := validInput(t, state.Root, "rev", "sha256:candidate")
+	in := validInput(t, state, "rev", "sha256:candidate")
 	var wg sync.WaitGroup
 	results := make([]Result, 2)
 	errs := make([]error, 2)
@@ -47,7 +49,7 @@ func TestReviewerConcurrentPublicationReturnsOneImmutableReceipt(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i], errs[i] = NewReviewer(&reviewAdapter{}, nil, state).Review(context.Background(), in)
+			results[i], errs[i] = NewReviewer(&reviewAdapter{}, &checkRunner{}, state).Review(context.Background(), in)
 		}(i)
 	}
 	wg.Wait()
@@ -72,8 +74,8 @@ func TestReviewerRejectsTamperedOrStaleReceipt(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			state := reviewStore(t)
-			in := validInput(t, state.Root, "rev", "sha256:candidate")
-			r := NewReviewer(&reviewAdapter{}, nil, state)
+			in := validInput(t, state, "rev", "sha256:candidate")
+			r := NewReviewer(&reviewAdapter{}, &checkRunner{}, state)
 			got, err := r.Review(context.Background(), in)
 			if err != nil {
 				t.Fatal(err)
@@ -110,15 +112,15 @@ func TestReviewerRejectsIncompleteOrUnprovenProvenanceBeforeReservation(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := &reviewAdapter{}
 			state := reviewStore(t)
-			in := validInput(t, state.Root, "rev", "sha256:candidate")
+			in := validInput(t, state, "rev", "sha256:candidate")
 			tc.edit(&in)
-			if _, err := NewReviewer(adapter, nil, state).Review(context.Background(), in); !errors.Is(err, core.ErrPath) || adapter.startCount() != 0 {
+			if _, err := NewReviewer(adapter, &checkRunner{}, state).Review(context.Background(), in); !errors.Is(err, core.ErrPath) || adapter.startCount() != 0 {
 				t.Fatalf("Review() error=%v starts=%d", err, adapter.startCount())
 			}
 		})
 	}
 	state := reviewStore(t)
-	if _, err := NewReviewer(nil, nil, state).Review(context.Background(), validInput(t, state.Root, "rev", "sha256:nil")); !errors.Is(err, core.ErrCapacity) {
+	if _, err := NewReviewer(nil, nil, state).Review(context.Background(), validInput(t, state, "rev", "sha256:nil")); !errors.Is(err, core.ErrCapacity) {
 		t.Fatalf("nil host error = %v", err)
 	}
 }
@@ -141,31 +143,61 @@ func TestReviewerUsesStoreRootRatherThanAmbientModule(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
 
-	foreignInput := validInput(t, state.Root, "rev", "sha256:foreign")
+	foreignInput := validInput(t, state, "rev", "sha256:foreign")
 	foreignPath := filepath.Join(foreign, ".agent-team", "worktrees", "foreign")
 	foreignInput.Candidate.Worktree.Path, foreignInput.Candidate.Worktree.Canonical = foreignPath, foreignPath
 	adapter := &reviewAdapter{}
-	if _, err := NewReviewer(adapter, nil, state).Review(context.Background(), foreignInput); !errors.Is(err, core.ErrPath) || adapter.startCount() != 0 {
+	if _, err := NewReviewer(adapter, &checkRunner{}, state).Review(context.Background(), foreignInput); !errors.Is(err, core.ErrPath) || adapter.startCount() != 0 {
 		t.Fatalf("foreign Review() error=%v starts=%d", err, adapter.startCount())
 	}
 
-	valid := validInput(t, state.Root, "rev", "sha256:local")
-	if _, err := NewReviewer(adapter, nil, state).Review(context.Background(), valid); err != nil {
+	valid := validInput(t, state, "rev", "sha256:local")
+	if _, err := NewReviewer(adapter, &checkRunner{}, state).Review(context.Background(), valid); err != nil {
 		t.Fatalf("store-root Review() error=%v", err)
 	}
 	if err := os.Symlink(foreignPath, filepath.Join(state.Root, ".agent-team", "worktrees", "alias")); err == nil {
-		aliased := validInput(t, state.Root, "rev-2", "sha256:alias")
+		aliased := validInput(t, state, "rev-2", "sha256:alias")
 		aliased.Candidate.Worktree.Path = filepath.Join(state.Root, ".agent-team", "worktrees", "alias")
 		aliased.Candidate.Worktree.Canonical = foreignPath
-		if _, err := NewReviewer(&reviewAdapter{}, nil, state).Review(context.Background(), aliased); !errors.Is(err, core.ErrPath) {
+		if _, err := NewReviewer(&reviewAdapter{}, &checkRunner{}, state).Review(context.Background(), aliased); !errors.Is(err, core.ErrPath) {
 			t.Fatalf("symlink escape error=%v", err)
 		}
 	}
 }
 
+func TestReviewerRequiresExactPersistedWorktreeIdentity(t *testing.T) {
+	state := reviewStore(t)
+	a := validInput(t, state, "rev", "sha256:a")
+	b := a.Candidate.Worktree
+	b.Team = "team-b"
+	b.Path, b.Canonical = managedTaskRoot(t, state.Root), ""
+	b.Canonical = b.Path
+	b.Branch = "agent-team/run/team-b"
+	persistWorktree(t, state, b)
+	adapter := &reviewAdapter{}
+	forged := a
+	forged.Candidate.Worktree.Path, forged.Candidate.Worktree.Canonical = b.Path, b.Canonical
+	if _, err := NewReviewer(adapter, &checkRunner{}, state).Review(context.Background(), forged); !errors.Is(err, core.ErrPath) || adapter.startCount() != 0 {
+		t.Fatalf("sibling path error=%v starts=%d", err, adapter.startCount())
+	}
+	if _, err := NewReviewer(adapter, &checkRunner{}, state).Review(context.Background(), a); err != nil {
+		t.Fatalf("exact identity error=%v", err)
+	}
+	branch := a
+	branch.Candidate.Worktree.Branch = "agent-team/run/forged"
+	if _, err := NewReviewer(&reviewAdapter{}, &checkRunner{}, state).Review(context.Background(), branch); !errors.Is(err, core.ErrPath) {
+		t.Fatalf("branch tamper error=%v", err)
+	}
+	base := a
+	base.Candidate.Base, base.Candidate.Worktree.Base = strings.Repeat("b", 40), strings.Repeat("b", 40)
+	if _, err := NewReviewer(&reviewAdapter{}, &checkRunner{}, state).Review(context.Background(), base); !errors.Is(err, core.ErrPath) {
+		t.Fatalf("base tamper error=%v", err)
+	}
+}
+
 func TestReviewerRejectsNonIndependentIdentityBeforeChecks(t *testing.T) {
 	state := reviewStore(t)
-	in := validInput(t, state.Root, "rev", "sha256:candidate")
+	in := validInput(t, state, "rev", "sha256:candidate")
 	adapter := &reviewAdapter{identity: "developer"}
 	runner := &checkRunner{result: tracker.CommandResult{Exit: 1, Stderr: []byte("failed")}}
 	if _, err := NewReviewer(adapter, runner, state).Review(context.Background(), in); !errors.Is(err, core.ErrRevision) || runner.callCount() != 0 {
@@ -188,7 +220,7 @@ func TestReviewerBoundsChecksExecutionAndFindings(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := &reviewAdapter{}
 			state := reviewStore(t)
-			in := validInput(t, state.Root, "rev", "sha256:"+tc.name)
+			in := validInput(t, state, "rev", "sha256:"+tc.name)
 			in.Checks = tc.checks
 			if _, err := NewReviewer(adapter, tc.runner, state).Review(context.Background(), in); !errors.Is(err, core.ErrLimit) {
 				t.Fatalf("Review() error = %v", err)
@@ -202,7 +234,7 @@ func TestReviewerBoundsChecksExecutionAndFindings(t *testing.T) {
 
 func TestReviewerCreatesFixEvidence(t *testing.T) {
 	state := reviewStore(t)
-	in := validInput(t, state.Root, "rev", "sha256:checks")
+	in := validInput(t, state, "rev", "sha256:checks")
 	in.Checks = []core.Check{{Name: "unit", Command: []string{"test", "arg"}}}
 	runner := &checkRunner{result: tracker.CommandResult{Exit: 1, Stderr: []byte("failed")}}
 	got, err := NewReviewer(&reviewAdapter{}, runner, state).Review(context.Background(), in)
@@ -211,10 +243,13 @@ func TestReviewerCreatesFixEvidence(t *testing.T) {
 	}
 }
 
-func validInput(t *testing.T, stateRoot, revision, digest string) Input {
+func validInput(t *testing.T, state *store.Store, revision, digest string) Input {
 	t.Helper()
-	root := managedTaskRoot(t, stateRoot)
-	return Input{Task: core.Task{RecordEnvelope: core.RecordEnvelope{Project: "project", RunID: "run"}, ID: "task"}, Candidate: contracts.Candidate{Task: "task", Revision: revision, Base: "base", Worktree: contracts.Worktree{Run: "run", Team: "team", Path: root, Canonical: root, Branch: "branch", Base: "base"}}, Developer: contracts.WorkerHandle{Host: "developer-host", Identity: "developer", Run: "run", Team: "team", Task: "task", CandidateRevision: revision, PacketDigest: digest}, CandidateDigest: digest}
+	root := managedTaskRoot(t, state.Root)
+	base := strings.Repeat("a", 40)
+	in := Input{Task: core.Task{RecordEnvelope: core.RecordEnvelope{Project: "project", RunID: "run"}, ID: "task"}, Candidate: contracts.Candidate{Task: "task", Revision: revision, Base: base, Worktree: contracts.Worktree{Run: "run", Team: "team", Path: root, Canonical: root, Branch: "agent-team/run/team", Base: base}}, Developer: contracts.WorkerHandle{Host: "developer-host", Identity: "developer", Run: "run", Team: "team", Task: "task", CandidateRevision: revision, PacketDigest: digest}, CandidateDigest: digest}
+	persistWorktree(t, state, in.Candidate.Worktree)
+	return in
 }
 func managedTaskRoot(t *testing.T, stateRoot string) string {
 	t.Helper()
@@ -232,6 +267,13 @@ func managedTaskRoot(t *testing.T, stateRoot string) string {
 func reviewStore(t *testing.T) *store.Store {
 	t.Helper()
 	return store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+}
+func persistWorktree(t *testing.T, state *store.Store, tree contracts.Worktree) {
+	t.Helper()
+	record := map[string]any{"schema": 1, "project": "project", "runId": tree.Run, "writtenAt": time.Now().UTC().Format(time.RFC3339Nano), "revision": 1, "team": tree.Team, "path": tree.Path, "base": tree.Base, "branch": tree.Branch, "lifecycle": "active", "removed": false}
+	if _, err := state.WriteJSON(filepath.ToSlash(filepath.Join(".agent-team", "runtime", "worktrees", string(tree.Run), string(tree.Team)+".json")), record, 64<<10); err != nil {
+		t.Fatal(err)
+	}
 }
 func makeChecks(n int) []core.Check {
 	checks := make([]core.Check, n)

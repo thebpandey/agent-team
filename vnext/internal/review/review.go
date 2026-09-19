@@ -17,6 +17,7 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/host"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
+	"github.com/thebpandey/agent-team/vnext/internal/worktree"
 )
 
 const (
@@ -82,12 +83,16 @@ func NewReviewer(adapter host.Adapter, runner host.CommandRunner, state *store.S
 }
 
 func (r *reviewer) Review(ctx context.Context, input Input) (Result, error) {
-	if r == nil || r.host == nil || r.store == nil || ctx == nil || ctx.Err() != nil {
+	if r == nil || r.host == nil || r.runner == nil || r.store == nil || ctx == nil || ctx.Err() != nil {
 		return Result{}, core.ErrCapacity
 	}
 	p, err := validateInput(input, r.store.Root)
 	if err != nil {
 		return Result{}, err
+	}
+	inspected, err := worktree.NewManager(r.store.Root, p.Task.Project, r.store, r.runner).Inspect(ctx, p.Candidate.Worktree)
+	if err != nil || !sameWorktree(inspected, p.Candidate.Worktree) {
+		return Result{}, core.ErrPath
 	}
 	key, err := provenanceKey(p)
 	if err != nil {
@@ -216,6 +221,10 @@ func validateInput(input Input, stateRoot string) (provenance, error) {
 
 func validDeveloper(h contracts.WorkerHandle, task core.Task, candidate contracts.Candidate, digest string) bool {
 	return h.Host != "" && h.Identity != "" && !h.Reviewer && h.Run == task.RunID && h.Team == candidate.Worktree.Team && h.Task == task.ID && h.CandidateRevision == candidate.Revision && h.PacketDigest == digest
+}
+
+func sameWorktree(expected, supplied contracts.Worktree) bool {
+	return expected.Run == supplied.Run && expected.Team == supplied.Team && expected.Path == supplied.Path && expected.Canonical == supplied.Canonical && expected.Branch == supplied.Branch && expected.Base == supplied.Base && !supplied.Dirty
 }
 
 // verifiedTaskRoot derives authority from the same explicit project-rooted
