@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -80,7 +81,6 @@ func ValidateSetup(ctx context.Context, input SetupInput) (SetupResult, error) {
 
 	result := SetupResult{
 		Project: project, Config: core.DefaultConfig(), ArtifactDigests: make(map[string]string),
-		Handoff: core.KickoffHandoff{ApprovedPlanRevision: project.Head, Branch: branch(ctx, project), TrackerKind: "tasks-md", TrackerRef: "TASKS.md"},
 	}
 	seen := make(map[string]struct{}, len(input.Artifacts))
 	for _, artifact := range input.Artifacts {
@@ -97,7 +97,7 @@ func ValidateSetup(ctx context.Context, input SetupInput) (SetupResult, error) {
 		}
 		switch artifact.Mode {
 		case ExistingArtifact:
-			digest, err := digestFile(project.Root, relative, result.Config.Storage.CanonicalBytes)
+			digest, err := digestArtifact(project.Root, relative, fullPath, result.Config.Storage.CanonicalBytes)
 			if err != nil {
 				return SetupResult{}, err
 			}
@@ -114,7 +114,9 @@ func ValidateSetup(ctx context.Context, input SetupInput) (SetupResult, error) {
 		}
 		if relative == "TASKS.md" {
 			result.Config.Tracker = core.TrackerConfig{Kind: "tasks-md", Path: relative}
-			result.Handoff.TrackerKind, result.Handoff.TrackerRef = "tasks-md", relative
+		}
+		if relative == ".beads" {
+			result.Config.Tracker = core.TrackerConfig{Kind: "beads", Path: relative}
 		}
 	}
 	if input.Mode == OneOffMode && len(input.Artifacts) != 0 {
@@ -224,6 +226,9 @@ func (s *setupService) Initialize(ctx context.Context, input SetupInput) (SetupR
 	if input.Mode == OneOffMode {
 		return preflight, nil
 	}
+	if err := probeInitializeWritable(preflight.Project.Root); err != nil {
+		return SetupResult{}, err
+	}
 	project, err := Discover(ctx, input.Root)
 	if err != nil {
 		return SetupResult{}, err
@@ -271,32 +276,78 @@ func (s *setupService) Initialize(ctx context.Context, input SetupInput) (SetupR
 	})
 }
 
+func probeInitializeWritable(rootPath string) error {
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return err
+	}
+	name := ".agent-team-probe-" + hex.EncodeToString(token[:])
+	file, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("%w: project is not writable: %v", core.ErrPath, err)
+	}
+	value := []byte(name)
+	_, writeErr := file.Write(value)
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	if writeErr != nil || syncErr != nil || closeErr != nil {
+		return fmt.Errorf("%w: write project probe", core.ErrPath)
+	}
+	opened, err := root.Open(name)
+	if err != nil {
+		return err
+	}
+	stored, readErr := io.ReadAll(io.LimitReader(opened, int64(len(value)+1)))
+	_ = opened.Close()
+	if readErr != nil || string(stored) != string(value) {
+		return fmt.Errorf("%w: probe ownership changed", core.ErrPath)
+	}
+	if err := root.Remove(name); err != nil {
+		return fmt.Errorf("%w: remove owned project probe: %v", core.ErrPath, err)
+	}
+	return nil
+}
+
 // withLock is a bounded cross-process initialization CAS. The lock is not a
 // durable authority: a stale lock is reclaimed only after its bounded lease,
 // and the pending bundle below remains the recovery authority after a crash.
 func (s *setupService) withLock(ctx context.Context, root string, action func() (SetupResult, error)) (SetupResult, error) {
 	deadline := time.Now().Add(10 * time.Second)
+	rootHandle, err := os.OpenRoot(root)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	defer rootHandle.Close()
+	if err := rootHandle.MkdirAll(".agent-team/setup", 0o700); err != nil {
+		return SetupResult{}, err
+	}
+	var tokenBytes [16]byte
+	if _, err := rand.Read(tokenBytes[:]); err != nil {
+		return SetupResult{}, err
+	}
+	token := hex.EncodeToString(tokenBytes[:])
 	for {
 		if err := ctx.Err(); err != nil {
 			return SetupResult{}, err
 		}
-		if err := os.MkdirAll(filepath.Join(root, ".agent-team", "setup"), 0o700); err != nil {
-			return SetupResult{}, err
-		}
-		file, err := os.OpenFile(filepath.Join(root, filepath.FromSlash(lockPath)), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		file, err := rootHandle.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			_, _ = file.WriteString(time.Now().UTC().Format(time.RFC3339Nano))
-			_ = file.Close()
-			defer os.Remove(filepath.Join(root, filepath.FromSlash(lockPath)))
+			_, writeErr := file.WriteString(token)
+			syncErr := file.Sync()
+			closeErr := file.Close()
+			if writeErr != nil || syncErr != nil || closeErr != nil {
+				return SetupResult{}, fmt.Errorf("%w: write setup lock", core.ErrPath)
+			}
+			defer removeVerified(rootHandle, lockPath, token)
 			return action()
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return SetupResult{}, err
-		}
-		if info, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(lockPath))); statErr == nil && time.Since(info.ModTime()) > time.Minute {
-			// Only this exact protocol-owned file is ever removed.
-			_ = os.Remove(filepath.Join(root, filepath.FromSlash(lockPath)))
-			continue
 		}
 		if time.Now().After(deadline) {
 			return SetupResult{}, fmt.Errorf("%w: setup initialization is in progress", core.ErrRevision)
@@ -306,6 +357,18 @@ func (s *setupService) withLock(ctx context.Context, root string, action func() 
 			return SetupResult{}, ctx.Err()
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+}
+
+func removeVerified(root *os.Root, relative, token string) {
+	file, err := root.Open(relative)
+	if err != nil {
+		return
+	}
+	contents, readErr := io.ReadAll(io.LimitReader(file, 128))
+	_ = file.Close()
+	if readErr == nil && string(contents) == token {
+		_ = root.Remove(relative)
 	}
 }
 
@@ -347,8 +410,20 @@ func (s *setupService) publishPending(pending setupPending) error {
 	}
 	// Failure to remove this owned staging file is harmless: commit wins and a
 	// later recovery observes the matching commit without changing it.
-	_ = os.Remove(filepath.Join(s.store.Root, filepath.FromSlash(pendingPath)))
+	s.removePendingIfOwned(pending)
 	return nil
+}
+
+func (s *setupService) removePendingIfOwned(want setupPending) {
+	var got setupPending
+	if err := s.store.ReadJSON(pendingPath, core.DefaultConfig().Storage.CanonicalBytes, &got); err != nil || digestPending(got) != digestPending(want) {
+		return
+	}
+	root, err := os.OpenRoot(s.store.Root)
+	if err == nil {
+		_ = root.Remove(pendingPath)
+		_ = root.Close()
+	}
 }
 
 func (s *setupService) ensureConfig(want configRecord) error {
@@ -414,6 +489,11 @@ func digestReceipt(receipt setupReceipt) string {
 	return digestBytes(encoded)
 }
 
+func digestPending(pending setupPending) string {
+	encoded, _ := json.Marshal(pending)
+	return digestBytes(encoded)
+}
+
 func (s *setupService) write(relative string, value any, limit int64) (store.AtomicResult, error) {
 	if s.writeJSON != nil {
 		return s.writeJSON(relative, value, limit)
@@ -443,6 +523,52 @@ func digestFile(root, relative string, limit int64) (string, error) {
 		return "", fmt.Errorf("%w: existing artifact %q: %v", core.ErrSettings, relative, err)
 	}
 	return digestBytes(contents), nil
+}
+
+func digestArtifact(root, relative, full string, limit int64) (string, error) {
+	info, err := os.Lstat(full)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		if relative != ".beads" {
+			return "", fmt.Errorf("directory artifact is not a tracker authority")
+		}
+		return digestDirectory(full, limit)
+	}
+	return digestFile(root, relative, limit)
+}
+
+func digestDirectory(root string, limit int64) (string, error) {
+	hash := sha256.New()
+	var used int64
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symbolic link in tracker")
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		body, err := readBounded(path, limit-used)
+		if err != nil {
+			return err
+		}
+		used += int64(len(body))
+		if used > limit {
+			return fmt.Errorf("%w: tracker exceeds %d bytes", core.ErrLimit, limit)
+		}
+		relative, _ := filepath.Rel(root, path)
+		_, _ = io.WriteString(hash, filepath.ToSlash(relative)+"\x00")
+		_, _ = hash.Write(body)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 // readBoundedContained uses os.Root for the final open, so a symlink/reparse

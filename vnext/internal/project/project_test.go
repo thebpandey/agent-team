@@ -58,6 +58,15 @@ func TestContainRejectsCaseAlias(t *testing.T) {
 	}
 }
 
+func TestContainRejectsPortableWindowsAliases(t *testing.T) {
+	root := t.TempDir()
+	for _, candidate := range []string{filepath.Join(root, "NUL"), filepath.Join(root, "file:stream"), `\\?\C:\work`, `\\.\PIPE\agent-team`} {
+		if _, err := Contain(root, candidate); !errors.Is(err, core.ErrPath) {
+			t.Errorf("Contain(%q) = %v, want ErrPath", candidate, err)
+		}
+	}
+}
+
 func TestDiscoverReportsGitIdentityAndState(t *testing.T) {
 	root := testkit.GitRepo(t)
 	project, err := Discover(context.Background(), root)
@@ -67,7 +76,7 @@ func TestDiscoverReportsGitIdentityAndState(t *testing.T) {
 	if project.Root != root || project.TopLevel != root || project.Head == "" || project.CommonDir == "" {
 		t.Fatalf("incomplete project identity: %#v", project)
 	}
-	if project.Dirty || project.Detached || !project.Readable || !project.Writable || project.FreeBytes <= 0 {
+	if project.Dirty || project.Detached || !project.Readable || project.Writable || project.FreeBytes <= 0 {
 		t.Fatalf("incorrect clean project state: %#v", project)
 	}
 	if err := os.WriteFile(filepath.Join(root, "dirty.txt"), []byte("x"), 0o644); err != nil {
@@ -76,6 +85,46 @@ func TestDiscoverReportsGitIdentityAndState(t *testing.T) {
 	project, err = Discover(context.Background(), root)
 	if err != nil || !project.Dirty {
 		t.Fatalf("dirty project = %#v, %v", project, err)
+	}
+}
+
+func TestNoKickoffIsAbsentAndBeadsIsExplicitTracker(t *testing.T) {
+	root := testkit.GitRepo(t)
+	for name, contents := range map[string]string{"DECISIONS.md": "# Decisions\n", "AGENT_TEAM_RULES.md": "# Rules\n"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	input := SetupInput{Root: root, Mode: PlanMode, Artifacts: []ArtifactDecision{
+		{Path: ".beads", Mode: ExistingArtifact, Confirmation: Approved},
+		{Path: "DECISIONS.md", Mode: ExistingArtifact, Confirmation: Approved},
+		{Path: "AGENT_TEAM_RULES.md", Mode: ExistingArtifact, Confirmation: Approved},
+	}}
+	validated, err := ValidateSetup(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validated.Handoff.ApprovedPlanRevision != "" || validated.Handoff.Branch != "" || validated.Handoff.TrackerKind != "" || validated.Handoff.TrackerRef != "" || validated.Handoff.TrackerRevision != 0 || len(validated.Handoff.TaskIDs) != 0 || len(validated.Handoff.Acceptance) != 0 || len(validated.Handoff.Checks) != 0 || len(validated.Handoff.WritablePaths) != 0 || len(validated.Handoff.Resources) != 0 || len(validated.Handoff.Capabilities) != 0 {
+		t.Fatalf("no-Kickoff handoff = %#v, want zero", validated.Handoff)
+	}
+	initialized, err := NewSetupService(store.New(root, core.DefaultConfig().Storage)).Initialize(context.Background(), input)
+	if err != nil || initialized.Config.Tracker.Kind != "beads" || initialized.Config.Tracker.Path != ".beads" {
+		t.Fatalf("Beads setup = %#v, %v", initialized, err)
+	}
+}
+
+func TestValidateAndRefusalLeaveFilesystemUntouched(t *testing.T) {
+	root := testkit.GitRepo(t)
+	before := testkit.SnapshotTree(t, root)
+	refused := SetupInput{Root: root, Mode: PlanMode, Artifacts: []ArtifactDecision{{Path: "TASKS.md", Mode: ExistingArtifact, Confirmation: Refused}}}
+	if _, err := NewSetupService(store.New(root, core.DefaultConfig().Storage)).Validate(context.Background(), refused); !errors.Is(err, core.ErrSettings) {
+		t.Fatalf("refused validation error = %v", err)
+	}
+	if after := testkit.SnapshotTree(t, root); !equalTree(before, after) {
+		t.Fatal("Validate/refusal changed filesystem")
 	}
 }
 

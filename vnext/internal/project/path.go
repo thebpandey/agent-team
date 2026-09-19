@@ -27,6 +27,9 @@ func Contain(root, candidate string) (string, error) {
 		return "", fmt.Errorf("%w: absolute candidate: %v", core.ErrPath, err)
 	}
 	abs = filepath.Clean(abs)
+	if err := validateCandidateSegments(canonicalRoot, abs); err != nil {
+		return "", err
+	}
 	canonicalCandidate, err := resolveCandidate(abs)
 	if err != nil {
 		return "", err
@@ -35,6 +38,31 @@ func Contain(root, candidate string) (string, error) {
 		return "", fmt.Errorf("%w: %q escapes %q", core.ErrPath, candidate, root)
 	}
 	return canonicalCandidate, nil
+}
+
+func validateCandidateSegments(root, candidate string) error {
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil // containment supplies the authoritative outside-root error.
+	}
+	current := root
+	for _, segment := range strings.Split(filepath.ToSlash(relative), "/") {
+		if segment == "." || segment == "" {
+			continue
+		}
+		if err := ValidateSegment(segment); err != nil {
+			return err
+		}
+		if entries, err := os.ReadDir(current); err == nil {
+			for _, entry := range entries {
+				if strings.EqualFold(entry.Name(), segment) && entry.Name() != segment {
+					return fmt.Errorf("%w: case-folding alias %q", core.ErrPath, candidate)
+				}
+			}
+		}
+		current = filepath.Join(current, segment)
+	}
+	return nil
 }
 
 // ValidateSegment enforces a filename segment acceptable across supported

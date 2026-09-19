@@ -3,7 +3,6 @@ package project
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -76,17 +75,11 @@ func access(root string) (readable, writable bool) {
 	if directory, err := os.Open(root); err == nil {
 		_, readErr := directory.ReadDir(1)
 		_ = directory.Close()
-		readable = readErr == nil || errors.Is(readErr, io.EOF)
+		readable = readErr == nil || readErr == io.EOF
 	}
-	// Permission bits are advisory across ACL filesystems. A bounded owned
-	// create/remove probe gives the caller's actual access without retaining a
-	// project artifact; failure is conservatively reported as not writable.
-	if temporary, err := os.CreateTemp(root, ".agent-team-access-"); err == nil {
-		name := temporary.Name()
-		if temporary.Close() == nil && os.Remove(name) == nil {
-			writable = true
-		}
-	}
+	// Discover is strictly read-only. A portable actual write probe requires a
+	// mutation, so report writability conservatively until Initialize is allowed
+	// to perform its owned preflight.
 	return readable, writable
 }
 
