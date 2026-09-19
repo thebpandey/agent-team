@@ -30,7 +30,7 @@ func TestManagerCreatesOnlyDedicatedWorktreesAndResumesExactIdentity(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"git", "-C", repo, "worktree", "add", "-b", "agent-team/run-1/team-1", spec.Root, "base"}
+	want := []string{"git", "-C", repo, "worktree", "add", "-b", "agent-team/run-1/team-1", spec.Root, strings.Repeat("a", 40)}
 	if !reflect.DeepEqual(mutations(runner.calls), [][]string{want}) {
 		t.Fatalf("git calls = %#v", runner.calls)
 	}
@@ -62,7 +62,7 @@ func TestManagerRejectsMainOutsideAndCrossRunBeforeGit(t *testing.T) {
 			t.Fatalf("Create(%#v) error = %v, want ErrPath", spec, err)
 		}
 	}
-	if len(runner.calls) != 0 {
+	if len(mutations(runner.calls)) != 0 {
 		t.Fatalf("git was called before validation: %#v", runner.calls)
 	}
 }
@@ -161,7 +161,7 @@ func TestManagerCompensatesWhenDurableStateFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("Create() succeeded with state publication through symlink")
 	}
-	if len(runner.calls) != 0 {
+	if len(mutations(runner.calls)) != 0 {
 		t.Fatalf("state failure calls = %#v", runner.calls)
 	}
 }
@@ -172,7 +172,7 @@ func TestManagerPersistsCreatingIntentBeforeGit(t *testing.T) {
 	manager := NewManager(repo, "project", store.New(repo, core.StorageLimits{CanonicalBytes: 16 << 20}), runner)
 	manager.create = func(string, WorktreeIdentity) error { return fmt.Errorf("injected write failure") }
 	_, err := manager.Create(context.Background(), worktreeSpec("run", "team", filepath.Join(repo, ".agent-team", "worktrees", "task")))
-	if err == nil || len(runner.calls) != 0 {
+	if err == nil || len(mutations(runner.calls)) != 0 {
 		t.Fatalf("Create() = %v, calls %#v; Git ran without durable creating intent", err, runner.calls)
 	}
 }
@@ -375,7 +375,7 @@ func TestExactProbeRejectsReusedPathBeforeMutation(t *testing.T) {
 			}
 			test.mutate(runner, w, other)
 			before := len(mutations(runner.calls))
-			if _, err := manager.Integrate(context.Background(), contracts.Candidate{Task: "task", Revision: "candidate", Base: "base", Worktree: w}); !errors.Is(err, core.ErrGit) {
+			if _, err := manager.Integrate(context.Background(), contracts.Candidate{Task: "task", Revision: "candidate", Base: w.Base, Worktree: w}); !errors.Is(err, core.ErrGit) {
 				t.Fatalf("Integrate error = %v", err)
 			}
 			if err := manager.RemoveExact(context.Background(), w); !errors.Is(err, core.ErrGit) {
@@ -383,6 +383,45 @@ func TestExactProbeRejectsReusedPathBeforeMutation(t *testing.T) {
 			}
 			if len(mutations(runner.calls)) != before {
 				t.Fatalf("foreign worktree mutated: %#v", runner.calls)
+			}
+		})
+	}
+}
+
+func TestCreateFreezesMutableBaseToOID(t *testing.T) {
+	repo := testkit.GitRepo(t)
+	runner := &gitRunner{base: strings.Repeat("A", 40)}
+	manager := NewManager(repo, "project", store.New(repo, core.StorageLimits{CanonicalBytes: 16 << 20}), runner)
+	spec := worktreeSpec("run", "team", filepath.Join(repo, ".agent-team", "worktrees", "task"))
+	w, err := manager.Create(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Repeat("a", 40)
+	if w.Base != want || mutations(runner.calls)[0][len(mutations(runner.calls)[0])-1] != want {
+		t.Fatalf("worktree/add base = %q, %#v", w.Base, mutations(runner.calls))
+	}
+	if retry, err := manager.Create(context.Background(), spec); err != nil || retry.Base != want {
+		t.Fatalf("retry = %#v, %v", retry, err)
+	}
+	runner.base = strings.Repeat("b", 40)
+	if _, err := manager.Create(context.Background(), spec); !errors.Is(err, core.ErrPath) {
+		t.Fatalf("advanced ref retry error = %v", err)
+	}
+	if _, err := manager.Integrate(context.Background(), contracts.Candidate{Task: "task", Revision: "candidate", Base: "base", Worktree: w}); !errors.Is(err, core.ErrPath) {
+		t.Fatalf("advanced ref integration error = %v", err)
+	}
+}
+
+func TestCreateRejectsMalformedBaseResolutionBeforeMutation(t *testing.T) {
+	for _, output := range []string{"short\n", strings.Repeat("a", 40) + "\n" + strings.Repeat("b", 40) + "\n"} {
+		t.Run(strings.ReplaceAll(output, "\n", "_"), func(t *testing.T) {
+			repo := testkit.GitRepo(t)
+			runner := &gitRunner{baseOutput: output}
+			manager := NewManager(repo, "project", store.New(repo, core.StorageLimits{CanonicalBytes: 16 << 20}), runner)
+			_, err := manager.Create(context.Background(), worktreeSpec("run", "team", filepath.Join(repo, ".agent-team", "worktrees", "task")))
+			if !errors.Is(err, core.ErrRevision) || len(mutations(runner.calls)) != 0 {
+				t.Fatalf("Create = %v, calls %#v", err, runner.calls)
 			}
 		})
 	}
@@ -398,6 +437,8 @@ type gitRunner struct {
 	common      map[string]string
 	symbolic    map[string]string
 	symbolicSet map[string]bool
+	base        string
+	baseOutput  string
 }
 
 func (r *gitRunner) Run(_ context.Context, name string, args ...string) tracker.CommandResult {
@@ -423,6 +464,15 @@ func (r *gitRunner) Run(_ context.Context, name string, args ...string) tracker.
 		return tracker.CommandResult{Exit: map[bool]int{true: 0, false: 1}[r.branches[strings.TrimPrefix(command[3], "refs/heads/")]]}
 	case len(command) == 2 && command[0] == "rev-parse" && command[1] == "--show-toplevel":
 		return tracker.CommandResult{Stdout: []byte(args[1])}
+	case len(command) == 3 && command[0] == "rev-parse" && command[1] == "--verify":
+		if r.baseOutput != "" {
+			return tracker.CommandResult{Stdout: []byte(r.baseOutput)}
+		}
+		base := r.base
+		if base == "" {
+			base = strings.Repeat("a", 40)
+		}
+		return tracker.CommandResult{Stdout: []byte(base + "\n")}
 	case len(command) == 3 && command[0] == "rev-parse" && command[2] == "--git-common-dir":
 		common := r.common[args[1]]
 		if common == "" {

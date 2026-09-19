@@ -80,23 +80,27 @@ func (m *Manager) Create(ctx context.Context, spec contracts.WorktreeSpec) (cont
 		return contracts.Worktree{}, err
 	}
 	_ = managed
+	base, err := m.resolveBase(ctx, repo, spec.Base)
+	if err != nil {
+		return contracts.Worktree{}, err
+	}
 	identity, exists, err := m.readIdentity(repo, spec.Run, spec.Team)
 	if err != nil {
 		return contracts.Worktree{}, err
 	}
 	if !exists {
-		identity = WorktreeIdentity{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: m.project, RunID: spec.Run, WrittenAt: timestamp(), Revision: 1}, Team: spec.Team, Path: path, Base: spec.Base, Branch: branchFor(spec.Run, spec.Team), Lifecycle: creating}
+		identity = WorktreeIdentity{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: m.project, RunID: spec.Run, WrittenAt: timestamp(), Revision: 1}, Team: spec.Team, Path: path, Base: base, Branch: branchFor(spec.Run, spec.Team), Lifecycle: creating}
 		// Creating intent is the ownership boundary: no Git mutation precedes it.
 		if err := m.persistNew(spec.Run, spec.Team, identity); err != nil {
 			if !errors.Is(err, store.ErrAlreadyExists) {
 				return contracts.Worktree{}, err
 			}
 			identity, exists, err = m.readIdentity(repo, spec.Run, spec.Team)
-			if err != nil || !exists || identity.Lifecycle == removed || !sameIdentitySpec(identity, spec, path) {
+			if err != nil || !exists || identity.Lifecycle == removed || !sameIdentitySpec(identity, spec, path, base) {
 				return contracts.Worktree{}, core.ErrPath
 			}
 		}
-	} else if identity.Lifecycle == removed || !sameIdentitySpec(identity, spec, path) {
+	} else if identity.Lifecycle == removed || !sameIdentitySpec(identity, spec, path, base) {
 		return contracts.Worktree{}, core.ErrPath
 	}
 	worktree, err := m.resumeCreate(ctx, repo, identity)
@@ -349,7 +353,7 @@ func (m *Manager) readIdentity(repo string, run core.RunID, team core.TeamID) (W
 }
 
 func (m *Manager) validIdentity(repo string, identity WorktreeIdentity, run core.RunID, team core.TeamID) bool {
-	if identity.Schema != 1 || identity.Project != m.project || identity.RunID != run || identity.Team != team || identity.Revision == 0 || identity.Revision == ^uint64(0) || !validTimestamp(identity.WrittenAt) || !safeID(string(identity.RunID)) || !safeID(string(identity.Team)) || !safeGitAtom(identity.Base) || identity.Branch != branchFor(run, team) {
+	if identity.Schema != 1 || identity.Project != m.project || identity.RunID != run || identity.Team != team || identity.Revision == 0 || identity.Revision == ^uint64(0) || !validTimestamp(identity.WrittenAt) || !safeID(string(identity.RunID)) || !safeID(string(identity.Team)) || !fullOID(identity.Base) || identity.Branch != branchFor(run, team) {
 		return false
 	}
 	if identity.Lifecycle != creating && identity.Lifecycle != active && identity.Lifecycle != removingWorktree && identity.Lifecycle != removingBranch && identity.Lifecycle != removed {
@@ -418,6 +422,18 @@ func (m *Manager) branchPresent(ctx context.Context, repo, branch string) (bool,
 	}
 	return r.Exit == 0, nil
 }
+
+func (m *Manager) resolveBase(ctx context.Context, repo, supplied string) (string, error) {
+	output, err := m.output(ctx, repo, "rev-parse", "--verify", supplied+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	oid := strings.ToLower(strings.TrimSpace(output))
+	if !singleLine(output) || !fullOID(oid) {
+		return "", core.ErrRevision
+	}
+	return oid, nil
+}
 func (m *Manager) worktreePresent(ctx context.Context, repo string, identity WorktreeIdentity) (bool, error) {
 	info, err := os.Lstat(identity.Path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -464,8 +480,8 @@ func (m *Manager) gitCommonDir(ctx context.Context, root string) (string, error)
 func worktreeFrom(i WorktreeIdentity) contracts.Worktree {
 	return contracts.Worktree{Run: i.RunID, Team: i.Team, Path: i.Path, Canonical: i.Path, Base: i.Base, Branch: i.Branch}
 }
-func sameIdentitySpec(i WorktreeIdentity, s contracts.WorktreeSpec, path string) bool {
-	return i.RunID == s.Run && i.Team == s.Team && i.Path == path && i.Base == s.Base && i.Branch == branchFor(s.Run, s.Team)
+func sameIdentitySpec(i WorktreeIdentity, s contracts.WorktreeSpec, path, base string) bool {
+	return i.RunID == s.Run && i.Team == s.Team && i.Path == path && i.Base == base && i.Branch == branchFor(s.Run, s.Team)
 }
 func sameWorktree(expected, supplied contracts.Worktree, requireBase bool) bool {
 	return expected.Run == supplied.Run && expected.Team == supplied.Team && expected.Path == supplied.Path && expected.Branch == supplied.Branch && !supplied.Dirty && (supplied.Canonical == "" || supplied.Canonical == expected.Canonical) && (!requireBase || expected.Base == supplied.Base) && (supplied.Base == "" || supplied.Base == expected.Base)
@@ -511,6 +527,18 @@ func canonicalGitPath(output string) (string, error) {
 func singleLine(output string) bool {
 	value := strings.TrimSpace(output)
 	return value != "" && !strings.Contains(value, "\n")
+}
+
+func fullOID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 func canonicalExisting(path string) (string, error) {
 	abs, err := filepath.Abs(filepath.Clean(path))
