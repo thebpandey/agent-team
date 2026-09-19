@@ -33,3 +33,31 @@ func TestCoreAndCLIContracts(t *testing.T) {
 		t.Fatal(round)
 	}
 }
+
+func TestVersionParserAcceptsOnlyExactForms(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want cli.Request
+		fail bool
+	}{
+		{name: "plain", args: []string{"version"}, want: cli.Request{Action: "version"}},
+		{name: "json", args: []string{"version", "--json"}, want: cli.Request{Action: "version", JSON: true}},
+		{name: "extra", args: []string{"version", "--json", "extra"}, fail: true},
+		{name: "unknown flag", args: []string{"version", "--json=false"}, fail: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := cli.Parse(tc.args)
+			if tc.fail {
+				if err == nil {
+					t.Fatal("invalid version form accepted")
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("got=%+v err=%v want=%+v", got, err, tc.want)
+			}
+		})
+	}
+}

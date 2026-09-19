@@ -20,14 +20,11 @@ func Run(_ context.Context, args []string, deps core.Dependencies) int {
 	if deps.Stderr == nil {
 		deps.Stderr = io.Discard
 	}
-	if len(args) == 0 || args[0] != "version" || (len(args) != 2 && len(args) != 1) {
+	request, err := Parse(args)
+	if err != nil || request.Action != "version" {
 		return 2
 	}
-	jsonOutput := len(args) == 2 && args[1] == "--json"
-	if len(args) == 2 && !jsonOutput {
-		return 2
-	}
-	if jsonOutput {
+	if request.JSON {
 		return writeBoundedJSON(stdout, map[string]any{"schema": 1, "version": version})
 	}
 	if _, err := io.WriteString(stdout, version+"\n"); err != nil {
