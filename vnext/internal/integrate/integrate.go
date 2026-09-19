@@ -70,12 +70,28 @@ type intentRecord struct {
 // NewIntegrator creates a foreground serial integrator. It delegates all Git
 // operations and exact worktree identity checks to the inherited manager.
 func NewIntegrator(project project.Project, state *store.Store, manager contracts.WorktreeManager) Integrator {
-	key := canonicalPath(project.Root) + "\x00" + canonicalPath(project.CommonDir)
-	if state != nil {
-		key += "\x00" + canonicalPath(state.Root)
+	projectRoot, projectErr := resolvedDirectory(project.Root)
+	commonDir := project.CommonDir
+	if commonDir == "" {
+		commonDir = projectRoot
 	}
+	resolvedCommon, commonErr := resolvedDirectory(commonDir)
+	storeRoot := ""
+	var resolvedStore *store.Store
+	var storeErr error
+	if state != nil {
+		storeRoot, storeErr = resolvedDirectory(state.Root)
+		if projectErr == nil && commonErr == nil && storeErr == nil {
+			resolvedStore = store.New(storeRoot, state.Limits)
+		}
+	}
+	if projectErr != nil || commonErr != nil || storeErr != nil || resolvedStore == nil {
+		return &serialIntegrator{manager: manager}
+	}
+	project.Root, project.CommonDir = projectRoot, resolvedCommon
+	key := projectRoot + "\x00" + resolvedCommon + "\x00" + storeRoot
 	value, _ := integrationGuards.LoadOrStore(key, &integrationGuard{})
-	return &serialIntegrator{project: project, store: state, manager: manager, guard: value.(*integrationGuard)}
+	return &serialIntegrator{project: project, store: resolvedStore, manager: manager, guard: value.(*integrationGuard)}
 }
 
 func (i *serialIntegrator) Integrate(ctx context.Context, candidate contracts.Candidate, gateResult contracts.GateResult) (Integration, error) {
@@ -92,8 +108,8 @@ func (i *serialIntegrator) Integrate(ctx context.Context, candidate contracts.Ca
 		return Integration{}, err
 	}
 	canonical, err := gate.CanonicalEvidence(i.store, candidate, gateResult)
-	if err != nil {
-		return Integration{}, err
+	if err != nil || !canonical {
+		return Integration{}, core.ErrRevision
 	}
 	manifest, err := i.validate(ctx, candidate, gateResult, canonical)
 	if err != nil {
@@ -197,7 +213,8 @@ func (i *serialIntegrator) validate(ctx context.Context, candidate contracts.Can
 		}
 		return run.Run{}, core.ErrRevision
 	}
-	if canonicalPath(manifest.Root) != canonicalPath(i.project.Root) || manifest.Project == "" || manifest.Project != manifest.Root {
+	manifestRoot, rootErr := resolvedDirectory(manifest.Root)
+	if rootErr != nil || manifestRoot != i.project.Root || manifest.Project == "" || manifest.Project != manifest.Root {
 		return run.Run{}, core.ErrRevision
 	}
 	if !canonical {
@@ -303,15 +320,23 @@ func (i *serialIntegrator) history(projectName string) (int, error) {
 	return len(orders), nil
 }
 
-func canonicalPath(value string) string {
+func resolvedDirectory(value string) (string, error) {
 	if value == "" {
-		return ""
+		return "", core.ErrPath
 	}
 	abs, err := filepath.Abs(value)
 	if err != nil {
-		return filepath.Clean(value)
+		return "", core.ErrPath
 	}
-	return filepath.Clean(abs)
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(abs))
+	if err != nil {
+		return "", core.ErrPath
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return "", core.ErrPath
+	}
+	return filepath.Clean(resolved), nil
 }
 
 func evidenceDigest(record evidenceRecord) string {

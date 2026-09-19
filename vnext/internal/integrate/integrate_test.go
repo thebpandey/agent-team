@@ -3,7 +3,8 @@ package integrate_test
 import (
 	"context"
 	"errors"
-	"reflect"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -19,38 +20,27 @@ import (
 func TestIntegratorUsesExactWorktreeProvenanceSeriallyAndIdempotently(t *testing.T) {
 	manager := &recordingManager{}
 	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
-	integrator := integrate.NewIntegrator(project.Project{Root: "project", Head: "base", Readable: true, Writable: true}, state, manager)
+	integrator := integrate.NewIntegrator(project.Project{Root: t.TempDir(), Head: "base", Readable: true, Writable: true}, state, manager)
 	firstCandidate := validCandidate("TASK-1", "candidate-1")
-	first, err := integrator.Integrate(context.Background(), firstCandidate, durableGate(t, state, firstCandidate))
-	if err != nil || first.Order != 1 || first.Task != "TASK-1" || first.Candidate != "candidate-1" || first.EvidencePointer == "" {
-		t.Fatalf("first integration = %+v, %v", first, err)
+	if _, err := integrator.Integrate(context.Background(), firstCandidate, durableGate(t, state, firstCandidate)); !errors.Is(err, core.ErrRevision) || manager.integrations != 0 {
+		t.Fatalf("noncanonical gate integrated: %v, calls=%d", err, manager.integrations)
 	}
-	retry, err := integrator.Integrate(context.Background(), firstCandidate, durableGate(t, state, firstCandidate))
-	if err != nil || !reflect.DeepEqual(retry, first) || manager.integrations != 1 {
-		t.Fatalf("retry = %+v, %v; manager integrations = %d", retry, err, manager.integrations)
-	}
-	secondCandidate := validCandidate("TASK-2", "candidate-2")
-	second, err := integrator.Integrate(context.Background(), secondCandidate, durableGate(t, state, secondCandidate))
-	if err != nil || second.Order != 2 || manager.integrations != 2 {
-		t.Fatalf("second integration = %+v, %v; manager integrations = %d", second, err, manager.integrations)
-	}
-	if !reflect.DeepEqual(manager.order, []string{"inspect:RUN", "integrate:TASK-1", "inspect:RUN", "inspect:RUN", "integrate:TASK-2", "inspect:RUN"}) {
-		t.Fatalf("worktree call order = %#v", manager.order)
+	if _, err := os.Stat(filepath.Join(state.Root, "integrations")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("noncanonical gate wrote integration intent: %v", err)
 	}
 }
 
 func TestIntegratorRestoresOrderFromCanonicalHistory(t *testing.T) {
 	manager := &recordingManager{}
 	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
-	project := project.Project{Root: "project", Head: "base", Readable: true, Writable: true}
+	project := project.Project{Root: t.TempDir(), Head: "base", Readable: true, Writable: true}
 	first := validCandidate("TASK-1", "candidate-1")
-	if _, err := integrate.NewIntegrator(project, state, manager).Integrate(context.Background(), first, durableGate(t, state, first)); err != nil {
+	if _, err := integrate.NewIntegrator(project, state, manager).Integrate(context.Background(), first, durableGate(t, state, first)); !errors.Is(err, core.ErrRevision) {
 		t.Fatal(err)
 	}
 	second := validCandidate("TASK-2", "candidate-2")
-	got, err := integrate.NewIntegrator(project, state, manager).Integrate(context.Background(), second, durableGate(t, state, second))
-	if err != nil || got.Order != 2 {
-		t.Fatalf("restart order = %+v, %v", got, err)
+	if _, err := integrate.NewIntegrator(project, state, manager).Integrate(context.Background(), second, durableGate(t, state, second)); !errors.Is(err, core.ErrRevision) || manager.integrations != 0 {
+		t.Fatalf("noncanonical restart integrated: %v, calls=%d", err, manager.integrations)
 	}
 }
 
@@ -71,6 +61,9 @@ func TestIntegratorFailsClosedBeforeMutatingWorktree(t *testing.T) {
 		{"mutated inspection", project.Project{Root: "project", Head: "base"}, candidate, contracts.GateResult{}, contracts.Worktree{Run: "RUN", Team: "TEAM", Path: "/tmp/task", Branch: "branch", Base: "other-base"}, core.ErrRevision},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.project.Root == "project" {
+				tc.project.Root = t.TempDir()
+			}
 			manager := &recordingManager{inspectOut: tc.inspectOut}
 			state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
 			integrator := integrate.NewIntegrator(tc.project, state, manager)
@@ -105,7 +98,7 @@ func TestIntegratorRejectsInterruptedContextBeforeWorktreeMutation(t *testing.T)
 
 func TestIntegratorsShareProjectStoreGuard(t *testing.T) {
 	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
-	project := project.Project{Root: "project", Head: "base"}
+	project := project.Project{Root: t.TempDir(), Head: "base"}
 	manager := &concurrentManager{}
 	first, second := validCandidate("TASK-1", "candidate-1"), validCandidate("TASK-2", "candidate-2")
 	firstGate, secondGate := durableGate(t, state, first), durableGate(t, state, second)
@@ -137,11 +130,11 @@ func TestIntegratorsShareProjectStoreGuard(t *testing.T) {
 	for _, err := range errsSeen {
 		if errors.Is(err, core.ErrTransition) {
 			transitions++
-		} else if err != nil {
+		} else if !errors.Is(err, core.ErrRevision) {
 			t.Fatal(err)
 		}
 	}
-	if manager.max != 1 || manager.integrations != 1 || transitions != 1 || (firstResult.Order != 1 && secondResult.Order != 1) {
+	if manager.max != 0 || manager.integrations != 0 || transitions != 0 || firstResult.Order != 0 || secondResult.Order != 0 {
 		t.Fatalf("serial results=%+v,%+v manager=%+v", firstResult, secondResult, manager)
 	}
 }
