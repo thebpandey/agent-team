@@ -46,7 +46,7 @@ func Run(_ context.Context, args []string, deps core.Dependencies) int {
 	if deferred(action) {
 		status = "deferred"
 	}
-	if action.Name == "setup" && len(action.Args) == 1 && action.Args[0] == "--refuse-kickoff" {
+	if action.Name == "setup" && hasArg(action.Args, "--refuse-kickoff") {
 		status = "rejected"
 	}
 	message := action.Name + " " + status
@@ -67,6 +67,15 @@ func outcomeExit(status string) int {
 		return phaseExit(core.ErrPhase)
 	}
 	return 0
+}
+
+func hasArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
 
 func phaseExit(err error) int {

@@ -64,28 +64,34 @@ func TestVersionParserAcceptsOnlyExactForms(t *testing.T) {
 
 func TestCanonicalActions(t *testing.T) {
 	accepted := [][]string{
+		{"setup"},
 		{"setup", "--mode", "plan"},
 		{"settings", "runtime.kind=go", "tracker.kind=tasks-md"},
 		{"status"},
+		{"start"},
 		{"start", "--run", "R-1", "--task", "T-1", "--task", "T-2"},
 		{"task", "add", "--queue", "inspect feature"},
 		{"task", "add", "--execute", "inspect feature"},
+		{"task", "add", "--queue"},
+		{"task", "add", "--execute"},
 		{"one-off", "feature", "inspect feature"},
 		{"one-off", "audit", "inspect config"},
 		{"one-off", "review", "review change"},
+		{"one-off", "feature", "--objective", "inspect feature"},
 		{"pause", "--team", "TEAM-1"},
+		{"pause", "--scope", "team:TEAM-1"},
 		{"stop", "--run", "R-1"},
 		{"cancel", "--task", "T-1"},
 		{"resume", "--run", "R-1"},
 		{"inspect", "--run", "R-1"},
 		{"cleanup", "--team", "TEAM-1"},
 		{"inspect"},
+		{"cleanup"},
 		{"deploy"},
 	}
 	rejected := [][]string{
 		{"review"}, {"gate"}, {"integrate"}, {"reconcile"}, {"checkpoint"},
-		{"list"}, {"archive"}, {"plan"}, {"task", "add", "--queue"},
-		{"one-off", "feature", "--objective", "inspect feature"},
+		{"list"}, {"archive"}, {"plan"},
 	}
 	for _, args := range accepted {
 		if _, err := cli.Parse(args); err != nil {
@@ -106,6 +112,9 @@ func TestCanonicalActionsRetainArgumentsAndJSON(t *testing.T) {
 	}{
 		{[]string{"task", "add", "--queue", "inspect feature", "--json"}, cli.Action{Name: "task add", Args: []string{"--queue", "inspect feature"}, JSON: true}},
 		{[]string{"one-off", "feature", "inspect feature", "--json"}, cli.Action{Name: "one-off feature", Args: []string{"inspect feature"}, JSON: true}},
+		{[]string{"one-off", "feature", "--objective", "inspect feature"}, cli.Action{Name: "one-off feature", Args: []string{"inspect feature"}}},
+		{[]string{"pause", "--scope", "team:TEAM-1"}, cli.Action{Name: "pause", Args: []string{"--team", "TEAM-1"}}},
+		{[]string{"task", "add", "--queue"}, cli.Action{Name: "task add", Args: []string{"--queue"}}},
 		{[]string{"status", "--run", "RUN-1"}, cli.Action{Name: "status", Args: []string{"--run", "RUN-1"}}},
 	}
 	for _, tc := range cases {
@@ -182,6 +191,7 @@ func TestDeferredJSONOutcomesRetainPhaseExit(t *testing.T) {
 		{"deploy", "--json"},
 		{"task", "add", "--execute", "inspect feature", "--json"},
 		{"setup", "--refuse-kickoff", "--json"},
+		{"setup", "--mode", "plan", "--refuse-kickoff", "--json"},
 	} {
 		var out bytes.Buffer
 		if code := cli.Run(context.Background(), args, core.Dependencies{Stdout: &out, Stderr: &out}); code != 2 {

@@ -72,29 +72,44 @@ func Parse(args []string) (Action, error) {
 			return Action{}, err
 		}
 	case "task":
-		if len(args) < 4 || args[1] != "add" || (args[2] != "--queue" && args[2] != "--execute") {
-			return Action{}, core.ErrPhase
-		}
-		objective := strings.TrimSpace(strings.Join(args[3:], " "))
-		if objective == "" {
+		if len(args) < 3 || args[1] != "add" || (args[2] != "--queue" && args[2] != "--execute") {
 			return Action{}, core.ErrPhase
 		}
 		name = "task add"
-		actionArgs = []string{args[2], objective}
+		actionArgs = []string{args[2]}
+		if len(args) > 3 {
+			objective := strings.TrimSpace(strings.Join(args[3:], " "))
+			if objective == "" {
+				return Action{}, core.ErrPhase
+			}
+			actionArgs = append(actionArgs, objective)
+		}
 	case "one-off":
 		if len(args) < 3 || (args[1] != "feature" && args[1] != "audit" && args[1] != "review") {
 			return Action{}, core.ErrPhase
 		}
+		objectiveArgs := args[2:]
 		if args[2] == "--objective" {
-			return Action{}, core.ErrPhase
+			if len(args) < 4 {
+				return Action{}, core.ErrPhase
+			}
+			objectiveArgs = args[3:]
 		}
-		objective := strings.TrimSpace(strings.Join(args[2:], " "))
+		objective := strings.TrimSpace(strings.Join(objectiveArgs, " "))
 		if objective == "" {
 			return Action{}, core.ErrPhase
 		}
 		name = "one-off " + args[1]
 		actionArgs = []string{objective}
 	case "pause", "stop", "cancel", "resume":
+		if name == "pause" && len(args) == 3 && args[1] == "--scope" {
+			var err error
+			actionArgs, err = parseScope(args[2])
+			if err != nil {
+				return Action{}, err
+			}
+			break
+		}
 		allowed := map[string]bool{"--run": true, "--team": true, "--task": true}
 		if name == "pause" || name == "stop" {
 			allowed["--project"] = true
@@ -186,6 +201,15 @@ func parseSelectors(args []string, allowed map[string]bool, repeatTask bool) ([]
 		out = append(out, flag, value)
 	}
 	return out, nil
+}
+
+func parseScope(value string) ([]string, error) {
+	kind, id, ok := strings.Cut(strings.TrimSpace(value), ":")
+	id = strings.TrimSpace(id)
+	if !ok || id == "" || (kind != "project" && kind != "run" && kind != "team" && kind != "task") {
+		return nil, core.ErrPhase
+	}
+	return []string{"--" + kind, id}, nil
 }
 
 func parseDeployArgs(args []string) ([]string, error) {
