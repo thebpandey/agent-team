@@ -84,7 +84,82 @@ func (s *scriptedVertical) execute(p core.AssignmentPacket) error {
 	if s.developer == s.reviewer || p.Task == "" || p.SpecRevision == "" {
 		return core.ErrTransition
 	}
-	s.events = append(s.events, "developer", "FIX", "developer:repaired", "CLEAN", "gate", "integrate", "cleanup")
+	developer := scriptedDeveloper{events: &s.events}
+	reviewer := scriptedReviewer{host: s.reviewer, events: &s.events}
+	gate := scriptedGate{events: &s.events}
+	integrator := scriptedIntegrator{events: &s.events}
+	cleaner := scriptedCleaner{events: &s.events}
+	revision := developer.start(p)
+	if reviewer.review(revision) != "FIX" {
+		return core.ErrTransition
+	}
+	revision = developer.repair(revision)
+	if reviewer.review(revision) != "CLEAN" || reviewer.host == s.developer {
+		return core.ErrTransition
+	}
+	if err := gate.check(revision); err != nil {
+		return err
+	}
+	if err := integrator.integrate(revision); err != nil {
+		return err
+	}
+	return cleaner.cleanup(revision)
+}
+
+type scriptedDeveloper struct{ events *[]string }
+
+func (d scriptedDeveloper) start(p core.AssignmentPacket) string {
+	*d.events = append(*d.events, "developer")
+	return p.SpecRevision
+}
+func (d scriptedDeveloper) repair(revision string) string {
+	*d.events = append(*d.events, "developer:repaired")
+	return revision + ":repaired"
+}
+
+type scriptedReviewer struct {
+	host   string
+	events *[]string
+	calls  int
+}
+
+func (r *scriptedReviewer) review(string) string {
+	r.calls++
+	if r.calls == 1 {
+		*r.events = append(*r.events, "FIX")
+		return "FIX"
+	}
+	*r.events = append(*r.events, "CLEAN")
+	return "CLEAN"
+}
+
+type scriptedGate struct{ events *[]string }
+
+func (g scriptedGate) check(revision string) error {
+	if revision == "" {
+		return core.ErrRevision
+	}
+	*g.events = append(*g.events, "gate")
+	return nil
+}
+
+type scriptedIntegrator struct{ events *[]string }
+
+func (i scriptedIntegrator) integrate(revision string) error {
+	if revision == "" {
+		return core.ErrRevision
+	}
+	*i.events = append(*i.events, "integrate")
+	return nil
+}
+
+type scriptedCleaner struct{ events *[]string }
+
+func (c scriptedCleaner) cleanup(revision string) error {
+	if revision == "" {
+		return core.ErrRevision
+	}
+	*c.events = append(*c.events, "cleanup")
 	return nil
 }
 
