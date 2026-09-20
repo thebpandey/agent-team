@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/lifecycle"
 )
 
 const version = "0.0.0-dev"
@@ -21,7 +22,19 @@ type outcome struct {
 	Message string `json:"message"`
 }
 
-func Run(_ context.Context, args []string, deps core.Dependencies) int {
+// Dependencies composes the CLI's I/O with the lifecycle services needed for
+// scoped foreground actions.
+type Dependencies struct {
+	ProjectRoot   string
+	Stdout        io.Writer
+	Stderr        io.Writer
+	Confirmations map[string]bool
+	ActiveRuns    []core.RunID
+	ScopeLookup   lifecycle.ScopeLookup
+	Lifecycle     lifecycle.Lifecycle
+}
+
+func Run(ctx context.Context, args []string, deps Dependencies) int {
 	stdout := deps.Stdout
 	if stdout == nil {
 		stdout = io.Discard
@@ -41,6 +54,11 @@ func Run(_ context.Context, args []string, deps core.Dependencies) int {
 			return 1
 		}
 		return 0
+	}
+	if action.ScopeRequired {
+		if err := lifecycle.ExecuteLifecycle(ctx, lifecycle.ParsedAction{Name: action.Name, Selector: action.Args, ScopeRequired: action.ScopeRequired}, deps.ActiveRuns, deps.ScopeLookup, deps.Lifecycle); err != nil {
+			return writeFailure(stdout, deps.Stderr, args, err)
+		}
 	}
 
 	status := "accepted"
