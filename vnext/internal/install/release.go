@@ -99,8 +99,8 @@ func (s *ManifestStore) compareAndSwapLocked(ctx context.Context, expected uint6
 }
 
 func VerifyRelease(release Release) error {
-	if strings.TrimSpace(release.Version) == "" || len(release.Entrypoints) != 2 {
-		return fmt.Errorf("release version and both host entrypoints are required")
+	if strings.TrimSpace(release.Version) == "" || !validReleaseRevision(release.Revision) || len(release.Entrypoints) != 2 {
+		return fmt.Errorf("release version, revision, and both host entrypoints are required")
 	}
 	files := []ReleaseFile{release.Binary, release.Contract, release.Entrypoints[Codex], release.Entrypoints[Claude]}
 	for _, file := range files {
@@ -134,7 +134,7 @@ func sha256File(path string) (string, int64, error) {
 }
 
 func validateManifest(manifest InstallManifest) error {
-	if manifest.Schema != 1 || strings.TrimSpace(manifest.Version) == "" {
+	if manifest.Schema != 1 || strings.TrimSpace(manifest.Version) == "" || !validReleaseRevision(manifest.ReleaseRevision) {
 		return core.ErrSettings
 	}
 	seenHosts := map[Host]bool{}
@@ -145,16 +145,28 @@ func validateManifest(manifest InstallManifest) error {
 		seenHosts[host] = true
 	}
 	for _, file := range manifest.Files {
-		if !absoluteClean(file.Path) || !validSHA256(file.SHA256) || file.Bytes < 0 || file.Version == "" || (file.Role != BinaryRole && file.Role != ContractRole && file.Role != EntrypointRole) {
+		if !absoluteClean(file.Path) || !validSHA256(file.SHA256) || file.Bytes < 0 || file.Version == "" || !validReleaseRevision(file.Revision) || (file.Role != BinaryRole && file.Role != ContractRole && file.Role != EntrypointRole) {
 			return core.ErrSettings
 		}
 	}
 	for _, backup := range manifest.Backups {
-		if !absoluteClean(backup.Path) || !validSHA256(backup.SHA256) || backup.Bytes < 0 || backup.Version == "" {
+		if !absoluteClean(backup.Path) || !validSHA256(backup.SHA256) || backup.Bytes < 0 || backup.Version == "" || !validReleaseRevision(backup.Revision) {
 			return core.ErrSettings
 		}
 	}
 	return nil
+}
+
+func validReleaseRevision(value string) bool {
+	if len(value) < 40 || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') && (character < 'A' || character > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func validSHA256(value string) bool {

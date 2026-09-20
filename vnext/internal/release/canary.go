@@ -181,7 +181,7 @@ func RunInstallCanaryFromArchive(ctx context.Context, archivePath string, layout
 	if len(seen) != len(want) || !versionSeen {
 		return Canary{}, core.ErrRevision
 	}
-	staged := install.Release{Version: rel.Version, Binary: rel.Binary, Contract: rel.Contract, Entrypoints: map[install.Host]install.ReleaseFile{}}
+	staged := install.Release{Version: rel.Version, Revision: rel.Revision, Binary: rel.Binary, Contract: rel.Contract, Entrypoints: map[install.Host]install.ReleaseFile{}}
 	staged.Binary.Path = filepath.Join(stage, "agent-teamctl")
 	staged.Contract.Path = filepath.Join(stage, "WORKER-CONTRACT")
 	for host, file := range rel.Entrypoints {

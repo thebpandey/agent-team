@@ -47,7 +47,7 @@ func TestManifestStoreCAS(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := install.NewManifestStore(layout)
-	manifest := install.InstallManifest{Schema: 1, Version: "1.0.0", Hosts: []install.Host{install.Codex}}
+	manifest := install.InstallManifest{Schema: 1, Version: "1.0.0", ReleaseRevision: "0123456789abcdef0123456789abcdef01234567", Hosts: []install.Host{install.Codex}}
 	created, err := store.CompareAndSwap(context.Background(), 0, manifest)
 	if err != nil || created.Kind != install.CASCreated || created.Manifest.Revision != 1 {
 		t.Fatal(created, err)

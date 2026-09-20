@@ -100,7 +100,7 @@ func installLocked(ctx context.Context, layout Layout, release Release, hosts []
 			return fail(err)
 		}
 	}
-	manifest := InstallManifest{Schema: 1, Version: release.Version, Hosts: hosts}
+	manifest := InstallManifest{Schema: 1, Version: release.Version, ReleaseRevision: release.Revision, Hosts: hosts}
 	for _, file := range desired {
 		manifest.Files = append(manifest.Files, file.owned)
 	}
@@ -188,6 +188,7 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 	desired := releaseFiles(layout, release, current.Hosts)
 	next := cloneManifest(current)
 	next.Version = release.Version
+	next.ReleaseRevision = release.Revision
 	retained := []string{}
 	for _, target := range desired {
 		index := ownedIndex(next.Files, target.owned.Role, target.owned.Host)
@@ -200,7 +201,7 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			retained = append(retained, target.owned.Path)
 			continue
 		}
-		backup := Backup{Role: next.Files[index].Role, Host: next.Files[index].Host, Path: backupPath(layout, next.Files[index]), SHA256: next.Files[index].SHA256, Version: next.Files[index].Version, Bytes: next.Files[index].Bytes}
+		backup := Backup{Role: next.Files[index].Role, Host: next.Files[index].Host, Path: backupPath(layout, next.Files[index]), SHA256: next.Files[index].SHA256, Version: next.Files[index].Version, Revision: next.Files[index].Revision, Bytes: next.Files[index].Bytes}
 		if err := AtomicReplace(layout, backup.Path, oldBytes, 0o600); err != nil {
 			return CASOutcome{Retained: append(retained, target.owned.Path)}, err
 		}
@@ -267,12 +268,19 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 			return CASOutcome{Retained: append(retained, next.Files[index].Path)}, err
 		}
 		next.Files[index].SHA256, next.Files[index].Bytes, next.Files[index].Version = backup.SHA256, backup.Bytes, backup.Version
+		next.Files[index].Revision = backup.Revision
 		restored++
 	}
 	if restored == 0 {
 		return CASOutcome{Retained: retained}, core.ErrRevision
 	}
 	next.Version = version
+	for _, backup := range current.Backups {
+		if backup.Version == version {
+			next.ReleaseRevision = backup.Revision
+			break
+		}
+	}
 	outcome, err := manifestStore.compareAndSwapLocked(ctx, expected, next)
 	outcome.Retained = retained
 	return outcome, err
@@ -473,12 +481,12 @@ type desiredFile struct {
 
 func releaseFiles(layout Layout, release Release, hosts []Host) []desiredFile {
 	files := []desiredFile{
-		{OwnedFile{Role: BinaryRole, Path: layout.BinaryPath, SHA256: release.Binary.SHA256, Version: release.Version, Bytes: release.Binary.Bytes}, release.Binary},
-		{OwnedFile{Role: ContractRole, Path: layout.ContractPath, SHA256: release.Contract.SHA256, Version: release.Version, Bytes: release.Contract.Bytes}, release.Contract},
+		{OwnedFile{Role: BinaryRole, Path: layout.BinaryPath, SHA256: release.Binary.SHA256, Version: release.Version, Revision: release.Revision, Bytes: release.Binary.Bytes}, release.Binary},
+		{OwnedFile{Role: ContractRole, Path: layout.ContractPath, SHA256: release.Contract.SHA256, Version: release.Version, Revision: release.Revision, Bytes: release.Contract.Bytes}, release.Contract},
 	}
 	for _, host := range hosts {
 		entrypoint := release.Entrypoints[host]
-		files = append(files, desiredFile{OwnedFile{Role: EntrypointRole, Host: host, Path: filepath.Join(layout.SkillRoots[host], "agent-team-vnext", "SKILL.md"), SHA256: entrypoint.SHA256, Version: release.Version, Bytes: entrypoint.Bytes}, entrypoint})
+		files = append(files, desiredFile{OwnedFile{Role: EntrypointRole, Host: host, Path: filepath.Join(layout.SkillRoots[host], "agent-team-vnext", "SKILL.md"), SHA256: entrypoint.SHA256, Version: release.Version, Revision: release.Revision, Bytes: entrypoint.Bytes}, entrypoint})
 	}
 	return files
 }

@@ -27,36 +27,40 @@ type ReleaseFile struct {
 
 type Release struct {
 	Version     string               `json:"version"`
+	Revision    string               `json:"revision"`
 	Binary      ReleaseFile          `json:"binary"`
 	Contract    ReleaseFile          `json:"contract"`
 	Entrypoints map[Host]ReleaseFile `json:"entrypoints"`
 }
 
 type OwnedFile struct {
-	Role    FileRole `json:"role"`
-	Host    Host     `json:"host,omitempty"`
-	Path    string   `json:"path"`
-	SHA256  string   `json:"sha256"`
-	Version string   `json:"version"`
-	Bytes   int64    `json:"bytes"`
+	Role     FileRole `json:"role"`
+	Host     Host     `json:"host,omitempty"`
+	Path     string   `json:"path"`
+	SHA256   string   `json:"sha256"`
+	Version  string   `json:"version"`
+	Revision string   `json:"release_revision"`
+	Bytes    int64    `json:"bytes"`
 }
 
 type Backup struct {
-	Role    FileRole `json:"role"`
-	Host    Host     `json:"host,omitempty"`
-	Path    string   `json:"path"`
-	SHA256  string   `json:"sha256"`
-	Version string   `json:"version"`
-	Bytes   int64    `json:"bytes"`
+	Role     FileRole `json:"role"`
+	Host     Host     `json:"host,omitempty"`
+	Path     string   `json:"path"`
+	SHA256   string   `json:"sha256"`
+	Version  string   `json:"version"`
+	Revision string   `json:"release_revision"`
+	Bytes    int64    `json:"bytes"`
 }
 
 type InstallManifest struct {
-	Schema   int         `json:"schema"`
-	Revision uint64      `json:"revision"`
-	Version  string      `json:"version"`
-	Hosts    []Host      `json:"hosts"`
-	Files    []OwnedFile `json:"files"`
-	Backups  []Backup    `json:"backups"`
+	Schema          int         `json:"schema"`
+	Revision        uint64      `json:"revision"`
+	Version         string      `json:"version"`
+	ReleaseRevision string      `json:"release_revision"`
+	Hosts           []Host      `json:"hosts"`
+	Files           []OwnedFile `json:"files"`
+	Backups         []Backup    `json:"backups"`
 }
 
 type CASKind string

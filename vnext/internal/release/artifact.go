@@ -89,3 +89,6 @@ func validateManifest(manifest Manifest) error {
 	}
 	return nil
 }
+
+// VerifyManifest validates the immutable release manifest format.
+func VerifyManifest(manifest Manifest) error { return validateManifest(manifest) }

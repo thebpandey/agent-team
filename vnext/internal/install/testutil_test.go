@@ -28,5 +28,5 @@ func writeReleaseFixture(t *testing.T, root string) install.Release {
 		}
 		return install.ReleaseFile{Path: paths[name], SHA256: fmt.Sprintf("%x", sha256.Sum256(data)), Bytes: int64(len(data))}
 	}
-	return install.Release{Version: "1.0.0", Binary: file("agent-teamctl.bin"), Contract: file("WORKER-CONTRACT"), Entrypoints: map[install.Host]install.ReleaseFile{install.Codex: file("SKILL.md"), install.Claude: file("SKILL.md")}}
+	return install.Release{Version: "1.0.0", Revision: "0123456789abcdef0123456789abcdef01234567", Binary: file("agent-teamctl.bin"), Contract: file("WORKER-CONTRACT"), Entrypoints: map[install.Host]install.ReleaseFile{install.Codex: file("SKILL.md"), install.Claude: file("SKILL.md")}}
 }

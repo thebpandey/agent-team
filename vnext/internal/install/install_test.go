@@ -30,6 +30,9 @@ func TestInstallUpdateRollbackUninstallPreserveChangedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if first.Manifest.Version != release.Version || first.Manifest.ReleaseRevision != release.Revision {
+		t.Fatalf("manifest provenance = %q %q", first.Manifest.Version, first.Manifest.ReleaseRevision)
+	}
 	oldBinary, _ := os.ReadFile(release.Binary.Path)
 	oldContract, _ := os.ReadFile(release.Contract.Path)
 	oldEntrypoint, _ := os.ReadFile(release.Entrypoints[install.Codex].Path)

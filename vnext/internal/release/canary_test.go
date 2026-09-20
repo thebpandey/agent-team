@@ -45,12 +45,12 @@ func canaryFixture(t *testing.T) (install.Layout, install.Release, install.Insta
 		t.Fatal(err)
 	}
 	layout := install.Layout{DataRoot: installed, BinaryPath: oldBinary.Path, ContractPath: oldContract.Path, ManifestPath: filepath.Join(installed, "manifest.json"), SkillRoots: map[install.Host]string{install.Codex: filepath.Dir(oldCodex.Path), install.Claude: filepath.Dir(oldClaude.Path)}}
-	rel := install.Release{Version: "8.0.0", Binary: binary, Contract: contract, Entrypoints: map[install.Host]install.ReleaseFile{install.Codex: codex, install.Claude: claude}}
-	manifest := install.InstallManifest{Schema: 1, Version: "7.9.0", Hosts: []install.Host{install.Codex, install.Claude}, Files: []install.OwnedFile{
-		{Role: install.BinaryRole, Path: oldBinary.Path, SHA256: oldBinary.SHA256, Version: "7.9.0", Bytes: oldBinary.Bytes},
-		{Role: install.ContractRole, Path: oldContract.Path, SHA256: oldContract.SHA256, Version: "7.9.0", Bytes: oldContract.Bytes},
-		{Role: install.EntrypointRole, Host: install.Codex, Path: oldCodex.Path, SHA256: oldCodex.SHA256, Version: "7.9.0", Bytes: oldCodex.Bytes},
-		{Role: install.EntrypointRole, Host: install.Claude, Path: oldClaude.Path, SHA256: oldClaude.SHA256, Version: "7.9.0", Bytes: oldClaude.Bytes},
+	rel := install.Release{Version: "8.0.0", Revision: "0123456789abcdef0123456789abcdef01234567", Binary: binary, Contract: contract, Entrypoints: map[install.Host]install.ReleaseFile{install.Codex: codex, install.Claude: claude}}
+	manifest := install.InstallManifest{Schema: 1, Version: "7.9.0", ReleaseRevision: "abcdef0123456789abcdef0123456789abcdef01", Hosts: []install.Host{install.Codex, install.Claude}, Files: []install.OwnedFile{
+		{Role: install.BinaryRole, Path: oldBinary.Path, SHA256: oldBinary.SHA256, Version: "7.9.0", Revision: "abcdef0123456789abcdef0123456789abcdef01", Bytes: oldBinary.Bytes},
+		{Role: install.ContractRole, Path: oldContract.Path, SHA256: oldContract.SHA256, Version: "7.9.0", Revision: "abcdef0123456789abcdef0123456789abcdef01", Bytes: oldContract.Bytes},
+		{Role: install.EntrypointRole, Host: install.Codex, Path: oldCodex.Path, SHA256: oldCodex.SHA256, Version: "7.9.0", Revision: "abcdef0123456789abcdef0123456789abcdef01", Bytes: oldCodex.Bytes},
+		{Role: install.EntrypointRole, Host: install.Claude, Path: oldClaude.Path, SHA256: oldClaude.SHA256, Version: "7.9.0", Revision: "abcdef0123456789abcdef0123456789abcdef01", Bytes: oldClaude.Bytes},
 	}}
 	return layout, rel, manifest
 }
@@ -180,7 +180,7 @@ func TestPackagedArchiveCanary(t *testing.T) {
 		return install.ReleaseFile{}
 	}
 	layout, _, prior := canaryFixture(t)
-	rel := install.Release{Version: packageManifest.Version, Binary: metadata("agent-teamctl"), Contract: metadata("WORKER-CONTRACT"), Entrypoints: map[install.Host]install.ReleaseFile{install.Codex: metadata("codex/SKILL.md"), install.Claude: metadata("claude/SKILL.md")}}
+	rel := install.Release{Version: packageManifest.Version, Revision: packageManifest.Commit, Binary: metadata("agent-teamctl"), Contract: metadata("WORKER-CONTRACT"), Entrypoints: map[install.Host]install.ReleaseFile{install.Codex: metadata("codex/SKILL.md"), install.Claude: metadata("claude/SKILL.md")}}
 	canary, err := release.RunInstallCanaryFromArchive(context.Background(), archivePath, layout, rel, prior, []install.Host{install.Codex, install.Claude})
 	if err != nil || canary.ArchivePath != archivePath || canary.ArchiveSHA256 == "" || !canary.RollbackVerified {
 		t.Fatal(canary, err)

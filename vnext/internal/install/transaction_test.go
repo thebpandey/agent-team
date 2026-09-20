@@ -128,5 +128,5 @@ func internalFixtureAt(t *testing.T, root, name string) (Layout, Release) {
 		}
 		return ReleaseFile{Path: path, SHA256: digest, Bytes: size}
 	}
-	return layout, Release{Version: "1.0.0", Binary: write("binary", name+" binary"), Contract: write("contract", name+" contract"), Entrypoints: map[Host]ReleaseFile{Codex: write("codex.md", name+" codex"), Claude: write("claude.md", name+" claude")}}
+	return layout, Release{Version: "1.0.0", Revision: "0123456789abcdef0123456789abcdef01234567", Binary: write("binary", name+" binary"), Contract: write("contract", name+" contract"), Entrypoints: map[Host]ReleaseFile{Codex: write("codex.md", name+" codex"), Claude: write("claude.md", name+" claude")}}
 }
