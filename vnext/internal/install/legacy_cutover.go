@@ -316,11 +316,16 @@ func rollbackLegacyHosts(ctx context.Context, layout Layout, request LegacyHostC
 		}
 		seen[postimage.Path] = true
 		preimage := preimages[postimage.Path]
-		if matchesHostRollbackPreimage(layout, postimage.Path, preimage) {
+		current, readErr := readHostRollbackImage(layout, postimage.Path)
+		if readErr != nil {
+			return LegacyHostCutoverResult{}, core.ErrRevision
+		}
+		if matchesHostRollbackPreimage(current, preimage) {
 			already = append(already, postimage.Path)
 			continue
 		}
-		if !matchesHostRollbackPostimage(layout, postimage) {
+		postMode, modeKnown := hostRollbackPostMode(layout, postimage)
+		if !matchesHostRollbackPostimage(current, postimage, postMode, modeKnown) {
 			return LegacyHostCutoverResult{}, core.ErrRevision
 		}
 		var mutation lifecycleMutation
@@ -329,7 +334,7 @@ func rollbackLegacyHosts(ctx context.Context, layout Layout, request LegacyHostC
 		} else {
 			mutation, err = prepareMutation(layout, preimage.Path, preimage.Bytes, fs.FileMode(preimage.Mode), false, false, nil)
 		}
-		if err != nil || mutation.Existed == postimage.Absent || !postimage.Absent && mutation.PreSHA256 != postimage.SHA256 {
+		if err != nil || mutation.Existed == postimage.Absent || !postimage.Absent && (mutation.PreSHA256 != postimage.SHA256 || mutation.PreMode != postMode) {
 			return LegacyHostCutoverResult{}, core.ErrRevision
 		}
 		journal.Mutations = append(journal.Mutations, mutation)
@@ -340,7 +345,8 @@ func rollbackLegacyHosts(ctx context.Context, layout Layout, request LegacyHostC
 		}
 	}
 	for _, path := range already {
-		if !matchesHostRollbackPreimage(layout, path, preimages[path]) {
+		current, readErr := readHostRollbackImage(layout, path)
+		if readErr != nil || !matchesHostRollbackPreimage(current, preimages[path]) {
 			return LegacyHostCutoverResult{}, core.ErrRevision
 		}
 	}
@@ -361,42 +367,62 @@ func rollbackLegacyHosts(ctx context.Context, layout Layout, request LegacyHostC
 	return LegacyHostCutoverResult{ManifestRevision: outcome.Manifest.Revision, Idempotent: idempotent}, nil
 }
 
-func matchesHostRollbackPostimage(layout Layout, image hostCutoverPostimage) bool {
-	root := ownedRoot(layout, image.Path)
-	if root == "" {
-		return false
-	}
-	if image.Absent {
-		_, err := os.Lstat(image.Path)
-		return errors.Is(err, fs.ErrNotExist)
-	}
-	raw, err := readStableRegular(root, image.Path, -1, nil, "")
-	return err == nil && digestContent(raw) == image.SHA256
+type hostRollbackImage struct {
+	raw    []byte
+	mode   uint32
+	absent bool
 }
 
-func matchesHostRollbackPreimage(layout Layout, path string, image *hostCutoverPreimage) bool {
+func readHostRollbackImage(layout Layout, path string) (hostRollbackImage, error) {
 	root := ownedRoot(layout, path)
 	if root == "" {
-		return false
+		return hostRollbackImage{}, core.ErrPath
 	}
-	if image == nil {
-		_, err := os.Lstat(path)
-		return errors.Is(err, fs.ErrNotExist)
-	}
-	if image.Path != path || int64(len(image.Bytes)) > installJournalLimit || digestContent(image.Bytes) != image.SHA256 {
-		return false
+	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+		return hostRollbackImage{absent: true}, nil
+	} else if err != nil {
+		return hostRollbackImage{}, err
 	}
 	file, size, err := openStableRegular(root, path)
 	if err != nil {
-		return false
+		return hostRollbackImage{}, err
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || size != int64(len(image.Bytes)) || uint32(info.Mode().Perm()) != image.Mode {
-		return false
+	if err != nil {
+		return hostRollbackImage{}, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, size+1))
-	return err == nil && bytes.Equal(raw, image.Bytes) && verifyStableIdentity(file, path) == nil
+	if err != nil || int64(len(raw)) != size || verifyStableIdentity(file, path) != nil {
+		return hostRollbackImage{}, core.ErrRevision
+	}
+	return hostRollbackImage{raw: raw, mode: uint32(info.Mode().Perm())}, nil
+}
+
+func hostRollbackPostMode(layout Layout, image hostCutoverPostimage) (uint32, bool) {
+	if image.Absent {
+		return 0, true
+	}
+	for _, host := range []Host{Codex, Claude} {
+		if sameHostPath(image.Path, filepath.Join(layout.SkillRoots[host], "SKILL.md")) || sameHostPath(image.Path, layout.ConfigPaths[host]) {
+			return 0o600, true
+		}
+	}
+	return 0, false
+}
+
+func matchesHostRollbackPostimage(current hostRollbackImage, expected hostCutoverPostimage, mode uint32, modeKnown bool) bool {
+	if expected.Absent {
+		return current.absent
+	}
+	return modeKnown && !current.absent && current.mode == mode && digestContent(current.raw) == expected.SHA256
+}
+
+func matchesHostRollbackPreimage(current hostRollbackImage, image *hostCutoverPreimage) bool {
+	if image == nil {
+		return current.absent
+	}
+	return !current.absent && current.mode == image.Mode && bytes.Equal(current.raw, image.Bytes)
 }
 
 func (receipt *hostCutoverReceipt) addMutation(mutation lifecycleMutation) {

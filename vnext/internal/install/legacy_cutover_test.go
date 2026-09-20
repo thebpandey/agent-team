@@ -200,6 +200,70 @@ func TestLegacyHostRollbackRejectsThirdStateBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestLegacyHostRollbackRejectsPostimageModeDriftBeforeMutation(t *testing.T) {
+	for _, name := range []string{"top-level skill", "transformed settings"} {
+		t.Run(name, func(t *testing.T) {
+			layout, release, request, receipt := legacyRollbackFixture(t)
+			if receipt.Schema != 1 {
+				t.Fatalf("fixture receipt schema = %d", receipt.Schema)
+			}
+			target := receipt.Postimages[0].Path
+			if name == "transformed settings" {
+				target = layout.ConfigPaths[Claude]
+			}
+			if err := os.Chmod(target, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			before := snapshotRollbackPaths(t, layout, receipt)
+			if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); !errors.Is(err, core.ErrRevision) {
+				t.Fatalf("mode-drift rollback = %v", err)
+			}
+			assertRollbackPathsUnchanged(t, before)
+			assertNoJournal(t, layout)
+		})
+	}
+}
+
+func TestLegacyHostRollbackRejectsPostimagePathReplacementBeforeMutation(t *testing.T) {
+	layout, release, request, receipt := legacyRollbackFixture(t)
+	target := receipt.Postimages[0].Path
+	targetRaw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotRollbackPaths(t, layout, receipt)
+	var replacement os.FileInfo
+	stableReadHook = func(path string) {
+		if path != target {
+			return
+		}
+		stableReadHook = nil
+		temporary := filepath.Join(filepath.Dir(target), "replacement")
+		if err := os.WriteFile(temporary, targetRaw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		replacement, err = os.Stat(temporary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(temporary, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { stableReadHook = nil })
+	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("replacement rollback = %v", err)
+	}
+	stableReadHook = nil
+	after, err := os.Stat(target)
+	if err != nil || replacement == nil || !os.SameFile(replacement, after) {
+		t.Fatalf("replacement path changed: %v", err)
+	}
+	delete(before, target)
+	assertRollbackPathsUnchanged(t, before)
+	assertNoJournal(t, layout)
+}
+
 func TestLegacyHostRollbackRecoversInterruptedMixedState(t *testing.T) {
 	layout, release, request, receipt := legacyRollbackFixture(t)
 	already := receipt.Preimages[2]
@@ -695,6 +759,54 @@ func assertLegacyRollbackState(t *testing.T, layout Layout, receipt hostCutoverR
 	}
 	if _, err := os.Lstat(filepath.Join(layout.DataRoot, filepath.FromSlash(installAttemptPath))); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("lifecycle journal retained: %v", err)
+	}
+}
+
+type rollbackPathSnapshot struct {
+	info   os.FileInfo
+	raw    []byte
+	absent bool
+}
+
+func snapshotRollbackPaths(t *testing.T, layout Layout, receipt hostCutoverReceipt) map[string]rollbackPathSnapshot {
+	t.Helper()
+	paths := []string{layout.ManifestPath, filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))}
+	for _, image := range receipt.Postimages {
+		paths = append(paths, image.Path)
+	}
+	result := make(map[string]rollbackPathSnapshot, len(paths))
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			result[path] = rollbackPathSnapshot{absent: true}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result[path] = rollbackPathSnapshot{info: info, raw: raw}
+	}
+	return result
+}
+
+func assertRollbackPathsUnchanged(t *testing.T, before map[string]rollbackPathSnapshot) {
+	t.Helper()
+	for path, want := range before {
+		info, err := os.Lstat(path)
+		if want.absent {
+			if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("absent path changed %s: %v", path, err)
+			}
+			continue
+		}
+		raw, readErr := os.ReadFile(path)
+		if err != nil || readErr != nil || !os.SameFile(want.info, info) || info.Mode() != want.info.Mode() || !bytes.Equal(raw, want.raw) {
+			t.Fatalf("path changed %s: stat=%v read=%v", path, err, readErr)
+		}
 	}
 }
 
