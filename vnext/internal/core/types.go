@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"io"
 )
 
@@ -172,6 +173,7 @@ type Dependencies struct {
 	Stdout        io.Writer       `json:"-"`
 	Stderr        io.Writer       `json:"-"`
 	Confirmations map[string]bool `json:"confirmations"`
+	ExecuteLifecycle func(context.Context, string, []string) error `json:"-"`
 }
 
 type ErrorCode string
