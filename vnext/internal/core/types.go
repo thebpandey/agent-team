@@ -47,11 +47,12 @@ type Check struct {
 }
 
 type SkillRef struct {
-	Name     string `json:"name"`
-	Path     string `json:"path"`
-	Digest   string `json:"digest"`
-	Purpose  string `json:"purpose"`
-	Required bool   `json:"required"`
+	Name            string `json:"name"`
+	Path            string `json:"path"`
+	Digest          string `json:"digest"`
+	Purpose         string `json:"purpose"`
+	DesignAuthority string `json:"designAuthority,omitempty"`
+	Required        bool   `json:"required"`
 }
 
 type AcceleratorStatus string
