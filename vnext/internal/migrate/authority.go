@@ -286,13 +286,41 @@ func cutoverAuthority(ctx context.Context, request AuthorityRequest, requestDige
 		return AuthorityResult{}, core.ErrLimit
 	}
 	archiveSum := sha256.Sum256(append(archiveRaw, '\n'))
+	archiveSHA256 := hex.EncodeToString(archiveSum[:])
+	state := store.New(request.Project, core.StorageLimits{CanonicalBytes: authorityLimit})
+	archiveCreated := false
+	if _, statErr := os.Lstat(filepath.Join(request.Project, filepath.FromSlash(archiveRelative))); statErr == nil {
+		existing, _, readErr := state.ReadFile(archiveRelative, authorityLimit)
+		if readErr != nil {
+			return AuthorityResult{}, readErr
+		}
+		var reusable bool
+		archiveSHA256, reusable = reusableAuthorityArchive(existing, archive)
+		if !reusable {
+			return AuthorityResult{}, fmt.Errorf("%w: cutover archive differs", core.ErrRevision)
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return AuthorityResult{}, statErr
+	} else {
+		if _, err := state.CreateJSON(archiveRelative, archive, authorityLimit); err != nil {
+			return AuthorityResult{}, err
+		}
+		archiveCreated = true
+	}
 	mutated := []string{".agent-team/setup.json", ".agent-team/state.json"}
-	receipt := AuthorityReceipt{Schema: 1, Project: request.Project, OperationID: request.OperationID, RequestDigest: requestDigest, TargetRevision: request.TargetRevision, Tracker: request.Tracker, Reviews: request.Reviews, Tests: request.Tests, Readiness: request.Readiness, Remote: trusted.Remote, Authorization: trusted.Approval, RecoveryDisposition: trusted.Recovery, ApprovalID: trusted.ID, ApprovalSHA256: trusted.EvidenceSHA, ApprovalSignature: request.ApprovalSignature, ApprovalSignerKeyID: request.ApprovalSignerKeyID, HostInventories: trusted.Hosts, ArchivePath: archiveRelative, ArchiveSHA256: hex.EncodeToString(archiveSum[:]), Held: true, HoldCause: trusted.Approval.Cause, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano), Mutated: mutated}
+	receipt := AuthorityReceipt{Schema: 1, Project: request.Project, OperationID: request.OperationID, RequestDigest: requestDigest, TargetRevision: request.TargetRevision, Tracker: request.Tracker, Reviews: request.Reviews, Tests: request.Tests, Readiness: request.Readiness, Remote: trusted.Remote, Authorization: trusted.Approval, RecoveryDisposition: trusted.Recovery, ApprovalID: trusted.ID, ApprovalSHA256: trusted.EvidenceSHA, ApprovalSignature: request.ApprovalSignature, ApprovalSignerKeyID: request.ApprovalSignerKeyID, HostInventories: trusted.Hosts, ArchivePath: archiveRelative, ArchiveSHA256: archiveSHA256, Held: true, HoldCause: trusted.Approval.Cause, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano), Mutated: mutated}
 	receipt.ReceiptDigest = digestReceipt(receipt)
 	receiptSHA256 := jsonStoredDigest(receipt)
-	journal := authorityJournal{Schema: 1, OperationID: request.OperationID, RequestDigest: requestDigest, Archive: archive, Created: []string{archiveRelative, authorityReceiptPath}, Restore: mutated, ReceiptSHA256: receiptSHA256}
-	state := store.New(request.Project, core.StorageLimits{CanonicalBytes: authorityLimit})
+	journal := authorityJournal{Schema: 1, OperationID: request.OperationID, RequestDigest: requestDigest, Archive: archive, Created: []string{authorityReceiptPath}, Restore: mutated, ReceiptSHA256: receiptSHA256}
+	if archiveCreated {
+		journal.Created = append(journal.Created, archiveRelative)
+	}
 	if _, err := state.WriteJSON(authorityJournalPath, journal, authorityLimit); err != nil {
+		if archiveCreated {
+			if removeErr := state.RemoveExact(archiveRelative, archiveSHA256, authorityLimit); removeErr != nil {
+				return AuthorityResult{}, fmt.Errorf("%v; cutover archive cleanup: %w", err, removeErr)
+			}
+		}
 		return AuthorityResult{}, err
 	}
 	fail := func(cause error) (AuthorityResult, error) {
@@ -300,9 +328,6 @@ func cutoverAuthority(ctx context.Context, request AuthorityRequest, requestDige
 			return AuthorityResult{}, fmt.Errorf("%v; authority rollback: %w", cause, rollbackErr)
 		}
 		return AuthorityResult{}, cause
-	}
-	if _, err := state.CreateJSON(archiveRelative, archive, authorityLimit); err != nil {
-		return fail(err)
 	}
 	setup := map[string]any{"schema": 1, "authority": "v8", "project": request.Project, "revision": request.TargetRevision, "tracker": map[string]any{"kind": "beads", "fingerprint": request.Tracker.Fingerprint, "parentId": request.Tracker.ParentID, "taskIds": request.Tracker.TaskIDs}, "receiptPath": authorityReceiptPath, "receiptDigest": receipt.ReceiptDigest}
 	current := map[string]any{"schema": 1, "revision": request.TargetRevision, "integration": map[string]any{"authorized": false, "hold": true, "cause": trusted.Approval.Cause}, "release": map[string]any{"authorized": false, "hold": true, "cause": trusted.Approval.Cause}}
@@ -758,6 +783,12 @@ func snapshotLegacy(request AuthorityRequest, requestDigest string) (authorityAr
 			return relErr
 		}
 		rel = filepath.ToSlash(rel)
+		// The mutation lock is transient serialization state, not legacy project
+		// state. Including it would make the immutable archive depend on the
+		// current guard owner and prevent an exact rollback/reapply cycle.
+		if rel == ".agent-team/mutation.lock" {
+			return nil
+		}
 		if entry.IsDir() {
 			if rel == ".agent-team/v8" {
 				return filepath.SkipDir
@@ -785,6 +816,48 @@ func snapshotLegacy(request AuthorityRequest, requestDigest string) (authorityAr
 	}
 	sort.Slice(archive.Files, func(i, j int) bool { return archive.Files[i].Path < archive.Files[j].Path })
 	return archive, nil
+}
+
+func reusableAuthorityArchive(raw []byte, expected authorityArchive) (string, bool) {
+	digest := digestBytes(raw)
+	if digest == jsonStoredDigest(expected) {
+		return digest, true
+	}
+	var existing authorityArchive
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&existing) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return "", false
+	}
+	canonical, err := json.Marshal(existing)
+	if err != nil || !bytes.Equal(raw, append(canonical, '\n')) || existing.Schema != expected.Schema || existing.Project != expected.Project || existing.OperationID != expected.OperationID || existing.RequestDigest != expected.RequestDigest || len(existing.Files) != len(expected.Files)+1 {
+		return "", false
+	}
+	filtered := make([]authorityPreimage, 0, len(expected.Files))
+	for _, preimage := range existing.Files {
+		if digestBytes(preimage.Bytes) != preimage.SHA256 {
+			return "", false
+		}
+		if preimage.Path != ".agent-team/mutation.lock" {
+			filtered = append(filtered, preimage)
+			continue
+		}
+		var owner store.MutationOwner
+		ownerDecoder := json.NewDecoder(bytes.NewReader(preimage.Bytes))
+		ownerDecoder.DisallowUnknownFields()
+		if ownerDecoder.Decode(&owner) != nil || ownerDecoder.Decode(&struct{}{}) != io.EOF || store.ValidateMutationOwner(owner) != nil || owner.Scope != "authority-cutover" || owner.OperationID != expected.OperationID+":cutover" {
+			return "", false
+		}
+	}
+	if len(filtered) != len(expected.Files) {
+		return "", false
+	}
+	for index := range filtered {
+		if filtered[index].Path != expected.Files[index].Path || filtered[index].Mode != expected.Files[index].Mode || filtered[index].SHA256 != expected.Files[index].SHA256 || !bytes.Equal(filtered[index].Bytes, expected.Files[index].Bytes) {
+			return "", false
+		}
+	}
+	return digest, true
 }
 
 func snapshotAuthorityPaths(project, operationID, requestDigest string, paths []string) (authorityArchive, error) {
