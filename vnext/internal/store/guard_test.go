@@ -52,19 +52,22 @@ func TestProjectMutationGuardSerializesCanonicalAliasesAndTimesOut(t *testing.T)
 func TestMutationGuardRecoverySafety(t *testing.T) {
 	for name, test := range map[string]func(*testing.T, string, *MutationGuard){
 		"live holder": func(t *testing.T, root string, guard *MutationGuard) {
-			if err := RecoverProjectMutation(context.Background(), root, guard.Owner(), livenessProof{}); !errors.Is(err, core.ErrRevision) {
+			_, err := RecoverProjectMutation(context.Background(), root, recoveryRequest(MutationLockPrimary, guard.Owner()), livenessProof{})
+			if !errors.Is(err, core.ErrRevision) {
 				t.Fatal(err)
 			}
 		},
 		"wrong owner": func(t *testing.T, root string, guard *MutationGuard) {
 			wrong := guard.Owner()
 			wrong.Token = "00000000000000000000000000000000"
-			if err := RecoverProjectMutation(context.Background(), root, wrong, livenessProof{dead: true}); !errors.Is(err, core.ErrRevision) {
+			_, err := RecoverProjectMutation(context.Background(), root, recoveryRequest(MutationLockPrimary, wrong), livenessProof{dead: true})
+			if !errors.Is(err, core.ErrRevision) {
 				t.Fatal(err)
 			}
 		},
 		"unknown liveness": func(t *testing.T, root string, guard *MutationGuard) {
-			if err := RecoverProjectMutation(context.Background(), root, guard.Owner(), livenessProof{err: errors.New("unknown")}); !errors.Is(err, core.ErrRevision) {
+			_, err := RecoverProjectMutation(context.Background(), root, recoveryRequest(MutationLockPrimary, guard.Owner()), livenessProof{err: errors.New("unknown")})
+			if !errors.Is(err, core.ErrRevision) {
 				t.Fatal(err)
 			}
 		},
@@ -88,14 +91,15 @@ func TestMutationGuardRecoverySafety(t *testing.T) {
 func TestMutationGuardRejectsCorruptCrashResidue(t *testing.T) {
 	root := t.TempDir()
 	lock := filepath.Join(root, filepath.FromSlash(projectMutationLock))
-	if err := os.MkdirAll(lock, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(lock, mutationOwnerFile), []byte("not-json"), 0o600); err != nil {
+	if err := os.WriteFile(lock, []byte("not-json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	expected := MutationOwner{Token: "00000000000000000000000000000000", Scope: "test", OperationID: "op"}
-	if err := RecoverProjectMutation(context.Background(), root, expected, livenessProof{dead: true}); !errors.Is(err, core.ErrRevision) {
+	_, err := RecoverProjectMutation(context.Background(), root, recoveryRequest(MutationLockPrimary, expected), livenessProof{dead: true})
+	if !errors.Is(err, core.ErrRevision) {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(lock); err != nil {
@@ -113,11 +117,16 @@ func TestMutationGuardDeadRecoveryIsSingleWinnerAndReacquires(t *testing.T) {
 	entered := make(chan struct{})
 	results := make(chan error, 2)
 	go func() {
-		results <- RecoverProjectMutation(context.Background(), root, guard.Owner(), livenessProof{dead: true, entered: entered, wait: resume})
+		_, err := RecoverProjectMutation(context.Background(), root, recoveryRequest(MutationLockPrimary, guard.Owner()), livenessProof{dead: true, entered: entered, wait: resume})
+		results <- err
 	}()
 	<-entered
+	if err := guard.Release(); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("release raced recovery claim: %v", err)
+	}
 	go func() {
-		results <- RecoverProjectMutation(context.Background(), root, guard.Owner(), livenessProof{dead: true})
+		_, err := RecoverProjectMutation(context.Background(), root, recoveryRequest(MutationLockPrimary, guard.Owner()), livenessProof{dead: true})
+		results <- err
 	}()
 	second := <-results
 	if !errors.Is(second, core.ErrRevision) {
@@ -145,16 +154,19 @@ func TestMutationGuardReleaseRequiresExactOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, filepath.FromSlash(projectMutationLock), mutationOwnerFile)
+	path := filepath.Join(root, filepath.FromSlash(projectMutationLock))
 	owner := guard.Owner()
 	owner.Token = "00000000000000000000000000000000"
-	if err := writeOwner(path, owner); err != nil {
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOwnerExclusive(path, owner); err != nil {
 		t.Fatal(err)
 	}
 	if err := guard.Release(); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("release error = %v", err)
 	}
-	if _, err := os.Stat(filepath.Dir(path)); err != nil {
+	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("foreign lock removed: %v", err)
 	}
 }
@@ -177,6 +189,57 @@ func TestMutationGuardOwnerRecordIsDurable(t *testing.T) {
 	}
 }
 
+func TestMutationGuardPublishesOnlyCompleteOwner(t *testing.T) {
+	root := t.TempDir()
+	entered, resume := make(chan struct{}), make(chan struct{})
+	ownerCandidateHook = func(relative string) {
+		if relative == projectMutationLock {
+			close(entered)
+			<-resume
+		}
+	}
+	t.Cleanup(func() { ownerCandidateHook = nil })
+	done := make(chan error, 1)
+	go func() {
+		guard, err := AcquireProjectMutation(context.Background(), root, "test", "atomic")
+		if err == nil {
+			err = guard.Release()
+		}
+		done <- err
+	}()
+	<-entered
+	path := filepath.Join(root, filepath.FromSlash(projectMutationLock))
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial canonical owner published: %v", err)
+	}
+	close(resume)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCrashedRecoveryClaimCanBeRecovered(t *testing.T) {
+	root := t.TempDir()
+	if _, err := canonicalMutationRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := acquireRecoveryClaim(root, "crashed-primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := RecoverProjectMutation(context.Background(), root, recoveryRequest(MutationLockRecovery, claim.Owner()), livenessProof{dead: true})
+	if err != nil || got != claim.Owner() {
+		t.Fatal(got, err)
+	}
+	guard, err := AcquireProjectMutation(context.Background(), root, "test", "after-claim-recovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := guard.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConcurrentDeadRecoveryUsesClaim(t *testing.T) {
 	root := t.TempDir()
 	guard, err := AcquireProjectMutation(context.Background(), root, "test", "crash")
@@ -191,7 +254,8 @@ func TestConcurrentDeadRecoveryUsesClaim(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			errs <- RecoverProjectMutation(context.Background(), root, guard.Owner(), livenessProof{dead: true})
+			_, err := RecoverProjectMutation(context.Background(), root, recoveryRequest(MutationLockPrimary, guard.Owner()), livenessProof{dead: true})
+			errs <- err
 		}()
 	}
 	close(start)
@@ -208,4 +272,8 @@ func TestConcurrentDeadRecoveryUsesClaim(t *testing.T) {
 	if success != 1 || stale != 1 {
 		t.Fatalf("success=%d stale=%d", success, stale)
 	}
+}
+
+func recoveryRequest(target string, owner MutationOwner) MutationRecoveryRequest {
+	return MutationRecoveryRequest{Target: target, Token: owner.Token, OperationID: owner.OperationID}
 }

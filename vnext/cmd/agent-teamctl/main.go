@@ -23,6 +23,7 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/install"
 	"github.com/thebpandey/agent-team/vnext/internal/lifecycle"
 	releasepkg "github.com/thebpandey/agent-team/vnext/internal/release"
+	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
 func main() {
@@ -43,6 +44,13 @@ func main() {
 }
 
 func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "cleanup" {
+		owner, err := recoverMutationLock(ctx, ".", args, store.NativeLiveness{})
+		if err != nil {
+			return managementError(args, stdout, stderr, err)
+		}
+		return managementResult(args, stdout, map[string]any{"ok": true, "action": "cleanup", "recovered": true, "target": args[2], "operation": owner.OperationID, "owner_token": owner.Token})
+	}
 	layout, err := install.ResolveLayout(runtime.GOOS, map[string]string{
 		"LOCALAPPDATA":  os.Getenv("LOCALAPPDATA"),
 		"XDG_DATA_HOME": os.Getenv("XDG_DATA_HOME"),
@@ -94,6 +102,14 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return managementError(args, stdout, stderr, err)
 	}
 	return managementResult(args, stdout, map[string]any{"ok": true, "action": action, "revision": outcome.Manifest.Revision, "retained": outcome.Retained})
+}
+
+func recoverMutationLock(ctx context.Context, root string, args []string, proof store.HolderLiveness) (store.MutationOwner, error) {
+	if len(args) < 8 || args[1] != "--mutation-lock" || args[3] != "--owner-token" || args[5] != "--operation" || args[7] != "--confirm-dead" {
+		return store.MutationOwner{}, core.ErrPhase
+	}
+	request := store.MutationRecoveryRequest{Target: args[2], Token: args[4], OperationID: args[6]}
+	return store.RecoverProjectMutation(ctx, root, request, proof)
 }
 
 func localRelease(requested string) (install.Release, error) {

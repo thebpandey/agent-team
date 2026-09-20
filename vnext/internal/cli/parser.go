@@ -97,7 +97,13 @@ func Parse(args []string) (Action, error) {
 			}
 			actionArgs, err = parseSelectors(args[1:], allowed, false)
 		}
-	case "inspect", "cleanup":
+	case "cleanup":
+		if len(args) > 1 && args[1] == "--mutation-lock" {
+			actionArgs, err = parseMutationCleanup(args[1:])
+		} else {
+			actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true, "--team": true, "--task": true}, false)
+		}
+	case "inspect":
 		actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true, "--team": true, "--task": true}, false)
 	case "deploy":
 		actionArgs, err = parseDeployArgs(args[1:])
@@ -117,6 +123,18 @@ func Parse(args []string) (Action, error) {
 	}
 
 	return Action{Name: name, Args: actionArgs, JSON: jsonOutput, ScopeRequired: name == "pause" || name == "stop" || name == "cancel" || name == "resume"}, nil
+}
+
+func parseMutationCleanup(args []string) ([]string, error) {
+	if len(args) != 7 || args[0] != "--mutation-lock" || (args[1] != "primary" && args[1] != "recovery") || args[2] != "--owner-token" || len(args[3]) != 32 || args[4] != "--operation" || strings.TrimSpace(args[5]) == "" || args[5] != strings.TrimSpace(args[5]) || args[6] != "--confirm-dead" {
+		return nil, core.ErrPhase
+	}
+	for _, character := range args[3] {
+		if !strings.ContainsRune("0123456789abcdef", character) {
+			return nil, core.ErrPhase
+		}
+	}
+	return append([]string(nil), args...), nil
 }
 
 func parseExactPair(args []string, flag string, allowed map[string]bool) ([]string, error) {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,15 +23,21 @@ import (
 const (
 	projectMutationLock  = ".agent-team/mutation.lock"
 	mutationRecoveryLock = ".agent-team/mutation.recovery"
-	mutationOwnerFile    = "owner.json"
+	MutationLockPrimary  = "primary"
+	MutationLockRecovery = "recovery"
 	defaultMutationWait  = 30 * time.Second
 )
 
 var processStarted = time.Now().UTC().Format(time.RFC3339Nano)
+var ownerCandidateHook func(string)
 
 type MutationOwner struct {
 	Token, Scope, OperationID, Host, ProcessStart, AcquiredAt, HeartbeatAt string
 	PID                                                                    int
+}
+
+type MutationRecoveryRequest struct {
+	Target, Token, OperationID string
 }
 
 type MutationGuard struct {
@@ -53,11 +60,12 @@ func (g *MutationGuard) Release() error {
 	if relative == "" {
 		relative = projectMutationLock
 	}
-	current, err := readOwner(filepath.Join(g.root, filepath.FromSlash(relative), mutationOwnerFile))
-	if err != nil || !reflect.DeepEqual(current, g.owner) {
-		return core.ErrRevision
+	if relative == projectMutationLock {
+		if _, err := os.Lstat(filepath.Join(g.root, filepath.FromSlash(mutationRecoveryLock))); err == nil || !errors.Is(err, fs.ErrNotExist) {
+			return core.ErrRevision
+		}
 	}
-	return removeOwnedLock(g.root, relative, g.owner)
+	return removeExactOwner(g.root, relative, g.owner)
 }
 
 type HolderLiveness interface {
@@ -79,13 +87,14 @@ func (NativeLiveness) HolderDead(_ context.Context, owner MutationOwner) (bool, 
 	if err == nil {
 		return false, nil
 	}
-	if errors.Is(err, os.ErrProcessDone) {
+	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
 		return true, nil
 	}
 	return false, core.ErrRevision
 }
 
-// AcquireProjectMutation serializes mutations and durably records exact guard ownership.
+// AcquireProjectMutation serializes mutations and atomically publishes a
+// complete, durable owner record.
 func AcquireProjectMutation(ctx context.Context, root, scope, operationID string) (*MutationGuard, error) {
 	ctx, cancel, err := boundedMutationContext(ctx)
 	if err != nil {
@@ -96,29 +105,17 @@ func AcquireProjectMutation(ctx context.Context, root, scope, operationID string
 	if err != nil {
 		return nil, err
 	}
-	if !validGuardText(scope) || !validGuardText(operationID) {
-		return nil, core.ErrSettings
-	}
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		return nil, core.ErrRevision
-	}
-	token, err := randomToken()
+	owner, err := newMutationOwner(scope, operationID)
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	owner := MutationOwner{Token: token, Scope: scope, OperationID: operationID, Host: host, PID: os.Getpid(), ProcessStart: processStarted, AcquiredAt: now, HeartbeatAt: now}
-	lock := filepath.Join(canonical, filepath.FromSlash(projectMutationLock))
 	for {
-		if err := os.Mkdir(lock, 0o700); err == nil {
-			if err := writeOwner(filepath.Join(lock, mutationOwnerFile), owner); err != nil {
-				_ = os.Remove(lock)
-				return nil, err
-			}
+		err = publishOwner(canonical, projectMutationLock, owner)
+		if err == nil {
 			return &MutationGuard{root: canonical, relative: projectMutationLock, owner: owner}, nil
-		} else if !errors.Is(err, os.ErrExist) {
-			return nil, fmt.Errorf("%w: mutation guard: %v", core.ErrPath, err)
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, err
 		}
 		select {
 		case <-ctx.Done():
@@ -128,83 +125,140 @@ func AcquireProjectMutation(ctx context.Context, root, scope, operationID string
 	}
 }
 
-// RecoverProjectMutation removes only the exact expected guard after a liveness
-// authority proves its holder dead. Age alone never authorizes recovery.
-func RecoverProjectMutation(ctx context.Context, root string, expected MutationOwner, proof HolderLiveness) error {
-	if proof == nil || !validMutationOwner(expected) {
-		return core.ErrRevision
+// RecoverProjectMutation removes only the requested exact owner after a
+// liveness authority proves it dead. Recovering a primary lock is serialized
+// by the recovery lock; a crashed recovery owner is recovered directly.
+func RecoverProjectMutation(ctx context.Context, root string, request MutationRecoveryRequest, proof HolderLiveness) (MutationOwner, error) {
+	if proof == nil || !validGuardText(request.Token) || !validGuardText(request.OperationID) {
+		return MutationOwner{}, core.ErrRevision
 	}
 	ctx, cancel, err := boundedMutationContext(ctx)
 	if err != nil {
-		return err
+		return MutationOwner{}, err
 	}
 	defer cancel()
 	canonical, err := canonicalMutationRoot(root)
 	if err != nil {
-		return err
+		return MutationOwner{}, err
 	}
-	claim, err := acquireRecoveryClaim(canonical)
-	if err != nil {
-		return err
+	relative := projectMutationLock
+	var claim *MutationGuard
+	switch request.Target {
+	case MutationLockPrimary:
+		claim, err = acquireRecoveryClaim(canonical, request.OperationID)
+		if err != nil {
+			return MutationOwner{}, err
+		}
+		defer claim.Release()
+	case MutationLockRecovery:
+		relative = mutationRecoveryLock
+	default:
+		return MutationOwner{}, core.ErrRevision
 	}
-	defer claim.Release()
-	current, err := readMutationOwner(canonical)
-	if err != nil || !reflect.DeepEqual(current, expected) {
-		return core.ErrRevision
+	owner, err := readOwner(filepath.Join(canonical, filepath.FromSlash(relative)))
+	if err != nil || owner.Token != request.Token || owner.OperationID != request.OperationID {
+		return MutationOwner{}, core.ErrRevision
 	}
-	dead, err := proof.HolderDead(ctx, current)
+	dead, err := proof.HolderDead(ctx, owner)
 	if err != nil || !dead {
-		return core.ErrRevision
+		return MutationOwner{}, core.ErrRevision
 	}
-	current, err = readMutationOwner(canonical)
-	if err != nil || !reflect.DeepEqual(current, expected) {
-		return core.ErrRevision
+	if err := removeExactOwner(canonical, relative, owner); err != nil {
+		return MutationOwner{}, err
 	}
-	return removeOwnedLock(canonical, projectMutationLock, expected)
+	return owner, nil
 }
 
-func acquireRecoveryClaim(root string) (*MutationGuard, error) {
-	token, err := randomToken()
+func acquireRecoveryClaim(root, operation string) (*MutationGuard, error) {
+	owner, err := newMutationOwner("recovery", "recover:"+operation)
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	host, _ := os.Hostname()
-	owner := MutationOwner{Token: token, Scope: "recovery", OperationID: token, Host: host, PID: os.Getpid(), ProcessStart: processStarted, AcquiredAt: now, HeartbeatAt: now}
-	lock := filepath.Join(root, filepath.FromSlash(mutationRecoveryLock))
-	if err := os.Mkdir(lock, 0o700); err != nil {
-		if errors.Is(err, os.ErrExist) {
+	if err := publishOwner(root, mutationRecoveryLock, owner); err != nil {
+		if errors.Is(err, fs.ErrExist) {
 			return nil, core.ErrRevision
 		}
-		return nil, err
-	}
-	if err := writeOwner(filepath.Join(lock, mutationOwnerFile), owner); err != nil {
-		_ = os.Remove(lock)
 		return nil, err
 	}
 	return &MutationGuard{root: root, relative: mutationRecoveryLock, owner: owner}, nil
 }
 
-func removeOwnedLock(root, relative string, expected MutationOwner) error {
-	path := filepath.Join(root, filepath.FromSlash(relative))
-	var current MutationOwner
-	raw, err := os.ReadFile(filepath.Join(path, mutationOwnerFile))
-	if err != nil || json.Unmarshal(raw, &current) != nil || !reflect.DeepEqual(current, expected) {
-		return core.ErrRevision
+func newMutationOwner(scope, operationID string) (MutationOwner, error) {
+	if !validGuardText(scope) || !validGuardText(operationID) {
+		return MutationOwner{}, core.ErrSettings
 	}
-	if err := os.Remove(filepath.Join(path, mutationOwnerFile)); err != nil {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return MutationOwner{}, core.ErrRevision
+	}
+	token, err := randomToken()
+	if err != nil {
+		return MutationOwner{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	return MutationOwner{Token: token, Scope: scope, OperationID: operationID, Host: host, PID: os.Getpid(), ProcessStart: processStarted, AcquiredAt: now, HeartbeatAt: now}, nil
+}
+
+func publishOwner(root, relative string, owner MutationOwner) error {
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	candidate := path + ".candidate-" + owner.Token
+	if err := writeOwnerExclusive(candidate, owner); err != nil {
 		return err
 	}
-	return os.Remove(path)
+	defer os.Remove(candidate)
+	if ownerCandidateHook != nil {
+		ownerCandidateHook(relative)
+	}
+	return os.Link(candidate, path)
+}
+
+func removeExactOwner(root, relative string, expected MutationOwner) error {
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	before, err := os.Stat(path)
+	if err != nil {
+		return core.ErrRevision
+	}
+	current, err := readOwner(path)
+	if err != nil || !reflect.DeepEqual(current, expected) {
+		return core.ErrRevision
+	}
+	tombstone := path + ".removed-" + expected.Token
+	if err := os.Rename(path, tombstone); err != nil {
+		return err
+	}
+	after, statErr := os.Stat(tombstone)
+	current, readErr := readOwner(tombstone)
+	if statErr != nil || readErr != nil || !os.SameFile(before, after) || !reflect.DeepEqual(current, expected) {
+		return core.ErrRevision
+	}
+	return os.Remove(tombstone)
 }
 
 func readMutationOwner(root string) (MutationOwner, error) {
-	return readOwner(filepath.Join(root, filepath.FromSlash(projectMutationLock), mutationOwnerFile))
+	return readOwner(filepath.Join(root, filepath.FromSlash(projectMutationLock)))
+}
+
+func MutationLockOwner(root, target string) (MutationOwner, error) {
+	canonical, err := canonicalMutationRoot(root)
+	if err != nil {
+		return MutationOwner{}, err
+	}
+	relative := projectMutationLock
+	if target == MutationLockRecovery {
+		relative = mutationRecoveryLock
+	} else if target != MutationLockPrimary {
+		return MutationOwner{}, core.ErrRevision
+	}
+	return readOwner(filepath.Join(canonical, filepath.FromSlash(relative)))
 }
 
 func readOwner(path string) (MutationOwner, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 16<<10 {
+		return MutationOwner{}, core.ErrRevision
+	}
 	raw, err := os.ReadFile(path)
-	if err != nil || len(raw) > 16<<10 {
+	if err != nil {
 		return MutationOwner{}, core.ErrRevision
 	}
 	var owner MutationOwner
@@ -216,12 +270,12 @@ func readOwner(path string) (MutationOwner, error) {
 	return owner, nil
 }
 
-func writeOwner(path string, owner MutationOwner) error {
+func writeOwnerExclusive(path string, owner MutationOwner) error {
 	raw, err := json.Marshal(owner)
 	if err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
