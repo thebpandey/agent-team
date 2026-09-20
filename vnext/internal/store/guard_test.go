@@ -3,14 +3,92 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
+
+func TestMutationGuardNamespaceSyncOrdering(t *testing.T) {
+	for _, failAt := range []int32{1, 2, 3} {
+		t.Run(fmt.Sprintf("sync-%d", failAt), func(t *testing.T) {
+			root := t.TempDir()
+			original := syncGuardNamespace
+			var calls atomic.Int32
+			syncGuardNamespace = func(path string) error {
+				if calls.Add(1) == failAt {
+					return errors.New("injected namespace sync failure")
+				}
+				return original(path)
+			}
+			_, err := AcquireProjectMutation(context.Background(), root, "test", "sync-order")
+			syncGuardNamespace = original
+			if err == nil {
+				t.Fatal("sync failure accepted")
+			}
+			matches, globErr := filepath.Glob(filepath.Join(root, ".agent-team", "mutation.lock.candidate-*"))
+			if globErr != nil || len(matches) != 0 {
+				t.Fatalf("candidate residue = %v, %v", matches, globErr)
+			}
+			owner, ownerErr := MutationLockOwner(root, MutationLockPrimary)
+			if failAt == 1 {
+				if !errors.Is(ownerErr, core.ErrRevision) {
+					t.Fatalf("canonical published before candidate sync: %#v, %v", owner, ownerErr)
+				}
+				return
+			}
+			if ownerErr != nil {
+				t.Fatalf("complete fail-closed canonical missing: %v", ownerErr)
+			}
+			if _, err := RecoverProjectMutation(context.Background(), root, recoveryRequest(MutationLockPrimary, owner), livenessProof{dead: true}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestNativeLivenessRejectsCurrentHolder(t *testing.T) {
+	root := t.TempDir()
+	guard, err := AcquireProjectMutation(context.Background(), root, "test", "native-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead, err := (NativeLiveness{}).HolderDead(context.Background(), guard.Owner())
+	if err != nil || dead {
+		t.Fatalf("dead=%v err=%v", dead, err)
+	}
+	if err := guard.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHolderLivenessRequiresCreationIdentityAndKnownState(t *testing.T) {
+	live, exited := false, true
+	for _, test := range []struct {
+		name              string
+		recorded, current string
+		exited            *bool
+		wantDead, wantErr bool
+	}{
+		{"live exact owner", "one", "one", &live, false, false},
+		{"exited exact owner", "one", "one", &exited, true, false},
+		{"reused pid", "one", "two", &live, true, false},
+		{"unknown state", "one", "one", nil, false, true},
+		{"missing identity", "", "one", &exited, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dead, err := decideHolderDead(test.recorded, test.current, test.exited)
+			if dead != test.wantDead || (err != nil) != test.wantErr {
+				t.Fatalf("dead=%v err=%v", dead, err)
+			}
+		})
+	}
+}
 
 type livenessProof struct {
 	dead    bool

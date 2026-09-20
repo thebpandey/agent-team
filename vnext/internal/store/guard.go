@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
@@ -28,8 +27,8 @@ const (
 	defaultMutationWait  = 30 * time.Second
 )
 
-var processStarted = time.Now().UTC().Format(time.RFC3339Nano)
 var ownerCandidateHook func(string)
+var syncGuardNamespace = syncGuardDirectory
 
 type MutationOwner struct {
 	Token, Scope, OperationID, Host, ProcessStart, AcquiredAt, HeartbeatAt string
@@ -72,25 +71,17 @@ type HolderLiveness interface {
 	HolderDead(context.Context, MutationOwner) (bool, error)
 }
 
-type NativeLiveness struct{}
-
-func (NativeLiveness) HolderDead(_ context.Context, owner MutationOwner) (bool, error) {
-	host, err := os.Hostname()
-	if err != nil || host == "" || owner.Host != host || owner.PID <= 0 {
+func decideHolderDead(recorded, current string, exited *bool) (bool, error) {
+	if recorded == "" || current == "" {
 		return false, core.ErrRevision
 	}
-	process, err := os.FindProcess(owner.PID)
-	if err != nil {
-		return false, core.ErrRevision
-	}
-	err = process.Signal(syscall.Signal(0))
-	if err == nil {
-		return false, nil
-	}
-	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+	if recorded != current {
 		return true, nil
 	}
-	return false, core.ErrRevision
+	if exited == nil {
+		return false, core.ErrRevision
+	}
+	return *exited, nil
 }
 
 // AcquireProjectMutation serializes mutations and atomically publishes a
@@ -196,20 +187,43 @@ func newMutationOwner(scope, operationID string) (MutationOwner, error) {
 		return MutationOwner{}, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	return MutationOwner{Token: token, Scope: scope, OperationID: operationID, Host: host, PID: os.Getpid(), ProcessStart: processStarted, AcquiredAt: now, HeartbeatAt: now}, nil
+	identity, err := currentProcessIdentity()
+	if err != nil {
+		return MutationOwner{}, core.ErrRevision
+	}
+	return MutationOwner{Token: token, Scope: scope, OperationID: operationID, Host: host, PID: os.Getpid(), ProcessStart: identity, AcquiredAt: now, HeartbeatAt: now}, nil
 }
 
 func publishOwner(root, relative string, owner MutationOwner) error {
 	path := filepath.Join(root, filepath.FromSlash(relative))
 	candidate := path + ".candidate-" + owner.Token
 	if err := writeOwnerExclusive(candidate, owner); err != nil {
+		_ = os.Remove(candidate)
+		_ = syncGuardNamespace(filepath.Dir(path))
 		return err
 	}
-	defer os.Remove(candidate)
+	if err := syncGuardNamespace(filepath.Dir(path)); err != nil {
+		_ = os.Remove(candidate)
+		_ = syncGuardNamespace(filepath.Dir(path))
+		return err
+	}
 	if ownerCandidateHook != nil {
 		ownerCandidateHook(relative)
 	}
-	return os.Link(candidate, path)
+	if err := os.Link(candidate, path); err != nil {
+		_ = os.Remove(candidate)
+		_ = syncGuardNamespace(filepath.Dir(path))
+		return err
+	}
+	if err := syncGuardNamespace(filepath.Dir(path)); err != nil {
+		_ = os.Remove(candidate)
+		_ = syncGuardNamespace(filepath.Dir(path))
+		return err
+	}
+	if err := os.Remove(candidate); err != nil {
+		return err
+	}
+	return syncGuardNamespace(filepath.Dir(path))
 }
 
 func removeExactOwner(root, relative string, expected MutationOwner) error {
@@ -226,12 +240,18 @@ func removeExactOwner(root, relative string, expected MutationOwner) error {
 	if err := os.Rename(path, tombstone); err != nil {
 		return err
 	}
+	if err := syncGuardNamespace(filepath.Dir(path)); err != nil {
+		return err
+	}
 	after, statErr := os.Stat(tombstone)
 	current, readErr := readOwner(tombstone)
 	if statErr != nil || readErr != nil || !os.SameFile(before, after) || !reflect.DeepEqual(current, expected) {
 		return core.ErrRevision
 	}
-	return os.Remove(tombstone)
+	if err := os.Remove(tombstone); err != nil {
+		return err
+	}
+	return syncGuardNamespace(filepath.Dir(path))
 }
 
 func readMutationOwner(root string) (MutationOwner, error) {
