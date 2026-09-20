@@ -35,14 +35,17 @@ type Reservation struct {
 // ValidatePlannedAdmission verifies that a host can reserve both independent
 // roles required by planned work. A single usable slot is valid only because
 // the developer and reviewer run sequentially.
-func ValidatePlannedAdmission(c contracts.HostCapabilities) error {
+func ValidatePlannedAdmission(limits core.Limits, c contracts.HostCapabilities, teams int) error {
+	if limits.ParallelTeams < 1 || limits.ParallelTeams > 2 || teams < 1 || teams > 2 || teams > limits.ParallelTeams {
+		return core.ErrCapacity
+	}
 	if c.Unknown {
-		if c.DeveloperSlots != 1 || c.ReviewerSlots != 1 {
+		if teams != 1 || c.DeveloperSlots != 1 || c.ReviewerSlots != 1 {
 			return core.ErrCapacity
 		}
 		return nil
 	}
-	if c.UsableSlots <= 0 || c.DeveloperSlots < 1 || c.ReviewerSlots < 1 {
+	if c.UsableSlots <= 0 || c.DeveloperSlots < 1 || c.ReviewerSlots < 1 || (teams == 2 && c.UsableSlots < 2) {
 		return core.ErrCapacity
 	}
 	if c.UsableSlots == 1 {
