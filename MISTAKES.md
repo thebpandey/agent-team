@@ -31,3 +31,35 @@ Cause: Tests checked evidence acceptance and policy fields separately instead of
 Correction: The release mapper now derives and validates exact integration identity, and policy revalidates run, batch, artifact digest, and repeated release bindings before consequential operations.
 
 Prevention: For each consequential evidence writer, test invalid evidence without mutation, valid canonical mapping, exact policy consumption, and independent corruption of every authority and identity field.
+
+## M-003: Recheck durable authority after cross-process races
+
+Status: Active
+
+Scope: File-backed coordination and revision-checked workflows; vNext and later
+
+Source: Tasks 1–18 complexity audit, 2026-09-19; deterministic admission regression test
+
+Mistake: Admission treated a revision change observed after its first commit lookup as stale, even when an identical concurrent process had since written the authoritative commit.
+
+Cause: A process-local mutex was mistaken for complete coordination, and the stale branch did not recheck durable authority after the unlocked cross-process race window.
+
+Correction: The stale branch now re-reads and validates the immutable commit, converges its projection, and classifies an exact retry as duplicate.
+
+Prevention: For file-backed coordination used by multiple agent processes, test a deterministic interleaving across separate lock domains and recheck durable authority before classifying a raced request or mutating state.
+
+## M-004: Search for existing primitives before adding local machinery
+
+Status: Active
+
+Scope: Agent-Team implementation and refactoring; vNext and later
+
+Source: Tasks 1–18 complexity audit, 2026-09-19
+
+Mistake: Completed code repeated path canonicalization, deep-copy routines, argument error handling, membership loops, unused collaborator state, and an unused digest helper.
+
+Cause: Task-local implementations were added without a final repository-wide duplication and necessity pass.
+
+Correction: Shared invariants now have one owner, standard-library operations replace handwritten loops, unused state and dead code are removed, and external APIs remain unchanged.
+
+Prevention: Before handoff, search the affected repository for equivalent invariants and helpers; reuse the narrowest existing or standard-library primitive, remove unused state, and prove behavior with focused plus full tests.

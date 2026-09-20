@@ -4,12 +4,67 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/run"
 	"github.com/thebpandey/agent-team/vnext/internal/testkit"
 )
+
+func TestAppendAdmissionRechecksCommitAfterConcurrentProjection(t *testing.T) {
+	f := testkit.NewAdmissionFixture(t)
+	batch := f.Batch(1)
+	root, err := canonicalRoot(f.Store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var first sync.Once
+	admissionFault = func(point admissionFaultPoint) error {
+		if point != faultAfterCommitLookup {
+			return nil
+		}
+		block := false
+		first.Do(func() { block = true })
+		if block {
+			close(reached)
+			<-release
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		admissionFault = nil
+		admissionLocks.Delete(root)
+	})
+
+	type result struct {
+		out AdmissionOutcome
+		err error
+	}
+	delayed := make(chan result, 1)
+	go func() {
+		out, err := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, batch)
+		delayed <- result{out: out, err: err}
+	}()
+	<-reached
+
+	// A separate process has its own in-memory lock, so make the second call
+	// use another mutex while sharing the same durable store.
+	admissionLocks.Delete(root)
+	winner, winnerErr := AppendAdmission(context.Background(), f.Store, f.Tracker, f.Run, f.RunRevision, f.Team, f.TeamRevision, f.TrackerRevision, f.TaskRevisions, batch)
+	close(release)
+	retry := <-delayed
+
+	if winnerErr != nil || winner.Kind != Created {
+		t.Fatalf("winner = %#v, %v; want created", winner, winnerErr)
+	}
+	if retry.err != nil || retry.out.Kind != Duplicate {
+		t.Fatalf("delayed retry = %#v, %v; want duplicate", retry.out, retry.err)
+	}
+}
 
 func TestAppendAdmissionInterruptionConvergesOnRetry(t *testing.T) {
 	points := []admissionFaultPoint{faultBeforeCommit, faultAfterCommit, faultAfterRunProjection, faultAfterTeamProjection}

@@ -71,6 +71,7 @@ const (
 	faultAfterCommit
 	faultAfterRunProjection
 	faultAfterTeamProjection
+	faultAfterCommitLookup
 )
 
 var admissionFault func(admissionFaultPoint) error
@@ -137,6 +138,9 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 		}
 		return staleOutcome(ctx, repositories, runID, teamID, batch.Fingerprint)
 	}
+	if err := failAdmission(faultAfterCommitLookup); err != nil {
+		return AdmissionOutcome{}, err
+	}
 	currentRun, err := repositories.Runs.Read(ctx, runID)
 	if err != nil {
 		return AdmissionOutcome{}, err
@@ -165,6 +169,20 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 		return AdmissionOutcome{}, fmt.Errorf("%w: noncanonical run/team slot", core.ErrRevision)
 	}
 	if currentRun.Revision != expectedRunRevision || currentTeam.Revision != expectedTeamRevision {
+		if existing, found, err := readCommit(st, commitPath); err != nil {
+			return AdmissionOutcome{}, err
+		} else if found {
+			if err := validateCommit(existing, runID, expectedRunRevision); err != nil {
+				return AdmissionOutcome{}, err
+			}
+			if err := project(ctx, repositories, existing); err != nil {
+				return AdmissionOutcome{}, err
+			}
+			if existing.Batch.Fingerprint == batch.Fingerprint && reflect.DeepEqual(existing.Batch, batch) && existing.ExpectedTeamRevision == expectedTeamRevision && existing.ExpectedTrackerRevision == expectedTrackerRevision {
+				return outcome(Duplicate, existing), nil
+			}
+			return staleOutcome(ctx, repositories, runID, teamID, batch.Fingerprint)
+		}
 		return outcome(Stale, committedAdmission{Batch: batch, AfterRun: currentRun, AfterTeam: currentTeam}), nil
 	}
 	if batch.Project != currentRun.Project || currentTeam.Project != currentRun.Project || currentTeam.RunID != runID {
