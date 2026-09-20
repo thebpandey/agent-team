@@ -90,6 +90,60 @@ func TestKnowledgeRecordsRed(t *testing.T) {
 	}
 }
 
+func TestReceiptStoresOnlyResourceReferences(t *testing.T) {
+	ctx := context.Background()
+	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	r := Receipt{
+		RecordEnvelope: envelope("RUN-1", 1), Team: "TEAM-1", Task: "TASK-1", Attempt: 1, State: core.Working, NextAction: "review",
+		Resources: core.ResourceSnapshot{Servers: []string{"S-1"}, Browsers: []string{"B-1"}, External: []string{"evidence/TASK-1/1/browser.json"}},
+	}
+	if err := WriteReceipt(ctx, s, r); err != nil {
+		t.Fatal(err)
+	}
+	var got Receipt
+	if err := s.ReadJSON(".agent-team/receipts/TEAM-1.json", 16<<20, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Resources.Servers) != 1 || got.Resources.Servers[0] != "S-1" || len(got.Resources.Browsers) != 1 || got.Resources.Browsers[0] != "B-1" {
+		t.Fatalf("resource references = %#v", got.Resources)
+	}
+}
+
+func TestReceiptRejectsInvalidResourceReferences(t *testing.T) {
+	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	base := Receipt{RecordEnvelope: envelope("RUN-1", 1), Team: "TEAM-1", Task: "TASK-1", Attempt: 1, State: core.Working, NextAction: "review"}
+	for _, resources := range []core.ResourceSnapshot{{Servers: []string{"server-1"}}, {Servers: []string{"S-1", "S-1"}}, {Servers: []string{"{\"id\":\"S-1\"}"}}, {External: []string{"not a pointer"}}} {
+		r := base
+		r.Resources = resources
+		if err := WriteReceipt(context.Background(), s, r); err == nil {
+			t.Fatalf("invalid resource refs accepted: %#v", resources)
+		}
+	}
+}
+
+func TestReceiptResourceReferencesUseSharedSegments(t *testing.T) {
+	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	base := Receipt{RecordEnvelope: envelope("RUN-1", 1), Team: "TEAM-1", Task: "TASK-1", Attempt: 1, State: core.Working, NextAction: "review"}
+	for _, value := range []string{"S-", "S-a/b", "S-a\\b", "S-a\x00b", "S-ü", "S-CON", "S-..", "S-" + strings.Repeat("a", 129)} {
+		r := base
+		r.Resources.Servers = []string{value}
+		if err := WriteReceipt(context.Background(), s, r); err == nil {
+			t.Fatalf("accepted invalid shared segment %q", value)
+		}
+	}
+	for _, value := range []string{"S-safe-1", "B-safe_2"} {
+		r := base
+		if strings.HasPrefix(value, "S-") {
+			r.Resources.Servers = []string{value}
+		} else {
+			r.Resources.Browsers = []string{value}
+		}
+		if err := WriteReceipt(context.Background(), store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}), r); err != nil {
+			t.Fatalf("rejected shared segment %q: %v", value, err)
+		}
+	}
+}
+
 func TestBlockerCASAndProjectionRed(t *testing.T) {
 	ctx := context.Background()
 	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20, HandoffHardBytes: 256 << 10})
