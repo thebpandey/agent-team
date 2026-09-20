@@ -101,6 +101,14 @@ func Parse(args []string) (Action, error) {
 		actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true, "--team": true, "--task": true}, false)
 	case "deploy":
 		actionArgs, err = parseDeployArgs(args[1:])
+	case "install":
+		actionArgs, err = parseExactPair(args[1:], "--host", map[string]bool{"codex": true, "claude": true, "both": true})
+	case "update", "rollback":
+		actionArgs, err = parseExactPair(args[1:], "--version", nil)
+	case "uninstall":
+		if len(args) != 1 {
+			return Action{}, core.ErrPhase
+		}
 	default:
 		return Action{}, core.ErrPhase
 	}
@@ -109,6 +117,17 @@ func Parse(args []string) (Action, error) {
 	}
 
 	return Action{Name: name, Args: actionArgs, JSON: jsonOutput, ScopeRequired: name == "pause" || name == "stop" || name == "cancel" || name == "resume"}, nil
+}
+
+func parseExactPair(args []string, flag string, allowed map[string]bool) ([]string, error) {
+	if len(args) != 2 || args[0] != flag {
+		return nil, core.ErrPhase
+	}
+	value := strings.TrimSpace(args[1])
+	if value == "" || (allowed != nil && !allowed[value]) {
+		return nil, core.ErrPhase
+	}
+	return []string{flag, value}, nil
 }
 
 func parseSetupArgs(args []string) ([]string, error) {

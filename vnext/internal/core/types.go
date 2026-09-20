@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"io"
 )
 
@@ -173,12 +174,39 @@ type Dependencies struct {
 	ProjectRoot      string                                        `json:"projectRoot"`
 	Stdout           io.Writer                                     `json:"-"`
 	Stderr           io.Writer                                     `json:"-"`
+	OutputLimit      int                                           `json:"-"`
 	Confirmations    map[string]bool                               `json:"confirmations"`
 	ExecuteLifecycle func(context.Context, string, []string) error `json:"-"`
 	Deployment       DeploymentAction                              `json:"-"`
+	Management       ManagementAction                              `json:"-"`
 }
 
 type DeploymentAction func(context.Context, []string, io.Writer, io.Writer) int
+
+type ManagementAction func(context.Context, []string, io.Writer, io.Writer) int
+
+var ErrOutputLimit = errors.New("management output limit exceeded")
+
+const DefaultOutputLimit = 8192
+
+type BoundedOutput struct {
+	Limit    int
+	Data     []byte
+	Overflow bool
+}
+
+func (b *BoundedOutput) Write(p []byte) (int, error) {
+	limit := b.Limit
+	if limit <= 0 {
+		limit = DefaultOutputLimit
+	}
+	if len(b.Data)+len(p) > limit {
+		b.Overflow = true
+		return 0, ErrOutputLimit
+	}
+	b.Data = append(b.Data, p...)
+	return len(p), nil
+}
 
 type ErrorCode string
 
