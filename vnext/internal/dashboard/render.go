@@ -109,7 +109,8 @@ func NewIntegrationObserver(renderer Renderer, receipts ReceiptWriter) Integrati
 	return &observer{renderer: renderer, receipts: receipts}
 }
 
-// AfterIntegration deliberately absorbs dashboard failures: integration remains authoritative.
+// AfterIntegration runs after integration completes. A returned error is a refresh/audit
+// failure and cannot roll back or block that completed integration.
 func (o *observer) AfterIntegration(ctx context.Context, result IntegrationResult, snapshot Snapshot) error {
 	receipt := DashboardRefreshReceipt{
 		RecordEnvelope:    core.RecordEnvelope{Schema: snapshot.Schema, Project: snapshot.Project, RunID: core.RunID(result.RunID), WrittenAt: snapshot.GeneratedAt, Revision: result.Revision},
@@ -135,10 +136,10 @@ func (o *observer) AfterIntegration(ctx context.Context, result IntegrationResul
 }
 
 func (o *observer) write(ctx context.Context, receipt DashboardRefreshReceipt) error {
-	if o.receipts != nil {
-		_ = o.receipts.WriteRefreshReceipt(ctx, receipt)
+	if o.receipts == nil {
+		return fmt.Errorf("dashboard receipt writer is required")
 	}
-	return nil
+	return o.receipts.WriteRefreshReceipt(ctx, receipt)
 }
 
 func validate(s Snapshot) error {

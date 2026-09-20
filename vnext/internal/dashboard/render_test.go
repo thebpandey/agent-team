@@ -14,6 +14,11 @@ import (
 
 type receipts struct{ values []DashboardRefreshReceipt }
 
+type failingReceipts struct {
+	err    error
+	values []DashboardRefreshReceipt
+}
+
 type countedRenderer struct {
 	Renderer
 	publishes int
@@ -27,6 +32,11 @@ func (r *countedRenderer) Publish(ctx context.Context, input Snapshot) error {
 func (r *receipts) WriteRefreshReceipt(_ context.Context, value DashboardRefreshReceipt) error {
 	r.values = append(r.values, value)
 	return nil
+}
+
+func (r *failingReceipts) WriteRefreshReceipt(_ context.Context, value DashboardRefreshReceipt) error {
+	r.values = append(r.values, value)
+	return r.err
 }
 
 func snapshot() Snapshot {
@@ -148,15 +158,90 @@ func TestObserverPublishesOnceAndRetainsLastGoodOnFailure(t *testing.T) {
 	if err != nil || string(afterRenderFailure) != string(lastGood) {
 		t.Fatalf("last-good changed after render failure: %v", err)
 	}
-	writeFailing := NewIntegrationObserver(NewRenderer(store.New(root, core.StorageLimits{CanonicalBytes: 1})), receipt)
-	if err := writeFailing.AfterIntegration(context.Background(), result, snapshot()); err != nil {
+	publicationFailing := NewIntegrationObserver(NewRenderer(store.New(root, core.StorageLimits{CanonicalBytes: 1})), receipt)
+	if err := publicationFailing.AfterIntegration(context.Background(), result, snapshot()); err != nil {
 		t.Fatal(err)
 	}
 	if len(receipt.values) != 4 || receipt.values[3].Success || receipt.values[3].Status != Unavailable {
-		t.Fatalf("write failure receipt: %#v", receipt.values)
+		t.Fatalf("publication failure receipt: %#v", receipt.values)
 	}
 	afterWriteFailure, err := os.ReadFile(path)
 	if err != nil || string(afterWriteFailure) != string(lastGood) {
-		t.Fatalf("last-good changed after write failure: %v", err)
+		t.Fatalf("last-good changed after publication failure: %v", err)
+	}
+}
+
+func TestReceiptWriterFailureIsObservableWithoutRollingBackDashboard(t *testing.T) {
+	root := t.TempDir()
+	publisher := NewRenderer(store.New(root, core.StorageLimits{CanonicalBytes: 16 << 20}))
+	input := snapshot()
+	if err := publisher.Publish(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".agent-team", "dashboard", "index.html")
+	lastGood, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("receipt persistence failed")
+	receipt := &failingReceipts{err: want}
+	observer := NewIntegrationObserver(publisher, receipt)
+	result := IntegrationResult{Success: true, RunID: "run", TaskID: "task", CanonicalRevision: "rev"}
+	input.Project = "current"
+	if err := observer.AfterIntegration(context.Background(), result, input); !errors.Is(err, want) {
+		t.Fatalf("current receipt error = %v, want %v", err, want)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil || string(current) == string(lastGood) {
+		t.Fatalf("current publish was rolled back: %v", err)
+	}
+	if err := observer.AfterIntegration(context.Background(), IntegrationResult{RunID: "run", TaskID: "task", Error: "integration failed"}, input); !errors.Is(err, want) {
+		t.Fatalf("stale receipt error = %v, want %v", err, want)
+	}
+	stale, err := os.ReadFile(path)
+	if err != nil || string(stale) != string(current) {
+		t.Fatalf("stale receipt changed last-good: %v", err)
+	}
+	publisher.(*renderer).render = func(Snapshot) ([]byte, error) { return nil, errors.New("render failed") }
+	if err := observer.AfterIntegration(context.Background(), result, input); !errors.Is(err, want) {
+		t.Fatalf("unavailable receipt error = %v, want %v", err, want)
+	}
+	unavailable, err := os.ReadFile(path)
+	if err != nil || string(unavailable) != string(current) {
+		t.Fatalf("unavailable receipt changed last-good: %v", err)
+	}
+	if got := []DashboardStatus{receipt.values[0].Status, receipt.values[1].Status, receipt.values[2].Status}; got[0] != Current || got[1] != Stale || got[2] != Unavailable {
+		t.Fatalf("receipt statuses = %#v", got)
+	}
+}
+
+func TestNilReceiptWriterIsRefreshAuditFailure(t *testing.T) {
+	root := t.TempDir()
+	publisher := NewRenderer(store.New(root, core.StorageLimits{CanonicalBytes: 16 << 20}))
+	observer := NewIntegrationObserver(publisher, nil)
+	input := snapshot()
+	result := IntegrationResult{Success: true, RunID: "run", TaskID: "task", CanonicalRevision: "rev"}
+	if err := observer.AfterIntegration(context.Background(), result, input); err == nil {
+		t.Fatal("current nil receipt writer accepted")
+	}
+	path := filepath.Join(root, ".agent-team", "dashboard", "index.html")
+	current, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := observer.AfterIntegration(context.Background(), IntegrationResult{RunID: "run", TaskID: "task", Error: "integration failed"}, input); err == nil {
+		t.Fatal("stale nil receipt writer accepted")
+	}
+	stale, err := os.ReadFile(path)
+	if err != nil || string(stale) != string(current) {
+		t.Fatalf("stale nil receipt writer changed last-good: %v", err)
+	}
+	publisher.(*renderer).render = func(Snapshot) ([]byte, error) { return nil, errors.New("render failed") }
+	if err := observer.AfterIntegration(context.Background(), result, input); err == nil {
+		t.Fatal("unavailable nil receipt writer accepted")
+	}
+	unavailable, err := os.ReadFile(path)
+	if err != nil || string(unavailable) != string(current) {
+		t.Fatalf("unavailable nil receipt writer changed last-good: %v", err)
 	}
 }
