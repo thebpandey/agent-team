@@ -1,6 +1,7 @@
 package acceptance_test
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/cli"
 	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/orchestrator"
 	"github.com/thebpandey/agent-team/vnext/internal/project"
 	"github.com/thebpandey/agent-team/vnext/internal/resources"
 	"github.com/thebpandey/agent-team/vnext/internal/testkit"
@@ -58,14 +60,18 @@ func TestHostAcceptanceMarksLifecycleScopeUnresolved(t *testing.T) {
 }
 
 func TestTwoWorkerExecutionReviewGateIntegration(t *testing.T) {
-	f := scriptedVertical{developer: "developer-host", reviewer: "reviewer-host"}
+	developer := &scriptedDeveloper{host: "developer-host"}
+	f := scriptedVertical{developer: developer, reviewer: "reviewer-host", orchestrator: orchestrator.New(nil, nil, developer, nil, nil, nil, nil)}
+	if _, err := f.orchestrator.DispatchPlanned(context.Background(), core.Limits{ParallelTeams: 2}, contracts.HostCapabilities{UsableSlots: 2, DeveloperSlots: 1, ReviewerSlots: 1}, 3, core.AssignmentPacket{}, contracts.WorktreeSpec{}); !errors.Is(err, core.ErrCapacity) || developer.calls != 0 {
+		t.Fatalf("rejected dispatch err=%v calls=%d", err, developer.calls)
+	}
 	for _, p := range []core.AssignmentPacket{{Task: "TASK-1", SpecRevision: "rev-1"}, {Task: "TASK-2", SpecRevision: "rev-2"}} {
 		if err := f.execute(p); err != nil {
 			t.Fatal(err)
 		}
 	}
 	want := []string{"developer", "FIX", "developer:repaired", "CLEAN", "gate", "integrate", "cleanup"}
-	if f.developer == f.reviewer || len(f.events) != 14 {
+	if f.developer.host == f.reviewer || len(f.events) != 14 {
 		t.Fatal(f)
 	}
 	for i, event := range want {
@@ -76,25 +82,32 @@ func TestTwoWorkerExecutionReviewGateIntegration(t *testing.T) {
 }
 
 type scriptedVertical struct {
-	developer, reviewer string
-	events              []string
+	developer    *scriptedDeveloper
+	reviewer     string
+	orchestrator orchestrator.Orchestrator
+	events       []string
 }
 
 func (s *scriptedVertical) execute(p core.AssignmentPacket) error {
-	if s.developer == s.reviewer || p.Task == "" || p.SpecRevision == "" {
+	if s.developer.host == s.reviewer || p.Task == "" || p.SpecRevision == "" {
 		return core.ErrTransition
 	}
-	developer := scriptedDeveloper{events: &s.events}
+	s.developer.events = &s.events
 	reviewer := scriptedReviewer{host: s.reviewer, events: &s.events}
 	gate := scriptedGate{events: &s.events}
 	integrator := scriptedIntegrator{events: &s.events}
 	cleaner := scriptedCleaner{events: &s.events}
-	revision := developer.start(p)
+	worktree := contracts.WorktreeSpec{Run: "RUN", Team: "TEAM", Root: "task", Base: "base", WritablePaths: []string{"src"}}
+	handle, err := s.orchestrator.DispatchPlanned(context.Background(), core.Limits{ParallelTeams: 2}, contracts.HostCapabilities{UsableSlots: 2, DeveloperSlots: 1, ReviewerSlots: 1}, 2, p, worktree)
+	if err != nil {
+		return err
+	}
+	revision := handle.CandidateRevision
 	if reviewer.review(revision) != "FIX" {
 		return core.ErrTransition
 	}
-	revision = developer.repair(revision)
-	if reviewer.review(revision) != "CLEAN" || reviewer.host == s.developer {
+	revision = s.developer.repair(revision)
+	if reviewer.review(revision) != "CLEAN" || reviewer.host == s.developer.host {
 		return core.ErrTransition
 	}
 	if err := gate.check(revision); err != nil {
@@ -106,13 +119,19 @@ func (s *scriptedVertical) execute(p core.AssignmentPacket) error {
 	return cleaner.cleanup(revision)
 }
 
-type scriptedDeveloper struct{ events *[]string }
-
-func (d scriptedDeveloper) start(p core.AssignmentPacket) string {
-	*d.events = append(*d.events, "developer")
-	return p.SpecRevision
+type scriptedDeveloper struct {
+	host   string
+	events *[]string
+	calls  int
 }
-func (d scriptedDeveloper) repair(revision string) string {
+
+func (d *scriptedDeveloper) Dispatch(_ context.Context, p core.AssignmentPacket, _ contracts.WorktreeSpec) (contracts.WorkerHandle, error) {
+	d.calls++
+	*d.events = append(*d.events, "developer")
+	return contracts.WorkerHandle{Host: d.host, Identity: "developer", Run: p.RunID, Team: p.Team, Task: p.Task, CandidateRevision: p.SpecRevision, PacketDigest: p.QueueFingerprint}, nil
+}
+
+func (d *scriptedDeveloper) repair(revision string) string {
 	*d.events = append(*d.events, "developer:repaired")
 	return revision + ":repaired"
 }
