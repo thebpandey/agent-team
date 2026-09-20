@@ -121,6 +121,29 @@ func TestReceiptRejectsInvalidResourceReferences(t *testing.T) {
 	}
 }
 
+func TestReceiptResourceReferencesUseSharedSegments(t *testing.T) {
+	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	base := Receipt{RecordEnvelope: envelope("RUN-1", 1), Team: "TEAM-1", Task: "TASK-1", Attempt: 1, State: core.Working, NextAction: "review"}
+	for _, value := range []string{"S-", "S-a/b", "S-a\\b", "S-a\x00b", "S-ü", "S-CON", "S-..", "S-" + strings.Repeat("a", 129)} {
+		r := base
+		r.Resources.Servers = []string{value}
+		if err := WriteReceipt(context.Background(), s, r); err == nil {
+			t.Fatalf("accepted invalid shared segment %q", value)
+		}
+	}
+	for _, value := range []string{"S-safe-1", "B-safe_2"} {
+		r := base
+		if strings.HasPrefix(value, "S-") {
+			r.Resources.Servers = []string{value}
+		} else {
+			r.Resources.Browsers = []string{value}
+		}
+		if err := WriteReceipt(context.Background(), store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20}), r); err != nil {
+			t.Fatalf("rejected shared segment %q: %v", value, err)
+		}
+	}
+}
+
 func TestBlockerCASAndProjectionRed(t *testing.T) {
 	ctx := context.Background()
 	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20, HandoffHardBytes: 256 << 10})
