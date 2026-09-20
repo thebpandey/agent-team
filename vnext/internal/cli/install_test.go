@@ -54,13 +54,13 @@ func TestManagementActionsAndJSONBound(t *testing.T) {
 		}
 		return 0
 	}}
-	valid := [][]string{{"install", "--host", "codex"}, {"install", "--host", "claude", "--json"}, {"update", "--version", "1.2.3", "--json"}, {"rollback", "--version", "8.0.0", "--json"}, {"rollback", "--version", "8.0.0", "--revision", "0123456789abcdef0123456789abcdef01234567", "--json"}, {"uninstall", "--json"}}
+	valid := [][]string{{"install", "--host", "codex"}, {"install", "--host", "claude", "--json"}, {"update", "--version", "1.2.3", "--json"}, {"rollback", "--version", "8.0.0", "--json"}, {"rollback", "--version", "8.0.0", "--revision", "0123456789abcdef0123456789abcdef01234567", "--json"}, {"uninstall", "--json"}, {"cutover", "--request", "/tmp/cutover.json", "--json"}}
 	for _, args := range valid {
 		if code := cli.Run(context.Background(), args, deps); code != 0 {
 			t.Fatal(args, code)
 		}
 	}
-	for _, args := range [][]string{{"install"}, {"install", "--host"}, {"update"}, {"rollback", "--version"}, {"rollback", "--revision", "0123456789abcdef0123456789abcdef01234567"}, {"rollback", "--version", "8.0.0", "--revision", "bad"}, {"unknown"}, {"uninstall", "--bad"}} {
+	for _, args := range [][]string{{"install"}, {"install", "--host"}, {"update"}, {"rollback", "--version"}, {"rollback", "--revision", "0123456789abcdef0123456789abcdef01234567"}, {"rollback", "--version", "8.0.0", "--revision", "bad"}, {"unknown"}, {"uninstall", "--bad"}, {"cutover"}, {"cutover", "--request", "relative.json"}} {
 		if code := cli.Run(context.Background(), args, deps); code == 0 {
 			t.Fatal("malformed command accepted", args)
 		}

@@ -83,6 +83,7 @@ type CASOutcome struct {
 type Layout struct {
 	DataRoot, BinaryPath, ContractPath, ManifestPath string
 	SkillRoots                                       map[Host]string
+	ConfigPaths                                      map[Host]string
 }
 
 type ManifestStore struct {

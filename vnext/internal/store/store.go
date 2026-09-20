@@ -93,6 +93,100 @@ func (s *Store) ReadJSON(relative string, maxBytes int64, destination any) error
 	return nil
 }
 
+// ReadFile returns one bounded regular file through a stable rooted handle.
+func (s *Store) ReadFile(relative string, maxBytes int64) ([]byte, fs.FileMode, error) {
+	limit, err := s.limit(maxBytes)
+	if err != nil {
+		return nil, 0, err
+	}
+	relative, err = validateRelative(relative)
+	if err != nil {
+		return nil, 0, err
+	}
+	root, _, err := s.openRoot(false)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer root.Close()
+	before, err := root.Lstat(relative)
+	if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || before.Size() < 0 || before.Size() > limit {
+		return nil, 0, core.ErrPath
+	}
+	file, err := root.OpenFile(relative, os.O_RDONLY|guardReadFlags(), 0)
+	if err != nil {
+		return nil, 0, core.ErrPath
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return nil, 0, core.ErrRevision
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || int64(len(raw)) != opened.Size() {
+		return nil, 0, core.ErrRevision
+	}
+	current, err := root.Lstat(relative)
+	if err != nil || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, current) {
+		return nil, 0, core.ErrRevision
+	}
+	return raw, opened.Mode().Perm(), nil
+}
+
+// RemoveExact removes a regular file only when the bytes read from its opened
+// handle match expectedSHA256. The existing identity-claim removal primitive
+// retains a pathname replacement that races the verification.
+func (s *Store) RemoveExact(relative, expectedSHA256 string, maxBytes int64) error {
+	if s == nil || len(expectedSHA256) != 64 {
+		return core.ErrPath
+	}
+	limit, err := s.limit(maxBytes)
+	if err != nil {
+		return err
+	}
+	relative, err = validateRelative(relative)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(s.Root)
+	if err != nil {
+		return pathError("open root", s.Root, err)
+	}
+	defer root.Close()
+	before, err := root.Lstat(filepath.FromSlash(relative))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || before.Size() < 0 || before.Size() > limit {
+		return core.ErrPath
+	}
+	file, err := root.OpenFile(filepath.FromSlash(relative), os.O_RDONLY|guardReadFlags(), 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return pathError("open", relative, err)
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxBytes || !os.SameFile(before, info) {
+		_ = file.Close()
+		return core.ErrPath
+	}
+	hash := sha256.New()
+	n, readErr := io.Copy(hash, io.LimitReader(file, limit+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || n != info.Size() || hex.EncodeToString(hash.Sum(nil)) != expectedSHA256 {
+		return core.ErrRevision
+	}
+	named, err := root.Lstat(filepath.FromSlash(relative))
+	if err != nil || named.Mode()&os.ModeSymlink != 0 || !os.SameFile(info, named) {
+		return core.ErrRevision
+	}
+	if err := removeOwned(root, ownedTemp{name: filepath.ToSlash(relative), info: info}); err != nil {
+		return pathError("remove exact", relative, err)
+	}
+	return nil
+}
+
 // WriteJSON streams value into a bounded temporary file before replacement.
 func (s *Store) WriteJSON(relative string, value any, maxBytes int64) (AtomicResult, error) {
 	return s.write(relative, maxBytes, func(writer io.Writer) error {

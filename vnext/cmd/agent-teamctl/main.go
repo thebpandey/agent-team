@@ -22,6 +22,7 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/install"
 	"github.com/thebpandey/agent-team/vnext/internal/lifecycle"
+	"github.com/thebpandey/agent-team/vnext/internal/migrate"
 	releasepkg "github.com/thebpandey/agent-team/vnext/internal/release"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
@@ -50,6 +51,43 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return managementError(args, stdout, stderr, err)
 		}
 		return managementResult(args, stdout, map[string]any{"ok": true, "action": "cleanup", "recovered": true, "target": args[2], "operation": owner.OperationID, "owner_token": owner.Token})
+	}
+	if len(args) > 0 && args[0] == "cutover" {
+		if len(args) != 3 || args[1] != "--request" {
+			return managementError(args, stdout, stderr, core.ErrPhase)
+		}
+		requestAction, actionErr := cutoverRequestAction(args[2])
+		if actionErr != nil {
+			return managementError(args, stdout, stderr, actionErr)
+		}
+		if strings.HasPrefix(requestAction, "host-") {
+			layout, layoutErr := install.ResolveLayout(runtime.GOOS, map[string]string{"LOCALAPPDATA": os.Getenv("LOCALAPPDATA"), "XDG_DATA_HOME": os.Getenv("XDG_DATA_HOME"), "CODEX_HOME": os.Getenv("CODEX_HOME"), "CLAUDE_HOME": os.Getenv("CLAUDE_HOME")})
+			if layoutErr != nil {
+				return managementError(args, stdout, stderr, layoutErr)
+			}
+			var request install.LegacyHostCutoverRequest
+			if err := readStrictJSON(args[2], &request); err != nil {
+				return managementError(args, stdout, stderr, err)
+			}
+			var release install.Release
+			if request.Action == "host-cutover" {
+				var releaseErr error
+				release, releaseErr = localRelease("")
+				if releaseErr != nil {
+					return managementError(args, stdout, stderr, releaseErr)
+				}
+			}
+			result, err := install.CutoverLegacyHosts(ctx, layout, release, request)
+			if err != nil {
+				return managementError(args, stdout, stderr, err)
+			}
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": request.Action, "revision": result.ManifestRevision, "receipt_digest": result.ReceiptDigest, "idempotent": result.Idempotent})
+		}
+		result, err := migrate.ExecuteAuthorityRequest(ctx, args[2])
+		if err != nil {
+			return managementError(args, stdout, stderr, err)
+		}
+		return managementResult(args, stdout, map[string]any{"ok": true, "action": result.Action, "revision": result.TargetRevision, "receipt_digest": result.ReceiptDigest, "held": result.Held, "idempotent": result.Idempotent})
 	}
 	layout, err := install.ResolveLayout(runtime.GOOS, map[string]string{
 		"LOCALAPPDATA":  os.Getenv("LOCALAPPDATA"),
@@ -113,6 +151,23 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return managementError(args, stdout, stderr, err)
 	}
 	return managementResult(args, stdout, map[string]any{"ok": true, "action": action, "revision": outcome.Manifest.Revision, "retained": outcome.Retained})
+}
+
+func cutoverRequestAction(path string) (string, error) {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", core.ErrPath
+	}
+	raw, _, err := store.New(filepath.Dir(path), core.StorageLimits{CanonicalBytes: 1 << 20}).ReadFile(filepath.Base(path), 1<<20)
+	if err != nil || len(raw) == 0 {
+		return "", core.ErrPath
+	}
+	var envelope struct {
+		Action string `json:"action"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Action == "" {
+		return "", core.ErrPhase
+	}
+	return envelope.Action, nil
 }
 
 func recoverMutationLock(ctx context.Context, root string, args []string, proof store.HolderLiveness) (store.MutationOwner, error) {
@@ -251,7 +306,10 @@ func verifyDistributionFiles(root string, manifest releasepkg.Manifest, checksum
 }
 
 func readStrictJSON(path string, value any) error {
-	raw, err := os.ReadFile(path)
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return core.ErrPath
+	}
+	raw, _, err := store.New(filepath.Dir(path), core.StorageLimits{CanonicalBytes: 16 << 20}).ReadFile(filepath.Base(path), 16<<20)
 	if err != nil {
 		return err
 	}
