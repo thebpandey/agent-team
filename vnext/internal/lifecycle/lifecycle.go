@@ -16,7 +16,6 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/project"
 	"github.com/thebpandey/agent-team/vnext/internal/run"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
-	"github.com/thebpandey/agent-team/vnext/internal/supervise"
 	"github.com/thebpandey/agent-team/vnext/internal/workflow"
 )
 
@@ -53,9 +52,15 @@ type record struct {
 
 type controller struct {
 	store      *store.Store
-	supervisor supervise.Supervisor
+	supervisor EventSink
 	mu         *sync.Mutex
 	err        error
+}
+
+// EventSink is the narrow foreground boundary lifecycle needs from a host.
+type EventSink interface {
+	Emit(context.Context, workflow.Event) error
+	Checkpoint(context.Context, core.RunID, core.Scope, string) error
 }
 
 type target struct {
@@ -66,7 +71,7 @@ type target struct {
 var locks sync.Map
 
 // New creates a lifecycle controller. All work remains in the calling goroutine.
-func New(state *store.Store, supervisor supervise.Supervisor) Lifecycle {
+func New(state *store.Store, supervisor EventSink) Lifecycle {
 	key, err := canonicalStoreRoot(state)
 	if err != nil {
 		key = "<invalid-store-root>"
@@ -79,7 +84,7 @@ func New(state *store.Store, supervisor supervise.Supervisor) Lifecycle {
 }
 
 // NewLifecycle is retained as the explicit constructor named by the plan.
-func NewLifecycle(state *store.Store, supervisor supervise.Supervisor) Lifecycle {
+func NewLifecycle(state *store.Store, supervisor EventSink) Lifecycle {
 	return New(state, supervisor)
 }
 

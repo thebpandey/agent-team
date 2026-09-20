@@ -38,7 +38,7 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: canonical run: %v", core.ErrRevision, err)
 	}
-	snapshot := knowledge.HandoffSnapshot{RecordEnvelope: manifest.RecordEnvelope, NextAction: "resume", Freshness: "canonical run revision"}
+	snapshot := knowledge.HandoffSnapshot{RecordEnvelope: manifest.RecordEnvelope, NextAction: "inspect", Freshness: "canonical run revision"}
 	receipts := make([]knowledge.Receipt, 0, len(manifest.Teams))
 	for _, team := range manifest.Teams {
 		if err := project.ValidateSegment(string(team.ID)); err != nil {
@@ -79,7 +79,29 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 			snapshot.Blockers = append(snapshot.Blockers, blocker)
 		}
 	}
+	if resumable(manifest, receipts, snapshot.Blockers) {
+		snapshot.NextAction = "resume"
+	}
 	return knowledge.NewProjectionWriter(s.store).WriteHandoff(ctx, snapshot)
+}
+
+func resumable(manifest run.Run, receipts []knowledge.Receipt, blockers []knowledge.Blocker) bool {
+	if manifest.State == core.Cancelled || manifest.State == core.Archived || len(receipts) == 0 || len(blockers) != 0 {
+		return false
+	}
+	paused := false
+	for _, receipt := range receipts {
+		if receipt.NextAction != "resume" {
+			return false
+		}
+		switch receipt.State {
+		case core.Paused, core.Interrupted:
+			paused = true
+		case core.Cancelled, core.Clean, core.Integrated, core.Archived:
+			return false
+		}
+	}
+	return paused
 }
 
 func validReceipt(manifest run.Run, team run.TeamRecord, receipt knowledge.Receipt) bool {

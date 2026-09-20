@@ -21,7 +21,7 @@ func TestDeriveReadsCanonicalRunAndWritesDeterministicHandoff(t *testing.T) {
 	if _, err := run.NewRepositories(s).Runs.Initialize(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-	receipt := knowledge.Receipt{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: r.Project, RunID: r.ID, WrittenAt: r.WrittenAt, Revision: 1}, Team: string(r.Teams[0].ID), Task: "T1", Attempt: 1, State: core.Ready, Review: "review-1", Gate: "gate-1", EvidencePointers: []string{"evidence/one"}, NextAction: "resume"}
+	receipt := knowledge.Receipt{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: r.Project, RunID: r.ID, WrittenAt: r.WrittenAt, Revision: 1}, Team: string(r.Teams[0].ID), Task: "T1", Attempt: 1, State: core.Paused, Review: "review-1", Gate: "gate-1", EvidencePointers: []string{"evidence/one"}, NextAction: "resume"}
 	if err := knowledge.WriteReceipt(context.Background(), s, receipt); err != nil {
 		t.Fatal(err)
 	}

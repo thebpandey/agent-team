@@ -10,6 +10,8 @@ import (
 
 	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/lifecycle"
+	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
 // Dispatcher starts one worker from a validated, immutable request.
@@ -17,16 +19,24 @@ type Dispatcher interface {
 	Dispatch(context.Context, core.AssignmentPacket, contracts.WorktreeSpec) (contracts.WorkerHandle, error)
 }
 
-type dispatcher struct{ adapter contracts.HostAdapter }
+type dispatcher struct {
+	adapter contracts.HostAdapter
+	state   *store.Store
+}
 
 // NewDispatcher returns a dispatcher backed by adapter.
-func NewDispatcher(adapter contracts.HostAdapter) Dispatcher { return &dispatcher{adapter: adapter} }
+func NewDispatcher(state *store.Store, adapter contracts.HostAdapter) Dispatcher {
+	return &dispatcher{state: state, adapter: adapter}
+}
 
 func (d *dispatcher) Dispatch(ctx context.Context, packet core.AssignmentPacket, worktree contracts.WorktreeSpec) (contracts.WorkerHandle, error) {
-	if d == nil || d.adapter == nil {
+	if d == nil || d.adapter == nil || d.state == nil {
 		return contracts.WorkerHandle{}, core.ErrCapacity
 	}
 	if err := ValidatePacket(packet, worktree); err != nil {
+		return contracts.WorkerHandle{}, err
+	}
+	if err := lifecycle.AdmissionAllowed(ctx, d.state, packet); err != nil {
 		return contracts.WorkerHandle{}, err
 	}
 
