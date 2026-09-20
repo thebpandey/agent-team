@@ -118,7 +118,7 @@ func (c *cleaner) Cleanup(ctx context.Context, x CleanupCandidate) error {
 	id := digest(p)
 	root, err := project.CanonicalStoreRoot(c.store)
 	if err != nil {
-		return err
+		return core.ErrPath
 	}
 	state := store.New(root, c.store.Limits)
 	lock, _ := cleanupLocks.LoadOrStore(root+"\x00"+id, &sync.Mutex{})

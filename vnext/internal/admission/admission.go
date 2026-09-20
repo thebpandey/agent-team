@@ -19,7 +19,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
-	projectpkg "github.com/thebpandey/agent-team/vnext/internal/project"
 	"github.com/thebpandey/agent-team/vnext/internal/run"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 	"github.com/thebpandey/agent-team/vnext/internal/tracker"
@@ -102,7 +101,7 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 	if err := validateBatch(batch, runID, teamID); err != nil {
 		return AdmissionOutcome{}, err
 	}
-	root, err := projectpkg.CanonicalStoreRoot(st)
+	root, err := canonicalRoot(st.Root)
 	if err != nil {
 		return AdmissionOutcome{}, err
 	}
@@ -412,7 +411,7 @@ func validateCommit(commit committedAdmission, runID core.RunID, expected uint64
 	if _, err := time.Parse(time.RFC3339, commit.BeforeRun.WrittenAt); err != nil || commit.BeforeRun.Root != commit.BeforeRun.Project {
 		return fmt.Errorf("%w: invalid admission commit envelope", core.ErrRevision)
 	}
-	root, err := projectpkg.CanonicalRoot(commit.BeforeRun.Root)
+	root, err := canonicalRoot(commit.BeforeRun.Root)
 	if err != nil || root != commit.BeforeRun.Root {
 		return fmt.Errorf("%w: invalid admission commit root", core.ErrRevision)
 	}
@@ -612,6 +611,24 @@ func validateID(value string) error {
 		}
 	}
 	return nil
+}
+func canonicalRoot(value string) (string, error) {
+	if value == "" {
+		return "", fmt.Errorf("%w: empty store root", core.ErrPath)
+	}
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("%w: invalid store root", core.ErrPath)
+	}
+	return resolved, nil
 }
 func teamInRun(value run.Run, team run.TeamRecord) bool {
 	for _, slot := range value.Teams {
