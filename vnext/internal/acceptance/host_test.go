@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 
@@ -61,17 +62,27 @@ func TestHostAcceptanceMarksLifecycleScopeUnresolved(t *testing.T) {
 
 func TestTwoWorkerExecutionReviewGateIntegration(t *testing.T) {
 	developer := &scriptedDeveloper{host: "developer-host"}
-	f := scriptedVertical{developer: developer, reviewer: "reviewer-host", orchestrator: orchestrator.New(nil, nil, developer, nil, nil, nil, nil)}
+	f := scriptedVertical{developer: developer, reviewer: "developer-host", orchestrator: orchestrator.New(nil, nil, developer, nil, nil, nil, nil)}
 	if _, err := f.orchestrator.DispatchPlanned(context.Background(), core.Limits{ParallelTeams: 2}, contracts.HostCapabilities{UsableSlots: 2, DeveloperSlots: 1, ReviewerSlots: 1}, 3, core.AssignmentPacket{}, contracts.WorktreeSpec{}); !errors.Is(err, core.ErrCapacity) || developer.calls != 0 {
 		t.Fatalf("rejected dispatch err=%v calls=%d", err, developer.calls)
 	}
-	for _, p := range []core.AssignmentPacket{{Task: "TASK-1", SpecRevision: "rev-1"}, {Task: "TASK-2", SpecRevision: "rev-2"}} {
-		if err := f.execute(p); err != nil {
+	plans := []scriptedPlan{
+		{
+			packet:   core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: "RUN-1"}, Team: "TEAM-1", Task: "TASK-1", SpecRevision: "rev-1", QueueFingerprint: "packet-1"},
+			worktree: contracts.WorktreeSpec{Run: "RUN-1", Team: "TEAM-1", Root: "task-1", Base: "base-1", WritablePaths: []string{"src/one"}},
+		},
+		{
+			packet:   core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: "RUN-2"}, Team: "TEAM-2", Task: "TASK-2", SpecRevision: "rev-2", QueueFingerprint: "packet-2"},
+			worktree: contracts.WorktreeSpec{Run: "RUN-2", Team: "TEAM-2", Root: "task-2", Base: "base-2", WritablePaths: []string{"src/two"}},
+		},
+	}
+	for _, plan := range plans {
+		if err := f.execute(plan.packet, plan.worktree); err != nil {
 			t.Fatal(err)
 		}
 	}
 	want := []string{"developer", "FIX", "developer:repaired", "CLEAN", "gate", "integrate", "cleanup"}
-	if f.developer.host == f.reviewer || len(f.events) != 14 {
+	if len(f.events) != 14 {
 		t.Fatal(f)
 	}
 	for i, event := range want {
@@ -79,6 +90,22 @@ func TestTwoWorkerExecutionReviewGateIntegration(t *testing.T) {
 			t.Fatal(f.events)
 		}
 	}
+	if len(developer.packets) != len(plans) || len(developer.worktrees) != len(plans) {
+		t.Fatalf("dispatches packets=%d worktrees=%d", len(developer.packets), len(developer.worktrees))
+	}
+	for i, plan := range plans {
+		if assignmentIdentity(f.developer.host, "developer", plan.packet) == assignmentIdentity(f.reviewer, "reviewer", plan.packet) {
+			t.Fatalf("dispatch %d reused the developer identity", i)
+		}
+		if !reflect.DeepEqual(developer.packets[i], plan.packet) || !reflect.DeepEqual(developer.worktrees[i], plan.worktree) {
+			t.Fatalf("dispatch %d packet=%+v worktree=%+v", i, developer.packets[i], developer.worktrees[i])
+		}
+	}
+}
+
+type scriptedPlan struct {
+	packet   core.AssignmentPacket
+	worktree contracts.WorktreeSpec
 }
 
 type scriptedVertical struct {
@@ -88,26 +115,34 @@ type scriptedVertical struct {
 	events       []string
 }
 
-func (s *scriptedVertical) execute(p core.AssignmentPacket) error {
-	if s.developer.host == s.reviewer || p.Task == "" || p.SpecRevision == "" {
+func (s *scriptedVertical) execute(p core.AssignmentPacket, worktree contracts.WorktreeSpec) error {
+	developerIdentity := assignmentIdentity(s.developer.host, "developer", p)
+	reviewerIdentity := assignmentIdentity(s.reviewer, "reviewer", p)
+	if developerIdentity == reviewerIdentity || p.Task == "" || p.SpecRevision == "" {
 		return core.ErrTransition
 	}
 	s.developer.events = &s.events
-	reviewer := scriptedReviewer{host: s.reviewer, events: &s.events}
-	gate := scriptedGate{events: &s.events}
-	integrator := scriptedIntegrator{events: &s.events}
-	cleaner := scriptedCleaner{events: &s.events}
-	worktree := contracts.WorktreeSpec{Run: "RUN", Team: "TEAM", Root: "task", Base: "base", WritablePaths: []string{"src"}}
+	expectedRepaired := p.SpecRevision + ":repaired"
+	reviewer := scriptedReviewer{identity: reviewerIdentity, author: developerIdentity, initial: p.SpecRevision, repaired: expectedRepaired, events: &s.events}
+	gate := scriptedGate{expected: expectedRepaired, events: &s.events}
+	integrator := scriptedIntegrator{expected: expectedRepaired, events: &s.events}
+	cleaner := scriptedCleaner{expected: expectedRepaired, events: &s.events}
 	handle, err := s.orchestrator.DispatchPlanned(context.Background(), core.Limits{ParallelTeams: 2}, contracts.HostCapabilities{UsableSlots: 2, DeveloperSlots: 1, ReviewerSlots: 1}, 2, p, worktree)
 	if err != nil {
 		return err
 	}
 	revision := handle.CandidateRevision
+	if handle.Identity != developerIdentity || revision != p.SpecRevision {
+		return core.ErrRevision
+	}
 	if reviewer.review(revision) != "FIX" {
 		return core.ErrTransition
 	}
-	revision = s.developer.repair(revision)
-	if reviewer.review(revision) != "CLEAN" || reviewer.host == s.developer.host {
+	revision, err = s.developer.repair(revision)
+	if err != nil {
+		return err
+	}
+	if reviewer.review(revision) != "CLEAN" || reviewer.identity == handle.Identity {
 		return core.ErrTransition
 	}
 	if err := gate.check(revision); err != nil {
@@ -120,29 +155,42 @@ func (s *scriptedVertical) execute(p core.AssignmentPacket) error {
 }
 
 type scriptedDeveloper struct {
-	host   string
-	events *[]string
-	calls  int
+	host      string
+	events    *[]string
+	calls     int
+	packets   []core.AssignmentPacket
+	worktrees []contracts.WorktreeSpec
 }
 
-func (d *scriptedDeveloper) Dispatch(_ context.Context, p core.AssignmentPacket, _ contracts.WorktreeSpec) (contracts.WorkerHandle, error) {
+func (d *scriptedDeveloper) Dispatch(_ context.Context, p core.AssignmentPacket, worktree contracts.WorktreeSpec) (contracts.WorkerHandle, error) {
 	d.calls++
+	d.packets = append(d.packets, p)
+	d.worktrees = append(d.worktrees, worktree)
 	*d.events = append(*d.events, "developer")
-	return contracts.WorkerHandle{Host: d.host, Identity: "developer", Run: p.RunID, Team: p.Team, Task: p.Task, CandidateRevision: p.SpecRevision, PacketDigest: p.QueueFingerprint}, nil
+	return contracts.WorkerHandle{Host: d.host, Identity: assignmentIdentity(d.host, "developer", p), Run: p.RunID, Team: p.Team, Task: p.Task, CandidateRevision: p.SpecRevision, PacketDigest: p.QueueFingerprint}, nil
 }
 
-func (d *scriptedDeveloper) repair(revision string) string {
+func (d *scriptedDeveloper) repair(revision string) (string, error) {
+	if revision == "" {
+		return "", core.ErrRevision
+	}
 	*d.events = append(*d.events, "developer:repaired")
-	return revision + ":repaired"
+	return revision + ":repaired", nil
 }
 
 type scriptedReviewer struct {
-	host   string
-	events *[]string
-	calls  int
+	identity string
+	author   string
+	initial  string
+	repaired string
+	events   *[]string
+	calls    int
 }
 
-func (r *scriptedReviewer) review(string) string {
+func (r *scriptedReviewer) review(revision string) string {
+	if r.identity == "" || r.identity == r.author || (r.calls == 0 && revision != r.initial) || (r.calls == 1 && revision != r.repaired) || r.calls > 1 {
+		return ""
+	}
 	r.calls++
 	if r.calls == 1 {
 		*r.events = append(*r.events, "FIX")
@@ -152,34 +200,71 @@ func (r *scriptedReviewer) review(string) string {
 	return "CLEAN"
 }
 
-type scriptedGate struct{ events *[]string }
+func TestScriptedCollaboratorsBindAuthorAndRepairedCandidate(t *testing.T) {
+	events := []string{}
+	reviewer := scriptedReviewer{identity: "reviewer", author: "developer", initial: "base", repaired: "base:repaired", events: &events}
+	if reviewer.review("other-nonempty-candidate") != "" {
+		t.Fatal("review accepted an arbitrary candidate")
+	}
+	reviewer.identity = "developer"
+	if reviewer.review("base") != "" {
+		t.Fatal("review accepted the author identity")
+	}
+	for _, check := range []struct {
+		name string
+		fn   func(string) error
+	}{
+		{"gate", scriptedGate{expected: "base:repaired", events: &events}.check},
+		{"integrate", scriptedIntegrator{expected: "base:repaired", events: &events}.integrate},
+		{"cleanup", scriptedCleaner{expected: "base:repaired", events: &events}.cleanup},
+	} {
+		if err := check.fn("other-nonempty-candidate"); !errors.Is(err, core.ErrRevision) {
+			t.Fatalf("%s accepted an arbitrary candidate: %v", check.name, err)
+		}
+	}
+}
+
+type scriptedGate struct {
+	expected string
+	events   *[]string
+}
 
 func (g scriptedGate) check(revision string) error {
-	if revision == "" {
+	if revision == "" || revision != g.expected {
 		return core.ErrRevision
 	}
 	*g.events = append(*g.events, "gate")
 	return nil
 }
 
-type scriptedIntegrator struct{ events *[]string }
+type scriptedIntegrator struct {
+	expected string
+	events   *[]string
+}
 
 func (i scriptedIntegrator) integrate(revision string) error {
-	if revision == "" {
+	if revision == "" || revision != i.expected {
 		return core.ErrRevision
 	}
 	*i.events = append(*i.events, "integrate")
 	return nil
 }
 
-type scriptedCleaner struct{ events *[]string }
+type scriptedCleaner struct {
+	expected string
+	events   *[]string
+}
 
 func (c scriptedCleaner) cleanup(revision string) error {
-	if revision == "" {
+	if revision == "" || revision != c.expected {
 		return core.ErrRevision
 	}
 	*c.events = append(*c.events, "cleanup")
 	return nil
+}
+
+func assignmentIdentity(host, role string, packet core.AssignmentPacket) string {
+	return host + "/" + role + "/" + string(packet.RunID) + "/" + string(packet.Team) + "/" + string(packet.Task) + "/" + packet.QueueFingerprint
 }
 
 func TestNativePathAndSharingCases(t *testing.T) {
