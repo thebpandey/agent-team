@@ -187,6 +187,57 @@ func (s *Store) RemoveExact(relative, expectedSHA256 string, maxBytes int64) err
 	return nil
 }
 
+// RemoveExactIdentity removes only the originally opened regular-file
+// identity when its current bytes still match expectedSHA256.
+func (s *Store) RemoveExactIdentity(relative, expectedSHA256 string, maxBytes int64, expected fs.FileInfo) error {
+	if expected == nil || !expected.Mode().IsRegular() || len(expectedSHA256) != 64 {
+		return core.ErrPath
+	}
+	relative, err := validateRelative(relative)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(s.Root)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	current, err := root.Lstat(filepath.FromSlash(relative))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, current) {
+		return core.ErrRevision
+	}
+	raw, _, err := s.ReadFile(relative, maxBytes)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(raw)
+	if hex.EncodeToString(sum[:]) != expectedSHA256 {
+		return core.ErrRevision
+	}
+	return removeOwned(root, ownedTemp{name: filepath.ToSlash(relative), info: expected})
+}
+
+// RemoveIdentity removes only expected's exact file identity. It is used for
+// cleaning a partially written file whose final digest is not yet known.
+func (s *Store) RemoveIdentity(relative string, expected fs.FileInfo) error {
+	if expected == nil || !expected.Mode().IsRegular() {
+		return core.ErrPath
+	}
+	relative, err := validateRelative(relative)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(s.Root)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return removeOwned(root, ownedTemp{name: filepath.ToSlash(relative), info: expected})
+}
+
 // WriteJSON streams value into a bounded temporary file before replacement.
 func (s *Store) WriteJSON(relative string, value any, maxBytes int64) (AtomicResult, error) {
 	return s.write(relative, maxBytes, func(writer io.Writer) error {

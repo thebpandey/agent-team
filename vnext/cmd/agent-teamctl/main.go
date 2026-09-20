@@ -87,7 +87,13 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		if err != nil {
 			return managementError(args, stdout, stderr, err)
 		}
-		return managementResult(args, stdout, map[string]any{"ok": true, "action": result.Action, "revision": result.TargetRevision, "receipt_digest": result.ReceiptDigest, "held": result.Held, "idempotent": result.Idempotent})
+		output := map[string]any{"ok": true, "action": result.Action, "revision": result.TargetRevision, "receipt_digest": result.ReceiptDigest, "held": result.Held, "idempotent": result.Idempotent}
+		if result.Action == "prepare" {
+			output["payload_path"], output["payload_sha256"] = result.PayloadPath, result.PayloadSHA256
+			output["request_path"], output["request_sha256"] = result.RequestPath, result.RequestSHA256
+			output["trust_notice"] = "external operator trust is only the one-time fallback for stale or unverifiable v7 cutover; normal v8 setup and schema-4 receipt migrations do not require it"
+		}
+		return managementResult(args, stdout, output)
 	}
 	layout, err := install.ResolveLayout(runtime.GOOS, map[string]string{
 		"LOCALAPPDATA":  os.Getenv("LOCALAPPDATA"),

@@ -18,8 +18,189 @@ import (
 	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/install"
 	"github.com/thebpandey/agent-team/vnext/internal/release"
 )
+
+func TestAuthorityPrepareWritesCanonicalDetachedArtifacts(t *testing.T) {
+	project := authorityFixture(t)
+	request := readAuthorityRequestTest(t, authorityRequestFixture(t, project))
+	root := t.TempDir()
+	layout, err := install.ResolveLayout("linux", map[string]string{"XDG_DATA_HOME": filepath.Join(root, "data"), "CODEX_HOME": filepath.Join(root, "codex"), "CLAUDE_HOME": filepath.Join(root, "claude")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseFixture := install.Release{Version: "8.0.0", Revision: request.TargetRevision, Entrypoints: map[install.Host]install.ReleaseFile{}}
+	for name, target := range map[string]*install.ReleaseFile{"binary": &releaseFixture.Binary, "contract": &releaseFixture.Contract} {
+		path := filepath.Join(root, name)
+		raw := []byte(name + "\n")
+		if os.WriteFile(path, raw, 0o600) != nil {
+			t.Fatal("release")
+		}
+		*target = install.ReleaseFile{Path: path, SHA256: digestBytes(raw), Bytes: int64(len(raw))}
+	}
+	for _, host := range []install.Host{install.Codex, install.Claude} {
+		path := filepath.Join(root, string(host)+"-entry")
+		raw := []byte("native " + string(host) + "\n")
+		if os.WriteFile(path, raw, 0o600) != nil {
+			t.Fatal("entry")
+		}
+		releaseFixture.Entrypoints[host] = install.ReleaseFile{Path: path, SHA256: digestBytes(raw), Bytes: int64(len(raw))}
+	}
+	if _, err := install.Install(context.Background(), layout, releaseFixture, []install.Host{install.Codex, install.Claude}, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []install.Host{install.Codex, install.Claude} {
+		skill := []byte("legacy " + string(host) + "\n")
+		if err := os.WriteFile(filepath.Join(layout.SkillRoots[host], "SKILL.md"), skill, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		metadata := map[string]any{"version": "7.3.1", "sourceRevision": strings.Repeat("a", 40), "packageFileMap": map[string]any{"SKILL.md": map[string]any{"sha256": digestBytes(skill), "mode": 384, "size": len(skill)}}}
+		if raw, marshalErr := json.Marshal(metadata); marshalErr != nil || os.WriteFile(filepath.Join(layout.SkillRoots[host], ".agent-team-source.json"), raw, 0o600) != nil {
+			t.Fatal(marshalErr)
+		}
+	}
+	for i := range request.Reviews {
+		request.Reviews[i].Path, _ = filepath.Rel(project, request.Reviews[i].Path)
+		request.Reviews[i].SHA256 = ""
+	}
+	for i := range request.Tests {
+		request.Tests[i].Path, _ = filepath.Rel(project, request.Tests[i].Path)
+		request.Tests[i].SHA256 = ""
+	}
+	request.Readiness.Path, _ = filepath.Rel(project, request.Readiness.Path)
+	request.Readiness.SHA256 = ""
+	request.Tracker.Export, _ = filepath.Rel(project, request.Tracker.Export)
+	request.Tracker.SHA256, request.Tracker.Fingerprint, request.Tracker.TaskIDs, request.Tracker.TaskCount = "", "", nil, 0
+	issued := time.Now().UTC().Add(-time.Minute)
+	request.Action, request.Approval = "prepare", EvidenceReference{}
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{3}, ed25519.SeedSize))
+	keyID := digestBytes(privateKey.Public().(ed25519.PublicKey))
+	request.Prepare = &AuthorityPrepare{ApprovalID: "operator-approval", SignerKeyID: keyID, IssuedAt: issued.Format(time.RFC3339Nano), ExpiresAt: issued.Add(time.Hour).Format(time.RFC3339Nano), Cause: "authorized cutover", RecoveryDisposition: "restore archive", RemoteName: "origin", BaseRef: "refs/heads/main", TargetRef: "refs/heads/main", RemoteMainDeploys: true, PayloadPath: filepath.Join(project, "unsigned.json"), RequestPath: filepath.Join(project, "cutover.json"), SignaturePath: filepath.Join(project, "unsigned.sig"), NativeManifest: layout.ManifestPath, HostRoots: layout.SkillRoots}
+	path := writeAuthorityJSON(t, project, "prepare.json", request)
+	result, err := ExecuteAuthorityRequest(context.Background(), path)
+	if err != nil || result.Action != "prepare" || !validDigest(result.ReceiptDigest) {
+		t.Fatalf("prepare = %#v, %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(project, authorityReceiptPath)); !os.IsNotExist(err) {
+		t.Fatal("prepare mutated authority")
+	}
+	payload, err := os.ReadFile(request.Prepare.PayloadPath)
+	if err != nil || digestBytes(payload) != result.ReceiptDigest {
+		t.Fatalf("payload: %v", err)
+	}
+	if info, statErr := os.Stat(request.Prepare.PayloadPath); statErr != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("payload mode = %v, %v", info, statErr)
+	}
+	var approval signedCutoverApproval
+	if json.Unmarshal(payload, &approval) != nil || len(approval.HostInventories) != 2 || approval.Signature != "" {
+		t.Fatal("invalid unsigned payload")
+	}
+	var skeleton AuthorityRequest
+	raw, _ := os.ReadFile(request.Prepare.RequestPath)
+	if json.Unmarshal(raw, &skeleton) != nil || skeleton.Action != "cutover" || skeleton.Approval.Path != request.Prepare.PayloadPath || skeleton.ApprovalSignature.Path != request.Prepare.SignaturePath {
+		t.Fatal("invalid request skeleton")
+	}
+	second := request
+	copyPrepare := *request.Prepare
+	second.Prepare = &copyPrepare
+	second.Prepare.PayloadPath = filepath.Join(project, "unsigned-2.json")
+	second.Prepare.RequestPath = filepath.Join(project, "cutover-2.json")
+	second.Prepare.SignaturePath = filepath.Join(project, "unsigned-2.sig")
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "prepare-2.json", second)); err != nil {
+		t.Fatal(err)
+	}
+	secondPayload, _ := os.ReadFile(second.Prepare.PayloadPath)
+	if !bytes.Equal(payload, secondPayload) {
+		t.Fatal("prepare payload is not deterministic")
+	}
+	if _, err := ExecuteAuthorityRequest(context.Background(), path); err == nil {
+		t.Fatal("prepare overwrote existing outputs")
+	}
+	if err := os.WriteFile(request.Prepare.SignaturePath, ed25519.Sign(privateKey, payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cutover, err := ExecuteAuthorityRequest(context.Background(), request.Prepare.RequestPath)
+	if err != nil || cutover.Action != "cutover" {
+		t.Fatalf("prepared cutover = %#v, %v", cutover, err)
+	}
+	receipt, err := AuthorityStatus(project)
+	if err != nil || len(receipt.HostInventories) != 2 {
+		t.Fatalf("authority status = %#v, %v", receipt, err)
+	}
+}
+
+func TestProjectEvidencePathRejectsRelativeEscape(t *testing.T) {
+	project := t.TempDir()
+	for _, candidate := range []string{"../outside.json", filepath.Join("nested", "..", "..", "outside.json")} {
+		if _, err := projectEvidencePath(project, candidate); !errors.Is(err, core.ErrPath) {
+			t.Fatalf("projectEvidencePath(%q) = %v, want ErrPath", candidate, err)
+		}
+	}
+	external := t.TempDir()
+	link := filepath.Join(project, "linked")
+	if err := os.Symlink(external, link); err == nil {
+		if _, err := projectEvidencePath(project, filepath.Join("linked", "evidence.json")); !errors.Is(err, core.ErrPath) {
+			t.Fatalf("symlinked relative evidence = %v, want ErrPath", err)
+		}
+	}
+	absolute := filepath.Join(external, "evidence.json")
+	if got, err := projectEvidencePath(project, absolute); err != nil || got != absolute {
+		t.Fatalf("absolute external evidence = %q, %v", got, err)
+	}
+}
+
+func TestPreparedArtifactCleanupRetainsReplacement(t *testing.T) {
+	root := t.TempDir()
+	payloadPath := filepath.Join(root, "approval.json")
+	requestPath := filepath.Join(root, "request.json")
+	if err := os.WriteFile(requestPath, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preflightCleanupHook = func(path string) {
+		if path != payloadPath {
+			t.Fatalf("cleanup hook path = %q", path)
+		}
+		if err := os.Rename(path, path+".owned"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("owned"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { preflightCleanupHook = nil })
+	if err := writePreparedArtifacts(payloadPath, requestPath, []byte("owned"), []byte("request")); err == nil {
+		t.Fatal("artifact collision unexpectedly succeeded")
+	}
+	raw, err := os.ReadFile(payloadPath)
+	if err != nil || string(raw) != "owned" {
+		t.Fatalf("replacement = %q, %v", raw, err)
+	}
+}
+
+func TestAuthorityCutoverAcceptsDetachedCanonicalSignature(t *testing.T) {
+	project := authorityFixture(t)
+	request := readAuthorityRequestTest(t, authorityRequestFixture(t, project))
+	raw, err := os.ReadFile(request.Approval.Path)
+	var approval signedCutoverApproval
+	if err != nil || json.Unmarshal(raw, &approval) != nil {
+		t.Fatal(err)
+	}
+	approval.Signature = ""
+	payload, _ := json.Marshal(approval)
+	payloadPath := filepath.Join(project, "detached-approval.json")
+	signaturePath := filepath.Join(project, "detached-approval.sig")
+	if os.WriteFile(payloadPath, payload, 0o600) != nil || os.WriteFile(signaturePath, ed25519.Sign(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{3}, ed25519.SeedSize)), payload), 0o600) != nil {
+		t.Fatal("detached approval")
+	}
+	request.Approval = EvidenceReference{ID: approval.ID, Path: payloadPath, SHA256: digestBytes(payload)}
+	request.ApprovalSignature = EvidenceReference{ID: approval.ID + "-signature", Path: signaturePath}
+	request.ApprovalSignerKeyID = approval.SignerKeyID
+	result, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "detached-request.json", request))
+	if err != nil || result.Action != "cutover" {
+		t.Fatalf("detached cutover = %#v, %v", result, err)
+	}
+}
 
 func TestAuthorityCutoverReconcileStatusAndRollback(t *testing.T) {
 	project := authorityFixture(t)
