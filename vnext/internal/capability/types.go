@@ -16,6 +16,7 @@ const (
 	LeanCTX          Name = "leanctx"
 	Serena           Name = "serena"
 	Graphify         Name = "graphify"
+	AstGrep          Name = "ast-grep"
 	Playwright       Name = "playwright"
 	Impeccable       Name = "impeccable"
 	UIUXProMax       Name = "ui-ux-pro-max"
@@ -57,9 +58,10 @@ type NativeRunner interface {
 type InstallPlan struct{ state *planState }
 
 type planState struct {
-	mu   sync.Mutex
-	used bool
-	spec adapterSpec
+	mu                 sync.Mutex
+	used               bool
+	published, removed bool
+	spec               adapterSpec
 }
 
 // adapterSpec is a closed, same-package seam. Task 21 adapters supply fixed

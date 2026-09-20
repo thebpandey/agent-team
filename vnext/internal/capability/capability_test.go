@@ -52,6 +52,13 @@ func TestProbeNativeAndRequestValidation(t *testing.T) {
 	}
 }
 
+func TestProbeAstGrepContract(t *testing.T) {
+	got, err := ProbeAll(context.Background(), nil, []Name{AstGrep})
+	if err != nil || len(got) != 1 || got[0].Name != AstGrep || got[0].Mode != CLI {
+		t.Fatalf("ast-grep probe = %#v, %v", got, err)
+	}
+}
+
 func TestProbeExecutableOutcomesAndDigest(t *testing.T) {
 	dir := t.TempDir()
 	name := string(Serena)
@@ -218,6 +225,44 @@ func TestInstallUsesCopiedExactArgvAndScrubbedEnvironment(t *testing.T) {
 	}
 }
 
+func TestInstallRejectsStageChangedDuringDirectProbe(t *testing.T) {
+	plan, spec, _, runner := stagedPlan(t)
+	runner.onRun = func(argv []string) {
+		if argv[0] == "installer" {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(spec.project, spec.stage)), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(spec.project, spec.stage), []byte("built artifact"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		if err := os.WriteFile(filepath.Join(spec.project, spec.stage), []byte("replaced after probe"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Install(context.Background(), runner, plan); err == nil {
+		t.Fatal("published artifact changed during direct probe")
+	}
+	if _, err := os.Stat(filepath.Join(spec.project, spec.destination)); !os.IsNotExist(err) {
+		t.Fatalf("published changed stage: %v", err)
+	}
+}
+
+func TestAdapterSpecRejectsShellLaunchers(t *testing.T) {
+	for _, launcher := range []string{"sh", "bash", "dash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "/bin/SH", `C:\\Windows\\System32\\CMD.EXE`} {
+		t.Run(launcher, func(t *testing.T) {
+			_, spec, _, _ := stagedPlan(t)
+			spec.installArgv = []string{launcher}
+			probe := Probe{Name: Serena, Mode: ReadOnlyMCP, Available: true, Healthy: true, Version: "1"}
+			consent := Consent{Name: Serena, Enabled: true, Mode: ReadOnlyMCP, InstallerPackage: "serena", Source: "registry.example/serena@1"}
+			if _, err := buildInstallPlan(spec, probe, consent); err == nil {
+				t.Fatal("accepted shell launcher")
+			}
+		})
+	}
+}
+
 func TestInstallRejectsSourceTamperWithoutMutation(t *testing.T) {
 	plan, spec, source, runner := stagedPlan(t)
 	if err := os.WriteFile(source, []byte("tampered"), 0o600); err != nil {
@@ -292,5 +337,65 @@ func TestInstallRootRejectsSymlinkParentEscape(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
 		t.Fatalf("outside root mutated: %#v, %v", entries, err)
+	}
+}
+
+func TestRollbackRemovesOnlyPublishedExactDestination(t *testing.T) {
+	plan, spec, _, runner := stagedPlan(t)
+	if _, err := Install(context.Background(), runner, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := Rollback(context.Background(), &fakeRunner{}, plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(spec.project, spec.destination)); !os.IsNotExist(err) {
+		t.Fatalf("exact published destination remains: %v", err)
+	}
+	if err := Rollback(context.Background(), nil, plan); err != nil {
+		t.Fatalf("prior exact removal was not idempotent: %v", err)
+	}
+}
+
+func TestRollbackRefusesForeignTamperedAndMissingDestination(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(t *testing.T, path string)
+	}{
+		{"foreign", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("foreign"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"tampered", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("tampered"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"missing", func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, spec, _, runner := stagedPlan(t)
+			if _, err := Install(context.Background(), runner, plan); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(spec.project, spec.destination)
+			tc.mutate(t, path)
+			if err := Rollback(context.Background(), nil, plan); err == nil {
+				t.Fatal("removed or accepted non-owned destination")
+			}
+			if tc.name != "missing" {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("foreign destination removed: %v", err)
+				}
+			}
+		})
+	}
+	plan, _, _, _ := stagedPlan(t)
+	if err := Rollback(context.Background(), nil, plan); err != nil {
+		t.Fatalf("unpublished plan was not idempotent: %v", err)
 	}
 }

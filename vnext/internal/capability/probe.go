@@ -124,7 +124,7 @@ func sha256Digest(data []byte) string {
 
 func known(name Name) bool {
 	switch name {
-	case Native, UsingSuperpowers, LeanCTX, Serena, Graphify, Playwright, Impeccable, UIUXProMax, UIStyling:
+	case Native, UsingSuperpowers, LeanCTX, Serena, Graphify, AstGrep, Playwright, Impeccable, UIUXProMax, UIStyling:
 		return true
 	default:
 		return false

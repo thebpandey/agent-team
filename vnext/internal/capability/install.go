@@ -88,6 +88,9 @@ func Install(ctx context.Context, runner NativeRunner, plan InstallPlan) (Probe,
 		}
 		return Probe{}, failStage(root, state.spec.stage, reason)
 	}
+	if err := verifyStaged(root, state.spec.stage, state.spec.stageDigest); err != nil {
+		return Probe{}, failStage(root, state.spec.stage, "staged artifact changed during probe: "+err.Error())
+	}
 	if err := absent(root, state.spec.destination); err != nil {
 		return Probe{}, failStage(root, state.spec.stage, "destination changed before publish: "+err.Error())
 	}
@@ -106,7 +109,41 @@ func Install(ctx context.Context, runner NativeRunner, plan InstallPlan) (Probe,
 	if err := root.Remove(state.spec.stage); err != nil {
 		return Probe{}, fmt.Errorf("unsafe publish cleanup ambiguity: %w", err)
 	}
+	state.published = true
 	return Probe{Name: state.spec.name, Mode: state.spec.mode, Path: filepath.Join(state.spec.project, state.spec.destination), Version: state.spec.version, Digest: "sha256:" + state.spec.stageDigest, Available: true, Healthy: true}, nil
+}
+
+// Rollback only removes the exact, fresh destination published by this plan.
+// It never invokes an adapter or uses the runner.
+func Rollback(ctx context.Context, _ NativeRunner, plan InstallPlan) error {
+	if ctx == nil || plan.state == nil {
+		return fmt.Errorf("rollback requires context and plan")
+	}
+	state := plan.state
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.published || state.removed {
+		return nil
+	}
+	root, err := os.OpenRoot(state.spec.project)
+	if err != nil {
+		return fmt.Errorf("unsafe project root: %w", err)
+	}
+	defer root.Close()
+	if err := verifyStaged(root, state.spec.destination, state.spec.stageDigest); err != nil {
+		return fmt.Errorf("unsafe rollback identity: %w", err)
+	}
+	if err := root.Remove(state.spec.destination); err != nil {
+		return fmt.Errorf("unsafe rollback removal: %w", err)
+	}
+	if _, err := root.Lstat(state.spec.destination); !os.IsNotExist(err) {
+		if err == nil {
+			return fmt.Errorf("unsafe rollback removal: destination remains")
+		}
+		return fmt.Errorf("unsafe rollback identity: %w", err)
+	}
+	state.removed = true
+	return nil
 }
 
 func sourceBytes(path, want string) ([]byte, error) {
@@ -164,7 +201,7 @@ func absent(root *os.Root, path string) error {
 }
 
 func validArgv(argv []string) bool {
-	if len(argv) == 0 || argv[0] == "" {
+	if len(argv) == 0 || argv[0] == "" || shellLauncher(argv[0]) {
 		return false
 	}
 	for _, arg := range argv {
@@ -173,6 +210,19 @@ func validArgv(argv []string) bool {
 		}
 	}
 	return true
+}
+
+func shellLauncher(argv0 string) bool {
+	name := strings.ToLower(strings.ReplaceAll(argv0, "\\", "/"))
+	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
+		name = name[slash+1:]
+	}
+	switch name {
+	case "sh", "bash", "dash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe":
+		return true
+	default:
+		return false
+	}
 }
 
 func validRelative(path string) bool {
