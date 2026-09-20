@@ -1,8 +1,9 @@
 name: Check package
 
 on:
-  pull_request:
   push:
+    tags:
+      - 'v7.*'
 
 jobs:
   package:

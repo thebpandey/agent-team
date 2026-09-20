@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -54,7 +55,8 @@ func TestManagementActionsAndJSONBound(t *testing.T) {
 		}
 		return 0
 	}}
-	valid := [][]string{{"install", "--host", "codex"}, {"install", "--host", "claude", "--json"}, {"update", "--version", "1.2.3", "--json"}, {"rollback", "--version", "8.0.0", "--json"}, {"rollback", "--version", "8.0.0", "--revision", "0123456789abcdef0123456789abcdef01234567", "--json"}, {"uninstall", "--json"}, {"cutover", "--request", "/tmp/cutover.json", "--json"}}
+	cutoverRequest := filepath.Join(t.TempDir(), "cutover.json")
+	valid := [][]string{{"install", "--host", "codex"}, {"install", "--host", "claude", "--json"}, {"update", "--version", "1.2.3", "--json"}, {"rollback", "--version", "8.0.0", "--json"}, {"rollback", "--version", "8.0.0", "--revision", "0123456789abcdef0123456789abcdef01234567", "--json"}, {"uninstall", "--json"}, {"cutover", "--request", cutoverRequest, "--json"}}
 	for _, args := range valid {
 		if code := cli.Run(context.Background(), args, deps); code != 0 {
 			t.Fatal(args, code)

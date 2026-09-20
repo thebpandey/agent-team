@@ -8,6 +8,10 @@ jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      TMPDIR: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
+      TEMP: ${{ runner.temp }}
     strategy:
       fail-fast: false
       matrix:
