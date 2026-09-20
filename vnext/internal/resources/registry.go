@@ -438,11 +438,11 @@ func (r *registry) withDocument(ctx context.Context, action func(*registryDocume
 	if r == nil || r.store == nil {
 		return fmt.Errorf("%w: nil resource store", core.ErrSettings)
 	}
-	release, err := store.AcquireProjectMutation(ctx, r.store.Root)
+	release, err := store.AcquireProjectMutation(ctx, r.store.Root, "resources", "registry")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = release() }()
+	defer func() { _ = release.Release() }()
 
 	// The re-read is intentional: another process can have committed while this
 	// caller waited on the durable lock. Never decide from a pre-contention view.

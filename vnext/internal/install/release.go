@@ -50,11 +50,11 @@ func (s *ManifestStore) CompareAndSwap(ctx context.Context, expected uint64, nex
 	if s == nil {
 		return CASOutcome{}, core.ErrPath
 	}
-	release, err := store.AcquireProjectMutation(ctx, s.Root)
+	release, err := store.AcquireProjectMutation(ctx, s.Root, "install-manifest", fmt.Sprintf("cas:%d", expected))
 	if err != nil {
 		return CASOutcome{}, err
 	}
-	defer func() { _ = release() }()
+	defer func() { _ = release.Release() }()
 	return s.compareAndSwapLocked(ctx, expected, next)
 }
 

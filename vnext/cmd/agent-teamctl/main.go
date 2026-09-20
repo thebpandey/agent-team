@@ -11,10 +11,12 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/cli"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
@@ -24,7 +26,11 @@ import (
 )
 
 func main() {
-	code := cli.Run(context.Background(), os.Args[1:], core.Dependencies{
+	interruptible, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	ctx, cancel := context.WithTimeout(interruptible, 5*time.Minute)
+	defer cancel()
+	code := cli.Run(ctx, os.Args[1:], core.Dependencies{
 		ProjectRoot: ".",
 		Stdout:      os.Stdout,
 		Stderr:      os.Stderr,

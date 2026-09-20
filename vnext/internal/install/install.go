@@ -3,12 +3,14 @@ package install
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -18,30 +20,59 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
-const installAttemptPath = ".agent-team/install-attempt.json"
+const (
+	installAttemptPath  = ".agent-team/install-attempt.json"
+	installJournalLimit = 16 << 20
+)
 
 var installMutationHook func()
 var installCreateHook func(int) error
+var lifecycleMutationHook func(string, int) error
+var lifecycleInterruptHook func(string, int) bool
 
-type installAttempt struct {
-	Schema           int         `json:"schema"`
-	ExpectedRevision uint64      `json:"expected_revision"`
-	Created          []OwnedFile `json:"created"`
+type lifecycleMutation struct {
+	Path        string `json:"path"`
+	Existed     bool   `json:"existed"`
+	Preimage    []byte `json:"preimage,omitempty"`
+	PreSHA256   string `json:"pre_sha256,omitempty"`
+	PreMode     uint32 `json:"pre_mode,omitempty"`
+	PostMode    uint32 `json:"post_mode,omitempty"`
+	PostSHA256  string `json:"post_sha256,omitempty"`
+	PostBytes   int64  `json:"post_bytes,omitempty"`
+	PostAbsent  bool   `json:"post_absent,omitempty"`
+	Exclusive   bool   `json:"exclusive,omitempty"`
+	Replacement []byte `json:"replacement,omitempty"`
+}
+
+type lifecycleJournal struct {
+	Schema           int                 `json:"schema"`
+	Operation        string              `json:"operation"`
+	ExpectedRevision uint64              `json:"expected_revision"`
+	Owner            store.MutationOwner `json:"owner"`
+	Previous         *InstallManifest    `json:"previous,omitempty"`
+	Intended         InstallManifest     `json:"intended"`
+	Mutations        []lifecycleMutation `json:"mutations"`
+	Retained         []string            `json:"retained,omitempty"`
+	Progress         int                 `json:"progress"`
 }
 
 func Install(ctx context.Context, layout Layout, release Release, hosts []Host, expected uint64) (CASOutcome, error) {
-	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot)
+	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", fmt.Sprintf("install:%d:%s", expected, release.Revision))
 	if err != nil {
 		return CASOutcome{}, err
 	}
-	defer func() { _ = releaseGuard() }()
+	defer func() { _ = releaseGuard.Release() }()
+	manifestStore := NewManifestStore(layout)
+	if err := recoverLifecycleJournal(ctx, layout, manifestStore); err != nil {
+		return CASOutcome{}, err
+	}
 	if installMutationHook != nil {
 		installMutationHook()
 	}
-	return installLocked(ctx, layout, release, hosts, expected)
+	return installLocked(ctx, layout, release, hosts, expected, releaseGuard.Owner())
 }
 
-func installLocked(ctx context.Context, layout Layout, release Release, hosts []Host, expected uint64) (CASOutcome, error) {
+func installLocked(ctx context.Context, layout Layout, release Release, hosts []Host, expected uint64, owner store.MutationOwner) (CASOutcome, error) {
 	if err := validateLifecycle(ctx, layout, release); err != nil {
 		return CASOutcome{}, err
 	}
@@ -51,7 +82,6 @@ func installLocked(ctx context.Context, layout Layout, release Release, hosts []
 	}
 	manifestStore := NewManifestStore(layout)
 	if current, readErr := manifestStore.Read(ctx); readErr == nil {
-		_ = removeInstallAttempt(layout)
 		return CASOutcome{Kind: CASStale, Manifest: current, ExpectedRevision: expected, ObservedRevision: current.Revision, Retained: ownedPaths(current)}, core.ErrRevision
 	} else if !errors.Is(readErr, fs.ErrNotExist) {
 		return CASOutcome{}, readErr
@@ -59,94 +89,286 @@ func installLocked(ctx context.Context, layout Layout, release Release, hosts []
 	if expected != 0 {
 		return CASOutcome{Kind: CASStale, ExpectedRevision: expected}, core.ErrRevision
 	}
-	if err := recoverInstallAttempt(layout, expected); err != nil {
-		return CASOutcome{}, err
-	}
 	desired := releaseFiles(layout, release, hosts)
 	for _, file := range desired {
 		if _, err := os.Lstat(file.owned.Path); !errors.Is(err, fs.ErrNotExist) {
 			return CASOutcome{Retained: []string{file.owned.Path}}, core.ErrRevision
 		}
 	}
-	attempt := installAttempt{Schema: 1, ExpectedRevision: expected}
-	if err := writeInstallAttempt(layout, attempt); err != nil {
-		return CASOutcome{}, err
-	}
-	fail := func(cause error) (CASOutcome, error) {
-		if cleanupErr := cleanupInstallAttempt(layout, attempt); cleanupErr != nil {
-			return CASOutcome{Retained: ownedFilePaths(attempt.Created)}, fmt.Errorf("%v; install cleanup: %w", cause, cleanupErr)
-		}
-		return CASOutcome{}, cause
-	}
+	manifest := InstallManifest{Schema: 1, Revision: 1, Version: release.Version, ReleaseRevision: release.Revision, Hosts: hosts}
+	journal := lifecycleJournal{Schema: 1, Operation: "install", ExpectedRevision: expected, Owner: owner, Intended: manifest}
 	for index, file := range desired {
 		data, err := verifiedReleaseBytes(file.source)
 		if err != nil {
-			return fail(err)
+			return CASOutcome{}, err
 		}
 		mode := fs.FileMode(0o600)
 		if file.owned.Role == BinaryRole {
 			mode = 0o700
 		}
-		if installCreateHook != nil {
+		mutation, err := prepareMutation(layout, file.owned.Path, data, mode, false, true)
+		if err != nil {
+			return CASOutcome{}, err
+		}
+		journal.Mutations = append(journal.Mutations, mutation)
+		journal.Intended.Files = append(journal.Intended.Files, file.owned)
+		_ = index
+	}
+	return executeLifecycleJournal(ctx, layout, manifestStore, &journal)
+}
+
+func prepareMutation(layout Layout, path string, replacement []byte, mode fs.FileMode, postAbsent, exclusive bool) (lifecycleMutation, error) {
+	if ownedRoot(layout, path) == "" {
+		return lifecycleMutation{}, core.ErrPath
+	}
+	mutation := lifecycleMutation{Path: path, Replacement: append([]byte(nil), replacement...), PostMode: uint32(mode.Perm()), PostAbsent: postAbsent, Exclusive: exclusive}
+	if !postAbsent {
+		sum := sha256.Sum256(replacement)
+		mutation.PostSHA256, mutation.PostBytes = hex.EncodeToString(sum[:]), int64(len(replacement))
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return mutation, nil
+	}
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return lifecycleMutation{}, core.ErrPath
+	}
+	mutation.Existed = true
+	mutation.PreMode = uint32(info.Mode().Perm())
+	mutation.Preimage, err = os.ReadFile(path)
+	if err != nil {
+		return lifecycleMutation{}, err
+	}
+	sum := sha256.Sum256(mutation.Preimage)
+	mutation.PreSHA256 = hex.EncodeToString(sum[:])
+	return mutation, nil
+}
+
+func executeLifecycleJournal(ctx context.Context, layout Layout, manifestStore *ManifestStore, journal *lifecycleJournal) (CASOutcome, error) {
+	if err := validateLifecycleJournal(layout, *journal); err != nil {
+		return CASOutcome{}, err
+	}
+	if err := writeLifecycleJournal(layout, *journal); err != nil {
+		return CASOutcome{}, err
+	}
+	fail := func(cause error) (CASOutcome, error) {
+		if err := restoreLifecycleJournal(layout, *journal); err != nil {
+			return CASOutcome{Retained: journalPaths(*journal)}, fmt.Errorf("%v; lifecycle recovery: %w", cause, err)
+		}
+		if err := removeLifecycleJournal(layout); err != nil {
+			return CASOutcome{}, err
+		}
+		return CASOutcome{}, cause
+	}
+	for index := range journal.Mutations {
+		journal.Progress = index + 1
+		if err := writeLifecycleJournal(layout, *journal); err != nil {
+			return fail(err)
+		}
+		if journal.Operation == "install" && installCreateHook != nil {
 			if err := installCreateHook(index); err != nil {
 				return fail(err)
 			}
 		}
-		if err := atomicCreate(layout, file.owned.Path, data, mode); err != nil {
+		if lifecycleMutationHook != nil {
+			if err := lifecycleMutationHook(journal.Operation, index); err != nil {
+				return fail(err)
+			}
+		}
+		if err := applyLifecycleMutation(layout, journal.Mutations[index]); err != nil {
 			return fail(err)
 		}
-		attempt.Created = append(attempt.Created, file.owned)
-		if err := writeInstallAttempt(layout, attempt); err != nil {
-			return fail(err)
+		if lifecycleInterruptHook != nil && lifecycleInterruptHook(journal.Operation, index) {
+			return CASOutcome{Retained: journalPaths(*journal)}, core.ErrTransition
 		}
 	}
-	manifest := InstallManifest{Schema: 1, Version: release.Version, ReleaseRevision: release.Revision, Hosts: hosts}
-	for _, file := range desired {
-		manifest.Files = append(manifest.Files, file.owned)
-	}
-	outcome, err := manifestStore.compareAndSwapLocked(ctx, expected, manifest)
+	next := journal.Intended
+	next.Revision = 0
+	outcome, err := manifestStore.compareAndSwapLocked(ctx, journal.ExpectedRevision, next)
 	if err != nil {
 		return fail(err)
 	}
-	if err := removeInstallAttempt(layout); err != nil {
-		return CASOutcome{Manifest: outcome.Manifest, Retained: ownedPaths(outcome.Manifest)}, err
+	journal.Intended = outcome.Manifest
+	if err := verifyAuthoritativeManifest(ctx, manifestStore, journal.Intended, journal.Retained); err != nil {
+		return outcome, err
+	}
+	if err := removeLifecycleJournal(layout); err != nil {
+		return outcome, err
 	}
 	return outcome, nil
 }
 
-func writeInstallAttempt(layout Layout, attempt installAttempt) error {
-	_, err := store.New(layout.DataRoot, core.StorageLimits{CanonicalBytes: manifestLimit}).WriteJSON(installAttemptPath, attempt, manifestLimit)
-	return err
+func applyLifecycleMutation(layout Layout, mutation lifecycleMutation) error {
+	if mutation.PostAbsent {
+		return removeOwnedPath(layout, mutation.Path)
+	}
+	mode := fs.FileMode(mutation.PostMode)
+	if mode == 0 {
+		mode = 0o600
+	}
+	if mutation.Exclusive {
+		return atomicCreate(layout, mutation.Path, mutation.Replacement, mode)
+	}
+	return AtomicReplace(layout, mutation.Path, mutation.Replacement, mode)
 }
 
-func recoverInstallAttempt(layout Layout, expected uint64) error {
-	var attempt installAttempt
-	err := store.New(layout.DataRoot, core.StorageLimits{CanonicalBytes: manifestLimit}).ReadJSON(installAttemptPath, manifestLimit, &attempt)
+func recoverLifecycleJournal(ctx context.Context, layout Layout, manifestStore *ManifestStore) error {
+	journal, err := readLifecycleJournal(layout)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	if err != nil || attempt.Schema != 1 || attempt.ExpectedRevision != expected {
+	if err != nil || validateLifecycleJournal(layout, journal) != nil {
 		return core.ErrRevision
 	}
-	return cleanupInstallAttempt(layout, attempt)
-}
-
-func cleanupInstallAttempt(layout Layout, attempt installAttempt) error {
-	for _, file := range attempt.Created {
-		if !diskMatches(file.Path, file.SHA256, file.Bytes) {
-			if _, err := os.Lstat(file.Path); errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			return fmt.Errorf("%w: created file ownership changed: %s", core.ErrRevision, file.Path)
+	current, readErr := manifestStore.Read(ctx)
+	if readErr == nil && reflect.DeepEqual(current, journal.Intended) {
+		if err := verifyManifestFiles(current, journal.Retained); err != nil {
+			return err
 		}
-		if err := removeOwnedPath(layout, file.Path); err != nil {
+		return removeLifecycleJournal(layout)
+	}
+	if journal.Previous == nil {
+		if !errors.Is(readErr, fs.ErrNotExist) {
+			return core.ErrRevision
+		}
+	} else if readErr != nil || !reflect.DeepEqual(current, *journal.Previous) {
+		return core.ErrRevision
+	}
+	if err := restoreLifecycleJournal(layout, journal); err != nil {
+		return err
+	}
+	if journal.Previous != nil {
+		if err := verifyManifestFiles(*journal.Previous, journal.Retained); err != nil {
 			return err
 		}
 	}
-	return removeInstallAttempt(layout)
+	return removeLifecycleJournal(layout)
 }
 
-func removeInstallAttempt(layout Layout) error {
+func validateLifecycleJournal(layout Layout, journal lifecycleJournal) error {
+	if journal.Schema != 1 || store.ValidateMutationOwner(journal.Owner) != nil || journal.Progress < 0 || journal.Progress > len(journal.Mutations) {
+		return core.ErrRevision
+	}
+	switch journal.Operation {
+	case "install", "update", "rollback", "uninstall":
+	default:
+		return core.ErrRevision
+	}
+	if validateManifest(journal.Intended) != nil || journal.Intended.Revision != journal.ExpectedRevision+1 {
+		return core.ErrRevision
+	}
+	if journal.Previous == nil {
+		if journal.ExpectedRevision != 0 || journal.Operation != "install" {
+			return core.ErrRevision
+		}
+	} else if validateManifest(*journal.Previous) != nil || journal.Previous.Revision != journal.ExpectedRevision {
+		return core.ErrRevision
+	}
+	for _, mutation := range journal.Mutations {
+		if ownedRoot(layout, mutation.Path) == "" {
+			return core.ErrPath
+		}
+		if mutation.Existed {
+			if !validSHA256(mutation.PreSHA256) || digestContent(mutation.Preimage) != mutation.PreSHA256 {
+				return core.ErrRevision
+			}
+		} else if len(mutation.Preimage) != 0 || mutation.PreSHA256 != "" || mutation.PreMode != 0 {
+			return core.ErrRevision
+		}
+		if mutation.PostAbsent {
+			if mutation.PostSHA256 != "" || mutation.PostBytes != 0 || len(mutation.Replacement) != 0 {
+				return core.ErrRevision
+			}
+		} else if !validSHA256(mutation.PostSHA256) || mutation.PostBytes != int64(len(mutation.Replacement)) || digestContent(mutation.Replacement) != mutation.PostSHA256 {
+			return core.ErrRevision
+		}
+		if mutation.Exclusive && (mutation.Existed || journal.Operation != "install") {
+			return core.ErrRevision
+		}
+	}
+	for _, path := range journal.Retained {
+		if ownedRoot(layout, path) == "" {
+			return core.ErrPath
+		}
+	}
+	return nil
+}
+
+func digestContent(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func restoreLifecycleJournal(layout Layout, journal lifecycleJournal) error {
+	for index := journal.Progress - 1; index >= 0; index-- {
+		mutation := journal.Mutations[index]
+		if mutation.Existed {
+			if diskMatches(mutation.Path, mutation.PreSHA256, int64(len(mutation.Preimage))) {
+				continue
+			}
+			if mutation.PostAbsent {
+				if _, err := os.Lstat(mutation.Path); !errors.Is(err, fs.ErrNotExist) {
+					return core.ErrRevision
+				}
+			} else if !diskMatches(mutation.Path, mutation.PostSHA256, mutation.PostBytes) {
+				return core.ErrRevision
+			}
+			if err := AtomicReplace(layout, mutation.Path, mutation.Preimage, fs.FileMode(mutation.PreMode)); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := os.Lstat(mutation.Path); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if mutation.PostAbsent || !diskMatches(mutation.Path, mutation.PostSHA256, mutation.PostBytes) {
+			return core.ErrRevision
+		}
+		if err := removeOwnedPath(layout, mutation.Path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func verifyAuthoritativeManifest(ctx context.Context, manifestStore *ManifestStore, expected InstallManifest, retained []string) error {
+	current, err := manifestStore.Read(ctx)
+	if err != nil || !reflect.DeepEqual(current, expected) {
+		return core.ErrRevision
+	}
+	return verifyManifestFiles(current, retained)
+}
+
+func verifyManifestFiles(manifest InstallManifest, retained []string) error {
+	ignored := map[string]bool{}
+	for _, path := range retained {
+		ignored[path] = true
+	}
+	for _, file := range manifest.Files {
+		if !ignored[file.Path] && !diskMatches(file.Path, file.SHA256, file.Bytes) {
+			return fmt.Errorf("%w: installed file mismatch: %s", core.ErrRevision, file.Path)
+		}
+	}
+	for _, backup := range manifest.Backups {
+		if !ignored[backup.Path] && !diskMatches(backup.Path, backup.SHA256, backup.Bytes) {
+			return fmt.Errorf("%w: backup mismatch: %s", core.ErrRevision, backup.Path)
+		}
+	}
+	return nil
+}
+
+func writeLifecycleJournal(layout Layout, journal lifecycleJournal) error {
+	_, err := store.New(layout.DataRoot, core.StorageLimits{CanonicalBytes: installJournalLimit}).WriteJSON(installAttemptPath, journal, installJournalLimit)
+	return err
+}
+
+func readLifecycleJournal(layout Layout) (lifecycleJournal, error) {
+	var journal lifecycleJournal
+	err := store.New(layout.DataRoot, core.StorageLimits{CanonicalBytes: installJournalLimit}).ReadJSON(installAttemptPath, installJournalLimit, &journal)
+	return journal, err
+}
+
+func removeLifecycleJournal(layout Layout) error {
 	root, err := os.OpenRoot(layout.DataRoot)
 	if err != nil {
 		return err
@@ -159,24 +381,43 @@ func removeInstallAttempt(layout Layout) error {
 	return err
 }
 
-func ownedFilePaths(files []OwnedFile) []string {
-	paths := make([]string, 0, len(files))
-	for _, file := range files {
-		paths = append(paths, file.Path)
+func journalPaths(journal lifecycleJournal) []string {
+	paths := make([]string, 0, len(journal.Mutations))
+	for _, mutation := range journal.Mutations {
+		paths = append(paths, mutation.Path)
+	}
+	return paths
+}
+
+func manifestMismatches(manifest InstallManifest) []string {
+	paths := []string{}
+	for _, file := range manifest.Files {
+		if !diskMatches(file.Path, file.SHA256, file.Bytes) {
+			paths = append(paths, file.Path)
+		}
+	}
+	for _, backup := range manifest.Backups {
+		if !diskMatches(backup.Path, backup.SHA256, backup.Bytes) {
+			paths = append(paths, backup.Path)
+		}
 	}
 	return paths
 }
 
 func Update(ctx context.Context, layout Layout, release Release, expected uint64) (CASOutcome, error) {
-	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot)
+	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", fmt.Sprintf("update:%d:%s", expected, release.Revision))
 	if err != nil {
 		return CASOutcome{}, err
 	}
-	defer func() { _ = releaseGuard() }()
-	return updateLocked(ctx, layout, release, expected)
+	defer func() { _ = releaseGuard.Release() }()
+	manifestStore := NewManifestStore(layout)
+	if err := recoverLifecycleJournal(ctx, layout, manifestStore); err != nil {
+		return CASOutcome{}, err
+	}
+	return updateLocked(ctx, layout, release, expected, releaseGuard.Owner())
 }
 
-func updateLocked(ctx context.Context, layout Layout, release Release, expected uint64) (CASOutcome, error) {
+func updateLocked(ctx context.Context, layout Layout, release Release, expected uint64, owner store.MutationOwner) (CASOutcome, error) {
 	if err := validateLifecycle(ctx, layout, release); err != nil {
 		return CASOutcome{}, err
 	}
@@ -190,6 +431,7 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 	next.Version = release.Version
 	next.ReleaseRevision = release.Revision
 	retained := []string{}
+	mutations := []lifecycleMutation{}
 	for _, target := range desired {
 		index := ownedIndex(next.Files, target.owned.Role, target.owned.Host)
 		if index < 0 || !diskMatches(next.Files[index].Path, next.Files[index].SHA256, next.Files[index].Bytes) {
@@ -202,8 +444,15 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			continue
 		}
 		backup := Backup{Role: next.Files[index].Role, Host: next.Files[index].Host, Path: backupPath(layout, next.Files[index]), SHA256: next.Files[index].SHA256, Version: next.Files[index].Version, Revision: next.Files[index].Revision, Bytes: next.Files[index].Bytes}
-		if err := AtomicReplace(layout, backup.Path, oldBytes, 0o600); err != nil {
-			return CASOutcome{Retained: append(retained, target.owned.Path)}, err
+		backupExists := false
+		if _, statErr := os.Lstat(backup.Path); statErr == nil {
+			if !diskMatches(backup.Path, backup.SHA256, backup.Bytes) {
+				retained = append(retained, target.owned.Path, backup.Path)
+				continue
+			}
+			backupExists = true
+		} else if !errors.Is(statErr, fs.ErrNotExist) {
+			return CASOutcome{Retained: append(retained, target.owned.Path)}, statErr
 		}
 		data, err := verifiedReleaseBytes(target.source)
 		if err != nil {
@@ -213,27 +462,44 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 		if target.owned.Role == BinaryRole {
 			mode = 0o700
 		}
-		if err := AtomicReplace(layout, target.owned.Path, data, mode); err != nil {
+		targetMutation, err := prepareMutation(layout, target.owned.Path, data, mode, false, false)
+		if err != nil {
 			return CASOutcome{Retained: append(retained, target.owned.Path)}, err
 		}
+		if !backupExists {
+			backupMutation, err := prepareMutation(layout, backup.Path, oldBytes, 0o600, false, false)
+			if err != nil {
+				return CASOutcome{Retained: append(retained, target.owned.Path)}, err
+			}
+			mutations = append(mutations, backupMutation)
+		}
+		mutations = append(mutations, targetMutation)
 		next.Backups = appendBackup(next.Backups, backup)
 		next.Files[index] = target.owned
 	}
-	outcome, err := manifestStore.compareAndSwapLocked(ctx, expected, next)
+	previous := cloneManifest(current)
+	intended := cloneManifest(next)
+	intended.Revision = expected + 1
+	journal := lifecycleJournal{Schema: 1, Operation: "update", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended, Mutations: mutations, Retained: retained}
+	outcome, err := executeLifecycleJournal(ctx, layout, manifestStore, &journal)
 	outcome.Retained = append([]string(nil), retained...)
 	return outcome, err
 }
 
 func Rollback(ctx context.Context, layout Layout, version string, expected uint64) (CASOutcome, error) {
-	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot)
+	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", fmt.Sprintf("rollback:%d:%s", expected, version))
 	if err != nil {
 		return CASOutcome{}, err
 	}
-	defer func() { _ = releaseGuard() }()
-	return rollbackLocked(ctx, layout, version, expected)
+	defer func() { _ = releaseGuard.Release() }()
+	manifestStore := NewManifestStore(layout)
+	if err := recoverLifecycleJournal(ctx, layout, manifestStore); err != nil {
+		return CASOutcome{}, err
+	}
+	return rollbackLocked(ctx, layout, version, expected, releaseGuard.Owner())
 }
 
-func rollbackLocked(ctx context.Context, layout Layout, version string, expected uint64) (CASOutcome, error) {
+func rollbackLocked(ctx context.Context, layout Layout, version string, expected uint64, owner store.MutationOwner) (CASOutcome, error) {
 	if ctx == nil || ctx.Err() != nil || ValidateLayout(layout) != nil || strings.TrimSpace(version) == "" {
 		return CASOutcome{}, core.ErrSettings
 	}
@@ -243,8 +509,9 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 		return stale, err
 	}
 	next := cloneManifest(current)
-	retained := []string{}
+	retained := manifestMismatches(current)
 	restored := 0
+	mutations := []lifecycleMutation{}
 	for _, backup := range current.Backups {
 		if backup.Version != version {
 			continue
@@ -264,9 +531,11 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 		if backup.Role == BinaryRole {
 			mode = 0o700
 		}
-		if err := AtomicReplace(layout, next.Files[index].Path, data, mode); err != nil {
+		mutation, err := prepareMutation(layout, next.Files[index].Path, data, mode, false, false)
+		if err != nil {
 			return CASOutcome{Retained: append(retained, next.Files[index].Path)}, err
 		}
+		mutations = append(mutations, mutation)
 		next.Files[index].SHA256, next.Files[index].Bytes, next.Files[index].Version = backup.SHA256, backup.Bytes, backup.Version
 		next.Files[index].Revision = backup.Revision
 		restored++
@@ -281,21 +550,29 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 			break
 		}
 	}
-	outcome, err := manifestStore.compareAndSwapLocked(ctx, expected, next)
+	previous := cloneManifest(current)
+	intended := cloneManifest(next)
+	intended.Revision = expected + 1
+	journal := lifecycleJournal{Schema: 1, Operation: "rollback", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended, Mutations: mutations, Retained: retained}
+	outcome, err := executeLifecycleJournal(ctx, layout, manifestStore, &journal)
 	outcome.Retained = retained
 	return outcome, err
 }
 
 func Uninstall(ctx context.Context, layout Layout, expected uint64) ([]string, CASOutcome, error) {
-	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot)
+	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", fmt.Sprintf("uninstall:%d", expected))
 	if err != nil {
 		return nil, CASOutcome{}, err
 	}
-	defer func() { _ = releaseGuard() }()
-	return uninstallLocked(ctx, layout, expected)
+	defer func() { _ = releaseGuard.Release() }()
+	manifestStore := NewManifestStore(layout)
+	if err := recoverLifecycleJournal(ctx, layout, manifestStore); err != nil {
+		return nil, CASOutcome{}, err
+	}
+	return uninstallLocked(ctx, layout, expected, releaseGuard.Owner())
 }
 
-func uninstallLocked(ctx context.Context, layout Layout, expected uint64) ([]string, CASOutcome, error) {
+func uninstallLocked(ctx context.Context, layout Layout, expected uint64, owner store.MutationOwner) ([]string, CASOutcome, error) {
 	if ctx == nil || ctx.Err() != nil || ValidateLayout(layout) != nil {
 		return nil, CASOutcome{}, core.ErrSettings
 	}
@@ -306,6 +583,7 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64) ([]str
 	}
 	next := cloneManifest(current)
 	retained := []string{}
+	mutations := []lifecycleMutation{}
 	next.Files = nil
 	for _, file := range current.Files {
 		if !diskMatches(file.Path, file.SHA256, file.Bytes) {
@@ -313,10 +591,13 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64) ([]str
 			next.Files = append(next.Files, file)
 			continue
 		}
-		if err := removeOwnedPath(layout, file.Path); err != nil {
+		mutation, err := prepareMutation(layout, file.Path, nil, 0, true, false)
+		if err != nil {
 			retained = append(retained, file.Path)
 			next.Files = append(next.Files, file)
+			continue
 		}
+		mutations = append(mutations, mutation)
 	}
 	next.Backups = nil
 	for _, backup := range current.Backups {
@@ -325,12 +606,19 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64) ([]str
 			next.Backups = append(next.Backups, backup)
 			continue
 		}
-		if err := removeOwnedPath(layout, backup.Path); err != nil {
+		mutation, err := prepareMutation(layout, backup.Path, nil, 0, true, false)
+		if err != nil {
 			retained = append(retained, backup.Path)
 			next.Backups = append(next.Backups, backup)
+			continue
 		}
+		mutations = append(mutations, mutation)
 	}
-	outcome, err := manifestStore.compareAndSwapLocked(ctx, expected, next)
+	previous := cloneManifest(current)
+	intended := cloneManifest(next)
+	intended.Revision = expected + 1
+	journal := lifecycleJournal{Schema: 1, Operation: "uninstall", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended, Mutations: mutations, Retained: retained}
+	outcome, err := executeLifecycleJournal(ctx, layout, manifestStore, &journal)
 	outcome.Retained = append([]string(nil), retained...)
 	return retained, outcome, err
 }

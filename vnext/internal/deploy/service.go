@@ -123,7 +123,7 @@ func (r *FileRepository) CompareAndSwapOperation(ctx context.Context, expected u
 	if err := validateOperationRecord(value); err != nil {
 		return OperationRecord{}, err
 	}
-	guarded, release, err := r.guard(ctx)
+	guarded, release, err := r.guard(ctx, "operation:"+value.BatchID)
 	if err != nil {
 		return OperationRecord{}, err
 	}
@@ -145,7 +145,7 @@ func (r *FileRepository) WriteEvidence(ctx context.Context, value DeploymentEvid
 	if ctx == nil || ctx.Err() != nil || r == nil || r.store == nil || !validProfileID(ProfileID(value.BatchID)) {
 		return "", core.ErrSettings
 	}
-	guarded, release, err := r.guard(ctx)
+	guarded, release, err := r.guard(ctx, "evidence:"+value.BatchID)
 	if err != nil {
 		return "", err
 	}
@@ -178,7 +178,7 @@ func (r *FileRepository) CompareAndSwapReceipt(ctx context.Context, expected uin
 	if err := validateReceipt(value); err != nil {
 		return DeploymentReceipt{}, err
 	}
-	guarded, release, err := r.guard(ctx)
+	guarded, release, err := r.guard(ctx, "receipt:"+value.BatchID)
 	if err != nil {
 		return DeploymentReceipt{}, err
 	}
@@ -196,23 +196,23 @@ func (r *FileRepository) CompareAndSwapReceipt(ctx context.Context, expected uin
 	return value, nil
 }
 
-func (r *FileRepository) guard(ctx context.Context) (context.Context, func(), error) {
+func (r *FileRepository) guard(ctx context.Context, operationID string) (context.Context, func(), error) {
 	if ctx == nil || r == nil || r.store == nil {
 		return ctx, nil, core.ErrSettings
 	}
 	if ctx.Value(repositoryGuardKey{}) == r {
 		return ctx, func() {}, nil
 	}
-	release, err := store.AcquireProjectMutation(ctx, r.store.Root)
+	release, err := store.AcquireProjectMutation(ctx, r.store.Root, "deploy", operationID)
 	if err != nil {
 		return ctx, nil, err
 	}
-	return context.WithValue(ctx, repositoryGuardKey{}, r), func() { _ = release() }, nil
+	return context.WithValue(ctx, repositoryGuardKey{}, r), func() { _ = release.Release() }, nil
 }
 
-func guardRepository(ctx context.Context, repository Repository) (context.Context, func(), error) {
+func guardRepository(ctx context.Context, repository Repository, operationID string) (context.Context, func(), error) {
 	if file, ok := repository.(*FileRepository); ok {
-		return file.guard(ctx)
+		return file.guard(ctx, operationID)
 	}
 	return ctx, func() {}, nil
 }
@@ -259,7 +259,7 @@ func SubmitOrReconcile(ctx context.Context, repository Repository, executor *Bou
 	if ctx == nil || repository == nil || executor == nil || executor.Provider == nil || batch.BatchID == "" || batch.Fingerprint == "" || batch.IdempotencyKey == "" {
 		return DeployOutcome{}, core.ErrSettings
 	}
-	guarded, release, err := guardRepository(ctx, repository)
+	guarded, release, err := guardRepository(ctx, repository, "submit:"+batch.BatchID)
 	if err != nil {
 		return DeployOutcome{}, err
 	}
@@ -312,7 +312,7 @@ func ResumeBatch(ctx context.Context, repository Repository, executor *BoundExec
 	if ctx == nil || repository == nil || executor == nil || executor.Provider == nil || id == "" {
 		return DeployOutcome{}, core.ErrSettings
 	}
-	guarded, release, err := guardRepository(ctx, repository)
+	guarded, release, err := guardRepository(ctx, repository, "resume:"+id)
 	if err != nil {
 		return DeployOutcome{}, err
 	}

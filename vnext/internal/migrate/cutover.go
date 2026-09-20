@@ -30,11 +30,11 @@ func (s *Store) CompareAndSwap(ctx context.Context, expected uint64, next Canary
 	if s == nil {
 		return CanaryRecord{}, core.ErrPath
 	}
-	release, err := state.AcquireProjectMutation(ctx, s.Root)
+	release, err := state.AcquireProjectMutation(ctx, s.Root, "migration", fmt.Sprintf("canary-cas:%s:%d", next.ID, expected))
 	if err != nil {
 		return CanaryRecord{}, err
 	}
-	defer func() { _ = release() }()
+	defer func() { _ = release.Release() }()
 	return s.compareAndSwapLocked(ctx, expected, next)
 }
 
@@ -80,11 +80,11 @@ func BeginCanary(ctx context.Context, store *Store, project string, host install
 	if err != nil {
 		return CanaryRecord{}, err
 	}
-	release, err := state.AcquireProjectMutation(ctx, project)
+	release, err := state.AcquireProjectMutation(ctx, project, "migration", "canary-begin:"+string(host))
 	if err != nil {
 		return CanaryRecord{}, err
 	}
-	defer func() { _ = release() }()
+	defer func() { _ = release.Release() }()
 	inv, err := readInventory(project)
 	if err != nil {
 		return CanaryRecord{}, err
@@ -109,11 +109,11 @@ func ResumeCanary(ctx context.Context, store *Store, id string, host install.Hos
 	if store == nil || runner == nil || !validHost(host) || !validID(id) {
 		return CanaryRecord{}, core.ErrSettings
 	}
-	release, err := state.AcquireProjectMutation(ctx, store.Root)
+	release, err := state.AcquireProjectMutation(ctx, store.Root, "migration", fmt.Sprintf("canary-resume:%s:%d", id, expected))
 	if err != nil {
 		return CanaryRecord{}, err
 	}
-	defer func() { _ = release() }()
+	defer func() { _ = release.Release() }()
 	record, err := store.read(id)
 	if err != nil {
 		return CanaryRecord{}, err
@@ -148,11 +148,11 @@ func RollbackCanary(ctx context.Context, store *Store, id string) (CanaryRecord,
 	if store == nil || !validID(id) {
 		return CanaryRecord{}, core.ErrPath
 	}
-	release, err := state.AcquireProjectMutation(ctx, store.Root)
+	release, err := state.AcquireProjectMutation(ctx, store.Root, "migration", "canary-rollback:"+id)
 	if err != nil {
 		return CanaryRecord{}, err
 	}
-	defer func() { _ = release() }()
+	defer func() { _ = release.Release() }()
 	record, err := store.read(id)
 	if err != nil {
 		return CanaryRecord{}, err
