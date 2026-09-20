@@ -33,6 +33,39 @@ func TestSnapshotProjectTreeExcludesOnlyGitInternals(t *testing.T) {
 	}
 }
 
+func TestSnapshotProjectTreeIgnoresRootGitFile(t *testing.T) {
+	root := t.TempDir()
+	gitFile := filepath.Join(root, ".git")
+	if err := os.WriteFile(gitFile, []byte("gitdir: elsewhere\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := SnapshotProjectTree(t, root)
+	if err := os.WriteFile(gitFile, []byte("gitdir: changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if after := SnapshotProjectTree(t, root); !sameSnapshot(before, after) {
+		t.Fatalf("root .git file changed project snapshot: before=%v after=%v", before, after)
+	}
+}
+
+func TestSnapshotProjectTreeIncludesNestedGitContent(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested", ".git", "HEAD")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nested, []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := SnapshotProjectTree(t, root)
+	if err := os.WriteFile(nested, []byte("two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if after := SnapshotProjectTree(t, root); sameSnapshot(before, after) {
+		t.Fatal("nested .git content was ignored")
+	}
+}
+
 func sameSnapshot(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false

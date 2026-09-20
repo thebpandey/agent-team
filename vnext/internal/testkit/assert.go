@@ -31,10 +31,13 @@ func snapshotTree(t *testing.T, root string, excludeGit bool) map[string]string 
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() {
-			if excludeGit && filepath.ToSlash(rel) == ".git" {
+		if excludeGit && filepath.ToSlash(rel) == ".git" {
+			if entry.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if entry.IsDir() {
 			return nil
 		}
 		body, err := os.ReadFile(path)
