@@ -441,6 +441,14 @@ func TestParseResolvedOIDIsByteStrict(t *testing.T) {
 	}
 }
 
+func TestParseRawLineRejectsSurroundingWhitespaceBeforePathCanonicalization(t *testing.T) {
+	for _, value := range []string{" path", "path ", "\tpath", "path\t"} {
+		if _, err := parseRawLine(value); !errors.Is(err, core.ErrPath) {
+			t.Fatalf("parseRawLine(%q) = %v", value, err)
+		}
+	}
+}
+
 func TestExactProbeRejectsNonStrictAuthoritativeLines(t *testing.T) {
 	for _, field := range []string{"top", "common", "symbolic"} {
 		for _, suffix := range []string{"\n\n", " ", "\t"} {

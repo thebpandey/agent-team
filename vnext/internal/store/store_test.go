@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -202,7 +203,7 @@ func TestStoreProbesThenFlushesClosesAndHashesReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("replacement permissions = %o, want restrictive", info.Mode().Perm())
 	}
 	root, err := os.OpenRoot(s.Root)

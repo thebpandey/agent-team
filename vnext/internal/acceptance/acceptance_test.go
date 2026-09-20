@@ -35,11 +35,11 @@ func TestPhase1Acceptance(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("outside\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	beforeRoot := testkit.SnapshotTree(t, root)
+	beforeRoot := testkit.SnapshotProjectTree(t, root)
 	beforeOutside := testkit.SnapshotTree(t, outside)
 
 	assertCLIOutcome(t, ctx, root, []string{"setup", "--refuse-kickoff", "--json"}, 2, cliEnvelope{Schema: 1, Action: "setup", Status: "rejected", Message: "setup rejected"})
-	testkit.RequireNoWrites(t, root, beforeRoot)
+	testkit.RequireNoProjectWrites(t, root, beforeRoot)
 	testkit.RequireNoWrites(t, outside, beforeOutside)
 
 	cases := []struct {
@@ -67,7 +67,7 @@ func TestPhase1Acceptance(t *testing.T) {
 			assertCLIOutcome(t, ctx, root, tc.args, tc.code, tc.want)
 		})
 	}
-	testkit.RequireNoWrites(t, root, beforeRoot)
+	testkit.RequireNoProjectWrites(t, root, beforeRoot)
 	testkit.RequireNoWrites(t, outside, beforeOutside)
 
 	for _, args := range [][]string{{"review"}, {"gate"}, {"integrate"}, {"reconcile"}, {"checkpoint"}, {"list"}, {"archive"}, {"plan"}, {"start", "--run"}, {"task", "add", "--execute", "--json", "extra"}, {"cleanup", "--bogus", "x"}, {"deploy", "--batch-size", "00"}} {

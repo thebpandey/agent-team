@@ -1,6 +1,11 @@
 # Changelog
 
-## 8.0.0 - candidate
+## 8.0.1 - candidate
+
+- Preserve mutation-guard durability on Windows while accepting only the documented unsupported directory-flush result after the owner record itself is synced.
+- Compare lifecycle file modes using each platform's native security contract, keep Git maintenance locks out of read-only project snapshots, and make Windows executable/worktree probes byte-strict and native-path-safe.
+
+## 8.0.0 - 2026-09-20
 
 - Ship one native Codex/Claude package with checksum verification, transactional install/update/uninstall, revision-specific rollback, and exact manifest ownership on Linux, macOS, and Windows.
 - Coordinate foreground runs through one orchestrator, bounded worktree lanes, independent FIX/CLEAN review, deterministic gates, serial integration, durable handoffs, and scoped pause/resume/recovery.

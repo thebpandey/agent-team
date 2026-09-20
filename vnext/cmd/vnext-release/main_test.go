@@ -113,7 +113,8 @@ func TestCheckEvidenceRejectsForgedAndStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "native.json")
-	good := `{"Phase":"phase","Revision":"r","Kind":"native","Source":"` + source + `","Hash":"` + digest + `","Passed":true}`
+	sourceJSON, _ := json.Marshal(source)
+	good := `{"Phase":"phase","Revision":"r","Kind":"native","Source":` + string(sourceJSON) + `,"Hash":"` + digest + `","Passed":true}`
 	if err := os.WriteFile(path, []byte(good), 0o644); err != nil {
 		t.Fatal(err)
 	}

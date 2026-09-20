@@ -755,7 +755,11 @@ func legacyHostFixture(t *testing.T, layout Layout) string {
 		if err := os.WriteFile(path, body, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		files := map[string]legacyFile{"SKILL.md": {SHA256: digestBytesInstall(body), Mode: 0o600, Size: int64(len(body))}}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := map[string]legacyFile{"SKILL.md": {SHA256: digestBytesInstall(body), Mode: uint32(info.Mode().Perm()), Size: int64(len(body))}}
 		installed[string(host)] = fileMap{Target: layout.SkillRoots[host], Digest: legacyFileMapDigest(map[string]legacyInstalledFile{"SKILL.md": {SHA256: files["SKILL.md"].SHA256, Mode: files["SKILL.md"].Mode, Size: files["SKILL.md"].Size}}), Files: files}
 		handler := map[string]any{"type": "command", "command": "node agent-team-hook.mjs", "timeout": float64(3)}
 		handlers = append(handlers, map[string]any{"runtime": string(host), "event": "SessionStart", "handlerId": string(host) + ":SessionStart:0:0", "digest": digestLegacyMap(handler), "handler": handler, "preexisting": false, "configPath": layout.ConfigPaths[host]})
