@@ -188,7 +188,7 @@ func TestAuthorityCutoverRejectsReplayAndRequestSelectedLegacyAuthority(t *testi
 func TestAuthorityCutoverRejectsMutableOperatorTrustStore(t *testing.T) {
 	project := authorityFixture(t)
 	requestPath := authorityRequestFixture(t, project)
-	authorityTrustStoreOwner = func(os.FileInfo) bool { return false }
+	authorityTrustStoreOwner = func(string, os.FileInfo) bool { return false }
 	if _, err := ExecuteAuthorityRequest(context.Background(), requestPath); err == nil {
 		t.Fatal("mutable operator trust store accepted")
 	}
@@ -206,7 +206,7 @@ func TestSystemTrustStoreRejectsWritableFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if systemTrustStoreOwner(info) {
+	if systemTrustStoreOwner(path, info) {
 		t.Fatal("group/world-writable trust store accepted")
 	}
 }
@@ -245,7 +245,7 @@ func TestAuthorityCutoverRechecksOperatorTrustBeforeReceiptPublication(t *testin
 	requestPath := authorityRequestFixture(t, project)
 	authorityMutationHook = func(index int) bool {
 		if index == 1 {
-			authorityTrustStoreOwner = func(os.FileInfo) bool { return false }
+			authorityTrustStoreOwner = func(string, os.FileInfo) bool { return false }
 		}
 		return false
 	}
@@ -434,7 +434,7 @@ func authorityRequestFixture(t *testing.T, project string) string {
 	keyID := digestBytes(publicKey)
 	trustPath := writeAuthorityJSON(t, t.TempDir(), "cutover-trust.json", operatorTrustStore{Schema: 1, Keys: []signedApprovalTrust{{Algorithm: "ed25519", KeyID: keyID, PublicKey: base64.StdEncoding.EncodeToString(publicKey)}}})
 	authorityTrustStorePath = trustPath
-	authorityTrustStoreOwner = func(os.FileInfo) bool { return true }
+	authorityTrustStoreOwner = func(string, os.FileInfo) bool { return true }
 	t.Cleanup(func() {
 		authorityTrustStorePath = systemTrustStorePath()
 		authorityTrustStoreOwner = systemTrustStoreOwner

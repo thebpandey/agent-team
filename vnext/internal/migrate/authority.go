@@ -555,12 +555,12 @@ func equalEvidence(left, right []EvidenceReference) bool {
 
 func readOperatorTrustStore() (operatorTrustStore, error) {
 	before, err := os.Lstat(authorityTrustStorePath)
-	if err != nil || !before.Mode().IsRegular() || !authorityTrustStoreOwner(before) {
+	if err != nil || !before.Mode().IsRegular() || !authorityTrustStoreOwner(authorityTrustStorePath, before) {
 		return operatorTrustStore{}, fmt.Errorf("%w: immutable operator trust store is unavailable", core.ErrRevision)
 	}
 	raw, _, err := store.New(filepath.Dir(authorityTrustStorePath), core.StorageLimits{CanonicalBytes: trustStoreLimit}).ReadFile(filepath.Base(authorityTrustStorePath), trustStoreLimit)
 	after, statErr := os.Lstat(authorityTrustStorePath)
-	if err != nil || statErr != nil || !os.SameFile(before, after) || !authorityTrustStoreOwner(after) {
+	if err != nil || statErr != nil || !os.SameFile(before, after) || !authorityTrustStoreOwner(authorityTrustStorePath, after) {
 		return operatorTrustStore{}, fmt.Errorf("%w: operator trust store changed", core.ErrRevision)
 	}
 	var trust operatorTrustStore
