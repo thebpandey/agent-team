@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -295,26 +296,55 @@ func rollbackLegacyHosts(ctx context.Context, layout Layout, request LegacyHostC
 	if err != nil || current.Revision != request.ExpectedManifestRevision {
 		return LegacyHostCutoverResult{}, core.ErrRevision
 	}
-	for _, post := range receipt.Postimages {
-		if post.Absent {
-			if _, err := os.Lstat(post.Path); !errors.Is(err, fs.ErrNotExist) {
-				return LegacyHostCutoverResult{}, core.ErrRevision
-			}
-		} else if digestPathBounded(post.Path, installJournalLimit) != post.SHA256 {
-			return LegacyHostCutoverResult{}, core.ErrRevision
-		}
-	}
 	previous := cloneManifest(current)
 	intended := cloneManifest(receipt.Previous)
 	intended.Revision = current.Revision + 1
 	journal := lifecycleJournal{Schema: 1, Operation: "rollback", ExpectedRevision: current.Revision, Owner: owner, Previous: &previous, Intended: intended}
-	for _, preimage := range receipt.Preimages {
-		mutation, err := prepareMutation(layout, preimage.Path, preimage.Bytes, fs.FileMode(preimage.Mode), false, false, nil)
-		if err != nil {
-			return LegacyHostCutoverResult{}, err
+	preimages := make(map[string]*hostCutoverPreimage, len(receipt.Preimages))
+	for index := range receipt.Preimages {
+		preimage := &receipt.Preimages[index]
+		if preimages[preimage.Path] != nil || ownedRoot(layout, preimage.Path) == "" || int64(len(preimage.Bytes)) > installJournalLimit || digestContent(preimage.Bytes) != preimage.SHA256 {
+			return LegacyHostCutoverResult{}, core.ErrRevision
+		}
+		preimages[preimage.Path] = preimage
+	}
+	already := make([]string, 0, len(receipt.Preimages))
+	seen := make(map[string]bool, len(receipt.Postimages))
+	for _, postimage := range receipt.Postimages {
+		if seen[postimage.Path] {
+			return LegacyHostCutoverResult{}, core.ErrRevision
+		}
+		seen[postimage.Path] = true
+		preimage := preimages[postimage.Path]
+		if matchesHostRollbackPreimage(layout, postimage.Path, preimage) {
+			already = append(already, postimage.Path)
+			continue
+		}
+		if !matchesHostRollbackPostimage(layout, postimage) {
+			return LegacyHostCutoverResult{}, core.ErrRevision
+		}
+		var mutation lifecycleMutation
+		if preimage == nil {
+			mutation, err = prepareMutation(layout, postimage.Path, nil, 0, true, false, nil)
+		} else {
+			mutation, err = prepareMutation(layout, preimage.Path, preimage.Bytes, fs.FileMode(preimage.Mode), false, false, nil)
+		}
+		if err != nil || mutation.Existed == postimage.Absent || !postimage.Absent && mutation.PreSHA256 != postimage.SHA256 {
+			return LegacyHostCutoverResult{}, core.ErrRevision
 		}
 		journal.Mutations = append(journal.Mutations, mutation)
 	}
+	for path := range preimages {
+		if !seen[path] {
+			return LegacyHostCutoverResult{}, core.ErrRevision
+		}
+	}
+	for _, path := range already {
+		if !matchesHostRollbackPreimage(layout, path, preimages[path]) {
+			return LegacyHostCutoverResult{}, core.ErrRevision
+		}
+	}
+	idempotent := len(journal.Mutations) == 0
 	receiptPath := filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))
 	mutation, err := prepareMutation(layout, receiptPath, nil, 0, true, false, nil)
 	if err != nil {
@@ -328,7 +358,45 @@ func rollbackLegacyHosts(ctx context.Context, layout Layout, request LegacyHostC
 	if err != nil {
 		return LegacyHostCutoverResult{}, err
 	}
-	return LegacyHostCutoverResult{ManifestRevision: outcome.Manifest.Revision}, nil
+	return LegacyHostCutoverResult{ManifestRevision: outcome.Manifest.Revision, Idempotent: idempotent}, nil
+}
+
+func matchesHostRollbackPostimage(layout Layout, image hostCutoverPostimage) bool {
+	root := ownedRoot(layout, image.Path)
+	if root == "" {
+		return false
+	}
+	if image.Absent {
+		_, err := os.Lstat(image.Path)
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	raw, err := readStableRegular(root, image.Path, -1, nil, "")
+	return err == nil && digestContent(raw) == image.SHA256
+}
+
+func matchesHostRollbackPreimage(layout Layout, path string, image *hostCutoverPreimage) bool {
+	root := ownedRoot(layout, path)
+	if root == "" {
+		return false
+	}
+	if image == nil {
+		_, err := os.Lstat(path)
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	if image.Path != path || int64(len(image.Bytes)) > installJournalLimit || digestContent(image.Bytes) != image.SHA256 {
+		return false
+	}
+	file, size, err := openStableRegular(root, path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || size != int64(len(image.Bytes)) || uint32(info.Mode().Perm()) != image.Mode {
+		return false
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, size+1))
+	return err == nil && bytes.Equal(raw, image.Bytes) && verifyStableIdentity(file, path) == nil
 }
 
 func (receipt *hostCutoverReceipt) addMutation(mutation lifecycleMutation) {

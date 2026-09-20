@@ -121,6 +121,121 @@ func TestLegacyHostCutoverRollbackAndRetry(t *testing.T) {
 	}
 }
 
+func TestLegacyHostRollbackCompletesMixedExactState(t *testing.T) {
+	layout, release, request, receipt := legacyRollbackFixture(t)
+	already := receipt.Preimages[2]
+	if err := os.WriteFile(already.Path, already.Bytes, os.FileMode(already.Mode)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(already.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := CutoverLegacyHosts(context.Background(), layout, release, request)
+	if err != nil {
+		t.Fatalf("mixed rollback = %#v, %v", result, err)
+	}
+	after, err := os.Stat(already.Path)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("already-restored path replaced: %v", err)
+	}
+	assertFileDigest(t, already.Path, already.SHA256)
+	assertLegacyRollbackState(t, layout, receipt)
+}
+
+func TestLegacyHostRollbackFinalizesAllPreimages(t *testing.T) {
+	layout, release, request, receipt := legacyRollbackFixture(t)
+	for _, preimage := range receipt.Preimages {
+		if err := os.WriteFile(preimage.Path, preimage.Bytes, os.FileMode(preimage.Mode)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := os.Stat(receipt.Preimages[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := CutoverLegacyHosts(context.Background(), layout, release, request)
+	if err != nil || !result.Idempotent {
+		t.Fatalf("all-preimage rollback = %#v, %v", result, err)
+	}
+	after, err := os.Stat(receipt.Preimages[0].Path)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("all-preimage path replaced: %v", err)
+	}
+	assertLegacyRollbackState(t, layout, receipt)
+}
+
+func TestLegacyHostRollbackRejectsThirdStateBeforeMutation(t *testing.T) {
+	layout, release, request, receipt := legacyRollbackFixture(t)
+	tampered := receipt.Preimages[2]
+	if err := os.WriteFile(tampered.Path, tampered.Bytes, os.FileMode(tampered.Mode)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(tampered.Path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	untouched := receipt.Postimages[0].Path
+	before, err := os.Stat(untouched)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBefore, _ := os.ReadFile(layout.ManifestPath)
+	receiptPath := filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))
+	receiptBefore, _ := os.ReadFile(receiptPath)
+	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("third state rollback = %v", err)
+	}
+	if info, err := os.Stat(tampered.Path); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("tampered mode changed: %v", err)
+	}
+	after, err := os.Stat(untouched)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("validated postimage changed: %v", err)
+	}
+	if got, _ := os.ReadFile(layout.ManifestPath); !bytes.Equal(got, manifestBefore) {
+		t.Fatal("manifest changed after rejected rollback")
+	}
+	if got, _ := os.ReadFile(receiptPath); !bytes.Equal(got, receiptBefore) {
+		t.Fatal("receipt changed after rejected rollback")
+	}
+}
+
+func TestLegacyHostRollbackRecoversInterruptedMixedState(t *testing.T) {
+	layout, release, request, receipt := legacyRollbackFixture(t)
+	already := receipt.Preimages[2]
+	if err := os.WriteFile(already.Path, already.Bytes, os.FileMode(already.Mode)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(already.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycleInterruptHook = func(operation string, index int) bool { return operation == "rollback" && index == 0 }
+	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); !errors.Is(err, core.ErrTransition) {
+		t.Fatalf("mixed interruption = %v", err)
+	}
+	journal, err := readLifecycleJournal(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mutation := range journal.Mutations {
+		if mutation.Path == already.Path {
+			t.Fatal("already-restored path was journaled")
+		}
+	}
+	lifecycleInterruptHook = nil
+	t.Cleanup(func() { lifecycleInterruptHook = nil })
+	result, err := CutoverLegacyHosts(context.Background(), layout, release, request)
+	if err != nil {
+		t.Fatalf("mixed recovery = %#v, %v", result, err)
+	}
+	after, err := os.Stat(already.Path)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("already-restored path changed during recovery: %v", err)
+	}
+	assertLegacyRollbackState(t, layout, receipt)
+}
+
 func TestLegacyHostCutoverAcceptsOnlyVerifiedSourceInventory(t *testing.T) {
 	root := t.TempDir()
 	layout, err := ResolveLayout("linux", map[string]string{"XDG_DATA_HOME": filepath.Join(root, "data"), "CODEX_HOME": filepath.Join(root, "codex"), "CLAUDE_HOME": filepath.Join(root, "claude")})
@@ -535,6 +650,52 @@ func legacyReleaseFixture(t *testing.T, root string) Release {
 		return ReleaseFile{Path: path, SHA256: digestText(body), Bytes: int64(len(body))}
 	}
 	return Release{Version: "8.0.0", Revision: "0123456789abcdef0123456789abcdef01234567", Binary: write("agent-teamctl", "binary\n"), Contract: write("WORKER-CONTRACT", "contract\n"), Entrypoints: map[Host]ReleaseFile{Codex: write("codex-SKILL.md", "codex-v8\n"), Claude: write("claude-SKILL.md", "claude-v8\n")}}
+}
+
+func legacyRollbackFixture(t *testing.T) (Layout, Release, LegacyHostCutoverRequest, hostCutoverReceipt) {
+	t.Helper()
+	root := t.TempDir()
+	layout, err := ResolveLayout("linux", map[string]string{"XDG_DATA_HOME": filepath.Join(root, "data"), "CODEX_HOME": filepath.Join(root, "codex"), "CLAUDE_HOME": filepath.Join(root, "claude")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := legacyReleaseFixture(t, root)
+	if _, err := Install(context.Background(), layout, release, []Host{Codex, Claude}, 0); err != nil {
+		t.Fatal(err)
+	}
+	legacyReceipt := legacyHostFixture(t, layout)
+	receiptDigest, _, err := sha256File(legacyReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := LegacyHostCutoverRequest{Schema: 1, Action: "host-cutover", OperationID: "partial-rollback", LegacyReceipt: legacyReceipt, LegacyReceiptSHA256: receiptDigest, ExpectedManifestRevision: 1, Hosts: []Host{Codex, Claude}}
+	result, err := CutoverLegacyHosts(context.Background(), layout, release, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := readHostCutoverReceipt(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Action, request.ExpectedManifestRevision, request.ExpectedReceiptDigest = "host-rollback", result.ManifestRevision, result.ReceiptDigest
+	return layout, release, request, receipt
+}
+
+func assertLegacyRollbackState(t *testing.T, layout Layout, receipt hostCutoverReceipt) {
+	t.Helper()
+	for _, preimage := range receipt.Preimages {
+		info, err := os.Lstat(preimage.Path)
+		if err != nil || !info.Mode().IsRegular() || uint32(info.Mode().Perm()) != preimage.Mode {
+			t.Fatalf("preimage mode %s: %v", preimage.Path, err)
+		}
+		assertFileDigest(t, preimage.Path, preimage.SHA256)
+	}
+	if _, err := os.Lstat(filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cutover receipt retained: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(layout.DataRoot, filepath.FromSlash(installAttemptPath))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lifecycle journal retained: %v", err)
+	}
 }
 
 func digestLegacyMap(value any) string {
