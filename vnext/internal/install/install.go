@@ -15,9 +15,33 @@ import (
 	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
+const installAttemptPath = ".agent-team/install-attempt.json"
+
+var installMutationHook func()
+var installCreateHook func(int) error
+
+type installAttempt struct {
+	Schema           int         `json:"schema"`
+	ExpectedRevision uint64      `json:"expected_revision"`
+	Created          []OwnedFile `json:"created"`
+}
+
 func Install(ctx context.Context, layout Layout, release Release, hosts []Host, expected uint64) (CASOutcome, error) {
+	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot)
+	if err != nil {
+		return CASOutcome{}, err
+	}
+	defer func() { _ = releaseGuard() }()
+	if installMutationHook != nil {
+		installMutationHook()
+	}
+	return installLocked(ctx, layout, release, hosts, expected)
+}
+
+func installLocked(ctx context.Context, layout Layout, release Release, hosts []Host, expected uint64) (CASOutcome, error) {
 	if err := validateLifecycle(ctx, layout, release); err != nil {
 		return CASOutcome{}, err
 	}
@@ -27,6 +51,7 @@ func Install(ctx context.Context, layout Layout, release Release, hosts []Host, 
 	}
 	manifestStore := NewManifestStore(layout)
 	if current, readErr := manifestStore.Read(ctx); readErr == nil {
+		_ = removeInstallAttempt(layout)
 		return CASOutcome{Kind: CASStale, Manifest: current, ExpectedRevision: expected, ObservedRevision: current.Revision, Retained: ownedPaths(current)}, core.ErrRevision
 	} else if !errors.Is(readErr, fs.ErrNotExist) {
 		return CASOutcome{}, readErr
@@ -34,33 +59,124 @@ func Install(ctx context.Context, layout Layout, release Release, hosts []Host, 
 	if expected != 0 {
 		return CASOutcome{Kind: CASStale, ExpectedRevision: expected}, core.ErrRevision
 	}
+	if err := recoverInstallAttempt(layout, expected); err != nil {
+		return CASOutcome{}, err
+	}
 	desired := releaseFiles(layout, release, hosts)
 	for _, file := range desired {
 		if _, err := os.Lstat(file.owned.Path); !errors.Is(err, fs.ErrNotExist) {
 			return CASOutcome{Retained: []string{file.owned.Path}}, core.ErrRevision
 		}
 	}
-	for _, file := range desired {
+	attempt := installAttempt{Schema: 1, ExpectedRevision: expected}
+	if err := writeInstallAttempt(layout, attempt); err != nil {
+		return CASOutcome{}, err
+	}
+	fail := func(cause error) (CASOutcome, error) {
+		if cleanupErr := cleanupInstallAttempt(layout, attempt); cleanupErr != nil {
+			return CASOutcome{Retained: ownedFilePaths(attempt.Created)}, fmt.Errorf("%v; install cleanup: %w", cause, cleanupErr)
+		}
+		return CASOutcome{}, cause
+	}
+	for index, file := range desired {
 		data, err := verifiedReleaseBytes(file.source)
 		if err != nil {
-			return CASOutcome{}, err
+			return fail(err)
 		}
 		mode := fs.FileMode(0o600)
 		if file.owned.Role == BinaryRole {
 			mode = 0o700
 		}
+		if installCreateHook != nil {
+			if err := installCreateHook(index); err != nil {
+				return fail(err)
+			}
+		}
 		if err := atomicCreate(layout, file.owned.Path, data, mode); err != nil {
-			return CASOutcome{Retained: []string{file.owned.Path}}, err
+			return fail(err)
+		}
+		attempt.Created = append(attempt.Created, file.owned)
+		if err := writeInstallAttempt(layout, attempt); err != nil {
+			return fail(err)
 		}
 	}
 	manifest := InstallManifest{Schema: 1, Version: release.Version, Hosts: hosts}
 	for _, file := range desired {
 		manifest.Files = append(manifest.Files, file.owned)
 	}
-	return manifestStore.CompareAndSwap(ctx, expected, manifest)
+	outcome, err := manifestStore.compareAndSwapLocked(ctx, expected, manifest)
+	if err != nil {
+		return fail(err)
+	}
+	if err := removeInstallAttempt(layout); err != nil {
+		return CASOutcome{Manifest: outcome.Manifest, Retained: ownedPaths(outcome.Manifest)}, err
+	}
+	return outcome, nil
+}
+
+func writeInstallAttempt(layout Layout, attempt installAttempt) error {
+	_, err := store.New(layout.DataRoot, core.StorageLimits{CanonicalBytes: manifestLimit}).WriteJSON(installAttemptPath, attempt, manifestLimit)
+	return err
+}
+
+func recoverInstallAttempt(layout Layout, expected uint64) error {
+	var attempt installAttempt
+	err := store.New(layout.DataRoot, core.StorageLimits{CanonicalBytes: manifestLimit}).ReadJSON(installAttemptPath, manifestLimit, &attempt)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil || attempt.Schema != 1 || attempt.ExpectedRevision != expected {
+		return core.ErrRevision
+	}
+	return cleanupInstallAttempt(layout, attempt)
+}
+
+func cleanupInstallAttempt(layout Layout, attempt installAttempt) error {
+	for _, file := range attempt.Created {
+		if !diskMatches(file.Path, file.SHA256, file.Bytes) {
+			if _, err := os.Lstat(file.Path); errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("%w: created file ownership changed: %s", core.ErrRevision, file.Path)
+		}
+		if err := removeOwnedPath(layout, file.Path); err != nil {
+			return err
+		}
+	}
+	return removeInstallAttempt(layout)
+}
+
+func removeInstallAttempt(layout Layout) error {
+	root, err := os.OpenRoot(layout.DataRoot)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	err = root.Remove(filepath.FromSlash(installAttemptPath))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func ownedFilePaths(files []OwnedFile) []string {
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.Path)
+	}
+	return paths
 }
 
 func Update(ctx context.Context, layout Layout, release Release, expected uint64) (CASOutcome, error) {
+	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot)
+	if err != nil {
+		return CASOutcome{}, err
+	}
+	defer func() { _ = releaseGuard() }()
+	return updateLocked(ctx, layout, release, expected)
+}
+
+func updateLocked(ctx context.Context, layout Layout, release Release, expected uint64) (CASOutcome, error) {
 	if err := validateLifecycle(ctx, layout, release); err != nil {
 		return CASOutcome{}, err
 	}
@@ -102,12 +218,21 @@ func Update(ctx context.Context, layout Layout, release Release, expected uint64
 		next.Backups = appendBackup(next.Backups, backup)
 		next.Files[index] = target.owned
 	}
-	outcome, err := manifestStore.CompareAndSwap(ctx, expected, next)
+	outcome, err := manifestStore.compareAndSwapLocked(ctx, expected, next)
 	outcome.Retained = append([]string(nil), retained...)
 	return outcome, err
 }
 
 func Rollback(ctx context.Context, layout Layout, version string, expected uint64) (CASOutcome, error) {
+	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot)
+	if err != nil {
+		return CASOutcome{}, err
+	}
+	defer func() { _ = releaseGuard() }()
+	return rollbackLocked(ctx, layout, version, expected)
+}
+
+func rollbackLocked(ctx context.Context, layout Layout, version string, expected uint64) (CASOutcome, error) {
 	if ctx == nil || ctx.Err() != nil || ValidateLayout(layout) != nil || strings.TrimSpace(version) == "" {
 		return CASOutcome{}, core.ErrSettings
 	}
@@ -148,12 +273,21 @@ func Rollback(ctx context.Context, layout Layout, version string, expected uint6
 		return CASOutcome{Retained: retained}, core.ErrRevision
 	}
 	next.Version = version
-	outcome, err := manifestStore.CompareAndSwap(ctx, expected, next)
+	outcome, err := manifestStore.compareAndSwapLocked(ctx, expected, next)
 	outcome.Retained = retained
 	return outcome, err
 }
 
 func Uninstall(ctx context.Context, layout Layout, expected uint64) ([]string, CASOutcome, error) {
+	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot)
+	if err != nil {
+		return nil, CASOutcome{}, err
+	}
+	defer func() { _ = releaseGuard() }()
+	return uninstallLocked(ctx, layout, expected)
+}
+
+func uninstallLocked(ctx context.Context, layout Layout, expected uint64) ([]string, CASOutcome, error) {
 	if ctx == nil || ctx.Err() != nil || ValidateLayout(layout) != nil {
 		return nil, CASOutcome{}, core.ErrSettings
 	}
@@ -188,7 +322,7 @@ func Uninstall(ctx context.Context, layout Layout, expected uint64) ([]string, C
 			next.Backups = append(next.Backups, backup)
 		}
 	}
-	outcome, err := manifestStore.CompareAndSwap(ctx, expected, next)
+	outcome, err := manifestStore.compareAndSwapLocked(ctx, expected, next)
 	outcome.Retained = append([]string(nil), retained...)
 	return retained, outcome, err
 }

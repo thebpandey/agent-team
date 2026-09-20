@@ -16,7 +16,6 @@ import (
 
 const (
 	registryPath = ".agent-team/resources/registry.json"
-	registryLock = ".agent-team/resources/registry.lock"
 	registryMax  = 1 << 20
 	recordLimit  = 64
 	serverSlots  = 2
@@ -439,10 +438,11 @@ func (r *registry) withDocument(ctx context.Context, action func(*registryDocume
 	if r == nil || r.store == nil {
 		return fmt.Errorf("%w: nil resource store", core.ErrSettings)
 	}
-	if err := acquireLock(ctx, r.store.Root); err != nil {
+	release, err := store.AcquireProjectMutation(ctx, r.store.Root)
+	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(filepath.Join(r.store.Root, filepath.FromSlash(registryLock))) }()
+	defer func() { _ = release() }()
 
 	// The re-read is intentional: another process can have committed while this
 	// caller waited on the durable lock. Never decide from a pre-contention view.
@@ -461,31 +461,6 @@ func (r *registry) withDocument(ctx context.Context, action func(*registryDocume
 		return fmt.Errorf("%w: registry write: %v", core.ErrRevision, err)
 	}
 	return nil
-}
-
-func acquireLock(ctx context.Context, root string) error {
-	if root == "" {
-		return fmt.Errorf("%w: empty resource store root", core.ErrPath)
-	}
-	parent := filepath.Join(root, ".agent-team", "resources")
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return fmt.Errorf("%w: registry lock parent: %v", core.ErrPath, err)
-	}
-	lock := filepath.Join(root, filepath.FromSlash(registryLock))
-	for {
-		err := os.Mkdir(lock, 0o700)
-		if err == nil {
-			return nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("%w: registry lock: %v", core.ErrPath, err)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Millisecond):
-		}
-	}
 }
 
 func checkReserveRevision(expected, actual uint64) error {

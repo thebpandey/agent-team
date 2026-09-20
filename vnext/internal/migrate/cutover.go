@@ -27,6 +27,18 @@ func NewStore(root string) *Store {
 }
 
 func (s *Store) CompareAndSwap(ctx context.Context, expected uint64, next CanaryRecord) (CanaryRecord, error) {
+	if s == nil {
+		return CanaryRecord{}, core.ErrPath
+	}
+	release, err := state.AcquireProjectMutation(ctx, s.Root)
+	if err != nil {
+		return CanaryRecord{}, err
+	}
+	defer func() { _ = release() }()
+	return s.compareAndSwapLocked(ctx, expected, next)
+}
+
+func (s *Store) compareAndSwapLocked(ctx context.Context, expected uint64, next CanaryRecord) (CanaryRecord, error) {
 	if ctx == nil || ctx.Err() != nil || s == nil || s.mu == nil {
 		return CanaryRecord{}, core.ErrPath
 	}
@@ -68,6 +80,11 @@ func BeginCanary(ctx context.Context, store *Store, project string, host install
 	if err != nil {
 		return CanaryRecord{}, err
 	}
+	release, err := state.AcquireProjectMutation(ctx, project)
+	if err != nil {
+		return CanaryRecord{}, err
+	}
+	defer func() { _ = release() }()
 	inv, err := readInventory(project)
 	if err != nil {
 		return CanaryRecord{}, err
@@ -85,13 +102,18 @@ func BeginCanary(ctx context.Context, store *Store, project string, host install
 	}
 	record := CanaryRecord{ID: id, Project: project, V7InventoryDigest: inv.Digest, State: "observing"}
 	setObservation(&record, host, observation)
-	return store.CompareAndSwap(ctx, 0, record)
+	return store.compareAndSwapLocked(ctx, 0, record)
 }
 
 func ResumeCanary(ctx context.Context, store *Store, id string, host install.Host, expected uint64, inventoryDigest string, runner CanaryRunner) (CanaryRecord, error) {
 	if store == nil || runner == nil || !validHost(host) || !validID(id) {
 		return CanaryRecord{}, core.ErrSettings
 	}
+	release, err := state.AcquireProjectMutation(ctx, store.Root)
+	if err != nil {
+		return CanaryRecord{}, err
+	}
+	defer func() { _ = release() }()
 	record, err := store.read(id)
 	if err != nil {
 		return CanaryRecord{}, err
@@ -119,13 +141,18 @@ func ResumeCanary(ctx context.Context, store *Store, id string, host install.Hos
 	}
 	setObservation(&record, host, observation)
 	record.State = observationState(record)
-	return store.CompareAndSwap(ctx, expected, record)
+	return store.compareAndSwapLocked(ctx, expected, record)
 }
 
 func RollbackCanary(ctx context.Context, store *Store, id string) (CanaryRecord, error) {
 	if store == nil || !validID(id) {
 		return CanaryRecord{}, core.ErrPath
 	}
+	release, err := state.AcquireProjectMutation(ctx, store.Root)
+	if err != nil {
+		return CanaryRecord{}, err
+	}
+	defer func() { _ = release() }()
 	record, err := store.read(id)
 	if err != nil {
 		return CanaryRecord{}, err
@@ -165,7 +192,7 @@ func RollbackCanary(ctx context.Context, store *Store, id string) (CanaryRecord,
 	record.Retained = retained
 	record.RollbackEvidence = hex.EncodeToString(evidence[:])
 	record.State = "rolled_back"
-	return store.CompareAndSwap(ctx, record.Revision, record)
+	return store.compareAndSwapLocked(ctx, record.Revision, record)
 }
 
 func (s *Store) read(id string) (CanaryRecord, error) {

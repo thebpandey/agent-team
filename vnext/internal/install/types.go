@@ -82,6 +82,7 @@ type Layout struct {
 }
 
 type ManifestStore struct {
+	Root string
 	Path string
 	mu   *sync.Mutex
 }

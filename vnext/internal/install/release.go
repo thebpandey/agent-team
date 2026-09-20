@@ -22,12 +22,13 @@ import (
 const manifestLimit = 1 << 20
 
 var manifestLocks sync.Map
+var manifestWriteHook func() error
 
 func NewManifestStore(layout Layout) *ManifestStore {
 	path := layout.ManifestPath
 	key, _ := filepath.Abs(path)
 	lock, _ := manifestLocks.LoadOrStore(key, &sync.Mutex{})
-	return &ManifestStore{Path: path, mu: lock.(*sync.Mutex)}
+	return &ManifestStore{Root: layout.DataRoot, Path: path, mu: lock.(*sync.Mutex)}
 }
 
 func (s *ManifestStore) Read(ctx context.Context) (InstallManifest, error) {
@@ -46,6 +47,18 @@ func (s *ManifestStore) Read(ctx context.Context) (InstallManifest, error) {
 }
 
 func (s *ManifestStore) CompareAndSwap(ctx context.Context, expected uint64, next InstallManifest) (CASOutcome, error) {
+	if s == nil {
+		return CASOutcome{}, core.ErrPath
+	}
+	release, err := store.AcquireProjectMutation(ctx, s.Root)
+	if err != nil {
+		return CASOutcome{}, err
+	}
+	defer func() { _ = release() }()
+	return s.compareAndSwapLocked(ctx, expected, next)
+}
+
+func (s *ManifestStore) compareAndSwapLocked(ctx context.Context, expected uint64, next InstallManifest) (CASOutcome, error) {
 	if ctx == nil || ctx.Err() != nil || s == nil || s.mu == nil || !absoluteClean(s.Path) {
 		return CASOutcome{}, core.ErrPath
 	}
@@ -69,6 +82,11 @@ func (s *ManifestStore) CompareAndSwap(ctx context.Context, expected uint64, nex
 		return CASOutcome{Kind: CASDuplicate, Manifest: current, ExpectedRevision: expected, ObservedRevision: observed, Idempotent: true, Retained: ownedPaths(current)}, nil
 	}
 	next.Revision = observed + 1
+	if manifestWriteHook != nil {
+		if err := manifestWriteHook(); err != nil {
+			return CASOutcome{}, err
+		}
+	}
 	state := store.New(filepath.Dir(s.Path), core.StorageLimits{CanonicalBytes: manifestLimit})
 	if _, err := state.WriteJSON(filepath.Base(s.Path), next, manifestLimit); err != nil {
 		return CASOutcome{}, err

@@ -104,6 +104,8 @@ type FileRepository struct {
 	store *store.Store
 }
 
+type repositoryGuardKey struct{}
+
 func NewRepository(state *store.Store) Repository { return &FileRepository{store: state} }
 
 func (r *FileRepository) ReadOperation(ctx context.Context, id string) (OperationRecord, error) {
@@ -121,6 +123,12 @@ func (r *FileRepository) CompareAndSwapOperation(ctx context.Context, expected u
 	if err := validateOperationRecord(value); err != nil {
 		return OperationRecord{}, err
 	}
+	guarded, release, err := r.guard(ctx)
+	if err != nil {
+		return OperationRecord{}, err
+	}
+	defer release()
+	ctx = guarded
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.compareRevision(ctx, recordPath("operations", value.BatchID), expected); err != nil {
@@ -137,6 +145,12 @@ func (r *FileRepository) WriteEvidence(ctx context.Context, value DeploymentEvid
 	if ctx == nil || ctx.Err() != nil || r == nil || r.store == nil || !validProfileID(ProfileID(value.BatchID)) {
 		return "", core.ErrSettings
 	}
+	guarded, release, err := r.guard(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	ctx = guarded
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -164,6 +178,12 @@ func (r *FileRepository) CompareAndSwapReceipt(ctx context.Context, expected uin
 	if err := validateReceipt(value); err != nil {
 		return DeploymentReceipt{}, err
 	}
+	guarded, release, err := r.guard(ctx)
+	if err != nil {
+		return DeploymentReceipt{}, err
+	}
+	defer release()
+	ctx = guarded
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.compareRevision(ctx, recordPath("receipts", value.BatchID), expected); err != nil {
@@ -174,6 +194,27 @@ func (r *FileRepository) CompareAndSwapReceipt(ctx context.Context, expected uin
 		return DeploymentReceipt{}, err
 	}
 	return value, nil
+}
+
+func (r *FileRepository) guard(ctx context.Context) (context.Context, func(), error) {
+	if ctx == nil || r == nil || r.store == nil {
+		return ctx, nil, core.ErrSettings
+	}
+	if ctx.Value(repositoryGuardKey{}) == r {
+		return ctx, func() {}, nil
+	}
+	release, err := store.AcquireProjectMutation(ctx, r.store.Root)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return context.WithValue(ctx, repositoryGuardKey{}, r), func() { _ = release() }, nil
+}
+
+func guardRepository(ctx context.Context, repository Repository) (context.Context, func(), error) {
+	if file, ok := repository.(*FileRepository); ok {
+		return file.guard(ctx)
+	}
+	return ctx, func() {}, nil
 }
 
 func (r *FileRepository) read(ctx context.Context, path string, destination any) error {
@@ -218,15 +259,21 @@ func SubmitOrReconcile(ctx context.Context, repository Repository, executor *Bou
 	if ctx == nil || repository == nil || executor == nil || executor.Provider == nil || batch.BatchID == "" || batch.Fingerprint == "" || batch.IdempotencyKey == "" {
 		return DeployOutcome{}, core.ErrSettings
 	}
+	guarded, release, err := guardRepository(ctx, repository)
+	if err != nil {
+		return DeployOutcome{}, err
+	}
+	defer release()
+	ctx = guarded
 	existing, err := repository.ReadOperation(ctx, batch.BatchID)
 	if err == nil {
 		if existing.Fingerprint != batch.Fingerprint || existing.Operation.IdempotencyKey != batch.IdempotencyKey {
 			return DeployOutcome{}, core.ErrRevision
 		}
-		if receipt, readErr := repository.ReadReceipt(ctx, batch.BatchID); readErr == nil && (receipt.State == "succeeded" || receipt.State == "failed") {
+		if receipt, readErr := repository.ReadReceipt(ctx, batch.BatchID); readErr == nil {
 			return DeployOutcome{Receipt: receipt, CodingMayContinue: true}, nil
 		}
-		return ResumeBatch(ctx, repository, executor, batch.BatchID)
+		return DeployOutcome{}, core.ErrRevision
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return DeployOutcome{}, err
@@ -265,6 +312,12 @@ func ResumeBatch(ctx context.Context, repository Repository, executor *BoundExec
 	if ctx == nil || repository == nil || executor == nil || executor.Provider == nil || id == "" {
 		return DeployOutcome{}, core.ErrSettings
 	}
+	guarded, release, err := guardRepository(ctx, repository)
+	if err != nil {
+		return DeployOutcome{}, err
+	}
+	defer release()
+	ctx = guarded
 	operation, err := repository.ReadOperation(ctx, id)
 	if err != nil {
 		return DeployOutcome{}, err

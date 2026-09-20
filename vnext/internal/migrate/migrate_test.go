@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/install"
@@ -21,6 +23,65 @@ type fakeRunner struct{}
 
 func (fakeRunner) Observe(_ context.Context, project string, host install.Host) (migrate.Observation, error) {
 	return migrate.Observation{Host: host, Identity: string(host) + "-identity", Revision: "git-1", TrackerDigest: "tracker-1", ReceiptDigest: project + "-receipt", State: "ready"}, nil
+}
+
+type barrierRunner struct {
+	mu      sync.Mutex
+	calls   int
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (r *barrierRunner) Observe(_ context.Context, project string, host install.Host) (migrate.Observation, error) {
+	r.mu.Lock()
+	r.calls++
+	call := r.calls
+	r.mu.Unlock()
+	if call == 1 {
+		close(r.entered)
+		<-r.resume
+	}
+	return fakeRunner{}.Observe(context.Background(), project, host)
+}
+
+func TestSeparateCanaryStoresAllowOneTransitionSideEffect(t *testing.T) {
+	project := t.TempDir()
+	legacy := filepath.Join(project, "v7-state.json")
+	if err := os.WriteFile(legacy, []byte(`{"owner":"v7"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.InventoryV7(context.Background(), project, legacy); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := migrate.BeginCanary(context.Background(), migrate.NewStore(project), project, install.Codex, true, fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &barrierRunner{entered: make(chan struct{}), resume: make(chan struct{})}
+	errs := make(chan error, 2)
+	resume := func(store *migrate.Store) {
+		_, err := migrate.ResumeCanary(context.Background(), store, seed.ID, install.Claude, seed.Revision, seed.V7InventoryDigest, runner)
+		errs <- err
+	}
+	go resume(migrate.NewStore(project))
+	<-runner.entered
+	go resume(migrate.NewStore(project))
+	select {
+	case <-errs:
+		t.Fatal("losing transition escaped durable guard")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(runner.resume)
+	a, b := <-errs, <-errs
+	if (a == nil) == (b == nil) {
+		t.Fatalf("errors = %v, %v; want one winner", a, b)
+	}
+	runner.mu.Lock()
+	calls := runner.calls
+	runner.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("external observations = %d, want 1", calls)
+	}
 }
 
 func digestFile(t *testing.T, path string) string {

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
@@ -17,6 +18,69 @@ type fakeProvider struct {
 	calls                             []string
 	unknown, queryErr, verifyNilError bool
 	verifyState                       string
+}
+
+type submitBarrierProvider struct {
+	entered chan struct{}
+	resume  chan struct{}
+	mu      sync.Mutex
+	calls   int
+}
+
+func (p *submitBarrierProvider) Submit(context.Context, contracts.DeploymentBatch, string) (contracts.Operation, error) {
+	p.mu.Lock()
+	p.calls++
+	call := p.calls
+	p.mu.Unlock()
+	if call == 1 {
+		close(p.entered)
+		<-p.resume
+	}
+	return contracts.Operation{Provider: "fake", ProviderID: "op-1", State: "submitted"}, nil
+}
+
+func (p *submitBarrierProvider) Query(context.Context, contracts.Operation, string) (contracts.Operation, error) {
+	return contracts.Operation{}, errors.New("unexpected query")
+}
+
+func (p *submitBarrierProvider) Verify(context.Context, contracts.Operation, string) (contracts.Verification, error) {
+	return contracts.Verification{}, errors.New("unexpected verify")
+}
+
+func TestSeparateFileRepositoriesHaveOneSubmitter(t *testing.T) {
+	root := t.TempDir()
+	provider := &submitBarrierProvider{entered: make(chan struct{}), resume: make(chan struct{})}
+	executor, err := NewBoundExecutor(testProfile(), provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	run := func() {
+		repository := NewRepository(store.New(root, core.StorageLimits{CanonicalBytes: 1 << 20}))
+		_, err := SubmitOrReconcile(context.Background(), repository, executor, testBatch("B-guard"))
+		results <- err
+	}
+	go run()
+	<-provider.entered
+	go run()
+	select {
+	case <-results:
+		t.Fatal("second deploy escaped durable guard")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(provider.resume)
+	if err := <-results; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-results; err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	calls := provider.calls
+	provider.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("provider submits = %d, want 1", calls)
+	}
 }
 
 func TestFileRepositoryCASAndRestart(t *testing.T) {
