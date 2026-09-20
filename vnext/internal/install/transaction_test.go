@@ -258,7 +258,7 @@ func TestInstallRecoversInterruptedAttempt(t *testing.T) {
 	layout, release := internalFixture(t, "release")
 	desired := releaseFiles(layout, release, []Host{Codex})
 	data, _ := os.ReadFile(desired[0].source.Path)
-	mutation, err := prepareMutation(layout, desired[0].owned.Path, data, 0o700, false, true)
+	mutation, err := prepareMutation(layout, desired[0].owned.Path, data, 0o700, false, true, newJournalBudget())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,6 +279,139 @@ func TestInstallRecoversInterruptedAttempt(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(layout.DataRoot, filepath.FromSlash(installAttemptPath))); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("attempt ledger retained: %v", err)
+	}
+}
+
+func TestLifecycleJournalBudgetRejectsBeforeMutation(t *testing.T) {
+	const oversize = 13 << 20
+	t.Run("install replacement", func(t *testing.T) {
+		layout, release := internalFixture(t, "oversize-install")
+		resizeReleaseFile(t, &release.Binary, oversize)
+		if _, err := Install(context.Background(), layout, release, []Host{Codex}, 0); !errors.Is(err, core.ErrRevision) {
+			t.Fatalf("install error = %v", err)
+		}
+		assertNoJournal(t, layout)
+		if _, err := os.Lstat(layout.BinaryPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("install mutated binary: %v", err)
+		}
+	})
+
+	t.Run("update replacement", func(t *testing.T) {
+		layout, _, release, current := installedFixture(t)
+		resizeReleaseFile(t, &release.Binary, oversize)
+		if _, err := Update(context.Background(), layout, release, current.Revision); !errors.Is(err, core.ErrRevision) {
+			t.Fatalf("update error = %v", err)
+		}
+		assertLifecycleUnchanged(t, layout, current)
+	})
+
+	t.Run("rollback preimage", func(t *testing.T) {
+		layout, first, second, current := installedFixture(t)
+		outcome, err := Update(context.Background(), layout, second, current.Revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current = resizeManagedFile(t, layout, outcome.Manifest, BinaryRole, oversize)
+		if _, err := Rollback(context.Background(), layout, first.Version, current.Revision); !errors.Is(err, core.ErrRevision) {
+			t.Fatalf("rollback error = %v", err)
+		}
+		assertLifecycleUnchanged(t, layout, current)
+	})
+
+	t.Run("uninstall preimage", func(t *testing.T) {
+		layout, _, _, current := installedFixture(t)
+		current = resizeManagedFile(t, layout, current, BinaryRole, oversize)
+		if _, _, err := Uninstall(context.Background(), layout, current.Revision); !errors.Is(err, core.ErrRevision) {
+			t.Fatalf("uninstall error = %v", err)
+		}
+		assertLifecycleUnchanged(t, layout, current)
+	})
+
+	t.Run("aggregate preimages", func(t *testing.T) {
+		layout, _, _, current := installedFixture(t)
+		current = resizeManagedFile(t, layout, current, BinaryRole, 6<<20)
+		current = resizeManagedFile(t, layout, current, ContractRole, 6<<20)
+		if _, _, err := Uninstall(context.Background(), layout, current.Revision); !errors.Is(err, core.ErrRevision) {
+			t.Fatalf("uninstall error = %v", err)
+		}
+		assertLifecycleUnchanged(t, layout, current)
+	})
+}
+
+func TestLifecycleJournalBudgetBoundary(t *testing.T) {
+	budget := newJournalBudget()
+	boundary := int64(installJournalLimit-journalMetadataSize) / 4 * 3
+	if err := budget.reserve(boundary); err != nil {
+		t.Fatalf("boundary rejected: %v", err)
+	}
+	if err := budget.reserve(1); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("overflow accepted: %v", err)
+	}
+}
+
+func resizeReleaseFile(t *testing.T, file *ReleaseFile, size int64) {
+	t.Helper()
+	if err := os.Truncate(file.Path, size); err != nil {
+		t.Fatal(err)
+	}
+	digest, bytes, err := sha256File(file.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.SHA256, file.Bytes = digest, bytes
+}
+
+func resizeManagedFile(t *testing.T, layout Layout, manifest InstallManifest, role FileRole, size int64) InstallManifest {
+	t.Helper()
+	next := cloneManifest(manifest)
+	found := false
+	for index := range next.Files {
+		if next.Files[index].Role != role {
+			continue
+		}
+		if err := os.Truncate(next.Files[index].Path, size); err != nil {
+			t.Fatal(err)
+		}
+		digest, bytes, err := sha256File(next.Files[index].Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next.Files[index].SHA256, next.Files[index].Bytes = digest, bytes
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("managed role not found")
+	}
+	next.Revision = 0
+	outcome, err := NewManifestStore(layout).CompareAndSwap(context.Background(), manifest.Revision, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range outcome.Manifest.Files {
+		if file.Role == role && !diskMatches(file.Path, file.SHA256, file.Bytes) {
+			t.Fatal("resized managed file is not authoritative")
+		}
+	}
+	return outcome.Manifest
+}
+
+func assertLifecycleUnchanged(t *testing.T, layout Layout, expected InstallManifest) {
+	t.Helper()
+	got, err := NewManifestStore(layout).Read(context.Background())
+	if err != nil || !reflect.DeepEqual(got, expected) {
+		t.Fatalf("manifest drift: %#v, %v", got, err)
+	}
+	if err := verifyManifestFiles(expected, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertNoJournal(t, layout)
+}
+
+func assertNoJournal(t *testing.T, layout Layout) {
+	t.Helper()
+	if _, err := os.Lstat(filepath.Join(layout.DataRoot, filepath.FromSlash(installAttemptPath))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("journal drift: %v", err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -23,12 +24,14 @@ import (
 const (
 	installAttemptPath  = ".agent-team/install-attempt.json"
 	installJournalLimit = 16 << 20
+	journalMetadataSize = 64 << 10
 )
 
 var installMutationHook func()
 var installCreateHook func(int) error
 var lifecycleMutationHook func(string, int) error
 var lifecycleInterruptHook func(string, int) bool
+var errJournalBudget = fmt.Errorf("%w: lifecycle journal budget exceeded", core.ErrRevision)
 
 type lifecycleMutation struct {
 	Path        string `json:"path"`
@@ -56,6 +59,24 @@ type lifecycleJournal struct {
 	Progress         int                 `json:"progress"`
 }
 
+type journalBudget struct{ remaining int64 }
+
+func newJournalBudget() *journalBudget {
+	return &journalBudget{remaining: installJournalLimit - journalMetadataSize}
+}
+
+func (b *journalBudget) reserve(size int64) error {
+	if b == nil || size < 0 || size > installJournalLimit {
+		return errJournalBudget
+	}
+	encoded := ((size + 2) / 3) * 4
+	if encoded > b.remaining {
+		return errJournalBudget
+	}
+	b.remaining -= encoded
+	return nil
+}
+
 func Install(ctx context.Context, layout Layout, release Release, hosts []Host, expected uint64) (CASOutcome, error) {
 	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", fmt.Sprintf("install:%d:%s", expected, release.Revision))
 	if err != nil {
@@ -73,7 +94,8 @@ func Install(ctx context.Context, layout Layout, release Release, hosts []Host, 
 }
 
 func installLocked(ctx context.Context, layout Layout, release Release, hosts []Host, expected uint64, owner store.MutationOwner) (CASOutcome, error) {
-	if err := validateLifecycle(ctx, layout, release); err != nil {
+	budget := newJournalBudget()
+	if err := validateLifecycle(ctx, layout, release, budget); err != nil {
 		return CASOutcome{}, err
 	}
 	hosts, err := normalizeHosts(hosts)
@@ -106,7 +128,7 @@ func installLocked(ctx context.Context, layout Layout, release Release, hosts []
 		if file.owned.Role == BinaryRole {
 			mode = 0o700
 		}
-		mutation, err := prepareMutation(layout, file.owned.Path, data, mode, false, true)
+		mutation, err := prepareMutation(layout, file.owned.Path, data, mode, false, true, budget)
 		if err != nil {
 			return CASOutcome{}, err
 		}
@@ -117,11 +139,14 @@ func installLocked(ctx context.Context, layout Layout, release Release, hosts []
 	return executeLifecycleJournal(ctx, layout, manifestStore, &journal)
 }
 
-func prepareMutation(layout Layout, path string, replacement []byte, mode fs.FileMode, postAbsent, exclusive bool) (lifecycleMutation, error) {
+func prepareMutation(layout Layout, path string, replacement []byte, mode fs.FileMode, postAbsent, exclusive bool, budget *journalBudget) (lifecycleMutation, error) {
 	if ownedRoot(layout, path) == "" {
 		return lifecycleMutation{}, core.ErrPath
 	}
-	mutation := lifecycleMutation{Path: path, Replacement: append([]byte(nil), replacement...), PostMode: uint32(mode.Perm()), PostAbsent: postAbsent, Exclusive: exclusive}
+	if len(replacement) > installJournalLimit {
+		return lifecycleMutation{}, core.ErrRevision
+	}
+	mutation := lifecycleMutation{Path: path, Replacement: replacement, PostMode: uint32(mode.Perm()), PostAbsent: postAbsent, Exclusive: exclusive}
 	if !postAbsent {
 		sum := sha256.Sum256(replacement)
 		mutation.PostSHA256, mutation.PostBytes = hex.EncodeToString(sum[:]), int64(len(replacement))
@@ -135,9 +160,15 @@ func prepareMutation(layout Layout, path string, replacement []byte, mode fs.Fil
 	}
 	mutation.Existed = true
 	mutation.PreMode = uint32(info.Mode().Perm())
+	if err := budget.reserve(info.Size()); err != nil {
+		return lifecycleMutation{}, err
+	}
 	mutation.Preimage, err = os.ReadFile(path)
 	if err != nil {
 		return lifecycleMutation{}, err
+	}
+	if int64(len(mutation.Preimage)) != info.Size() {
+		return lifecycleMutation{}, core.ErrRevision
 	}
 	sum := sha256.Sum256(mutation.Preimage)
 	mutation.PreSHA256 = hex.EncodeToString(sum[:])
@@ -291,6 +322,10 @@ func validateLifecycleJournal(layout Layout, journal lifecycleJournal) error {
 			return core.ErrPath
 		}
 	}
+	raw, err := json.Marshal(journal)
+	if err != nil || len(raw) > installJournalLimit {
+		return core.ErrRevision
+	}
 	return nil
 }
 
@@ -418,7 +453,8 @@ func Update(ctx context.Context, layout Layout, release Release, expected uint64
 }
 
 func updateLocked(ctx context.Context, layout Layout, release Release, expected uint64, owner store.MutationOwner) (CASOutcome, error) {
-	if err := validateLifecycle(ctx, layout, release); err != nil {
+	budget := newJournalBudget()
+	if err := validateLifecycle(ctx, layout, release, budget); err != nil {
 		return CASOutcome{}, err
 	}
 	manifestStore := NewManifestStore(layout)
@@ -438,7 +474,7 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			retained = append(retained, target.owned.Path)
 			continue
 		}
-		oldBytes, err := readRegular(next.Files[index].Path)
+		oldBytes, err := readRegular(next.Files[index].Path, budget)
 		if err != nil {
 			retained = append(retained, target.owned.Path)
 			continue
@@ -462,12 +498,12 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 		if target.owned.Role == BinaryRole {
 			mode = 0o700
 		}
-		targetMutation, err := prepareMutation(layout, target.owned.Path, data, mode, false, false)
+		targetMutation, err := prepareMutation(layout, target.owned.Path, data, mode, false, false, budget)
 		if err != nil {
 			return CASOutcome{Retained: append(retained, target.owned.Path)}, err
 		}
 		if !backupExists {
-			backupMutation, err := prepareMutation(layout, backup.Path, oldBytes, 0o600, false, false)
+			backupMutation, err := prepareMutation(layout, backup.Path, oldBytes, 0o600, false, false, budget)
 			if err != nil {
 				return CASOutcome{Retained: append(retained, target.owned.Path)}, err
 			}
@@ -504,6 +540,7 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 		return CASOutcome{}, core.ErrSettings
 	}
 	manifestStore := NewManifestStore(layout)
+	budget := newJournalBudget()
 	current, stale, err := currentManifest(ctx, manifestStore, expected)
 	if err != nil {
 		return stale, err
@@ -523,7 +560,7 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 			}
 			continue
 		}
-		data, err := readRegular(backup.Path)
+		data, err := readRegular(backup.Path, budget)
 		if err != nil {
 			return CASOutcome{Retained: retained}, err
 		}
@@ -531,7 +568,7 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 		if backup.Role == BinaryRole {
 			mode = 0o700
 		}
-		mutation, err := prepareMutation(layout, next.Files[index].Path, data, mode, false, false)
+		mutation, err := prepareMutation(layout, next.Files[index].Path, data, mode, false, false, budget)
 		if err != nil {
 			return CASOutcome{Retained: append(retained, next.Files[index].Path)}, err
 		}
@@ -577,6 +614,7 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64, owner 
 		return nil, CASOutcome{}, core.ErrSettings
 	}
 	manifestStore := NewManifestStore(layout)
+	budget := newJournalBudget()
 	current, stale, err := currentManifest(ctx, manifestStore, expected)
 	if err != nil {
 		return stale.Retained, stale, err
@@ -591,8 +629,11 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64, owner 
 			next.Files = append(next.Files, file)
 			continue
 		}
-		mutation, err := prepareMutation(layout, file.Path, nil, 0, true, false)
+		mutation, err := prepareMutation(layout, file.Path, nil, 0, true, false, budget)
 		if err != nil {
+			if errors.Is(err, errJournalBudget) {
+				return retained, CASOutcome{Retained: retained}, err
+			}
 			retained = append(retained, file.Path)
 			next.Files = append(next.Files, file)
 			continue
@@ -606,8 +647,11 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64, owner 
 			next.Backups = append(next.Backups, backup)
 			continue
 		}
-		mutation, err := prepareMutation(layout, backup.Path, nil, 0, true, false)
+		mutation, err := prepareMutation(layout, backup.Path, nil, 0, true, false, budget)
 		if err != nil {
+			if errors.Is(err, errJournalBudget) {
+				return retained, CASOutcome{Retained: retained}, err
+			}
 			retained = append(retained, backup.Path)
 			next.Backups = append(next.Backups, backup)
 			continue
@@ -779,12 +823,21 @@ func releaseFiles(layout Layout, release Release, hosts []Host) []desiredFile {
 	return files
 }
 
-func validateLifecycle(ctx context.Context, layout Layout, release Release) error {
+func validateLifecycle(ctx context.Context, layout Layout, release Release, budget *journalBudget) error {
 	if ctx == nil || ctx.Err() != nil {
 		return core.ErrSettings
 	}
 	if err := ValidateLayout(layout); err != nil {
 		return err
+	}
+	for _, file := range []ReleaseFile{release.Binary, release.Contract, release.Entrypoints[Codex], release.Entrypoints[Claude]} {
+		info, err := os.Lstat(file.Path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() != file.Bytes {
+			return core.ErrRevision
+		}
+		if err := budget.reserve(info.Size()); err != nil {
+			return err
+		}
 	}
 	return VerifyRelease(release)
 }
@@ -818,18 +871,31 @@ func verifiedReleaseBytes(file ReleaseFile) ([]byte, error) {
 	if !diskMatches(file.Path, file.SHA256, file.Bytes) {
 		return nil, core.ErrRevision
 	}
-	return readRegular(file.Path)
+	return readRegular(file.Path, nil)
 }
 
-func readRegular(path string) ([]byte, error) {
+func readRegular(path string, budget *journalBudget) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, core.ErrPath
 	}
-	return os.ReadFile(path)
+	if budget != nil {
+		if err := budget.reserve(info.Size()); err != nil {
+			return nil, err
+		}
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || int64(len(body)) != info.Size() {
+		return nil, core.ErrRevision
+	}
+	return body, nil
 }
 
 func diskMatches(path, digest string, bytes int64) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() != bytes {
+		return false
+	}
 	gotDigest, gotBytes, err := sha256File(path)
 	return err == nil && gotDigest == digest && gotBytes == bytes
 }
