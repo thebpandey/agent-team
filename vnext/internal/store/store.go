@@ -112,11 +112,14 @@ func (s *Store) CreateJSON(relative string, value any, maxBytes int64) (AtomicRe
 	if err != nil {
 		return AtomicResult{}, err
 	}
-	root, _, err := s.openRoot(true)
+	root, rootKey, err := s.openRoot(true)
 	if err != nil {
 		return AtomicResult{}, pathError("open root", s.Root, err)
 	}
 	defer root.Close()
+	lock := sharedFallbackLock(rootKey)
+	lock.Lock()
+	defer lock.Unlock()
 	if directory := path.Dir(relative); directory != "." {
 		if err := root.MkdirAll(directory, 0o700); err != nil {
 			return AtomicResult{}, pathError("create parent", relative, err)
@@ -209,6 +212,9 @@ func (s *Store) write(relative string, maxBytes int64, encode func(io.Writer) er
 		return AtomicResult{}, pathError("open root", s.Root, err)
 	}
 	defer root.Close()
+	lock := sharedFallbackLock(rootKey)
+	lock.Lock()
+	defer lock.Unlock()
 	if directory := path.Dir(relative); directory != "." {
 		if err := root.MkdirAll(directory, 0o700); err != nil {
 			return AtomicResult{}, pathError("create parent", relative, err)
@@ -220,14 +226,9 @@ func (s *Store) write(relative string, maxBytes int64, encode func(io.Writer) er
 		return AtomicResult{}, pathError("lstat", relative, err)
 	}
 
-	mode, err := s.replacementProbe(root, path.Dir(relative))
+	_, err = s.replacementProbe(root, path.Dir(relative))
 	if err != nil {
 		return AtomicResult{}, pathError("probe replacement", relative, err)
-	}
-	if mode == probeFallback {
-		lock := sharedFallbackLock(rootKey)
-		lock.Lock()
-		defer lock.Unlock()
 	}
 
 	temporary, file, err := createOwnedTemp(root, path.Dir(relative), ".agent-team-tmp-")
@@ -432,43 +433,96 @@ func createOwnedFile(root *os.Root, name string) (ownedTemp, *os.File, error) {
 	return ownedTemp{name: name, info: info}, file, nil
 }
 
-func removeOwned(root *os.Root, owned ownedTemp) error {
+var ownedRemoveHook func(*os.Root, ownedTemp)
+
+func removeOwned(root *os.Root, owned ownedTemp) (err error) {
 	if owned.name == "" {
 		return nil
 	}
-	info, err := root.Lstat(owned.name)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+	claim, err := createClaimDirectory(root, path.Dir(owned.name))
 	if err != nil {
 		return err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !os.SameFile(owned.info, info) {
-		return errors.New("temporary ownership changed")
+	removeClaim := true
+	defer func() {
+		if removeClaim {
+			err = errors.Join(err, root.Remove(claim))
+		}
+	}()
+	claimed := path.Join(claim, "owned")
+	if err := root.Rename(owned.name, claimed); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
 	}
-	return cleanupTemporary(root, owned.name)
+	info, err := root.Lstat(claimed)
+	if err != nil {
+		removeClaim = false
+		return err
+	}
+	ownedIdentity := info.Mode()&os.ModeSymlink == 0 && os.SameFile(owned.info, info)
+	if ownedIdentity && ownedRemoveHook != nil {
+		ownedRemoveHook(root, owned)
+	}
+	if !ownedIdentity {
+		if restoreErr := root.Link(claimed, owned.name); restoreErr != nil {
+			removeClaim = false
+			return errors.Join(errors.New("temporary ownership changed"), fmt.Errorf("retained at %s: %w", claimed, restoreErr))
+		}
+		return errors.Join(errors.New("temporary ownership changed"), cleanupTemporary(root, claimed))
+	}
+	return cleanupTemporary(root, claimed)
+}
+
+func createClaimDirectory(root *os.Root, directory string) (string, error) {
+	if directory == "." {
+		directory = ""
+	}
+	for attempt := 0; attempt < 32; attempt++ {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return "", err
+		}
+		name := path.Join(directory, ".agent-team-remove-"+hex.EncodeToString(token[:]))
+		if err := root.Mkdir(name, 0o700); errors.Is(err, os.ErrExist) {
+			continue
+		} else if err != nil {
+			return "", err
+		}
+		return name, nil
+	}
+	return "", errors.New("cleanup claim collision exhaustion")
 }
 
 func probeSameDirectoryReplace(root *os.Root, directory string) error {
+	return probeSameDirectoryReplaceWith(root, directory, replaceFile, removeOwned)
+}
+
+func probeSameDirectoryReplaceWith(root *os.Root, directory string, replace func(*os.Root, string, string) error, remove func(*os.Root, ownedTemp) error) (err error) {
 	from, fromFile, err := createOwnedTemp(root, directory, ".agent-team-probe-from-")
 	if err != nil {
 		return err
 	}
 	if err := fromFile.Close(); err != nil {
-		_ = removeOwned(root, from)
-		return err
+		return errors.Join(err, remove(root, from))
 	}
-	defer removeOwned(root, from)
+	defer func() { err = errors.Join(err, remove(root, from)) }()
 	to, toFile, err := createOwnedTemp(root, directory, ".agent-team-probe-to-")
 	if err != nil {
 		return err
 	}
 	if err := toFile.Close(); err != nil {
-		_ = removeOwned(root, to)
+		return errors.Join(err, remove(root, to))
+	}
+	defer func() { err = errors.Join(err, remove(root, to)) }()
+	if err := replace(root, from.name, to.name); err != nil {
+		if info, statErr := root.Lstat(to.name); statErr == nil && os.SameFile(from.info, info) {
+			to.info = from.info
+		}
 		return err
 	}
-	defer removeOwned(root, to)
-	return replaceFile(root, from.name, to.name)
+	to.info = from.info
+	return nil
 }
 
 func snapshotDestination(root *os.Root, relative string, limit int64) (*ownedTemp, error) {

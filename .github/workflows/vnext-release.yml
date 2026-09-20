@@ -119,8 +119,8 @@ jobs:
         working-directory: vnext
       - run: go test -json ./internal/release -run 'Test(CodexCanary|ClaudeCanary|PackagedArchiveCanary|Cutover)' -count=1 > release-evidence/canary-test.json
         env:
-          VNEXT_RELEASE_ARCHIVE: release-artifacts/agent-teamctl-${{ inputs.version }}.zip
-          VNEXT_RELEASE_MANIFEST: release-artifacts/RELEASE.json
+          VNEXT_RELEASE_ARCHIVE: ${{ github.workspace }}/vnext/release-artifacts/agent-teamctl-${{ inputs.version }}.zip
+          VNEXT_RELEASE_MANIFEST: ${{ github.workspace }}/vnext/release-artifacts/RELEASE.json
         working-directory: vnext
       - run: go test -json ./internal/release -run '^TestBothHostsRollbackAndActions$' -count=1 > release-evidence/rollback-test.json
         working-directory: vnext
@@ -128,8 +128,8 @@ jobs:
         working-directory: vnext
       - run: go test -json ./internal/release -run '^TestPackagedArchiveCanary$' -count=1 > release-evidence/installed-test.json
         env:
-          VNEXT_RELEASE_ARCHIVE: release-artifacts/agent-teamctl-${{ inputs.version }}.zip
-          VNEXT_RELEASE_MANIFEST: release-artifacts/RELEASE.json
+          VNEXT_RELEASE_ARCHIVE: ${{ github.workspace }}/vnext/release-artifacts/agent-teamctl-${{ inputs.version }}.zip
+          VNEXT_RELEASE_MANIFEST: ${{ github.workspace }}/vnext/release-artifacts/RELEASE.json
         working-directory: vnext
       - run: go run ./cmd/vnext-release finalize-evidence --revision "${GITHUB_SHA}" --out release-evidence --artifact release-artifacts/RELEASE.json --sbom release-artifacts/SBOM.cdx.json --canary release-evidence/canary-test.json --rollback release-evidence/rollback-test.json --provider release-evidence/provider-test.json --installed release-evidence/installed-test.json
         working-directory: vnext
@@ -151,7 +151,8 @@ jobs:
         with: { name: vnext-release-artifacts, path: vnext/release-artifacts }
       - uses: actions/download-artifact@v4
         with: { name: vnext-release-readiness, path: vnext/release-evidence }
-      - run: sha256sum -c vnext/release-artifacts/SHA256SUMS
+      - run: sha256sum -c SHA256SUMS
+        working-directory: vnext/release-artifacts
       - run: go run ./cmd/vnext-release verify-gates --evidence release-evidence/release-readiness.json --revision "${GITHUB_SHA}"
         working-directory: vnext
       - run: |

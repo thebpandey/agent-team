@@ -5,11 +5,37 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/thebpandey/agent-team/vnext/internal/release"
 )
+
+func TestBuildAgentTeamctlEmbedsReleaseIdentity(t *testing.T) {
+	name := "agent-teamctl"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	output := filepath.Join(t.TempDir(), name)
+	revision := strings.Repeat("a", 40)
+	if err := buildAgentTeamctl(filepath.Clean(filepath.Join("..", "..")), output, "8.0.0", revision); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := exec.Command(output, "version", "--json").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Version  string `json:"version"`
+		Revision string `json:"revision"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil || got.Version != "8.0.0" || got.Revision != revision {
+		t.Fatalf("packaged identity = %+v, %v", got, err)
+	}
+}
 
 func TestVerifyGatesCLI(t *testing.T) {
 	if _, _, err := parseVerifyGates(nil); err == nil {
