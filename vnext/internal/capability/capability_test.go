@@ -28,13 +28,13 @@ type timeoutRunner struct {
 	blockOn int
 	calls   int
 	started chan struct{}
-	install func()
+	install func([]string)
 }
 
-func (r *timeoutRunner) Run(ctx context.Context, _ []string, _ []string) tracker.CommandResult {
+func (r *timeoutRunner) Run(ctx context.Context, argv []string, _ []string) tracker.CommandResult {
 	r.calls++
 	if r.calls == 1 && r.install != nil {
-		r.install()
+		r.install(argv)
 	}
 	if r.calls == r.blockOn {
 		close(r.started)
@@ -198,6 +198,110 @@ func TestInstallRejectsForgedZeroPlan(t *testing.T) {
 	}
 }
 
+func TestInstallExternalRunnerNeverReceivesManagedProjectPath(t *testing.T) {
+	plan, spec, _, runner := stagedPlan(t)
+	if _, err := Install(context.Background(), runner, plan); err != nil {
+		t.Fatal(err)
+	}
+	for _, argv := range runner.calls {
+		for _, arg := range argv {
+			if strings.Contains(arg, spec.project) || strings.Contains(strings.ReplaceAll(arg, "\\", "/"), "/.agent-team/") {
+				t.Fatalf("runner received managed project path %q in %#v", arg, argv)
+			}
+		}
+	}
+}
+
+func TestInstallRejectsExternalOutputChangedDuringProbe(t *testing.T) {
+	plan, spec, _, runner := stagedPlan(t)
+	runner.onRun = func(argv []string) {
+		if argv[0] == "installer" {
+			if err := os.WriteFile(argv[len(argv)-1], []byte("built artifact"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		if err := os.WriteFile(argv[0], []byte("changed after probe"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Install(context.Background(), runner, plan); err == nil {
+		t.Fatal("accepted external output mutation")
+	}
+	if _, err := os.Stat(filepath.Join(spec.project, spec.destination)); !os.IsNotExist(err) {
+		t.Fatalf("published mutated output: %v", err)
+	}
+}
+
+func TestInstallRejectsPostPublishDestinationSwap(t *testing.T) {
+	plan, spec, _, runner := stagedPlan(t)
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := publishHook
+	publishHook = func(path string) {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { publishHook = old }()
+	if _, err := Install(context.Background(), runner, plan); err == nil {
+		t.Fatal("accepted post-publish swap")
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil || string(got) != "outside" {
+		t.Fatalf("outside changed: %q, %v", got, err)
+	}
+	_ = spec
+}
+
+func TestInstallRejectsProjectParentSwapWithoutOutsideMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privilege on Windows")
+	}
+	plan, spec, _, runner := stagedPlan(t)
+	outside := t.TempDir()
+	runner.onRun = func(argv []string) {
+		if argv[0] != "installer" {
+			return
+		}
+		if err := os.Symlink(outside, filepath.Join(spec.project, ".agent-team")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(argv[len(argv)-1], []byte("built artifact"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Install(context.Background(), runner, plan); err == nil {
+		t.Fatal("accepted project parent swap")
+	}
+	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+		t.Fatalf("outside changed: %#v, %v", entries, err)
+	}
+}
+
+func TestInstallRejectsPostPublishTamper(t *testing.T) {
+	plan, spec, _, runner := stagedPlan(t)
+	old := publishHook
+	publishHook = func(path string) {
+		if err := os.WriteFile(path, []byte("tampered"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { publishHook = old }()
+	if _, err := Install(context.Background(), runner, plan); err == nil {
+		t.Fatal("accepted post-publish tamper")
+	}
+	got, err := os.ReadFile(filepath.Join(spec.project, spec.destination))
+	if err != nil || string(got) != "tampered" {
+		t.Fatalf("unexpected tamper cleanup: %q, %v", got, err)
+	}
+}
+
 func stagedPlan(t *testing.T) (InstallPlan, adapterSpec, string, *fakeRunner) {
 	t.Helper()
 	project := t.TempDir()
@@ -205,10 +309,9 @@ func stagedPlan(t *testing.T) (InstallPlan, adapterSpec, string, *fakeRunner) {
 	if err := os.WriteFile(source, []byte("trusted source"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stage := filepath.Join(".agent-team", "stage", "serena")
+	stage := "output"
 	destination := filepath.Join(".agent-team", "tools", "serena-1")
-	stageHost := filepath.Join(project, stage)
-	spec := adapterSpec{name: Serena, mode: ReadOnlyMCP, packageName: "serena", source: "registry.example/serena", version: "1", project: project, sourceArtifact: source, sourceDigest: digest([]byte("trusted source")), stage: stage, destination: destination, stageDigest: digest([]byte("built artifact")), installArgv: []string{"installer", "--source", source, "--stage", stageHost}, probeArgv: []string{stageHost, "--version"}}
+	spec := adapterSpec{name: Serena, mode: ReadOnlyMCP, packageName: "serena", source: "registry.example/serena", version: "1", project: project, sourceArtifact: source, sourceDigest: digest([]byte("trusted source")), stage: stage, destination: destination, stageDigest: digest([]byte("built artifact")), installArgv: []string{"installer", "--source", source, "--output", externalOutputTag}, probeArgv: []string{externalOutputTag, "--version"}}
 	p := Probe{Name: Serena, Mode: ReadOnlyMCP, Available: true, Healthy: true, Version: "1"}
 	c := Consent{Name: Serena, Enabled: true, Mode: ReadOnlyMCP, InstallerPackage: "serena", Source: "registry.example/serena@1"}
 	plan, err := buildInstallPlan(spec, p, c)
@@ -217,10 +320,7 @@ func stagedPlan(t *testing.T) (InstallPlan, adapterSpec, string, *fakeRunner) {
 	}
 	runner := &fakeRunner{results: []tracker.CommandResult{{}, {Stdout: []byte("1\n")}}, onRun: func(argv []string) {
 		if len(argv) > 0 && argv[0] == "installer" {
-			if err := os.MkdirAll(filepath.Dir(stageHost), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(stageHost, []byte("built artifact"), 0o700); err != nil {
+			if err := os.WriteFile(argv[len(argv)-1], []byte("built artifact"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -235,7 +335,7 @@ func TestInstallUsesCopiedExactArgvAndScrubbedEnvironment(t *testing.T) {
 	if err != nil || !got.Healthy || got.Version != "1" {
 		t.Fatalf("Install = %#v, %v", got, err)
 	}
-	if len(runner.calls) != 2 || strings.Join(runner.calls[0], "\x00") != strings.Join([]string{"installer", "--source", spec.sourceArtifact, "--stage", filepath.Join(spec.project, spec.stage)}, "\x00") || strings.Join(runner.calls[1], "\x00") != strings.Join([]string{filepath.Join(spec.project, spec.stage), "--version"}, "\x00") {
+	if len(runner.calls) != 2 || strings.Join(runner.calls[0][:4], "\x00") != strings.Join([]string{"installer", "--source", spec.sourceArtifact, "--output"}, "\x00") || strings.Join(runner.calls[1], "\x00") != strings.Join([]string{runner.calls[0][4], "--version"}, "\x00") {
 		t.Fatalf("argv = %#v", runner.calls)
 	}
 	for _, env := range runner.envs {
@@ -246,8 +346,8 @@ func TestInstallUsesCopiedExactArgvAndScrubbedEnvironment(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(spec.project, spec.destination)); err != nil {
 		t.Fatalf("published destination missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(spec.project, spec.stage)); !os.IsNotExist(err) {
-		t.Fatalf("stage remains: %v", err)
+	if _, err := os.Stat(runner.calls[0][4]); !os.IsNotExist(err) {
+		t.Fatalf("external output remains: %v", err)
 	}
 }
 
@@ -255,15 +355,12 @@ func TestInstallRejectsStageChangedDuringDirectProbe(t *testing.T) {
 	plan, spec, _, runner := stagedPlan(t)
 	runner.onRun = func(argv []string) {
 		if argv[0] == "installer" {
-			if err := os.MkdirAll(filepath.Dir(filepath.Join(spec.project, spec.stage)), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(spec.project, spec.stage), []byte("built artifact"), 0o700); err != nil {
+			if err := os.WriteFile(argv[len(argv)-1], []byte("built artifact"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			return
 		}
-		if err := os.WriteFile(filepath.Join(spec.project, spec.stage), []byte("replaced after probe"), 0o700); err != nil {
+		if err := os.WriteFile(argv[0], []byte("replaced after probe"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -305,6 +402,11 @@ func TestAdapterSpecBoundsArgv(t *testing.T) {
 	if _, err := buildInstallPlan(spec, probe, consent); err == nil {
 		t.Fatal("accepted oversized argv")
 	}
+	_, spec, _, _ = stagedPlan(t)
+	spec.installArgv = []string{"installer", "./.agent-team/output", externalOutputTag}
+	if _, err := buildInstallPlan(spec, probe, consent); err == nil {
+		t.Fatal("accepted managed relative argv")
+	}
 }
 
 func TestInstallEnforcesDeadlineForEveryRunnerCall(t *testing.T) {
@@ -314,12 +416,8 @@ func TestInstallEnforcesDeadlineForEveryRunnerCall(t *testing.T) {
 	for _, blockOn := range []int{1, 2} {
 		t.Run(fmt.Sprintf("call-%d", blockOn), func(t *testing.T) {
 			plan, spec, _, _ := stagedPlan(t)
-			stage := filepath.Join(spec.project, spec.stage)
-			runner := &timeoutRunner{blockOn: blockOn, started: make(chan struct{}), install: func() {
-				if err := os.MkdirAll(filepath.Dir(stage), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(stage, []byte("built artifact"), 0o700); err != nil {
+			runner := &timeoutRunner{blockOn: blockOn, started: make(chan struct{}), install: func(argv []string) {
+				if err := os.WriteFile(argv[len(argv)-1], []byte("built artifact"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}}
@@ -372,29 +470,21 @@ func TestInstallNeverOverwritesFreshDestination(t *testing.T) {
 	}
 }
 
-func TestInstallCleansStageOnFailureAndReportsUnsafeAmbiguity(t *testing.T) {
-	plan, spec, _, runner := stagedPlan(t)
+func TestInstallCleansExternalOutputOnFailure(t *testing.T) {
+	plan, _, _, runner := stagedPlan(t)
 	runner.results = []tracker.CommandResult{{Exit: 1}}
+	var output string
+	runner.onRun = func(argv []string) {
+		output = argv[len(argv)-1]
+		if err := os.WriteFile(output, []byte("partial"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := Install(context.Background(), runner, plan); err == nil {
 		t.Fatal("accepted failing install")
 	}
-	if _, err := os.Stat(filepath.Join(spec.project, spec.stage)); !os.IsNotExist(err) {
-		t.Fatalf("stage not cleaned: %v", err)
-	}
-	plan, spec, _, runner = stagedPlan(t)
-	runner.results = []tracker.CommandResult{{Exit: 1}}
-	runner.onRun = func(argv []string) {
-		if argv[0] == "installer" {
-			if err := os.MkdirAll(filepath.Join(spec.project, spec.stage), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(spec.project, spec.stage, "unknown"), []byte("x"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	if _, err := Install(context.Background(), runner, plan); err == nil || !strings.Contains(err.Error(), "unsafe") {
-		t.Fatalf("ambiguous removal error = %v", err)
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("external output remains: %v", err)
 	}
 }
 
