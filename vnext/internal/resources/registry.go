@@ -108,7 +108,10 @@ type registryDocument struct {
 	Browsers []BrowserRecord `json:"browsers"`
 }
 
-type stopIntent struct{ kind, id, token string }
+type stopIntent struct {
+	kind, id, token string
+	expected        uint64
+}
 
 // NewRegistry returns the one durable project registry rooted in s. The lock
 // is a portable, scoped directory CAS, so independently constructed Stores
@@ -315,7 +318,7 @@ func (r *registry) claimStop(ctx context.Context, id string, expected uint64) (s
 			record.State, record.StopAttempt = "stopping", fmt.Sprintf("%s-%d", id, doc.Revision+1)
 			doc.Revision++
 			stampServer(record, record.Owner, doc.Revision)
-			intent = stopIntent{"server", id, record.StopAttempt}
+			intent = stopIntent{"server", id, record.StopAttempt, expected}
 			copy := *record
 			request = StopRequest{Kind: "server", Server: &copy}
 			outcome = releaseServer(*record, expected, doc.Revision, false, "")
@@ -333,7 +336,7 @@ func (r *registry) claimStop(ctx context.Context, id string, expected uint64) (s
 			record.State, record.StopAttempt = "stopping", fmt.Sprintf("%s-%d", id, doc.Revision+1)
 			doc.Revision++
 			stampBrowser(record, record.Owner, doc.Revision)
-			intent = stopIntent{"browser", id, record.StopAttempt}
+			intent = stopIntent{"browser", id, record.StopAttempt, expected}
 			copy := *record
 			request = StopRequest{Kind: "browser", Browser: &copy}
 			outcome = releaseBrowser(*record, expected, doc.Revision, false, "")
@@ -350,13 +353,13 @@ func (r *registry) finishStop(ctx context.Context, intent stopIntent, result tra
 	err := r.withDocument(ctx, func(doc *registryDocument) error {
 		if intent.kind == "server" {
 			if record := findServer(doc.Servers, intent.id); record != nil && record.State == "stopping" && record.StopAttempt == intent.token {
-				operationErr = finishServer(doc, record, result, &outcome)
+				operationErr = finishServer(doc, record, result, intent.expected, &outcome)
 				return nil
 			}
 		}
 		if intent.kind == "browser" {
 			if record := findBrowser(doc.Browsers, intent.id); record != nil && record.State == "stopping" && record.StopAttempt == intent.token {
-				operationErr = finishBrowser(doc, record, result, &outcome)
+				operationErr = finishBrowser(doc, record, result, intent.expected, &outcome)
 				return nil
 			}
 		}
@@ -377,7 +380,7 @@ func stopEvidence(result tracker.CommandResult) string {
 	}
 	return fmt.Sprintf("stop:exit=%d", result.Exit)
 }
-func finishServer(doc *registryDocument, record *ServerRecord, result tracker.CommandResult, outcome *ReleaseOutcome) error {
+func finishServer(doc *registryDocument, record *ServerRecord, result tracker.CommandResult, expected uint64, outcome *ReleaseOutcome) error {
 	record.TraceEvidence = stopEvidence(result)
 	if result.Transport != nil || result.TimedOut || result.Exit != 0 {
 		record.Ownership, record.State = Unknown, "unknown"
@@ -386,13 +389,13 @@ func finishServer(doc *registryDocument, record *ServerRecord, result tracker.Co
 	}
 	doc.Revision++
 	stampServer(record, record.Owner, doc.Revision)
-	*outcome = releaseServer(*record, 0, doc.Revision, record.State == "stopped", "")
+	*outcome = releaseServer(*record, expected, doc.Revision, record.State == "stopped", "")
 	if record.State != "stopped" {
 		return fmt.Errorf("%w: managed resource stop failed", core.ErrTransition)
 	}
 	return nil
 }
-func finishBrowser(doc *registryDocument, record *BrowserRecord, result tracker.CommandResult, outcome *ReleaseOutcome) error {
+func finishBrowser(doc *registryDocument, record *BrowserRecord, result tracker.CommandResult, expected uint64, outcome *ReleaseOutcome) error {
 	record.TraceEvidence = stopEvidence(result)
 	if result.Transport != nil || result.TimedOut || result.Exit != 0 {
 		record.Ownership, record.State = Unknown, "unknown"
@@ -401,7 +404,7 @@ func finishBrowser(doc *registryDocument, record *BrowserRecord, result tracker.
 	}
 	doc.Revision++
 	stampBrowser(record, record.Owner, doc.Revision)
-	*outcome = releaseBrowser(*record, 0, doc.Revision, record.State == "stopped", "")
+	*outcome = releaseBrowser(*record, expected, doc.Revision, record.State == "stopped", "")
 	if record.State != "stopped" {
 		return fmt.Errorf("%w: managed resource stop failed", core.ErrTransition)
 	}

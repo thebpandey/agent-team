@@ -279,3 +279,115 @@ func TestRegistrySeparateStoresConvergeAfterRace(t *testing.T) {
 		t.Fatalf("durable registry after race = %#v, %v", servers, err)
 	}
 }
+
+func startedRegistry(t *testing.T, stopper resources.StopFunc) (resources.Registry, uint64) {
+	t.Helper()
+	r := newRegistry(t, t.TempDir(), stopper)
+	a, err := r.ReserveServer(context.Background(), server("S-stop", 3300, "http://localhost:3300"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.MarkStarted(context.Background(), "S-stop", a.Revision, "start-trace", "process-stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r, b.Revision
+}
+
+func TestConcurrentStopExecutesOnce(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var calls int
+	var mu sync.Mutex
+	stop := func(context.Context, resources.StopRequest) tracker.CommandResult {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		close(entered)
+		<-release
+		return tracker.CommandResult{}
+	}
+	r, rev := startedRegistry(t, stop)
+	done := make(chan error, 1)
+	go func() { _, err := r.StopManaged(context.Background(), "S-stop", rev); done <- err }()
+	<-entered
+	if _, err := r.StopManaged(context.Background(), "S-stop", rev); err == nil {
+		t.Fatal("second stop claimed")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d", calls)
+	}
+}
+
+func TestStopConvergesAcrossUnrelatedUpdate(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	stop := func(context.Context, resources.StopRequest) tracker.CommandResult {
+		close(entered)
+		<-release
+		return tracker.CommandResult{}
+	}
+	r, rev := startedRegistry(t, stop)
+	done := make(chan error, 1)
+	go func() { _, err := r.StopManaged(context.Background(), "S-stop", rev); done <- err }()
+	<-entered
+	if _, err := r.ReserveBrowser(context.Background(), browser("B-other", "other", "http://localhost:4400"), rev+1); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	servers, _, _ := r.List(context.Background(), "R-1")
+	if servers[0].State != "stopped" {
+		t.Fatal(servers[0].State)
+	}
+}
+
+func TestStopFailurePersistsUnknown(t *testing.T) {
+	r, rev := startedRegistry(t, func(context.Context, resources.StopRequest) tracker.CommandResult {
+		return tracker.CommandResult{Exit: 1}
+	})
+	out, err := r.StopManaged(context.Background(), "S-stop", rev)
+	if !errors.Is(err, core.ErrTransition) || out.ExpectedRevision != rev {
+		t.Fatal(out, err)
+	}
+	s, _, _ := r.List(context.Background(), "R-1")
+	if s[0].State != "unknown" || s[0].TraceEvidence != "stop:exit=1" {
+		t.Fatal(s[0])
+	}
+}
+func TestStopTimeoutPersistsUnknown(t *testing.T) {
+	r, rev := startedRegistry(t, func(context.Context, resources.StopRequest) tracker.CommandResult {
+		return tracker.CommandResult{TimedOut: true}
+	})
+	_, err := r.StopManaged(context.Background(), "S-stop", rev)
+	if !errors.Is(err, core.ErrTransition) {
+		t.Fatal(err)
+	}
+	s, _, _ := r.List(context.Background(), "R-1")
+	if s[0].State != "unknown" || s[0].TraceEvidence != "stop:timeout" {
+		t.Fatal(s[0])
+	}
+}
+func TestNilStopperDoesNotClaim(t *testing.T) {
+	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	r := resources.NewRegistry(s, nil)
+	a, err := r.ReserveServer(context.Background(), server("S-nil", 3310, "http://localhost:3310"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.MarkStarted(context.Background(), "S-nil", a.Revision, "trace", "external")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = r.StopManaged(context.Background(), "S-nil", b.Revision); !errors.Is(err, core.ErrSettings) {
+		t.Fatal(err)
+	}
+	servers, _, _ := r.List(context.Background(), "R-1")
+	if servers[0].State != "started" {
+		t.Fatal(servers[0].State)
+	}
+}
