@@ -10,6 +10,8 @@ Install one checksum-verified native package and select the host explicitly: `ag
 
 The public lifecycle is `setup`, `status`, `start`, `task add`, and `one-off`, plus scoped `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN is an internal independent-review loop, not a public `review` command. Beads is the live tracker after an approved cutover; a pre-cutover `TASKS.md` is legacy provenance only. `BLOCKERS.md` and `DECISIONS.md` are bounded human-readable projections, never competing task stores.
 
+Existing v7 projects and hosts use the explicit native transaction `agent-teamctl cutover --request /absolute/path.json`. Project requests bind the closed Beads export, exact Git revision, independently authored CLEAN review, test/readiness digests, remote observation, user authorization cause, and recovery disposition. The first project pass remains held; a separate `reconcile` request must match the recorded cause and receipt digest. Host requests are `host-cutover`, `host-status`, or `host-rollback`; they require the exact schema-4 v7 install receipt and preserve a durable rollback receipt. Unknown, modified, or ambiguous v7 files and handlers are retained and fail closed.
+
 The dashboard is local-only and read-only. Capacity caps remain enforced. Optional Serena, Graphify, LeanCTX, browser, and visual tools have bounded native fallbacks; absence never widens authority. See the [honest benchmark report](docs/benchmarks/vnext-optional-8.0.0.md) and the revision-bound release checks before treating a candidate as published.
 
 ![Agent-Team overview: one orchestrator coordinates bounded implementation, independent review, integration, and release.](assets/guide/agent-team-essence-16x9.webp)

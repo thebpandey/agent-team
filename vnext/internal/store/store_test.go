@@ -318,6 +318,33 @@ func TestOwnedCleanupNeverDeletesAnExchangedTemporary(t *testing.T) {
 	}
 }
 
+func TestRemoveExactRetainsReplacementAfterVerification(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "owned.json")
+	body := []byte("{\"owned\":true}\n")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(body)
+	ownedRemoveHook = func(opened *os.Root, owned ownedTemp) {
+		file, err := opened.OpenFile(owned.name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = file.Write([]byte("foreign\n"))
+		_ = file.Close()
+	}
+	t.Cleanup(func() { ownedRemoveHook = nil })
+	if err := New(root, core.StorageLimits{}).RemoveExact("owned.json", hex.EncodeToString(sum[:]), 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "foreign\n" {
+		t.Fatalf("replacement = %q, %v", got, err)
+	}
+}
+
 func TestOwnedCleanupNeverDeletesReplacementAfterIdentityCheck(t *testing.T) {
 	rootPath := t.TempDir()
 	root, err := os.OpenRoot(rootPath)

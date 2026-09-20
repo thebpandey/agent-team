@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -117,6 +118,8 @@ func Parse(args []string) (Action, error) {
 		if len(args) != 1 {
 			return Action{}, core.ErrPhase
 		}
+	case "cutover":
+		actionArgs, err = parseAbsoluteRequest(args[1:])
 	default:
 		return Action{}, core.ErrPhase
 	}
@@ -125,6 +128,13 @@ func Parse(args []string) (Action, error) {
 	}
 
 	return Action{Name: name, Args: actionArgs, JSON: jsonOutput, ScopeRequired: name == "pause" || name == "stop" || name == "cancel" || name == "resume"}, nil
+}
+
+func parseAbsoluteRequest(args []string) ([]string, error) {
+	if len(args) != 2 || args[0] != "--request" || !filepath.IsAbs(args[1]) || filepath.Clean(args[1]) != args[1] {
+		return nil, core.ErrPhase
+	}
+	return append([]string(nil), args...), nil
 }
 
 func parseRollbackArgs(args []string) ([]string, error) {

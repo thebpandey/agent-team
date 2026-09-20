@@ -265,6 +265,9 @@ func executeLifecycleJournal(ctx context.Context, layout Layout, manifestStore *
 	if err := verifyAuthoritativeManifest(ctx, manifestStore, journal.Intended, journal.Retained); err != nil {
 		return outcome, err
 	}
+	if err := verifyLifecyclePostimages(*journal); err != nil {
+		return outcome, err
+	}
 	if err := removeLifecycleJournal(layout); err != nil {
 		return outcome, err
 	}
@@ -272,8 +275,11 @@ func executeLifecycleJournal(ctx context.Context, layout Layout, manifestStore *
 }
 
 func applyLifecycleMutation(layout Layout, mutation lifecycleMutation) error {
+	if mutation.Existed && !diskMatches(mutation.Path, mutation.PreSHA256, int64(len(mutation.Preimage))) {
+		return core.ErrRevision
+	}
 	if mutation.PostAbsent {
-		return removeOwnedPath(layout, mutation.Path)
+		return removeOwnedPath(layout, mutation.Path, mutation.PreSHA256)
 	}
 	mode := fs.FileMode(mutation.PostMode)
 	if mode == 0 {
@@ -298,6 +304,9 @@ func recoverLifecycleJournal(ctx context.Context, layout Layout, manifestStore *
 		if err := verifyManifestFiles(current, journal.Retained); err != nil {
 			return err
 		}
+		if err := verifyLifecyclePostimages(journal); err != nil {
+			return err
+		}
 		return removeLifecycleJournal(layout)
 	}
 	if journal.Previous == nil {
@@ -316,6 +325,21 @@ func recoverLifecycleJournal(ctx context.Context, layout Layout, manifestStore *
 		}
 	}
 	return removeLifecycleJournal(layout)
+}
+
+func verifyLifecyclePostimages(journal lifecycleJournal) error {
+	for _, mutation := range journal.Mutations {
+		if mutation.PostAbsent {
+			if _, err := os.Lstat(mutation.Path); !errors.Is(err, fs.ErrNotExist) {
+				return core.ErrRevision
+			}
+			continue
+		}
+		if !diskMatches(mutation.Path, mutation.PostSHA256, mutation.PostBytes) {
+			return core.ErrRevision
+		}
+	}
+	return nil
 }
 
 func validateLifecycleJournal(layout Layout, journal lifecycleJournal) error {
@@ -401,7 +425,7 @@ func restoreLifecycleJournal(layout Layout, journal lifecycleJournal) error {
 		if mutation.PostAbsent || !diskMatches(mutation.Path, mutation.PostSHA256, mutation.PostBytes) {
 			return core.ErrRevision
 		}
-		if err := removeOwnedPath(layout, mutation.Path); err != nil {
+		if err := removeOwnedPath(layout, mutation.Path, mutation.PostSHA256); err != nil {
 			return err
 		}
 	}
@@ -1280,6 +1304,11 @@ func appendBackup(backups []Backup, candidate Backup) []Backup {
 }
 
 func ownedRoot(layout Layout, target string) string {
+	for _, config := range layout.ConfigPaths {
+		if target == config {
+			return filepath.Dir(config)
+		}
+	}
 	roots := []string{layout.DataRoot, layout.SkillRoots[Codex], layout.SkillRoots[Claude]}
 	best := ""
 	for _, root := range roots {
@@ -1290,13 +1319,14 @@ func ownedRoot(layout Layout, target string) string {
 	return best
 }
 
-func removeOwnedPath(layout Layout, path string) error {
-	if ownedRoot(layout, path) == "" {
+func removeOwnedPath(layout Layout, target, expectedDigest string) error {
+	root := ownedRoot(layout, target)
+	if root == "" || !validSHA256(expectedDigest) {
 		return core.ErrPath
 	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative == "." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return core.ErrPath
 	}
-	return os.Remove(path)
+	return store.New(root, core.StorageLimits{CanonicalBytes: installJournalLimit}).RemoveExact(filepath.ToSlash(relative), expectedDigest, installJournalLimit)
 }

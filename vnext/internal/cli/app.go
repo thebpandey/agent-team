@@ -107,7 +107,7 @@ func Run(ctx context.Context, args []string, deps core.Dependencies) int {
 }
 
 func isManagement(name string) bool {
-	return name == "install" || name == "update" || name == "rollback" || name == "uninstall"
+	return name == "install" || name == "update" || name == "rollback" || name == "uninstall" || name == "cutover"
 }
 
 func isMutationCleanup(action Action) bool {

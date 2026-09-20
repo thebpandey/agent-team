@@ -8,6 +8,8 @@ From a verified unpacked release, run `agent-teamctl install --host codex|claude
 
 Run `setup`, then use `status`, `start`, `task add`, or `one-off`. Operational controls are `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN denotes internal independent review and is not a public `review` action. After approved tracker cutover, Beads is authoritative and `TASKS.md` is retained as legacy provenance; `BLOCKERS.md` and `DECISIONS.md` remain bounded projections.
 
+Do not overwrite a v7 project or top-level skill manually. Prepare a version-1 cutover request and run `agent-teamctl cutover --request /absolute/request.json`. A project request uses `action: "cutover"`, then `status`, a cause-bound `reconcile`, or an exact `rollback`; its evidence paths and SHA-256 values must still resolve to the recorded Git revision. A host request uses `host-cutover`, `host-status`, or `host-rollback`, the exact schema-4 legacy installer receipt and digest, the current native manifest revision, and `hosts: ["codex", "claude"]` as applicable. Keep the request and returned receipt digest: rollback refuses a different receipt, revision, changed legacy file, or customized hook.
+
 Host switching stays in the foreground and transfers no lease. The dashboard is local-only, capacity caps still apply, and optional semantic, graph, compression, browser, and visual tools fall back to native Git/Go/file operations. Review the [benchmark evidence](docs/benchmarks/vnext-optional-8.0.0.md) and revision-bound release checks before installation.
 
 These are prompts to paste into Codex or Claude Code—not Bash commands.

@@ -46,7 +46,8 @@ func ResolveLayout(goos string, env map[string]string) (Layout, error) {
 	}
 	layout := Layout{
 		DataRoot: dataRoot, BinaryPath: filepath.Join(dataRoot, "bin", binary), ContractPath: filepath.Join(dataRoot, "WORKER-CONTRACT"), ManifestPath: filepath.Join(dataRoot, "install-manifest.json"),
-		SkillRoots: map[Host]string{Codex: filepath.Join(codexHome, "skills", "agent-team"), Claude: filepath.Join(claudeHome, "skills", "agent-team")},
+		SkillRoots:  map[Host]string{Codex: filepath.Join(codexHome, "skills", "agent-team"), Claude: filepath.Join(claudeHome, "skills", "agent-team")},
+		ConfigPaths: map[Host]string{Codex: filepath.Join(codexHome, "hooks.json"), Claude: filepath.Join(claudeHome, "settings.json")},
 	}
 	if err := ValidateLayout(layout); err != nil {
 		return Layout{}, err
@@ -71,6 +72,9 @@ func ValidateLayout(layout Layout) error {
 	for _, host := range []Host{Codex, Claude} {
 		if !absoluteClean(layout.SkillRoots[host]) {
 			return fmt.Errorf("invalid %s skill root", host)
+		}
+		if len(layout.ConfigPaths) != 0 && !absoluteClean(layout.ConfigPaths[host]) {
+			return fmt.Errorf("invalid %s config path", host)
 		}
 	}
 	return nil
