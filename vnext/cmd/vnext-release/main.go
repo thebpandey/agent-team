@@ -30,12 +30,42 @@ func run(args []string) int {
 		}
 		return 0
 	case "verify-gates":
-		if _, _, err := parseVerifyGates(args[1:]); err != nil {
+		evidence, revision, err := parseVerifyGates(args[1:])
+		if err != nil {
 			return 2
 		}
-		// The final readiness task supplies the executable verifier. Until then,
-		// fail closed instead of accepting an unverified evidence file.
-		return 1
+		if release.VerifyReadinessEvidence(evidence, revision) != nil {
+			return 1
+		}
+		return 0
+	case "collect-evidence":
+		revision, output, native, benchmark, err := parseCollectEvidence(args[1:])
+		if err != nil {
+			return 2
+		}
+		if collectEvidence(revision, output, native, benchmark) != nil {
+			return 1
+		}
+		return 0
+	case "finalize-evidence":
+		revision, output, artifact, sbom, canary, rollback, provider, installed, err := parseFinalizeEvidence(args[1:])
+		if err != nil {
+			return 2
+		}
+		if finalizeEvidence(revision, output, artifact, sbom, canary, rollback, provider, installed) != nil {
+			return 1
+		}
+		return 0
+	case "write-readiness":
+		revision, gates, paths, err := parseReadiness(args[1:])
+		if err != nil {
+			return 2
+		}
+		evidence, err := release.BuildReadinessEvidence(revision, gates, paths)
+		if err != nil || release.WriteReadinessEvidence("release-readiness.json", evidence) != nil {
+			return 1
+		}
+		return 0
 	default:
 		return 2
 	}
