@@ -369,6 +369,7 @@ func TestSameVersionRevisionRetryRollbackAndReupdate(t *testing.T) {
 	_, next := internalFixtureAt(t, filepath.Join(filepath.Dir(layout.DataRoot), "new"), "new")
 	next.Version = old.Version
 	next.Revision = "abcdef0123456789abcdef0123456789abcdef01"
+	next.Contract, next.Entrypoints = old.Contract, old.Entrypoints
 	unrelated := filepath.Join(filepath.Dir(layout.DataRoot), "settings.json")
 	if err := os.WriteFile(unrelated, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
@@ -378,10 +379,53 @@ func TestSameVersionRevisionRetryRollbackAndReupdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const incompleteRevision = "fedcba9876543210fedcba9876543210fedcba98"
+	seeded := cloneManifest(installed.Manifest)
+	for _, file := range seeded.Files {
+		if file.Role == BinaryRole {
+			continue
+		}
+		legacy := file
+		legacy.Revision = incompleteRevision
+		path := backupPath(layout, legacy)
+		body, err := os.ReadFile(file.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		seeded.Backups = appendBackup(seeded.Backups, Backup{Role: file.Role, Host: file.Host, Path: path, SHA256: file.SHA256, Version: file.Version, Revision: incompleteRevision, Bytes: file.Bytes})
+	}
+	seeded.Revision = 0
+	installed, err = NewManifestStore(layout).CompareAndSwap(context.Background(), installed.Manifest.Revision, seeded)
+	if err != nil {
+		t.Fatal(err)
+	}
 	updated, err := Update(context.Background(), layout, next, installed.Manifest.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
+	complete := 0
+	for _, backup := range updated.Manifest.Backups {
+		if backup.Revision == old.Revision {
+			complete++
+			if !diskMatches(backup.Path, backup.SHA256, backup.Bytes) {
+				t.Fatalf("invalid snapshot member: %+v", backup)
+			}
+		}
+	}
+	if complete != len(updated.Manifest.Files) {
+		t.Fatalf("snapshot members = %d, want %d", complete, len(updated.Manifest.Files))
+	}
+	beforeIncomplete := cloneManifest(updated.Manifest)
+	if _, err := RollbackRelease(context.Background(), layout, old.Version, incompleteRevision, updated.Manifest.Revision); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("incomplete legacy rollback = %v", err)
+	}
+	assertLifecycleUnchanged(t, layout, beforeIncomplete)
 	backupCount := len(updated.Manifest.Backups)
 	retried, err := Update(context.Background(), layout, next, updated.Manifest.Revision)
 	if err != nil || !retried.Idempotent || retried.Manifest.Revision != updated.Manifest.Revision || len(retried.Manifest.Backups) != backupCount {
@@ -401,6 +445,7 @@ func TestSameVersionRevisionRetryRollbackAndReupdate(t *testing.T) {
 	if got, err := os.ReadFile(unrelated); err != nil || string(got) != "keep" {
 		t.Fatalf("unrelated=%q err=%v", got, err)
 	}
+	assertNoJournal(t, layout)
 }
 
 func TestRollbackVersionRejectsAmbiguousRevisionsBeforeMutation(t *testing.T) {
