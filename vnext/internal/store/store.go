@@ -450,6 +450,10 @@ func removeOwned(root *os.Root, owned ownedTemp) error {
 }
 
 func probeSameDirectoryReplace(root *os.Root, directory string) error {
+	return probeSameDirectoryReplaceWith(root, directory, replaceFile)
+}
+
+func probeSameDirectoryReplaceWith(root *os.Root, directory string, replace func(*os.Root, string, string) error) error {
 	from, fromFile, err := createOwnedTemp(root, directory, ".agent-team-probe-from-")
 	if err != nil {
 		return err
@@ -458,7 +462,7 @@ func probeSameDirectoryReplace(root *os.Root, directory string) error {
 		_ = removeOwned(root, from)
 		return err
 	}
-	defer removeOwned(root, from)
+	defer func() { _ = removeOwned(root, from) }()
 	to, toFile, err := createOwnedTemp(root, directory, ".agent-team-probe-to-")
 	if err != nil {
 		return err
@@ -467,8 +471,15 @@ func probeSameDirectoryReplace(root *os.Root, directory string) error {
 		_ = removeOwned(root, to)
 		return err
 	}
-	defer removeOwned(root, to)
-	return replaceFile(root, from.name, to.name)
+	defer func() { _ = removeOwned(root, to) }()
+	if err := replace(root, from.name, to.name); err != nil {
+		if info, statErr := root.Lstat(to.name); statErr == nil && os.SameFile(from.info, info) {
+			to.info = from.info
+		}
+		return err
+	}
+	to.info = from.info
+	return nil
 }
 
 func snapshotDestination(root *os.Root, relative string, limit int64) (*ownedTemp, error) {

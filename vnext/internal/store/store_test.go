@@ -213,6 +213,79 @@ func TestStoreProbesThenFlushesClosesAndHashesReplacement(t *testing.T) {
 	if err := probeSameDirectoryReplace(root, "."); err != nil {
 		t.Fatalf("same-directory probe: %v", err)
 	}
+	entries, err := os.ReadDir(s.Root)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "record.md" {
+		t.Fatalf("probe residue = %v, %v", entries, err)
+	}
+}
+
+func TestStoreProbeCleansOwnedFilesAfterReplaceFailure(t *testing.T) {
+	rootPath := t.TempDir()
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := probeSameDirectoryReplaceWith(root, ".", func(*os.Root, string, string) error {
+		return errors.New("replace failed")
+	}); err == nil {
+		t.Fatal("replace failure accepted")
+	}
+	entries, err := os.ReadDir(rootPath)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("failed probe residue = %v, %v", entries, err)
+	}
+}
+
+func TestStoreProbeCleansOwnedDestinationAfterReportedReplaceFailure(t *testing.T) {
+	rootPath := t.TempDir()
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := probeSameDirectoryReplaceWith(root, ".", func(root *os.Root, from, to string) error {
+		if err := replaceFile(root, from, to); err != nil {
+			return err
+		}
+		return errors.New("replace reported failure")
+	}); err == nil {
+		t.Fatal("reported replace failure accepted")
+	}
+	entries, err := os.ReadDir(rootPath)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("reported failure residue = %v, %v", entries, err)
+	}
+}
+
+func TestStoreProbeRetainsExchangedDestination(t *testing.T) {
+	rootPath := t.TempDir()
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	var destination string
+	err = probeSameDirectoryReplaceWith(root, ".", func(root *os.Root, _, to string) error {
+		destination = to
+		if err := root.Rename(to, to+"-held"); err != nil {
+			return err
+		}
+		file, err := root.OpenFile(to, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		_, writeErr := file.Write([]byte("foreign"))
+		closeErr := file.Close()
+		return errors.Join(errors.New("replace failed"), writeErr, closeErr)
+	})
+	if err == nil {
+		t.Fatal("exchanged replacement accepted")
+	}
+	got, readErr := os.ReadFile(filepath.Join(rootPath, destination))
+	if readErr != nil || string(got) != "foreign" {
+		t.Fatalf("foreign replacement = %q, %v", got, readErr)
+	}
 }
 
 func TestOwnedCleanupNeverDeletesAnExchangedTemporary(t *testing.T) {
@@ -229,9 +302,11 @@ func TestOwnedCleanupNeverDeletesAnExchangedTemporary(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(rootPath, owned.name)); err != nil {
+	held := filepath.Join(rootPath, owned.name+"-held")
+	if err := os.Rename(filepath.Join(rootPath, owned.name), held); err != nil {
 		t.Fatal(err)
 	}
+	defer os.Remove(held)
 	if err := os.WriteFile(filepath.Join(rootPath, owned.name), []byte("unknown"), 0o600); err != nil {
 		t.Fatal(err)
 	}
