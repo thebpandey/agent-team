@@ -23,9 +23,7 @@ func run(args []string) int {
 		if set.Parse(args[1:]) != nil || set.NArg() != 0 || release.ValidatePackageArgs(*version, *commit) != nil {
 			return 2
 		}
-		command := exec.Command("go", "build", "-trimpath", "-o", "agent-teamctl", "./cmd/agent-teamctl")
-		command.Stdout, command.Stderr = os.Stdout, os.Stderr
-		if command.Run() != nil || release.BuildReleasePackage("release-artifacts", *version, *commit) != nil {
+		if buildAgentTeamctl(".", "agent-teamctl", *version, *commit) != nil || release.BuildReleasePackage("release-artifacts", *version, *commit) != nil {
 			return 1
 		}
 		return 0
@@ -69,6 +67,13 @@ func run(args []string) int {
 	default:
 		return 2
 	}
+}
+
+func buildAgentTeamctl(source, output, version, revision string) error {
+	ldflags := fmt.Sprintf("-X github.com/thebpandey/agent-team/vnext/internal/cli.version=%s -X github.com/thebpandey/agent-team/vnext/internal/cli.revision=%s", version, revision)
+	command := exec.Command("go", "build", "-trimpath", "-ldflags", ldflags, "-o", output, "./cmd/agent-teamctl")
+	command.Dir, command.Stdout, command.Stderr = source, os.Stdout, os.Stderr
+	return command.Run()
 }
 
 func parseVerifyGates(args []string) (string, string, error) {

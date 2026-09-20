@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -155,6 +156,39 @@ func TestPackagedArchiveCanary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	var executable []byte
+	for _, entry := range archive.File {
+		if entry.Name != packageManifest.Executable {
+			continue
+		}
+		reader, openErr := entry.Open()
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		executable, err = io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(executable) == 0 {
+		t.Fatal("packaged executable missing")
+	}
+	executablePath := filepath.Join(t.TempDir(), "agent-teamctl")
+	if err := os.WriteFile(executablePath, executable, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	identityRaw, err := exec.Command(executablePath, "version", "--json").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identity struct {
+		Version  string `json:"version"`
+		Revision string `json:"revision"`
+	}
+	if err := json.Unmarshal(identityRaw, &identity); err != nil || identity.Version != packageManifest.Version || identity.Revision != packageManifest.Commit {
+		t.Fatalf("packaged executable identity = %+v, %v", identity, err)
+	}
 	metadata := func(name string) install.ReleaseFile {
 		t.Helper()
 		for _, entry := range archive.File {

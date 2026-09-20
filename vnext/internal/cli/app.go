@@ -12,7 +12,10 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
 
-const version = "0.0.0-dev"
+var (
+	version  = "0.0.0-dev"
+	revision = "unknown"
+)
 
 type outcome struct {
 	Schema  int    `json:"schema"`
@@ -35,7 +38,7 @@ func Run(ctx context.Context, args []string, deps core.Dependencies) int {
 	}
 	if action.Name == "version" {
 		if action.JSON {
-			return writeBoundedJSON(stdout, map[string]any{"schema": 1, "version": version})
+			return writeBoundedJSON(stdout, map[string]any{"schema": 1, "version": version, "revision": revision})
 		}
 		if _, err := io.WriteString(stdout, version+"\n"); err != nil {
 			return 1

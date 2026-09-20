@@ -106,7 +106,7 @@ func TestReleaseMetadata(t *testing.T) {
 		}
 	}
 	workflow, _ := os.ReadFile(filepath.Join(repository, ".github", "workflows", "vnext-release.yml"))
-	if !strings.Contains(string(workflow), "${{ inputs.version }}") || !strings.Contains(string(workflow), "permissions:\n  contents: read") || !strings.Contains(string(workflow), "permissions: { contents: write }") {
+	if !strings.Contains(string(workflow), "${{ inputs.version }}") || !strings.Contains(string(workflow), "permissions:\n  contents: read") || !strings.Contains(string(workflow), "permissions: { contents: write }") || !strings.Contains(string(workflow), "${{ github.workspace }}/vnext/release-artifacts") {
 		t.Fatal("workflow permissions are not least privilege")
 	}
 }
