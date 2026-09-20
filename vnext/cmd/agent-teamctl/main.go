@@ -91,8 +91,15 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		if readErr != nil {
 			return managementError(args, stdout, stderr, readErr)
 		}
-		if len(args) == 5 {
-			outcome, err = install.RollbackRelease(ctx, layout, args[2], args[4], expected)
+		revision := ""
+		for index := 3; index+1 < len(args); index++ {
+			if args[index] == "--revision" {
+				revision = args[index+1]
+				break
+			}
+		}
+		if revision != "" {
+			outcome, err = install.RollbackRelease(ctx, layout, args[2], revision, expected)
 		} else {
 			outcome, err = install.Rollback(ctx, layout, args[2], expected)
 		}
