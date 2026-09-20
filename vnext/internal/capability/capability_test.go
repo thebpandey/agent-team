@@ -2,182 +2,218 @@ package capability_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/capability"
 	"github.com/thebpandey/agent-team/vnext/internal/tracker"
 )
 
 type nativeFake struct {
-	calls   [][]string
-	results []tracker.CommandResult
+	calls  [][]string
+	result []tracker.CommandResult
+	onRun  func(string, []string)
 }
 
 func (f *nativeFake) Run(_ context.Context, name string, args ...string) tracker.CommandResult {
 	f.calls = append(f.calls, append([]string{name}, args...))
-	if len(f.results) == 0 {
+	if f.onRun != nil {
+		f.onRun(name, args)
+	}
+	if len(f.result) == 0 {
 		return tracker.CommandResult{}
 	}
-	r := f.results[0]
-	f.results = f.results[1:]
+	r := f.result[0]
+	f.result = f.result[1:]
 	return r
 }
 
-func TestProbeAllUsesKnownArgvAndNativeFallback(t *testing.T) {
-	runner := &nativeFake{results: []tracker.CommandResult{{Stdout: []byte("serena 1.2.3\n")}}}
-	got, err := capability.ProbeAll(context.Background(), runner, []capability.Name{capability.Native, capability.Serena})
+func digest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func TestNativeIsAlwaysFallback(t *testing.T) {
+	got, err := capability.ProbeAll(context.Background(), &nativeFake{}, []capability.Name{capability.Native})
+	if err != nil || len(got) != 1 || !got[0].Available || !got[0].Healthy {
+		t.Fatalf("probe = %#v, err = %v", got, err)
+	}
+}
+
+func TestExecutableProbeResolvesPathAndSkillProbeHashesContent(t *testing.T) {
+	bin := t.TempDir()
+	exe := filepath.Join(bin, "serena")
+	if err := os.WriteFile(exe, []byte("ignored"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	runner := &nativeFake{result: []tracker.CommandResult{{Stdout: []byte("1.2.3\n")}}}
+	got, err := capability.ProbeAll(context.Background(), runner, []capability.Name{capability.Serena})
+	if err != nil || len(got) != 1 || got[0].Path != exe || got[0].Version != "1.2.3" || !reflect.DeepEqual(runner.calls, [][]string{{exe, "--version"}}) {
+		t.Fatalf("probe = %#v calls=%#v err=%v", got, runner.calls, err)
+	}
+
+	skills := t.TempDir()
+	skill := filepath.Join(skills, "impeccable", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skill), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skill, []byte("skill content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_TEAM_SKILL_ROOT", skills)
+	got, err = capability.ProbeAll(context.Background(), runner, []capability.Name{capability.Impeccable})
+	if err != nil || len(got) != 1 || got[0].Path != skill || got[0].Digest == "" || !got[0].Available || len(runner.calls) != 1 {
+		t.Fatalf("skill probe = %#v calls=%#v err=%v", got, runner.calls, err)
+	}
+}
+
+func validConsent(t *testing.T) (capability.Probe, capability.Consent, string, string) {
+	t.Helper()
+	project := t.TempDir()
+	rel := filepath.Join("bin", "serena")
+	root := filepath.Join(project, ".agent-team", "tools")
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe := capability.Probe{Name: capability.Serena, Mode: capability.ReadOnlyMCP, Path: "serena", Version: "1", Source: "verified:local", Available: true, Healthy: true}
+	consent := capability.Consent{
+		Name: capability.Serena, Enabled: true, Mode: capability.ReadOnlyMCP, Source: "verified:local", VerifiedVersion: "1", InstallerPackage: "serena@1", ProjectRoot: project,
+		Install:    capability.Action{Argv: []string{"agent-team-capability-install", "--root", root, "--package", "serena@1", "--version", "1"}},
+		Probe:      capability.Action{Argv: []string{"agent-team-capability-probe", "--root", root, "--package", "serena@1", "--version", "1"}},
+		Rollback:   capability.Action{Argv: []string{"agent-team-capability-rollback", "--root", root, "--package", "serena@1", "--version", "1"}},
+		OwnedFiles: []capability.OwnedFile{{Path: rel, Role: capability.ToolBinary, SHA256: digest([]byte("new"))}},
+	}
+	return probe, consent, path, root
+}
+
+func TestPlanIsImmutableAndBoundToConsent(t *testing.T) {
+	probe, consent, path, _ := validConsent(t)
+	plan, err := capability.BuildInstallPlan(probe, consent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || !got[0].Available || !got[0].Healthy || !got[1].Available || got[1].Version != "serena 1.2.3" {
-		t.Fatalf("probes = %#v", got)
+	consent.Install.Argv[0] = "curl"
+	consent.OwnedFiles[0].Path = "../escape"
+	consent.VerifiedVersion = "2"
+	runner := &nativeFake{result: []tracker.CommandResult{{}, {Stdout: []byte("1")}}, onRun: func(name string, _ []string) {
+		if name == "agent-team-capability-install" {
+			_ = os.WriteFile(path, []byte("new"), 0o600)
+		}
+	}}
+	if _, err := capability.Install(context.Background(), runner, plan); err != nil {
+		t.Fatal(err)
 	}
-	if want := [][]string{{"serena", "--version"}}; !reflect.DeepEqual(runner.calls, want) {
-		t.Fatalf("argv = %#v, want %#v", runner.calls, want)
-	}
-}
-
-func TestProbeAllMarksFailuresUnhealthyAndRejectsUnknown(t *testing.T) {
-	runner := &nativeFake{results: []tracker.CommandResult{{Exit: 2, Stderr: []byte("not installed")}}}
-	got, err := capability.ProbeAll(context.Background(), runner, []capability.Name{capability.AstGrep})
-	if err != nil || len(got) != 1 || got[0].Available || got[0].Healthy || got[0].Reason == "" {
-		t.Fatalf("probes = %#v, err = %v", got, err)
-	}
-	if _, err := capability.ProbeAll(context.Background(), runner, []capability.Name{"bogus"}); err == nil {
-		t.Fatal("unknown capability accepted")
+	if got := runner.calls[0][0]; got != "agent-team-capability-install" {
+		t.Fatalf("post-consent mutation ran %q", got)
 	}
 }
 
-func TestConsentRequiresHealthyVerifiedExplicitPlan(t *testing.T) {
-	probe := capability.Probe{Name: capability.Serena, Mode: capability.ReadOnlyMCP, Available: true, Healthy: true, Version: "1.0"}
-	consent := capability.Consent{Name: capability.Serena, Enabled: true, Mode: capability.ReadOnlyMCP, InstallerPackage: "serena@1.0", Source: "verified:example", Rollback: "backup:serena"}
-	plan, err := capability.BuildInstallPlan(probe, consent)
-	if err != nil || !plan.Explicit || plan.Package != consent.InstallerPackage || plan.VerifiedVersion != "1.0" {
-		t.Fatalf("plan = %#v, err = %v", plan, err)
+func TestOpaquePlanRejectsPublicZeroValueForgery(t *testing.T) {
+	if _, err := capability.Install(context.Background(), &nativeFake{}, capability.InstallPlan{}); err == nil {
+		t.Fatal("forged zero-value plan accepted")
 	}
-	for _, bad := range []capability.Consent{
-		{Name: capability.Serena, Enabled: false, Source: "verified:example"},
-		{Name: capability.Serena, Enabled: true, Source: "unverified"},
-		{Name: capability.Serena, Enabled: true, Source: "verified:example", InstallerPackage: "x"},
+}
+
+func TestPlanRejectsSourceVersionAndActionDrift(t *testing.T) {
+	probe, _, _, root := validConsent(t)
+	for _, mutate := range []func(*capability.Consent){
+		func(c *capability.Consent) { c.Source = "verified:other" },
+		func(c *capability.Consent) { c.VerifiedVersion = "2" },
+		func(c *capability.Consent) { c.Install.Argv = []string{"curl", "--root", root} },
+		func(c *capability.Consent) { c.OwnedFiles[0].Role = "config" },
+		func(c *capability.Consent) { c.OwnedFiles[0].SHA256 = "" },
+		func(c *capability.Consent) { c.OwnedFiles[0].Path = filepath.Join("..", "hooks", "post-commit") },
 	} {
-		if _, err := capability.BuildInstallPlan(probe, bad); err == nil {
-			t.Fatalf("unsafe consent accepted: %#v", bad)
+		_, consent, _, _ := validConsent(t)
+		mutate(&consent)
+		if _, err := capability.BuildInstallPlan(probe, consent); err == nil {
+			t.Fatal("drift accepted")
 		}
 	}
 }
 
-func TestConsentCanPlanAnExplicitVerifiedMissingCapability(t *testing.T) {
-	plan, err := capability.BuildInstallPlan(
-		capability.Probe{Name: capability.AstGrep, Mode: capability.CLI, Available: false},
-		capability.Consent{Name: capability.AstGrep, Enabled: true, Mode: capability.CLI, InstallerPackage: "ast-grep@1.2.3", Source: "verified:example", Rollback: "backup:ast-grep"},
-	)
-	if err != nil || plan.VerifiedVersion != "1.2.3" || !plan.Explicit {
-		t.Fatalf("plan = %#v, err = %v", plan, err)
+func TestPlanRejectsFilesystemRootAsProject(t *testing.T) {
+	probe, consent, _, _ := validConsent(t)
+	consent.ProjectRoot = string(filepath.Separator)
+	root := filepath.Join(consent.ProjectRoot, ".agent-team", "tools")
+	consent.Install.Argv[2], consent.Probe.Argv[2], consent.Rollback.Argv[2] = root, root, root
+	if _, err := capability.BuildInstallPlan(probe, consent); err == nil {
+		t.Fatal("filesystem root accepted as project")
 	}
 }
 
-func validPlan() capability.InstallPlan {
-	return capability.InstallPlan{
-		Name:            capability.Serena,
-		Package:         "serena@1",
-		Source:          "verified:example",
-		VerifiedVersion: "1",
-		Scope:           "project",
-		OwnedFiles:      []capability.OwnedFile{{Path: "config/serena.json", Role: "config", SHA256: "sha256:new"}},
-		Rollback:        []capability.RollbackEntry{{Path: "config/serena.json", SHA256: "sha256:old", Backup: "backup:serena.json", Command: []string{"serena-rollback", "backup:serena.json"}}},
-		Command:         []string{"serena-install", "--package", "serena@1"},
-		ProbeCommand:    []string{"serena", "--version"},
-		Explicit:        true,
-	}
-}
-
-func TestInstallAndRollbackUseBoundedArgvOnly(t *testing.T) {
-	runner := &nativeFake{results: []tracker.CommandResult{{}, {Stdout: []byte("1\n")}, {}}}
-	plan := validPlan()
-	probe, err := capability.Install(context.Background(), runner, plan)
-	if err != nil || !probe.Available || !probe.Healthy || probe.Version != "1" {
-		t.Fatalf("probe = %#v, err = %v", probe, err)
-	}
-	if err := capability.Rollback(context.Background(), runner, plan); err != nil {
+func TestInstallFailureRollsBackAndVerifiesPriorBytes(t *testing.T) {
+	probe, consent, path, _ := validConsent(t)
+	plan, err := capability.BuildInstallPlan(probe, consent)
+	if err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"serena-install", "--package", "serena@1"}, {"serena", "--version"}, {"serena-rollback", "backup:serena.json"}}
-	if !reflect.DeepEqual(runner.calls, want) {
-		t.Fatalf("argv = %#v, want %#v", runner.calls, want)
-	}
-}
-
-func TestInstallFailsClosedBeforeRunningUnsafePlan(t *testing.T) {
-	runner := &nativeFake{}
-	cases := []capability.InstallPlan{
-		func() capability.InstallPlan { p := validPlan(); p.Explicit = false; return p }(),
-		func() capability.InstallPlan { p := validPlan(); p.Source = "unverified"; return p }(),
-		func() capability.InstallPlan { p := validPlan(); p.Command = []string{"sh", "-c", "bad"}; return p }(),
-		func() capability.InstallPlan {
-			p := validPlan()
-			p.Command = []string{"curl", "example.invalid"}
-			return p
-		}(),
-		func() capability.InstallPlan { p := validPlan(); p.OwnedFiles[0].Path = "../escape"; return p }(),
-		func() capability.InstallPlan {
-			p := validPlan()
-			p.Rollback[0].Backup, p.Rollback[0].Command = "", nil
-			return p
-		}(),
-		func() capability.InstallPlan { p := validPlan(); p.Rollback[0].Command = nil; return p }(),
-	}
-	for _, plan := range cases {
-		if _, err := capability.Install(context.Background(), runner, plan); err == nil {
-			t.Fatalf("unsafe plan accepted: %#v", plan)
+	runner := &nativeFake{result: []tracker.CommandResult{{}, {Exit: 1}, {}}, onRun: func(name string, _ []string) {
+		if name == "agent-team-capability-install" {
+			_ = os.WriteFile(path, []byte("new"), 0o600)
 		}
-	}
-	if len(runner.calls) != 0 {
-		t.Fatalf("unsafe plans ran: %#v", runner.calls)
-	}
-}
-
-func TestInstallRejectsFailedOrTimedOutCommands(t *testing.T) {
-	for _, result := range []tracker.CommandResult{{Exit: 1}, {TimedOut: true}, {Transport: errors.New("missing")}} {
-		runner := &nativeFake{results: []tracker.CommandResult{result}}
-		if _, err := capability.Install(context.Background(), runner, validPlan()); err == nil {
-			t.Fatalf("result accepted: %#v", result)
-		}
-	}
-}
-
-func TestInstallRejectsCrossPlatformUnsafePaths(t *testing.T) {
-	plan := validPlan()
-	plan.OwnedFiles[0].Path = `C:\escape`
-	plan.Rollback[0].Path = `C:\escape`
-	runner := &nativeFake{results: []tracker.CommandResult{{}, {Stdout: []byte("1")}}}
+	}}
 	if _, err := capability.Install(context.Background(), runner, plan); err == nil {
-		t.Fatal("Windows absolute path accepted")
+		t.Fatal("failed post-install probe accepted")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "old" {
+		t.Fatalf("rollback bytes=%q err=%v", got, err)
+	}
+	if len(runner.calls) != 3 || runner.calls[2][0] != "agent-team-capability-rollback" {
+		t.Fatalf("calls=%#v", runner.calls)
 	}
 }
 
-func TestInstallRejectsMismatchedPostInstallVersion(t *testing.T) {
-	runner := &nativeFake{results: []tracker.CommandResult{{}, {Stdout: []byte("2")}}}
-	if _, err := capability.Install(context.Background(), runner, validPlan()); err == nil {
-		t.Fatal("mismatched installed version accepted")
+func TestInstallRejectsWrongHashAndProtectedPathsBeforeMutation(t *testing.T) {
+	probe, _, path, _ := validConsent(t)
+	for _, mutate := range []func(*capability.Consent){
+		func(c *capability.Consent) { c.OwnedFiles[0].SHA256 = "sha256:wrong" },
+		func(c *capability.Consent) { c.OwnedFiles[0].Path = ".git/hooks/post-commit" },
+		func(c *capability.Consent) { c.Install.Argv = append(c.Install.Argv, "--config", "../settings") },
+		func(c *capability.Consent) { c.Install.Argv = append(c.Install.Argv, "--credentials", "secret") },
+	} {
+		_, consent, _, _ := validConsent(t)
+		mutate(&consent)
+		plan, err := capability.BuildInstallPlan(probe, consent)
+		if err == nil {
+			runner := &nativeFake{onRun: func(string, []string) { _ = os.WriteFile(path, []byte("new"), 0o600) }}
+			_, err = capability.Install(context.Background(), runner, plan)
+		}
+		if err == nil {
+			t.Fatal("unsafe authority accepted")
+		}
 	}
 }
 
-func TestInstallBoundsCallerWithoutDeadline(t *testing.T) {
-	// The adapter always supplies a finite operation deadline to the runner.
-	runner := deadlineFake{}
-	if _, err := capability.Install(context.Background(), runner, validPlan()); err != nil {
+func TestRollbackRequiresCapturedVerifiedBackup(t *testing.T) {
+	probe, consent, _, _ := validConsent(t)
+	plan, err := capability.BuildInstallPlan(probe, consent)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := capability.Rollback(context.Background(), &nativeFake{}, plan); err == nil {
+		t.Fatal("uncaptured rollback accepted")
+	}
 }
 
-type deadlineFake struct{}
-
-func (deadlineFake) Run(ctx context.Context, _ string, _ ...string) tracker.CommandResult {
-	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) <= 0 {
-		return tracker.CommandResult{Transport: errors.New("missing deadline")}
+func TestInstallRejectsRunnerFailure(t *testing.T) {
+	probe, consent, _, _ := validConsent(t)
+	plan, err := capability.BuildInstallPlan(probe, consent)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return tracker.CommandResult{Stdout: []byte("1")}
+	if _, err := capability.Install(context.Background(), &nativeFake{result: []tracker.CommandResult{{Transport: errors.New("offline")}}}, plan); err == nil {
+		t.Fatal("runner failure accepted")
+	}
 }

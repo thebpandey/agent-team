@@ -1,9 +1,10 @@
-// Package capability describes optional, explicitly consented tools. It does
-// not make any capability a requirement for native project work.
+// Package capability contains explicit, non-authoritative optional-tool
+// contracts. Native project work remains available without these tools.
 package capability
 
 import (
 	"context"
+	"sync"
 
 	"github.com/thebpandey/agent-team/vnext/internal/tracker"
 )
@@ -37,59 +38,68 @@ type Probe struct {
 	Path      string
 	Version   string
 	Digest    string
+	Source    string
 	Available bool
 	Healthy   bool
 	Reason    string
 }
 
-// Consent is the user's one-time, explicit selection of an optional adapter.
-// It deliberately contains no credentials or host configuration.
+type FileRole string
+
+const (
+	ToolBinary   FileRole = "tool-binary"
+	ToolMetadata FileRole = "tool-metadata"
+)
+
+type OwnedFile struct {
+	Path   string
+	Role   FileRole
+	SHA256 string
+}
+
+// Action is a complete, argument-array action presented for consent. Only the
+// three fixed adapter actions accepted by BuildInstallPlan can be used.
+type Action struct{ Argv []string }
+
+// Consent is untrusted input at the approval boundary. BuildInstallPlan copies
+// it into an opaque plan, so later caller mutation cannot alter authorization.
 type Consent struct {
 	Name             Name
 	Enabled          bool
 	Mode             Mode
-	InstallerPackage string
 	Source           string
-	Rollback         string
+	VerifiedVersion  string
+	InstallerPackage string
+	ProjectRoot      string
+	Install          Action
+	Probe            Action
+	Rollback         Action
+	OwnedFiles       []OwnedFile
 }
 
-type OwnedFile struct {
-	Path   string
-	Role   string
-	SHA256 string
+// InstallPlan intentionally exposes no mutable authorization fields.
+type InstallPlan struct{ state *planState }
+
+type planState struct {
+	mu sync.Mutex
+
+	name                       Name
+	source, version, pkg, root string
+	install, probe, rollback   []string
+	owned                      []OwnedFile
+	backups                    []backup
 }
 
-// RollbackEntry identifies both the file to restore and the authority used to
-// restore it. A path and expected hash alone cannot restore prior state.
-type RollbackEntry struct {
-	Path    string
-	SHA256  string
-	Backup  string
-	Command []string
+type backup struct {
+	path   string
+	exists bool
+	bytes  []byte
+	hash   string
+	mode   uint32
 }
 
-type InstallPlan struct {
-	Name            Name
-	Package         string
-	Source          string
-	VerifiedVersion string
-	Scope           string
-	OwnedFiles      []OwnedFile
-	SettingsChanged []string
-	Rollback        []RollbackEntry
-	Command         []string
-	ProbeCommand    []string
-	Explicit        bool
-}
-
-// NativeResult aliases the repository's bounded, shell-free command outcome.
+// NativeResult is the existing bounded shell-free command outcome.
 type NativeResult = tracker.CommandResult
-
-// NativeRunner deliberately matches tracker.CommandRunner so existing bounded
-// execution can be injected directly. Commands are executable plus argv only.
-type NativeRunner interface {
-	Run(context.Context, string, ...string) tracker.CommandResult
-}
 
 type OutputStore interface {
 	Write(context.Context, string, []byte, int64) (string, error)
