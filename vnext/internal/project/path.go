@@ -9,13 +9,25 @@ import (
 	"unicode/utf8"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
+
+// CanonicalRoot returns the canonical identity of an existing directory.
+func CanonicalRoot(root string) (string, error) { return canonicalDirectory(root) }
+
+// CanonicalStoreRoot returns the canonical directory owned by state.
+func CanonicalStoreRoot(state *store.Store) (string, error) {
+	if state == nil {
+		return "", core.ErrPath
+	}
+	return CanonicalRoot(state.Root)
+}
 
 // Contain returns a canonical candidate path only when it is below root after
 // resolving every existing symlink (including a Windows reparse-point target).
 // The final candidate may not exist; its closest existing parent is resolved.
 func Contain(root, candidate string) (string, error) {
-	canonicalRoot, err := canonicalDirectory(root)
+	canonicalRoot, err := CanonicalRoot(root)
 	if err != nil {
 		return "", err
 	}

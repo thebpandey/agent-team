@@ -12,13 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	projectpkg "github.com/thebpandey/agent-team/vnext/internal/project"
 	"github.com/thebpandey/agent-team/vnext/internal/run"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 	"github.com/thebpandey/agent-team/vnext/internal/tracker"
@@ -101,7 +102,7 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 	if err := validateBatch(batch, runID, teamID); err != nil {
 		return AdmissionOutcome{}, err
 	}
-	root, err := canonicalRoot(st.Root)
+	root, err := projectpkg.CanonicalStoreRoot(st)
 	if err != nil {
 		return AdmissionOutcome{}, err
 	}
@@ -411,7 +412,7 @@ func validateCommit(commit committedAdmission, runID core.RunID, expected uint64
 	if _, err := time.Parse(time.RFC3339, commit.BeforeRun.WrittenAt); err != nil || commit.BeforeRun.Root != commit.BeforeRun.Project {
 		return fmt.Errorf("%w: invalid admission commit envelope", core.ErrRevision)
 	}
-	root, err := canonicalRoot(commit.BeforeRun.Root)
+	root, err := projectpkg.CanonicalRoot(commit.BeforeRun.Root)
 	if err != nil || root != commit.BeforeRun.Root {
 		return fmt.Errorf("%w: invalid admission commit root", core.ErrRevision)
 	}
@@ -582,14 +583,8 @@ func union(left, right []string) []string {
 	if len(values) == 0 {
 		return nil
 	}
-	sort.Strings(values)
-	out := values[:0]
-	for _, value := range values {
-		if len(out) == 0 || out[len(out)-1] != value {
-			out = append(out, value)
-		}
-	}
-	return out
+	slices.Sort(values)
+	return slices.Compact(values)
 }
 func sortedUniqueIDs(values []core.TaskID) bool {
 	for i, value := range values {
@@ -617,24 +612,6 @@ func validateID(value string) error {
 		}
 	}
 	return nil
-}
-func canonicalRoot(value string) (string, error) {
-	if value == "" {
-		return "", fmt.Errorf("%w: empty store root", core.ErrPath)
-	}
-	absolute, err := filepath.Abs(value)
-	if err != nil {
-		return "", err
-	}
-	resolved, err := filepath.EvalSymlinks(absolute)
-	if err != nil {
-		return "", err
-	}
-	info, err := os.Stat(resolved)
-	if err != nil || !info.IsDir() {
-		return "", fmt.Errorf("%w: invalid store root", core.ErrPath)
-	}
-	return resolved, nil
 }
 func teamInRun(value run.Run, team run.TeamRecord) bool {
 	for _, slot := range value.Teams {

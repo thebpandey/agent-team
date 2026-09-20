@@ -1,6 +1,8 @@
 package model
 
 import (
+	"slices"
+
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/host"
 )
@@ -26,10 +28,8 @@ func RouteModel(capabilities host.Capabilities, harness Harness, requested strin
 	if requested == "" || (harness != Codex && harness != Claude) {
 		return ModelRoute{}, core.ErrCapacity
 	}
-	for _, advertised := range capabilities.Models {
-		if advertised == requested {
-			return ModelRoute{Harness: harness, Requested: requested, Resolved: advertised, Reviewer: reviewer}, nil
-		}
+	if slices.Contains(capabilities.Models, requested) {
+		return ModelRoute{Harness: harness, Requested: requested, Resolved: requested, Reviewer: reviewer}, nil
 	}
 	return ModelRoute{}, core.ErrCapacity
 }

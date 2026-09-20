@@ -150,6 +150,23 @@ type AssignmentPacket struct {
 	ReceiptPath      string           `json:"receiptPath"`
 }
 
+// Clone returns a packet whose mutable slices do not alias the original.
+func (packet AssignmentPacket) Clone() AssignmentPacket {
+	packet.Criteria = append([]string(nil), packet.Criteria...)
+	packet.Scope = append([]string(nil), packet.Scope...)
+	packet.Checks = append([]Check(nil), packet.Checks...)
+	for i := range packet.Checks {
+		packet.Checks[i].Command = append([]string(nil), packet.Checks[i].Command...)
+	}
+	packet.Capabilities = append([]string(nil), packet.Capabilities...)
+	packet.Skills = append([]SkillRef(nil), packet.Skills...)
+	packet.Resources.Servers = append([]string(nil), packet.Resources.Servers...)
+	packet.Resources.Browsers = append([]string(nil), packet.Resources.Browsers...)
+	packet.Resources.External = append([]string(nil), packet.Resources.External...)
+	packet.Accelerators = append([]AcceleratorRef(nil), packet.Accelerators...)
+	return packet
+}
+
 type Dependencies struct {
 	ProjectRoot   string          `json:"projectRoot"`
 	Stdout        io.Writer       `json:"-"`

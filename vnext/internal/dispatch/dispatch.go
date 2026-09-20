@@ -37,7 +37,7 @@ func (d *dispatcher) Dispatch(ctx context.Context, packet core.AssignmentPacket,
 		return contracts.WorkerHandle{}, err
 	}
 	request := contracts.WorkerRequest{
-		Packet:        copyPacket(packet),
+		Packet:        packet.Clone(),
 		Worktree:      copyWorktreeSpec(worktree),
 		WritablePaths: append([]string(nil), worktree.WritablePaths...),
 		Reviewer:      false,
@@ -89,22 +89,6 @@ func ValidatePacket(packet core.AssignmentPacket, worktree contracts.WorktreeSpe
 		}
 	}
 	return nil
-}
-
-func copyPacket(packet core.AssignmentPacket) core.AssignmentPacket {
-	packet.Criteria = append([]string(nil), packet.Criteria...)
-	packet.Scope = append([]string(nil), packet.Scope...)
-	packet.Checks = append([]core.Check(nil), packet.Checks...)
-	for i := range packet.Checks {
-		packet.Checks[i].Command = append([]string(nil), packet.Checks[i].Command...)
-	}
-	packet.Capabilities = append([]string(nil), packet.Capabilities...)
-	packet.Skills = append([]core.SkillRef(nil), packet.Skills...)
-	packet.Resources.Servers = append([]string(nil), packet.Resources.Servers...)
-	packet.Resources.Browsers = append([]string(nil), packet.Resources.Browsers...)
-	packet.Resources.External = append([]string(nil), packet.Resources.External...)
-	packet.Accelerators = append([]core.AcceleratorRef(nil), packet.Accelerators...)
-	return packet
 }
 
 func copyWorktreeSpec(spec contracts.WorktreeSpec) contracts.WorktreeSpec {

@@ -23,18 +23,10 @@ type Orchestrator interface {
 	Resume(context.Context, core.RunID) error
 }
 
-type foreground struct {
-	store      *store.Store
-	tracker    tracker.Tracker
-	dispatch   dispatch.Dispatcher
-	supervisor supervise.Supervisor
-	reviewer   review.Reviewer
-	gate       gate.Gate
-	integrator integrate.Integrator
-}
+type foreground struct{ store *store.Store }
 
-func New(state *store.Store, tasks tracker.Tracker, dispatcher dispatch.Dispatcher, supervisor supervise.Supervisor, reviewer review.Reviewer, gate gate.Gate, integrator integrate.Integrator) Orchestrator {
-	return &foreground{store: state, tracker: tasks, dispatch: dispatcher, supervisor: supervisor, reviewer: reviewer, gate: gate, integrator: integrator}
+func New(state *store.Store, _ tracker.Tracker, _ dispatch.Dispatcher, _ supervise.Supervisor, _ review.Reviewer, _ gate.Gate, _ integrate.Integrator) Orchestrator {
+	return &foreground{store: state}
 }
 
 func NewOrchestrator(state *store.Store, tasks tracker.Tracker, dispatcher dispatch.Dispatcher, supervisor supervise.Supervisor, reviewer review.Reviewer, gate gate.Gate, integrator integrate.Integrator) Orchestrator {
@@ -61,9 +53,6 @@ func (o *foreground) control(ctx context.Context, id core.RunID, resume bool) er
 	}
 	if manifest.ID != id || manifest.State == core.Cancelled || manifest.State == core.Archived || (!resume && (manifest.State == core.Paused || manifest.State == core.Interrupted)) {
 		return core.ErrTransition
-	}
-	if o.supervisor == nil || o.dispatch == nil || o.reviewer == nil || o.gate == nil || o.integrator == nil {
-		return core.ErrPhase
 	}
 	// Task assignment and candidate construction are owned by the later
 	// acceptance layer. This control surface deliberately does not fabricate

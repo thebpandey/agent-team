@@ -6,14 +6,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/thebpandey/agent-team/vnext/internal/contracts"
-	"github.com/thebpandey/agent-team/vnext/internal/core"
-	"github.com/thebpandey/agent-team/vnext/internal/store"
-	"github.com/thebpandey/agent-team/vnext/internal/worktree"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/thebpandey/agent-team/vnext/internal/contracts"
+	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/project"
+	"github.com/thebpandey/agent-team/vnext/internal/store"
+	"github.com/thebpandey/agent-team/vnext/internal/worktree"
 )
 
 type ServerRef struct {
@@ -114,7 +116,7 @@ func (c *cleaner) Cleanup(ctx context.Context, x CleanupCandidate) error {
 		return err
 	}
 	id := digest(p)
-	root, err := canonicalRoot(c.store.Root)
+	root, err := project.CanonicalStoreRoot(c.store)
 	if err != nil {
 		return err
 	}
@@ -280,21 +282,6 @@ func digest(v any) string {
 	b, _ := json.Marshal(v)
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
-}
-func canonicalRoot(root string) (string, error) {
-	absolute, err := filepath.Abs(root)
-	if err != nil {
-		return "", core.ErrPath
-	}
-	resolved, err := filepath.EvalSymlinks(filepath.Clean(absolute))
-	if err != nil {
-		return "", core.ErrPath
-	}
-	info, err := os.Stat(resolved)
-	if err != nil || !info.IsDir() {
-		return "", core.ErrPath
-	}
-	return resolved, nil
 }
 func ExecuteCleanup(ctx context.Context, x CleanupCandidate, o CleanupOps) error {
 	if err := validateCandidate(x); err != nil {

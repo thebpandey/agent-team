@@ -625,11 +625,6 @@ func setupDigest(result SetupResult, input SetupInput) (string, error) {
 	return digestBytes(encoded), nil
 }
 
-func digestConfig(config core.Config) string {
-	encoded, _ := json.Marshal(config)
-	return digestBytes(encoded)
-}
-
 func digestText(value string) string { return digestBytes([]byte(value)) }
 
 func digestBytes(value []byte) string {

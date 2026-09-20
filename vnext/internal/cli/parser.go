@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
@@ -24,53 +25,36 @@ func Parse(args []string) (Action, error) {
 	if len(args) == 0 {
 		return Action{}, core.ErrPhase
 	}
-	args = append([]string(nil), args...)
-
 	jsonOutput := false
 	if args[len(args)-1] == "--json" {
 		jsonOutput = true
 		args = args[:len(args)-1]
 	}
-	for _, arg := range args {
-		if arg == "--json" {
-			return Action{}, core.ErrPhase
-		}
+	if slices.Contains(args, "--json") {
+		return Action{}, core.ErrPhase
 	}
 	if len(args) == 0 {
 		return Action{}, core.ErrPhase
 	}
 
 	name := args[0]
-	var actionArgs []string
+	var (
+		actionArgs []string
+		err        error
+	)
 	switch name {
 	case "version":
 		if len(args) != 1 {
 			return Action{}, core.ErrPhase
 		}
 	case "setup":
-		var err error
 		actionArgs, err = parseSetupArgs(args[1:])
-		if err != nil {
-			return Action{}, err
-		}
 	case "settings":
-		var err error
 		actionArgs, err = parseSettingsArgs(args[1:])
-		if err != nil {
-			return Action{}, err
-		}
 	case "status":
-		var err error
 		actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true}, false)
-		if err != nil {
-			return Action{}, err
-		}
 	case "start":
-		var err error
 		actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true, "--task": true}, true)
-		if err != nil {
-			return Action{}, err
-		}
 	case "task":
 		if len(args) < 3 || args[1] != "add" || (args[2] != "--queue" && args[2] != "--execute") {
 			return Action{}, core.ErrPhase
@@ -103,39 +87,26 @@ func Parse(args []string) (Action, error) {
 		actionArgs = []string{objective}
 	case "pause", "stop", "cancel", "resume":
 		if name == "pause" && len(args) == 3 && args[1] == "--scope" {
-			var err error
 			actionArgs, err = parseScope(args[2])
-			if err != nil {
-				return Action{}, err
+		} else {
+			allowed := map[string]bool{"--run": true, "--team": true, "--task": true}
+			if name == "pause" || name == "stop" {
+				allowed["--project"] = true
 			}
-			break
-		}
-		allowed := map[string]bool{"--run": true, "--team": true, "--task": true}
-		if name == "pause" || name == "stop" {
-			allowed["--project"] = true
-		}
-		var err error
-		actionArgs, err = parseSelectors(args[1:], allowed, false)
-		if err != nil {
-			return Action{}, err
+			actionArgs, err = parseSelectors(args[1:], allowed, false)
 		}
 	case "inspect", "cleanup":
-		var err error
 		actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true, "--team": true, "--task": true}, false)
-		if err != nil {
-			return Action{}, err
-		}
 	case "deploy":
-		var err error
 		actionArgs, err = parseDeployArgs(args[1:])
-		if err != nil {
-			return Action{}, err
-		}
 	default:
 		return Action{}, core.ErrPhase
 	}
+	if err != nil {
+		return Action{}, err
+	}
 
-	return Action{Name: name, Args: append([]string(nil), actionArgs...), JSON: jsonOutput}, nil
+	return Action{Name: name, Args: actionArgs, JSON: jsonOutput}, nil
 }
 
 func parseSetupArgs(args []string) ([]string, error) {

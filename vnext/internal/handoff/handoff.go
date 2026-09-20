@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
@@ -31,7 +31,7 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 	if ctx == nil || ctx.Err() != nil || s == nil || s.store == nil {
 		return nil, core.ErrRevision
 	}
-	root, err := project.Contain(s.store.Root, s.store.Root)
+	root, err := project.CanonicalStoreRoot(s.store)
 	if err != nil {
 		return nil, fmt.Errorf("%w: canonical store root", core.ErrPath)
 	}
@@ -147,15 +147,9 @@ func validReceipt(manifest run.Run, team run.TeamRecord, receipt knowledge.Recei
 }
 
 func unique(values []string) []string {
-	sort.Strings(values)
 	if len(values) == 0 {
 		return nil
 	}
-	out := values[:1]
-	for _, value := range values[1:] {
-		if value != out[len(out)-1] {
-			out = append(out, value)
-		}
-	}
-	return out
+	slices.Sort(values)
+	return slices.Compact(values)
 }

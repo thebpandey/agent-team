@@ -77,7 +77,7 @@ func transitionError(format string, args ...any) error {
 func validScope(scope core.Scope) error {
 	switch scope.Kind {
 	case core.ScopeProject:
-		canonical, err := project.Contain(scope.ID, scope.ID)
+		canonical, err := project.CanonicalRoot(scope.ID)
 		if err != nil || canonical != scope.ID {
 			return transitionError("invalid project scope ID")
 		}

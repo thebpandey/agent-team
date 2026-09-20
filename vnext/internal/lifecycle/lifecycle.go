@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -73,7 +72,7 @@ var locks sync.Map
 
 // New creates a lifecycle controller. All work remains in the calling goroutine.
 func New(state *store.Store, supervisor EventSink) Lifecycle {
-	key, err := canonicalStoreRoot(state)
+	key, err := project.CanonicalStoreRoot(state)
 	if err != nil {
 		key = "<invalid-store-root>"
 	}
@@ -124,7 +123,7 @@ func admissionStore(state *store.Store) (*store.Store, *sync.Mutex, error) {
 	if state == nil {
 		return nil, nil, core.ErrTransition
 	}
-	root, err := canonicalStoreRoot(state)
+	root, err := project.CanonicalStoreRoot(state)
 	if err != nil {
 		return nil, nil, core.ErrPath
 	}
@@ -309,25 +308,6 @@ func (c *controller) transition(ctx context.Context, scope core.Scope, event wor
 	return nil
 }
 
-func canonicalStoreRoot(state *store.Store) (string, error) {
-	if state == nil || state.Root == "" {
-		return "", core.ErrPath
-	}
-	abs, err := filepath.Abs(filepath.Clean(state.Root))
-	if err != nil {
-		return "", core.ErrPath
-	}
-	root, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return "", core.ErrPath
-	}
-	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
-		return "", core.ErrPath
-	}
-	return filepath.Clean(root), nil
-}
-
 // resolve binds team/task scope only to one complete canonical run. The
 // Store is project-scoped; arbitrary task identifiers are never authority.
 func (c *controller) resolve(scope core.Scope) ([]target, error) {
@@ -444,7 +424,7 @@ func sameTransition(current record, event workflow.Event) bool {
 func validScope(scope core.Scope) error {
 	switch scope.Kind {
 	case core.ScopeProject:
-		canonical, err := project.Contain(scope.ID, scope.ID)
+		canonical, err := project.CanonicalRoot(scope.ID)
 		if err != nil || canonical != scope.ID {
 			return core.ErrTransition
 		}

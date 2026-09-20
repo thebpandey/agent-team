@@ -13,8 +13,8 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -75,30 +75,11 @@ func interruptLockFor(s *supervisor, handle contracts.WorkerHandle) *sync.Mutex 
 
 // NewSupervisor creates a foreground-only supervisor.
 func NewSupervisor(state *store.Store, adapter host.Adapter, runner host.CommandRunner) Supervisor {
-	root, err := canonicalStoreRoot(state)
+	root, err := project.CanonicalStoreRoot(state)
 	if err != nil {
 		root = "<invalid-store-root>"
 	}
 	return &supervisor{state: state, adapter: adapter, runner: runner, mu: lockFor(root), lockRoot: root, lockErr: err}
-}
-
-func canonicalStoreRoot(state *store.Store) (string, error) {
-	if state == nil || state.Root == "" {
-		return "", core.ErrPath
-	}
-	abs, err := filepath.Abs(filepath.Clean(state.Root))
-	if err != nil {
-		return "", core.ErrPath
-	}
-	root, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return "", core.ErrPath
-	}
-	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
-		return "", core.ErrPath
-	}
-	return filepath.Clean(root), nil
 }
 
 func (s *supervisor) lockError() error {
@@ -171,27 +152,11 @@ func workerRequest(packet core.AssignmentPacket) (contracts.WorkerRequest, error
 		return contracts.WorkerRequest{}, err
 	}
 	return contracts.WorkerRequest{
-		Packet:        copyPacket(packet),
+		Packet:        packet.Clone(),
 		Worktree:      worktree,
 		WritablePaths: append([]string(nil), worktree.WritablePaths...),
 		Reviewer:      false,
 	}, nil
-}
-
-func copyPacket(packet core.AssignmentPacket) core.AssignmentPacket {
-	packet.Criteria = append([]string(nil), packet.Criteria...)
-	packet.Scope = append([]string(nil), packet.Scope...)
-	packet.Checks = append([]core.Check(nil), packet.Checks...)
-	for index := range packet.Checks {
-		packet.Checks[index].Command = append([]string(nil), packet.Checks[index].Command...)
-	}
-	packet.Capabilities = append([]string(nil), packet.Capabilities...)
-	packet.Skills = append([]core.SkillRef(nil), packet.Skills...)
-	packet.Resources.Servers = append([]string(nil), packet.Resources.Servers...)
-	packet.Resources.Browsers = append([]string(nil), packet.Resources.Browsers...)
-	packet.Resources.External = append([]string(nil), packet.Resources.External...)
-	packet.Accelerators = append([]core.AcceleratorRef(nil), packet.Accelerators...)
-	return packet
 }
 
 func validateHandle(packet core.AssignmentPacket, handle contracts.WorkerHandle) error {
@@ -384,7 +349,7 @@ func validateEvent(event workflow.Event) error {
 		return core.ErrTransition
 	}
 	if event.Scope.Kind == core.ScopeProject {
-		canonical, err := project.Contain(event.Scope.ID, event.Scope.ID)
+		canonical, err := project.CanonicalRoot(event.Scope.ID)
 		if err != nil || canonical != event.Scope.ID {
 			return core.ErrPath
 		}
@@ -695,7 +660,7 @@ func (s *supervisor) interrupt(ctx context.Context, handle contracts.WorkerHandl
 	event.CheckpointDigest = digest
 	event.Reason = "foreground turn interrupted"
 	if receipt.State == core.Interrupted {
-		if receipt.NextAction == "resume" && contains(receipt.EvidencePointers, pointer) {
+		if receipt.NextAction == "resume" && slices.Contains(receipt.EvidencePointers, pointer) {
 			if err := s.convergeInterruptedCheckpoint(persistCtx, event, manifest); err != nil {
 				return err
 			}
@@ -721,7 +686,7 @@ func (s *supervisor) interrupt(ctx context.Context, handle contracts.WorkerHandl
 	}
 	_ = manifest
 	if receipt.State == core.Interrupted {
-		if receipt.NextAction == "resume" && contains(receipt.EvidencePointers, pointer) {
+		if receipt.NextAction == "resume" && slices.Contains(receipt.EvidencePointers, pointer) {
 			return nil
 		}
 		return core.ErrRevision
@@ -823,7 +788,7 @@ func (s *supervisor) receiptForTask(ctx context.Context, runID core.RunID, teamI
 			break
 		}
 	}
-	if !found || !containsTask(team.Queue, taskID) {
+	if !found || !slices.Contains(team.Queue, taskID) {
 		return knowledge.Receipt{}, run.Run{}, core.ErrRevision
 	}
 	receipt, err := s.receiptForTeam(ctx, manifest, team)
@@ -840,7 +805,7 @@ func (s *supervisor) receiptForTeam(ctx context.Context, manifest run.Run, team 
 		return knowledge.Receipt{}, fmt.Errorf("%w: receipt: %v", core.ErrRevision, err)
 	}
 	if receipt.Schema != 1 || receipt.Project != manifest.Project || receipt.RunID != manifest.ID || receipt.Team != string(team.ID) ||
-		receipt.Task == "" || receipt.Revision == 0 || receipt.Attempt < 1 || receipt.WrittenAt == "" || !containsTask(team.Queue, core.TaskID(receipt.Task)) {
+		receipt.Task == "" || receipt.Revision == 0 || receipt.Attempt < 1 || receipt.WrittenAt == "" || !slices.Contains(team.Queue, core.TaskID(receipt.Task)) {
 		return knowledge.Receipt{}, core.ErrRevision
 	}
 	return receipt, nil
@@ -898,7 +863,7 @@ func ordinaryTeams(manifest run.Run, scope core.Scope) ([]run.TeamRecord, error)
 		}
 		var owner *run.TeamRecord
 		for index := range manifest.Teams {
-			if containsTask(manifest.Teams[index].Queue, taskID) {
+			if slices.Contains(manifest.Teams[index].Queue, taskID) {
 				if owner != nil {
 					return nil, core.ErrRevision
 				}
@@ -916,24 +881,6 @@ func ordinaryTeams(manifest run.Run, scope core.Scope) ([]run.TeamRecord, error)
 		return nil, core.ErrRevision
 	}
 	return append([]run.TeamRecord(nil), manifest.Teams...), nil
-}
-
-func containsTask(values []core.TaskID, wanted core.TaskID) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
 }
 
 func interruptionDigest(handle contracts.WorkerHandle, observation, reason string) string {
