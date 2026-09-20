@@ -106,7 +106,9 @@ func TestReleaseMetadata(t *testing.T) {
 		}
 	}
 	workflow, _ := os.ReadFile(filepath.Join(repository, ".github", "workflows", "vnext-release.yml"))
-	if !strings.Contains(string(workflow), "${{ inputs.version }}") || !strings.Contains(string(workflow), "permissions:\n  contents: read") || !strings.Contains(string(workflow), "permissions: { contents: write }") || !strings.Contains(string(workflow), "${{ github.workspace }}/vnext/release-artifacts") {
-		t.Fatal("workflow permissions are not least privilege")
+	workflowText := string(workflow)
+	checksumStep := "- run: sha256sum -c SHA256SUMS\n        working-directory: vnext/release-artifacts"
+	if !strings.Contains(workflowText, "${{ inputs.version }}") || !strings.Contains(workflowText, "permissions:\n  contents: read") || !strings.Contains(workflowText, "permissions: { contents: write }") || !strings.Contains(workflowText, "${{ github.workspace }}/vnext/release-artifacts") || strings.Count(workflowText, checksumStep) != 2 {
+		t.Fatal("workflow release contract is incomplete")
 	}
 }

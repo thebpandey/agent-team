@@ -151,7 +151,8 @@ jobs:
         with: { name: vnext-release-artifacts, path: vnext/release-artifacts }
       - uses: actions/download-artifact@v4
         with: { name: vnext-release-readiness, path: vnext/release-evidence }
-      - run: sha256sum -c vnext/release-artifacts/SHA256SUMS
+      - run: sha256sum -c SHA256SUMS
+        working-directory: vnext/release-artifacts
       - run: go run ./cmd/vnext-release verify-gates --evidence release-evidence/release-readiness.json --revision "${GITHUB_SHA}"
         working-directory: vnext
       - run: |
