@@ -1,9 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/thebpandey/agent-team/vnext/internal/release"
 )
 
 func TestVerifyGatesCLI(t *testing.T) {
@@ -38,42 +43,51 @@ func TestEvidenceCLIParsers(t *testing.T) {
 }
 
 func TestReviewEvidenceRejectsForgedMissingAndStale(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "phase1-review.json")
-	if err := os.WriteFile(path, []byte(`{"Phase":"phase1","Revision":"r","Passed":true}`), 0o644); err != nil {
+	root := t.TempDir()
+	source := writeEvents(t, root, "review.json", []string{"TestReview"}, "")
+	digest, err := readPassingTest(source)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateReviewEvidence(path, "r"); err != nil {
+	path := filepath.Join(root, "phase1-review.json")
+	good := ReviewEvidence{Phase: "phase1", Revision: "r", Author: "builder", Reviewer: "reviewer", Source: source, Digest: digest, Result: "CLEAN"}
+	writeJSONTest(t, path, good)
+	if err := validateReviewEvidence(path, "r", "phase1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"Phase":"phase1","Revision":"r","Passed":false}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateReviewEvidence(path, "r"); err == nil {
-		t.Fatal("forged review accepted")
-	}
-	if err := validateReviewEvidence(filepath.Join(filepath.Dir(path), "missing.json"), "r"); err == nil {
+	if err := validateReviewEvidence(filepath.Join(root, "missing.json"), "r", "phase1"); err == nil {
 		t.Fatal("missing review accepted")
 	}
-	if err := os.WriteFile(path, []byte(`{"Phase":"phase1","Revision":"old","Passed":true}`), 0o644); err != nil {
-		t.Fatal(err)
+	cases := map[string]func(*ReviewEvidence){
+		"wrong revision": func(v *ReviewEvidence) { v.Revision = "old" },
+		"wrong phase":    func(v *ReviewEvidence) { v.Phase = "phase2" },
+		"self review":    func(v *ReviewEvidence) { v.Reviewer = v.Author },
+		"missing source": func(v *ReviewEvidence) { v.Source = "" },
+		"bad digest":     func(v *ReviewEvidence) { v.Digest = string(make([]byte, 64)) },
+		"not clean":      func(v *ReviewEvidence) { v.Result = "FIX" },
 	}
-	if err := validateReviewEvidence(path, "r"); err == nil {
-		t.Fatal("stale review accepted")
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			candidate := good
+			mutate(&candidate)
+			writeJSONTest(t, path, candidate)
+			if err := validateReviewEvidence(path, "r", "phase1"); err == nil {
+				t.Fatal("forged review accepted")
+			}
+		})
 	}
 }
 
 func TestCheckEvidenceRejectsForgedAndStale(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "native-test.json")
-	if err := os.WriteFile(source, []byte("passing evidence"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeEvents(t, root, "native-test.json", []string{"TestNative"}, "")
 	digest, err := readPassingTest(source)
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "native.json")
-	good := `{"Phase":"phase1","Revision":"r","Kind":"native","Source":"` + source + `","Hash":"` + digest + `","Passed":true}`
+	good := `{"Phase":"phase","Revision":"r","Kind":"native","Source":"` + source + `","Hash":"` + digest + `","Passed":true}`
 	if err := os.WriteFile(path, []byte(good), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -85,5 +99,97 @@ func TestCheckEvidenceRejectsForgedAndStale(t *testing.T) {
 	}
 	if err := validateCheckEvidence(path, "r", "native"); err == nil {
 		t.Fatal("changed source accepted")
+	}
+}
+
+func TestPassingTestRequiresStructuredSuccessfulTestAndPackageEvents(t *testing.T) {
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"arbitrary": `passing evidence`,
+		"zero":      `{"Action":"pass","Package":"example"}` + "\n",
+		"failure":   `{"Action":"pass","Package":"example","Test":"TestOne"}` + "\n" + `{"Action":"fail","Package":"example"}` + "\n",
+		"unknown":   `{"Action":"invented","Package":"example","Test":"TestOne"}` + "\n",
+	} {
+		path := filepath.Join(root, name+".json")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readPassingTest(path); err == nil {
+			t.Fatalf("%s evidence accepted", name)
+		}
+	}
+	valid := writeEvents(t, root, "valid.json", []string{"TestOne"}, "")
+	if _, err := readPassingTest(valid); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFinalizeEvidenceValidCompletePipeline(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, "evidence")
+	revision := "0123456789abcdef0123456789abcdef01234567"
+	native := writeEvents(t, root, "native.json", []string{"TestNative"}, "")
+	benchmark := writeEvents(t, root, "benchmark.json", []string{"TestReleaseReport"}, "")
+	if err := collectEvidence(revision, out, native, benchmark); err != nil {
+		t.Fatal(err)
+	}
+	for index := 1; index <= 5; index++ {
+		phase := "phase" + string(rune('0'+index))
+		source := writeEvents(t, root, phase+".json", []string{"TestReview"}, "")
+		digest, _ := readPassingTest(source)
+		writeJSONTest(t, filepath.Join(out, phase+"-review.json"), ReviewEvidence{Phase: phase, Revision: revision, Author: "builder", Reviewer: "reviewer-" + phase, Source: source, Digest: digest, Result: "CLEAN"})
+	}
+	component := []byte("binary")
+	sum := sha256.Sum256(component)
+	digest := hex.EncodeToString(sum[:])
+	manifest := release.Manifest{Version: "1.0.0", Commit: revision, SpecRevision: "vnext-8.0.0", Executable: "agent-teamctl", Files: []string{"agent-teamctl"}, Checksums: map[string]string{"agent-teamctl": digest}, SBOMPath: "SBOM.cdx.json", SBOMTool: "native"}
+	artifact := filepath.Join(root, "RELEASE.json")
+	writeJSONTest(t, artifact, manifest)
+	sbom, err := release.BuildSBOM(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sbomPath := filepath.Join(root, "SBOM.cdx.json")
+	writeJSONTest(t, sbomPath, sbom)
+	canary := writeEvents(t, root, "canary.json", []string{"TestCodexCanary", "TestClaudeCanary", "TestPackagedArchiveCanary", "TestCutover"}, "")
+	rollback := writeEvents(t, root, "rollback.json", []string{"TestBothHostsRollbackAndActions"}, "")
+	provider := writeEvents(t, root, "provider.json", []string{"TestProviderVerification"}, "")
+	installed := writeEvents(t, root, "installed.json", []string{"TestPackagedArchiveCanary"}, "")
+	if err := finalizeEvidence(revision, out, artifact, sbomPath, canary, rollback, provider, installed); err != nil {
+		t.Fatal(err)
+	}
+	var gates release.Gates
+	raw, _ := os.ReadFile(filepath.Join(out, "release-gates.json"))
+	if json.Unmarshal(raw, &gates) != nil || gates.Validate() != nil {
+		t.Fatalf("invalid gates: %s", raw)
+	}
+}
+
+func writeEvents(t *testing.T, root, name string, tests []string, failure string) string {
+	t.Helper()
+	path := filepath.Join(root, name)
+	body := ""
+	for _, test := range tests {
+		body += `{"Action":"run","Package":"example","Test":"` + test + `"}` + "\n"
+		body += `{"Action":"pass","Package":"example","Test":"` + test + `"}` + "\n"
+	}
+	if failure != "" {
+		body += `{"Action":"fail","Package":"example","Test":"` + failure + `"}` + "\n"
+	}
+	body += `{"Action":"pass","Package":"example"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeJSONTest(t *testing.T, path string, value any) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(raw, '\n'), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

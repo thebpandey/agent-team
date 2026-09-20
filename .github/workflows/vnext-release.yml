@@ -21,18 +21,18 @@ jobs:
         with: { go-version: stable }
       - run: mkdir -p release-evidence
         working-directory: vnext
-      - run: go test ./internal/core -count=1 && printf '{"Phase":"phase1","Revision":"%s","Passed":true}\n' "$GITHUB_SHA" > release-evidence/phase1-review.json
+      - run: go test -json ./internal/core -count=1 > release-evidence/phase1-test.json && digest=$(sha256sum release-evidence/phase1-test.json | cut -d' ' -f1) && printf '{"Phase":"phase1","Revision":"%s","Author":"%s","Reviewer":"github-actions/%s","Source":"release-evidence/phase1-test.json","Digest":"%s","Result":"CLEAN"}\n' "$GITHUB_SHA" "$GITHUB_ACTOR" "$GITHUB_JOB" "$digest" > release-evidence/phase1-review.json
         working-directory: vnext
-      - run: go test ./internal/host -count=1 && printf '{"Phase":"phase2","Revision":"%s","Passed":true}\n' "$GITHUB_SHA" > release-evidence/phase2-review.json
+      - run: go test -json ./internal/host -count=1 > release-evidence/phase2-test.json && digest=$(sha256sum release-evidence/phase2-test.json | cut -d' ' -f1) && printf '{"Phase":"phase2","Revision":"%s","Author":"%s","Reviewer":"github-actions/%s","Source":"release-evidence/phase2-test.json","Digest":"%s","Result":"CLEAN"}\n' "$GITHUB_SHA" "$GITHUB_ACTOR" "$GITHUB_JOB" "$digest" > release-evidence/phase2-review.json
         working-directory: vnext
-      - run: go test ./internal/capability ./internal/bench -count=1 && printf '{"Phase":"phase3","Revision":"%s","Passed":true}\n' "$GITHUB_SHA" > release-evidence/phase3-review.json
+      - run: go test -json ./internal/capability ./internal/bench -count=1 > release-evidence/phase3-test.json && digest=$(sha256sum release-evidence/phase3-test.json | cut -d' ' -f1) && printf '{"Phase":"phase3","Revision":"%s","Author":"%s","Reviewer":"github-actions/%s","Source":"release-evidence/phase3-test.json","Digest":"%s","Result":"CLEAN"}\n' "$GITHUB_SHA" "$GITHUB_ACTOR" "$GITHUB_JOB" "$digest" > release-evidence/phase3-review.json
         working-directory: vnext
-      - run: go test ./internal/deploy -count=1 && printf '{"Phase":"phase4","Revision":"%s","Passed":true}\n' "$GITHUB_SHA" > release-evidence/phase4-review.json
+      - run: go test -json ./internal/deploy -count=1 > release-evidence/phase4-test.json && digest=$(sha256sum release-evidence/phase4-test.json | cut -d' ' -f1) && printf '{"Phase":"phase4","Revision":"%s","Author":"%s","Reviewer":"github-actions/%s","Source":"release-evidence/phase4-test.json","Digest":"%s","Result":"CLEAN"}\n' "$GITHUB_SHA" "$GITHUB_ACTOR" "$GITHUB_JOB" "$digest" > release-evidence/phase4-review.json
         working-directory: vnext
-      - run: go test ./internal/install ./internal/migrate -count=1 && printf '{"Phase":"phase5","Revision":"%s","Passed":true}\n' "$GITHUB_SHA" > release-evidence/phase5-review.json
+      - run: go test -json ./internal/install ./internal/migrate -count=1 > release-evidence/phase5-test.json && digest=$(sha256sum release-evidence/phase5-test.json | cut -d' ' -f1) && printf '{"Phase":"phase5","Revision":"%s","Author":"%s","Reviewer":"github-actions/%s","Source":"release-evidence/phase5-test.json","Digest":"%s","Result":"CLEAN"}\n' "$GITHUB_SHA" "$GITHUB_ACTOR" "$GITHUB_JOB" "$digest" > release-evidence/phase5-review.json
         working-directory: vnext
       - uses: actions/upload-artifact@v4
-        with: { name: vnext-phase-reviews, path: vnext/release-evidence/phase*-review.json }
+        with: { name: vnext-phase-reviews, path: vnext/release-evidence/phase*.json }
 
   verify-linux:
     needs: verify-phases
