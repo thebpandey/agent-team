@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -88,6 +89,105 @@ func TestLegacyHostCutoverRejectsForeignOwnedFileBeforeMutation(t *testing.T) {
 		t.Fatal("foreign legacy file accepted")
 	}
 	assertFileDigest(t, filepath.Join(layout.SkillRoots[Codex], "SKILL.md"), digestText("foreign\n"))
+}
+
+func TestLegacyHostCutoverRequiresReceiptOwnedTopLevelSkill(t *testing.T) {
+	root := t.TempDir()
+	layout, _ := ResolveLayout("linux", map[string]string{"XDG_DATA_HOME": filepath.Join(root, "data"), "CODEX_HOME": filepath.Join(root, "codex"), "CLAUDE_HOME": filepath.Join(root, "claude")})
+	release := legacyReleaseFixture(t, root)
+	if _, err := Install(context.Background(), layout, release, []Host{Codex, Claude}, 0); err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := legacyHostFixture(t, layout)
+	var receipt map[string]any
+	raw, _ := os.ReadFile(receiptPath)
+	if json.Unmarshal(raw, &receipt) != nil {
+		t.Fatal("receipt")
+	}
+	maps := receipt["installedFileMaps"].(map[string]any)
+	codex := maps["codex"].(map[string]any)
+	files := codex["Files"].(map[string]any)
+	delete(files, "SKILL.md")
+	codex["Digest"] = digestLegacyMap(map[string]any{})
+	updated, _ := json.Marshal(receipt)
+	if err := os.WriteFile(receiptPath, updated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest, _, _ := sha256File(receiptPath)
+	request := LegacyHostCutoverRequest{Schema: 1, Action: "host-cutover", OperationID: "missing-top-skill", LegacyReceipt: receiptPath, LegacyReceiptSHA256: digest, ExpectedManifestRevision: 1, Hosts: []Host{Codex, Claude}}
+	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); err == nil {
+		t.Fatal("unowned top-level skill accepted")
+	}
+	assertFileDigest(t, filepath.Join(layout.SkillRoots[Codex], "SKILL.md"), digestText("legacy-codex\n"))
+}
+
+func TestLegacyHostCutoverRejectsTopLevelSkillSymlinkAndSwap(t *testing.T) {
+	for _, scenario := range []string{"symlink", "swap"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := t.TempDir()
+			layout, _ := ResolveLayout("linux", map[string]string{"XDG_DATA_HOME": filepath.Join(root, "data"), "CODEX_HOME": filepath.Join(root, "codex"), "CLAUDE_HOME": filepath.Join(root, "claude")})
+			release := legacyReleaseFixture(t, root)
+			if _, err := Install(context.Background(), layout, release, []Host{Codex, Claude}, 0); err != nil {
+				t.Fatal(err)
+			}
+			receipt := legacyHostFixture(t, layout)
+			digest, _, _ := sha256File(receipt)
+			top := filepath.Join(layout.SkillRoots[Codex], "SKILL.md")
+			if scenario == "symlink" {
+				target := filepath.Join(root, "foreign-skill")
+				if err := os.WriteFile(target, []byte("legacy-codex\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(top); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, top); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				lifecycleMutationHook = func(operation string, index int) error {
+					if operation == "update" && index == 0 {
+						return os.WriteFile(top, []byte("foreign replacement\n"), 0o600)
+					}
+					return nil
+				}
+				t.Cleanup(func() { lifecycleMutationHook = nil })
+			}
+			request := LegacyHostCutoverRequest{Schema: 1, Action: "host-cutover", OperationID: "skill-" + scenario, LegacyReceipt: receipt, LegacyReceiptSHA256: digest, ExpectedManifestRevision: 1, Hosts: []Host{Codex, Claude}}
+			if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); err == nil {
+				t.Fatal("unsafe top-level skill accepted")
+			}
+			if scenario == "swap" {
+				lifecycleMutationHook = nil
+				raw, _ := os.ReadFile(top)
+				if string(raw) != "foreign replacement\n" {
+					t.Fatalf("replacement changed: %q", raw)
+				}
+			}
+		})
+	}
+}
+
+func TestRetireLegacyHandlersPreservesUnrelatedBytes(t *testing.T) {
+	handler := []byte(`{"type":"command","command":"node agent-team-hook.mjs","timeout":3}`)
+	compact := new(bytes.Buffer)
+	if json.Compact(compact, handler) != nil {
+		t.Fatal("handler")
+	}
+	raw := []byte("{\n  \"number\": 1.00,\n  \"nested\": { \"orderB\":2, \"orderA\":1 },\n  \"hooks\": {\n    \"SessionStart\": [ { \"hooks\": [ " + string(handler) + ", {\"command\":\"foreign\",\"type\":\"command\"} ] } ]\n  },\n  \"tail\": \"keep\"\n}\n")
+	receipt := legacyHandler{Runtime: "codex", Event: "SessionStart", HandlerID: "codex:SessionStart:0:0", Digest: digestContent(compact.Bytes()), Handler: handler, ConfigPath: "/config.json"}
+	got, err := retireLegacyHandlers(raw, "/config.json", "codex", []legacyHandler{receipt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unchanged := range [][]byte{[]byte("\"number\": 1.00"), []byte("{ \"orderB\":2, \"orderA\":1 }"), []byte("{\"command\":\"foreign\",\"type\":\"command\"}"), []byte("\"tail\": \"keep\"")} {
+		if !bytes.Contains(got, unchanged) {
+			t.Fatalf("unrelated bytes changed: missing %q in %s", unchanged, got)
+		}
+	}
+	if bytes.Contains(got, []byte("agent-team-hook")) || !json.Valid(got) {
+		t.Fatalf("handler not safely removed: %s", got)
+	}
 }
 
 func TestLegacyHostCutoverRecoversInterruptedMutation(t *testing.T) {

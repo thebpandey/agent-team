@@ -310,6 +310,9 @@ func verifyLegacyOwnership(layout Layout, receipt legacyInstallReceipt, hosts []
 		if !ok || !sameHostPath(installed.Target, layout.SkillRoots[host]) || len(installed.Files) == 0 {
 			return core.ErrRevision
 		}
+		if skill, owned := installed.Files["SKILL.md"]; !owned || !validSHA256(skill.SHA256) || skill.Size < 0 {
+			return fmt.Errorf("%w: top-level SKILL.md is not receipt-owned", core.ErrRevision)
+		}
 		for relative, file := range installed.Files {
 			if !safeInstallRelative(relative) || !validSHA256(file.SHA256) || file.Size < 0 {
 				return core.ErrRevision
@@ -340,14 +343,15 @@ func retireLegacyHandlers(raw []byte, path, runtime string, receipts []legacyHan
 	if len(raw) > legacyReceiptLimit {
 		return nil, core.ErrPath
 	}
-	var config map[string]any
-	if json.Unmarshal(raw, &config) != nil {
+	root, err := parseJSONSpans(raw)
+	if err != nil {
 		return nil, core.ErrRevision
 	}
-	hooks, ok := config["hooks"].(map[string]any)
-	if !ok {
+	hooks := root.member("hooks")
+	if hooks == nil || hooks.kind != '{' {
 		return nil, core.ErrRevision
 	}
+	var removals []jsonSpan
 	for _, receipt := range receipts {
 		if receipt.Runtime != runtime || receipt.Preexisting {
 			continue
@@ -357,53 +361,44 @@ func retireLegacyHandlers(raw []byte, path, runtime string, receipts []legacyHan
 		if !sameHostPath(receipt.ConfigPath, path) || receipt.Event == "" || receipt.HandlerID == "" || !validSHA256(receipt.Digest) || len(receipt.Handler) == 0 || json.Unmarshal(receipt.Handler, &expected) != nil || json.Compact(compact, receipt.Handler) != nil || digestContent(compact.Bytes()) != receipt.Digest {
 			return nil, core.ErrRevision
 		}
-		groups, ok := hooks[receipt.Event].([]any)
-		if !ok {
+		groups := hooks.member(receipt.Event)
+		if groups == nil || groups.kind != '[' {
 			return nil, core.ErrRevision
 		}
-		matches := 0
-		for groupIndex := range groups {
-			group, ok := groups[groupIndex].(map[string]any)
-			if !ok {
+		var matched, matchedArray *jsonNode
+		for _, group := range groups.items {
+			if group.kind != '{' {
 				continue
 			}
-			handlers, ok := group["hooks"].([]any)
-			if !ok {
+			handlers := group.member("hooks")
+			if handlers == nil || handlers.kind != '[' {
 				continue
 			}
-			kept := handlers[:0]
-			for _, candidate := range handlers {
-				candidateMap, _ := candidate.(map[string]any)
+			for _, candidate := range handlers.items {
+				var candidateMap map[string]any
+				_ = json.Unmarshal(raw[candidate.start:candidate.end], &candidateMap)
 				if reflect.DeepEqual(candidateMap, expected) {
-					matches++
-					continue
+					if matched != nil {
+						return nil, fmt.Errorf("%w: legacy handler is missing or ambiguous", core.ErrRevision)
+					}
+					matched, matchedArray = candidate, handlers
 				}
-				kept = append(kept, candidate)
 			}
-			group["hooks"] = kept
 		}
-		if matches != 1 {
+		if matched == nil {
 			return nil, fmt.Errorf("%w: legacy handler is missing or ambiguous", core.ErrRevision)
 		}
-		keptGroups := groups[:0]
-		for _, candidate := range groups {
-			group, _ := candidate.(map[string]any)
-			handlers, _ := group["hooks"].([]any)
-			if len(handlers) != 0 {
-				keptGroups = append(keptGroups, candidate)
-			}
-		}
-		if len(keptGroups) == 0 {
-			delete(hooks, receipt.Event)
-		} else {
-			hooks[receipt.Event] = keptGroups
-		}
+		removals = append(removals, matchedArray.removal(matched))
 	}
-	encoded, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return nil, err
+	sort.Slice(removals, func(i, j int) bool { return removals[i].start > removals[j].start })
+	encoded := append([]byte(nil), raw...)
+	for _, span := range removals {
+		encoded = append(encoded[:span.start], encoded[span.end:]...)
 	}
-	return append(encoded, '\n'), nil
+	if !json.Valid(encoded) {
+		return nil, core.ErrRevision
+	}
+	return encoded, nil
 }
 
 func readHostCutoverReceipt(layout Layout) (hostCutoverReceipt, error) {
