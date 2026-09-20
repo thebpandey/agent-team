@@ -60,6 +60,13 @@ func TestAuthorityCutoverReconcileStatusAndRollback(t *testing.T) {
 			t.Fatalf("%s not restored: %q %v", name, raw, err)
 		}
 	}
+	reapply := readAuthorityRequestTest(t, request)
+	reapply.OperationID = "cutover-reapply"
+	reapplyPath := writeAuthorityJSON(t, project, "reapply.json", reapply)
+	result, err = ExecuteAuthorityRequest(context.Background(), reapplyPath)
+	if err != nil || !result.Held || result.Idempotent {
+		t.Fatalf("reapply = %#v, %v", result, err)
+	}
 }
 
 func TestAuthorityCutoverRejectsForeignLegacyAndStaleEvidence(t *testing.T) {

@@ -70,6 +70,16 @@ func TestLegacyHostCutoverRollbackAndRetry(t *testing.T) {
 			t.Fatalf("%s config rollback differs", host)
 		}
 	}
+	request.Action = "host-cutover"
+	request.ExpectedReceiptDigest = ""
+	request.ExpectedManifestRevision = result.ManifestRevision
+	result, err = CutoverLegacyHosts(context.Background(), layout, release, request)
+	if err != nil || result.Idempotent {
+		t.Fatalf("reapply = %#v, %v", result, err)
+	}
+	for _, host := range request.Hosts {
+		assertFileDigest(t, filepath.Join(layout.SkillRoots[host], "SKILL.md"), release.Entrypoints[host].SHA256)
+	}
 }
 
 func TestLegacyHostCutoverRejectsForeignOwnedFileBeforeMutation(t *testing.T) {
