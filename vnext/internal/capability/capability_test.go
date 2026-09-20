@@ -1,4 +1,4 @@
-package capability_test
+package capability
 
 import (
 	"context"
@@ -7,22 +7,25 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
-	"github.com/thebpandey/agent-team/vnext/internal/capability"
 	"github.com/thebpandey/agent-team/vnext/internal/tracker"
 )
 
 type fakeRunner struct {
-	calls   [][]string
 	results []tracker.CommandResult
-	run     func(string)
+	calls   [][]string
+	envs    [][]string
+	onRun   func([]string)
 }
 
-func (f *fakeRunner) Run(_ context.Context, n string, a ...string) tracker.CommandResult {
-	f.calls = append(f.calls, append([]string{n}, a...))
-	if f.run != nil {
-		f.run(n)
+func (f *fakeRunner) Run(_ context.Context, argv, env []string) tracker.CommandResult {
+	f.calls = append(f.calls, append([]string(nil), argv...))
+	f.envs = append(f.envs, append([]string(nil), env...))
+	if f.onRun != nil {
+		f.onRun(argv)
 	}
 	if len(f.results) == 0 {
 		return tracker.CommandResult{}
@@ -31,190 +34,263 @@ func (f *fakeRunner) Run(_ context.Context, n string, a ...string) tracker.Comma
 	f.results = f.results[1:]
 	return r
 }
-func hash(b []byte) string { s := sha256.Sum256(b); return "sha256:" + hex.EncodeToString(s[:]) }
 
-func fixture(t *testing.T) (capability.Probe, capability.Consent, capability.Installers, string) {
+func digest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+
+func TestProbeNativeAndRequestValidation(t *testing.T) {
+	got, err := ProbeAll(context.Background(), nil, []Name{Native})
+	if err != nil || len(got) != 1 || !got[0].Healthy {
+		t.Fatalf("native probe = %#v, %v", got, err)
+	}
+	for _, names := range [][]Name{{Serena, Serena}, {Name("unknown")}} {
+		if _, err := ProbeAll(context.Background(), nil, names); err == nil {
+			t.Fatalf("accepted malformed request %#v", names)
+		}
+	}
+	if _, err := ProbeAll(nil, nil, []Name{Native}); err == nil {
+		t.Fatal("accepted nil context")
+	}
+}
+
+func TestProbeExecutableOutcomesAndDigest(t *testing.T) {
+	dir := t.TempDir()
+	name := string(Serena)
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(dir, name)
+	bytes := []byte("not executed by fake runner")
+	if err := os.WriteFile(path, bytes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	for _, tc := range []struct {
+		name string
+		run  *fakeRunner
+		ok   bool
+	}{
+		{"nil", nil, false},
+		{"nonzero", &fakeRunner{results: []tracker.CommandResult{{Exit: 1}}}, false},
+		{"timeout", &fakeRunner{results: []tracker.CommandResult{{TimedOut: true}}}, false},
+		{"transport", &fakeRunner{results: []tracker.CommandResult{{Transport: errors.New("gone")}}}, false},
+		{"empty", &fakeRunner{results: []tracker.CommandResult{{Stdout: []byte(" \n")}}}, false},
+		{"oversize", &fakeRunner{results: []tracker.CommandResult{{Stdout: []byte(strings.Repeat("x", probeOutputLimit+1))}}}, false},
+		{"healthy", &fakeRunner{results: []tracker.CommandResult{{Stdout: []byte("1.2.3\n")}}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var runner NativeRunner
+			if tc.run != nil {
+				runner = tc.run
+			}
+			got, err := ProbeAll(context.Background(), runner, []Name{Serena})
+			if err != nil || len(got) != 1 || got[0].Healthy != tc.ok {
+				t.Fatalf("probe = %#v, %v", got, err)
+			}
+			if tc.ok && (got[0].Path != path || got[0].Version != "1.2.3" || got[0].Digest != "sha256:"+digest(bytes)) {
+				t.Fatalf("unverified executable probe: %#v", got[0])
+			}
+		})
+	}
+	missing, err := ProbeAll(context.Background(), &fakeRunner{}, []Name{Graphify})
+	if err != nil || missing[0].Available {
+		t.Fatalf("missing probe = %#v, %v", missing, err)
+	}
+}
+
+func TestProbeRejectsExecutableChangedDuringVersionCheck(t *testing.T) {
+	dir := t.TempDir()
+	name := string(Serena)
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("before"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	runner := &fakeRunner{results: []tracker.CommandResult{{Stdout: []byte("1\n")}}, onRun: func([]string) {
+		if err := os.WriteFile(path, []byte("after"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	got, err := ProbeAll(context.Background(), runner, []Name{Serena})
+	if err != nil || got[0].Healthy {
+		t.Fatalf("accepted executable replacement: %#v, %v", got, err)
+	}
+}
+
+func TestProbeSkillContentSizeRootAndDigest(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("AGENT_TEAM_SKILL_ROOT", root)
+	path := filepath.Join(root, string(Impeccable), "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("skill")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ProbeAll(context.Background(), nil, []Name{Impeccable})
+	if err != nil || !got[0].Healthy || got[0].Path != path || got[0].Digest != "sha256:"+digest(data) {
+		t.Fatalf("skill probe = %#v, %v", got, err)
+	}
+	if err := os.Truncate(path, skillContentLimit+1); err != nil {
+		t.Fatal(err)
+	}
+	got, err = ProbeAll(context.Background(), nil, []Name{Impeccable})
+	if err != nil || got[0].Healthy {
+		t.Fatalf("oversized skill probe = %#v, %v", got, err)
+	}
+	t.Setenv("AGENT_TEAM_SKILL_ROOT", "")
+	got, err = ProbeAll(context.Background(), nil, []Name{Impeccable})
+	if err != nil || got[0].Healthy {
+		t.Fatalf("rootless skill probe = %#v, %v", got, err)
+	}
+}
+
+func TestBuildInstallPlanFailsClosedWithoutAdapter(t *testing.T) {
+	p := Probe{Name: Serena, Mode: ReadOnlyMCP, Available: true, Healthy: true, Version: "1"}
+	c := Consent{Name: Serena, Enabled: true, Mode: ReadOnlyMCP, InstallerPackage: "serena", Source: "registry.example/serena@1"}
+	if _, err := BuildInstallPlan(p, c); err == nil || !strings.Contains(err.Error(), "installer unavailable") {
+		t.Fatalf("BuildInstallPlan error = %v", err)
+	}
+	if _, err := BuildInstallPlan(p, Consent{Name: Serena, Mode: ReadOnlyMCP}); err == nil {
+		t.Fatal("accepted declined consent")
+	}
+}
+
+func TestInstallRejectsForgedZeroPlan(t *testing.T) {
+	if _, err := Install(context.Background(), &fakeRunner{}, InstallPlan{}); err == nil {
+		t.Fatal("accepted forged zero plan")
+	}
+}
+
+func stagedPlan(t *testing.T) (InstallPlan, adapterSpec, string, *fakeRunner) {
 	t.Helper()
 	project := t.TempDir()
-	root := filepath.Join(project, ".agent-team", "tools")
-	artifact := filepath.Join(root, "bin", "serena")
-	if err := os.MkdirAll(filepath.Dir(artifact), 0700); err != nil {
+	source := filepath.Join(t.TempDir(), "release")
+	if err := os.WriteFile(source, []byte("trusted source"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(artifact, []byte("old"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	exe := filepath.Join(t.TempDir(), "installer")
-	if err := os.WriteFile(exe, []byte("x"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	src := capability.VerifiedSource{Identity: "registry.example/serena", Digest: hash([]byte("release")), Version: "1"}
-	probe := capability.Probe{Name: capability.Serena, Mode: capability.ReadOnlyMCP, Path: exe, Source: src, Version: "1", Available: true, Healthy: true}
-	install := []string{exe, "install", "--root", root}
-	rollback := []string{exe, "rollback", "--root", root}
-	consent := capability.Consent{Name: capability.Serena, Enabled: true, Mode: capability.ReadOnlyMCP, Source: src, VerifiedVersion: "1", ProjectRoot: project, Install: capability.Action{Argv: install}, Rollback: capability.Action{Argv: rollback}, ProbeArgs: []string{"--version"}, OwnedFiles: []capability.OwnedFile{{Path: filepath.Join("bin", "serena"), Role: capability.ToolBinary, SHA256: hash([]byte("new"))}}}
-	return probe, consent, capability.Installers{capability.Serena: {Name: capability.Serena, Executable: exe, Source: src, Install: install, Rollback: rollback, ProbeArgs: []string{"--version"}}}, artifact
-}
-
-func TestSourceMustBeConcreteAndExact(t *testing.T) {
-	p, c, m, _ := fixture(t)
-	c.Source.Identity = "verified:registry.example/serena"
-	if _, err := capability.BuildInstallPlan(p, c, m); err == nil {
-		t.Fatal("prefix source accepted")
-	}
-	p, c, m, _ = fixture(t)
-	c.Source.Digest = hash([]byte("other"))
-	if _, err := capability.BuildInstallPlan(p, c, m); err == nil {
-		t.Fatal("source digest drift accepted")
-	}
-}
-func TestMissingInstallerOrExecutableIsUnavailable(t *testing.T) {
-	p, c, _, _ := fixture(t)
-	if _, err := capability.BuildInstallPlan(p, c, capability.Installers{}); err == nil {
-		t.Fatal("missing installer accepted")
-	}
-	p, c, m, _ := fixture(t)
-	m[capability.Serena] = capability.Installer{Name: capability.Serena, Executable: filepath.Join(t.TempDir(), "missing")}
-	if _, err := capability.BuildInstallPlan(p, c, m); err == nil {
-		t.Fatal("missing executable accepted")
-	}
-}
-func TestInstallUsesActualArtifactProbeAndRestoresOnProbeFailure(t *testing.T) {
-	p, c, m, artifact := fixture(t)
-	plan, err := capability.BuildInstallPlan(p, c, m)
+	stage := filepath.Join(".agent-team", "stage", "serena")
+	destination := filepath.Join(".agent-team", "tools", "serena-1")
+	stageHost := filepath.Join(project, stage)
+	spec := adapterSpec{name: Serena, mode: ReadOnlyMCP, packageName: "serena", source: "registry.example/serena", version: "1", project: project, sourceArtifact: source, sourceDigest: digest([]byte("trusted source")), stage: stage, destination: destination, stageDigest: digest([]byte("built artifact")), installArgv: []string{"installer", "--source", source, "--stage", stageHost}, probeArgv: []string{stageHost, "--version"}}
+	p := Probe{Name: Serena, Mode: ReadOnlyMCP, Available: true, Healthy: true, Version: "1"}
+	c := Consent{Name: Serena, Enabled: true, Mode: ReadOnlyMCP, InstallerPackage: "serena", Source: "registry.example/serena@1"}
+	plan, err := buildInstallPlan(spec, p, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeRunner{results: []tracker.CommandResult{{}, {Exit: 1}, {}}, run: func(n string) {
-		if n == c.Install.Argv[0] {
-			_ = os.WriteFile(artifact, []byte("new"), 0755)
-			_ = os.Chmod(artifact, 0755)
+	runner := &fakeRunner{results: []tracker.CommandResult{{}, {Stdout: []byte("1\n")}}, onRun: func(argv []string) {
+		if len(argv) > 0 && argv[0] == "installer" {
+			if err := os.MkdirAll(filepath.Dir(stageHost), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(stageHost, []byte("built artifact"), 0o700); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}}
-	if _, err := capability.Install(context.Background(), f, plan); err == nil {
-		t.Fatal("failed probe accepted")
+	return plan, spec, source, runner
+}
+
+func TestInstallUsesCopiedExactArgvAndScrubbedEnvironment(t *testing.T) {
+	plan, spec, _, runner := stagedPlan(t)
+	spec.installArgv[0] = "caller-mutated"
+	got, err := Install(context.Background(), runner, plan)
+	if err != nil || !got.Healthy || got.Version != "1" {
+		t.Fatalf("Install = %#v, %v", got, err)
 	}
-	b, err := os.ReadFile(artifact)
-	if err != nil || string(b) != "old" {
-		t.Fatalf("restored=%q %v", b, err)
+	if len(runner.calls) != 2 || strings.Join(runner.calls[0], "\x00") != strings.Join([]string{"installer", "--source", spec.sourceArtifact, "--stage", filepath.Join(spec.project, spec.stage)}, "\x00") || strings.Join(runner.calls[1], "\x00") != strings.Join([]string{filepath.Join(spec.project, spec.stage), "--version"}, "\x00") {
+		t.Fatalf("argv = %#v", runner.calls)
 	}
-	info, _ := os.Stat(artifact)
-	if info.Mode().Perm() != 0600 {
-		t.Fatal("mode not restored")
+	for _, env := range runner.envs {
+		if len(env) != 0 {
+			t.Fatalf("unscrubbed environment: %#v", runner.envs)
+		}
 	}
-	if len(f.calls) != 3 || f.calls[1][0] != artifact {
-		t.Fatalf("calls=%#v", f.calls)
+	if _, err := os.Stat(filepath.Join(spec.project, spec.destination)); err != nil {
+		t.Fatalf("published destination missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(spec.project, spec.stage)); !os.IsNotExist(err) {
+		t.Fatalf("stage remains: %v", err)
 	}
 }
 
-func TestRollbackReplacesInstallerSymlinkWithoutTouchingOutside(t *testing.T) {
-	if os.Getenv("GOOS") == "windows" {
-		t.Skip("symlink setup")
-	}
-	p, c, m, artifact := fixture(t)
-	outside := filepath.Join(t.TempDir(), "outside")
-	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+func TestInstallRejectsSourceTamperWithoutMutation(t *testing.T) {
+	plan, spec, source, runner := stagedPlan(t)
+	if err := os.WriteFile(source, []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := mustPlan(t, p, c, m)
-	f := &fakeRunner{results: []tracker.CommandResult{{}, {Exit: 1}, {}}, run: func(n string) {
-		if n == c.Install.Argv[0] {
-			_ = os.Remove(artifact)
-			_ = os.Symlink(outside, artifact)
-		}
-	}}
-	if _, err := capability.Install(context.Background(), f, plan); err == nil {
-		t.Fatal("symlink swap accepted")
+	if _, err := Install(context.Background(), runner, plan); err == nil {
+		t.Fatal("accepted tampered source")
 	}
-	got, err := os.ReadFile(artifact)
-	if err != nil || string(got) != "old" {
-		t.Fatalf("restored=%q err=%v", got, err)
+	if len(runner.calls) != 0 {
+		t.Fatalf("ran installer after source tamper: %#v", runner.calls)
 	}
-	out, _ := os.ReadFile(outside)
-	if string(out) != "outside" {
-		t.Fatal("outside target changed")
+	if _, err := os.Stat(filepath.Join(spec.project, spec.destination)); !os.IsNotExist(err) {
+		t.Fatalf("destination changed: %v", err)
 	}
 }
 
-func TestRollbackRemovesSymlinkForPreviouslyAbsentLeaf(t *testing.T) {
-	if os.Getenv("GOOS") == "windows" {
-		t.Skip("symlink setup")
-	}
-	p, c, m, artifact := fixture(t)
-	_ = os.Remove(artifact)
-	outside := filepath.Join(t.TempDir(), "outside")
-	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+func TestInstallNeverOverwritesFreshDestination(t *testing.T) {
+	plan, spec, _, runner := stagedPlan(t)
+	final := filepath.Join(spec.project, spec.destination)
+	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	plan := mustPlan(t, p, c, m)
-	f := &fakeRunner{results: []tracker.CommandResult{{}, {Exit: 1}, {}}, run: func(n string) {
-		if n == c.Install.Argv[0] {
-			_ = os.Symlink(outside, artifact)
+	if err := os.WriteFile(final, []byte("user file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(context.Background(), runner, plan); err == nil {
+		t.Fatal("overwrote existing destination")
+	}
+	got, err := os.ReadFile(final)
+	if err != nil || string(got) != "user file" || len(runner.calls) != 0 {
+		t.Fatalf("destination = %q, calls = %#v, err = %v", got, runner.calls, err)
+	}
+}
+
+func TestInstallCleansStageOnFailureAndReportsUnsafeAmbiguity(t *testing.T) {
+	plan, spec, _, runner := stagedPlan(t)
+	runner.results = []tracker.CommandResult{{Exit: 1}}
+	if _, err := Install(context.Background(), runner, plan); err == nil {
+		t.Fatal("accepted failing install")
+	}
+	if _, err := os.Stat(filepath.Join(spec.project, spec.stage)); !os.IsNotExist(err) {
+		t.Fatalf("stage not cleaned: %v", err)
+	}
+	plan, spec, _, runner = stagedPlan(t)
+	runner.results = []tracker.CommandResult{{Exit: 1}}
+	runner.onRun = func(argv []string) {
+		if argv[0] == "installer" {
+			if err := os.MkdirAll(filepath.Join(spec.project, spec.stage), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(spec.project, spec.stage, "unknown"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
-	}}
-	if _, err := capability.Install(context.Background(), f, plan); err == nil {
-		t.Fatal("absent symlink swap accepted")
 	}
-	if _, err := os.Lstat(artifact); !os.IsNotExist(err) {
-		t.Fatalf("leaf remains: %v", err)
-	}
-	out, _ := os.ReadFile(outside)
-	if string(out) != "outside" {
-		t.Fatal("outside target changed")
+	if _, err := Install(context.Background(), runner, plan); err == nil || !strings.Contains(err.Error(), "unsafe") {
+		t.Fatalf("ambiguous removal error = %v", err)
 	}
 }
-func TestRollbackHelperFailureStillRestores(t *testing.T) {
-	p, c, m, artifact := fixture(t)
-	plan, err := capability.BuildInstallPlan(p, c, m)
-	if err != nil {
-		t.Fatal(err)
+
+func TestInstallRootRejectsSymlinkParentEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privilege on Windows")
 	}
-	f := &fakeRunner{results: []tracker.CommandResult{{}, {Exit: 1}, {Exit: 2}}, run: func(n string) {
-		if n == c.Install.Argv[0] {
-			_ = os.WriteFile(artifact, []byte("new"), 0755)
-		}
-	}}
-	if _, err := capability.Install(context.Background(), f, plan); err == nil {
-		t.Fatal("rollback helper failure accepted")
+	plan, spec, _, runner := stagedPlan(t)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(spec.project, ".agent-team")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
 	}
-	b, _ := os.ReadFile(artifact)
-	if string(b) != "old" {
-		t.Fatal("bytes not restored")
+	if _, err := Install(context.Background(), runner, plan); err == nil {
+		t.Fatal("accepted symlink parent")
 	}
-}
-func TestNoFollowRejectsSymlinkFileAndParent(t *testing.T) {
-	if os.Getenv("GOOS") == "windows" {
-		t.Skip("symlink setup")
+	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+		t.Fatalf("outside root mutated: %#v, %v", entries, err)
 	}
-	p, c, m, artifact := fixture(t)
-	_ = os.Remove(artifact)
-	if err := os.Symlink(filepath.Join(t.TempDir(), "target"), artifact); err != nil {
-		t.Skip(err)
-	}
-	if _, err := capability.BuildInstallPlan(p, c, m); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := capability.Install(context.Background(), &fakeRunner{}, mustPlan(t, p, c, m)); err == nil {
-		t.Fatal("symlink artifact accepted")
-	}
-}
-func mustPlan(t *testing.T, p capability.Probe, c capability.Consent, m capability.Installers) capability.InstallPlan {
-	t.Helper()
-	x, e := capability.BuildInstallPlan(p, c, m)
-	if e != nil {
-		t.Fatal(e)
-	}
-	return x
-}
-func TestNativeFallback(t *testing.T) {
-	p, e := capability.ProbeAll(context.Background(), nil, []capability.Name{capability.Native})
-	if e != nil || len(p) != 1 || !p[0].Healthy {
-		t.Fatal(p, e)
-	}
-}
-func TestZeroPlanAndRunnerFailureRejected(t *testing.T) {
-	if _, e := capability.Install(context.Background(), &fakeRunner{}, capability.InstallPlan{}); e == nil {
-		t.Fatal("forgery")
-	}
-	_ = errors.New
 }

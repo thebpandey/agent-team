@@ -1,5 +1,4 @@
-// Package capability contains explicit, non-authoritative optional-tool
-// contracts. Native project work remains available without these tools.
+// Package capability defines optional, non-authoritative capability boundaries.
 package capability
 
 import (
@@ -17,7 +16,6 @@ const (
 	LeanCTX          Name = "leanctx"
 	Serena           Name = "serena"
 	Graphify         Name = "graphify"
-	AstGrep          Name = "ast-grep"
 	Playwright       Name = "playwright"
 	Impeccable       Name = "impeccable"
 	UIUXProMax       Name = "ui-ux-pro-max"
@@ -33,85 +31,47 @@ const (
 )
 
 type Probe struct {
-	Name      Name
-	Mode      Mode
-	Path      string
-	Version   string
-	Digest    string
-	Source    VerifiedSource
-	Available bool
-	Healthy   bool
-	Reason    string
+	Name                  Name
+	Mode                  Mode
+	Path, Version, Digest string
+	Available, Healthy    bool
+	Reason                string
 }
 
-type VerifiedSource struct{ Identity, Digest, Version string }
-
-type FileRole string
-
-const (
-	ToolBinary   FileRole = "tool-binary"
-	ToolMetadata FileRole = "tool-metadata"
-)
-
-type OwnedFile struct {
-	Path   string
-	Role   FileRole
-	SHA256 string
-}
-
-// Action is a complete, argument-array action presented for consent. Only the
-// three fixed adapter actions accepted by BuildInstallPlan can be used.
-type Action struct{ Argv []string }
-
-// Consent is untrusted input at the approval boundary. BuildInstallPlan copies
-// it into an opaque plan, so later caller mutation cannot alter authorization.
+// Consent contains only the facts shown to and approved by a user. Adapter
+// command lines and filesystem locations are deliberately not caller inputs.
 type Consent struct {
-	Name             Name
-	Enabled          bool
-	Mode             Mode
-	Source           VerifiedSource
-	VerifiedVersion  string
-	InstallerPackage string
-	ProjectRoot      string
-	Install          Action
-	ProbeArgs        []string
-	Rollback         Action
-	OwnedFiles       []OwnedFile
+	Name                     Name
+	Enabled                  bool
+	Mode                     Mode
+	InstallerPackage, Source string
 }
 
-type Installer struct {
-	Name                         Name
-	Executable                   string
-	Source                       VerifiedSource
-	Install, Rollback, ProbeArgs []string
+// NativeRunner receives one exact argv and a complete, scrubbed environment.
+// CommandResult remains the single process result type in this module.
+type NativeRunner interface {
+	Run(context.Context, []string, []string) tracker.CommandResult
 }
-type Installers map[Name]Installer
 
-// InstallPlan intentionally exposes no mutable authorization fields.
+// InstallPlan is intentionally opaque. A zero value is not an installation.
 type InstallPlan struct{ state *planState }
 
 type planState struct {
-	mu sync.Mutex
-
-	name                     Name
-	source                   VerifiedSource
-	version, root            string
-	install, probe, rollback []string
-	owned                    []OwnedFile
-	backups                  []backup
-	binding                  string
+	mu   sync.Mutex
+	used bool
+	spec adapterSpec
 }
 
-type backup struct {
-	path   string
-	exists bool
-	bytes  []byte
-	hash   string
-	mode   uint32
+// adapterSpec is a closed, same-package seam. Task 21 adapters supply fixed
+// facts here; public callers can neither register adapters nor forge plans.
+type adapterSpec struct {
+	name                                  Name
+	mode                                  Mode
+	packageName, source, version, project string
+	sourceArtifact, sourceDigest          string
+	stage, destination, stageDigest       string
+	installArgv, probeArgv                []string
 }
-
-// NativeResult is the existing bounded shell-free command outcome.
-type NativeResult = tracker.CommandResult
 
 type OutputStore interface {
 	Write(context.Context, string, []byte, int64) (string, error)
