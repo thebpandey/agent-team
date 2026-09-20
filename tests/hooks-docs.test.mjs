@@ -147,13 +147,18 @@ test("Graphify guidance accepts AST-origin inferred structural leads only", asyn
 });
 
 test("GitHub release publication remains tag-driven and checked", async () => {
-  const workflow = await read(".github/workflows/release.yml");
+  const [workflow, packageWorkflow] = await readMany([
+    ".github/workflows/release.yml",
+    ".github/workflows/check-package.yml",
+  ]);
   for (const pattern of [
     /tags:\s*\n\s*- ['"]v7\.\*['"]/, /permissions:\s*\n\s*contents:\s*write/,
     /node --test tests\/hooks-\*\.test\.mjs/, /check-package/, /build-artifacts/,
     /check-artifacts/, /gh release create/, /sha256sum \*\.zip > SHA256SUMS/,
   ]) assert.match(workflow, pattern);
   assert.doesNotMatch(workflow, /- ['"]v\*['"]/);
+  assert.match(packageWorkflow, /tags:\s*\n\s*- ['"]v7\.\*['"]/);
+  assert.doesNotMatch(packageWorkflow, /on:\s*\n\s*pull_request:/);
 });
 
 test("published static site and native CI use portable repository paths", async () => {
