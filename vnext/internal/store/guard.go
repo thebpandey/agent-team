@@ -269,7 +269,10 @@ func removeExactOwner(root, relative string, expected MutationOwner) error {
 	if err != nil || parentCurrent.Mode()&os.ModeSymlink != 0 || !parentCurrent.IsDir() || !os.SameFile(parentBefore, parentCurrent) {
 		return core.ErrRevision
 	}
-	if err := opened.Mkdir(filepath.ToSlash(claim), 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+	if err := opened.Mkdir(filepath.ToSlash(claim), 0o700); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return core.ErrRevision
+		}
 		return err
 	}
 	claimInfo, err := opened.Lstat(filepath.ToSlash(claim))
@@ -284,7 +287,8 @@ func removeExactOwner(root, relative string, expected MutationOwner) error {
 		return core.ErrRevision
 	} else {
 		if err := opened.Rename(filepath.ToSlash(relative), filepath.ToSlash(claimed)); err != nil {
-			_ = opened.Remove(filepath.ToSlash(claim))
+			// Retain the claim: without a durable owner record it cannot be
+			// distinguished from an independently created collision.
 			return core.ErrRevision
 		}
 		if err := syncGuardNamespace(filepath.Dir(full)); err != nil {

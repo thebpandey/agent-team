@@ -361,7 +361,7 @@ func TestMutationGuardReleaseRequiresExactOwner(t *testing.T) {
 }
 
 func TestMutationGuardReleaseResumesExactTombstoneAndIsIdempotent(t *testing.T) {
-	for _, crash := range []string{"claim-created", "owner-claimed"} {
+	for _, crash := range []string{"owner-claimed"} {
 		t.Run(crash, func(t *testing.T) {
 			root := t.TempDir()
 			guard, err := AcquireProjectMutation(context.Background(), root, "install", "resume-release")
@@ -397,6 +397,54 @@ func TestMutationGuardReleaseResumesExactTombstoneAndIsIdempotent(t *testing.T) 
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestMutationGuardReleaseRejectsUnauthenticatedClaimCollision(t *testing.T) {
+	root := t.TempDir()
+	guard, err := AcquireProjectMutation(context.Background(), root, "install", "claim-collision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(root, filepath.FromSlash(projectMutationLock))
+	claim := canonical + ".removed-" + guard.Owner().Token
+	ownerBefore, err := os.Lstat(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawBefore, err := os.ReadFile(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(claim, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	claimBefore, err := os.Lstat(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := guard.Release(); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("claim collision release = %v", err)
+	}
+	ownerAfter, err := os.Lstat(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawAfter, err := os.ReadFile(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(ownerBefore, ownerAfter) || string(rawBefore) != string(rawAfter) {
+		t.Fatal("canonical owner changed on claim collision")
+	}
+	claimAfter, err := os.Lstat(claim)
+	if err != nil || !os.SameFile(claimBefore, claimAfter) ||
+		claimBefore.Mode() != claimAfter.Mode() || claimBefore.Size() != claimAfter.Size() ||
+		!claimBefore.ModTime().Equal(claimAfter.ModTime()) {
+		t.Fatalf("claim identity changed: %v", err)
+	}
+	if entries, err := os.ReadDir(claim); err != nil || len(entries) != 0 {
+		t.Fatalf("claim changed: %v, %v", entries, err)
 	}
 }
 
