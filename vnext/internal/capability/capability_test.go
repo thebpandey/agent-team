@@ -510,14 +510,54 @@ func TestRollbackRemovesOnlyPublishedExactDestination(t *testing.T) {
 	if _, err := Install(context.Background(), runner, plan); err != nil {
 		t.Fatal(err)
 	}
-	if err := Rollback(context.Background(), &fakeRunner{}, plan); err != nil {
+	if err := Rollback(context.Background(), &fakeRunner{}, plan); err == nil || !strings.Contains(err.Error(), "mutation guard unavailable") {
+		t.Fatalf("Rollback() = %v, want explicit fail-closed error", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(spec.project, spec.destination)); err != nil || string(got) != "built artifact" {
+		t.Fatalf("fail-closed rollback changed destination: %q, %v", got, err)
+	}
+}
+
+func TestRollbackRetainsDestinationAcrossDeterministicInterleaving(t *testing.T) {
+	plan, spec, _, runner := stagedPlan(t)
+	if _, err := Install(context.Background(), runner, plan); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(spec.project, spec.destination)); !os.IsNotExist(err) {
-		t.Fatalf("exact published destination remains: %v", err)
+	path := filepath.Join(spec.project, spec.destination)
+	interleaved := make(chan struct{})
+	old := removeHook
+	removeHook = func(string) { close(interleaved) }
+	defer func() { removeHook = old }()
+	if err := Rollback(context.Background(), nil, plan); err == nil {
+		t.Fatal("rollback without a project mutation guard succeeded")
 	}
-	if err := Rollback(context.Background(), nil, plan); err != nil {
-		t.Fatalf("prior exact removal was not idempotent: %v", err)
+	select {
+	case <-interleaved:
+	default:
+		t.Fatal("identity-to-removal interleaving seam was not reached")
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "built artifact" {
+		t.Fatalf("interleaved rollback changed destination: %q, %v", got, err)
+	}
+}
+
+func TestContainsManagedPathIsCaseInsensitiveAndComponentWise(t *testing.T) {
+	project := `C:\\Users\\Dev\\Project`
+	for _, argv := range [][]string{
+		{`tool`, `c:\\users\\dev\\PROJECT\\out`},
+		{`tool`, `D:\\Temp\\.AGENT-TEAM\\out`},
+	} {
+		if !containsManagedPath(argv, project) {
+			t.Fatalf("managed path not detected: %#v", argv)
+		}
+	}
+	for _, argv := range [][]string{
+		{`tool`, `C:\\Users\\Dev\\Projection\\out`},
+		{`tool`, `D:\\Temp\\.agent-team-backup\\out`},
+	} {
+		if containsManagedPath(argv, project) {
+			t.Fatalf("non-component path rejected: %#v", argv)
+		}
 	}
 }
 

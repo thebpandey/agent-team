@@ -25,6 +25,12 @@ var installTimeout = probeTimeout
 // publishHook is test-only synchronization for post-write identity checks.
 var publishHook func(string)
 
+// removeHook is a test-only synchronization seam immediately after identity
+// verification. Removal fails closed because the repository has no shared
+// cross-process project mutation guard that can cover verification through
+// root-relative deletion.
+var removeHook func(string)
+
 // buildInstallPlan is package-private: Task 21 adapters provide fixed specs,
 // while the public entry point remains fail-closed until then.
 func buildInstallPlan(spec adapterSpec, probe Probe, consent Consent) (InstallPlan, error) {
@@ -157,13 +163,10 @@ func removeCreated(root *os.Root, path, want string, partial bool, cause error) 
 			return cause
 		}
 	}
-	if err := root.Remove(path); err != nil {
-		return fmt.Errorf("unsafe destination cleanup after %v: %w", cause, err)
+	if removeHook != nil {
+		removeHook(path)
 	}
-	if _, err := root.Lstat(path); !os.IsNotExist(err) {
-		return fmt.Errorf("unsafe destination cleanup after %v", cause)
-	}
-	return cause
+	return fmt.Errorf("unsafe destination cleanup after %v: project mutation guard unavailable; retained %q", cause, path)
 }
 
 // Rollback removes only the exact fresh destination previously published by
@@ -186,14 +189,10 @@ func Rollback(ctx context.Context, _ NativeRunner, plan InstallPlan) error {
 	if _, err := readVerified(root, state.spec.destination, state.spec.stageDigest); err != nil {
 		return fmt.Errorf("unsafe rollback identity: %w", err)
 	}
-	if err := root.Remove(state.spec.destination); err != nil {
-		return fmt.Errorf("unsafe rollback removal: %w", err)
+	if removeHook != nil {
+		removeHook(state.spec.destination)
 	}
-	if _, err := root.Lstat(state.spec.destination); !os.IsNotExist(err) {
-		return fmt.Errorf("unsafe rollback removal")
-	}
-	state.removed = true
-	return nil
+	return fmt.Errorf("unsafe rollback removal: project mutation guard unavailable; retained %q", state.spec.destination)
 }
 
 func sourceBytes(path, want string) ([]byte, error) {
@@ -258,15 +257,39 @@ func outputTags(argv []string) int {
 }
 
 func containsManagedPath(argv []string, project string) bool {
+	projectParts := pathParts(project)
 	for _, arg := range argv {
-		normalized := strings.ReplaceAll(arg, "\\", "/")
-		if strings.Contains(arg, project) {
+		parts := pathParts(arg)
+		if containsParts(parts, projectParts) {
 			return true
 		}
-		for _, part := range strings.Split(normalized, "/") {
-			if part == ".agent-team" {
+		for _, part := range parts {
+			if strings.EqualFold(part, ".agent-team") {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func pathParts(path string) []string {
+	return strings.FieldsFunc(strings.ReplaceAll(path, "\\", "/"), func(r rune) bool { return r == '/' })
+}
+
+func containsParts(haystack, needle []string) bool {
+	if len(needle) == 0 || len(needle) > len(haystack) {
+		return false
+	}
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		matched := true
+		for j := range needle {
+			if !strings.EqualFold(haystack[i+j], needle[j]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
 		}
 	}
 	return false
