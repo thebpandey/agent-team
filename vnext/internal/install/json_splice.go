@@ -22,20 +22,28 @@ func (n *jsonNode) member(name string) *jsonNode {
 	return n.members[name]
 }
 
-func (n *jsonNode) removal(item *jsonNode) jsonSpan {
-	for i, candidate := range n.items {
-		if candidate != item {
+func (n *jsonNode) removals(owned map[*jsonNode]bool) []jsonSpan {
+	var spans []jsonSpan
+	for first := 0; first < len(n.items); {
+		if !owned[n.items[first]] {
+			first++
 			continue
 		}
-		if i+1 < len(n.items) {
-			return jsonSpan{item.start, n.items[i+1].start}
+		last := first
+		for last+1 < len(n.items) && owned[n.items[last+1]] {
+			last++
 		}
-		if i > 0 {
-			return jsonSpan{n.items[i-1].end, item.end}
+		switch {
+		case last+1 < len(n.items):
+			spans = append(spans, jsonSpan{n.items[first].start, n.items[last+1].start})
+		case first > 0:
+			spans = append(spans, jsonSpan{n.items[first-1].end, n.items[last].end})
+		default:
+			spans = append(spans, jsonSpan{n.items[first].start, n.items[last].end})
 		}
-		return item.jsonSpan
+		first = last + 1
 	}
-	return jsonSpan{}
+	return spans
 }
 
 func parseJSONSpans(raw []byte) (*jsonNode, error) {

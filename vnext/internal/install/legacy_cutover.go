@@ -351,7 +351,7 @@ func retireLegacyHandlers(raw []byte, path, runtime string, receipts []legacyHan
 	if hooks == nil || hooks.kind != '{' {
 		return nil, core.ErrRevision
 	}
-	var removals []jsonSpan
+	ownedByArray := map[*jsonNode]map[*jsonNode]bool{}
 	for _, receipt := range receipts {
 		if receipt.Runtime != runtime || receipt.Preexisting {
 			continue
@@ -388,7 +388,14 @@ func retireLegacyHandlers(raw []byte, path, runtime string, receipts []legacyHan
 		if matched == nil {
 			return nil, fmt.Errorf("%w: legacy handler is missing or ambiguous", core.ErrRevision)
 		}
-		removals = append(removals, matchedArray.removal(matched))
+		if ownedByArray[matchedArray] == nil {
+			ownedByArray[matchedArray] = map[*jsonNode]bool{}
+		}
+		ownedByArray[matchedArray][matched] = true
+	}
+	var removals []jsonSpan
+	for array, owned := range ownedByArray {
+		removals = append(removals, array.removals(owned)...)
 	}
 	sort.Slice(removals, func(i, j int) bool { return removals[i].start > removals[j].start })
 	encoded := append([]byte(nil), raw...)

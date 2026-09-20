@@ -200,6 +200,41 @@ func TestRetireLegacyHandlersPreservesUnrelatedBytes(t *testing.T) {
 	}
 }
 
+func TestRetireLegacyHandlersCoalescesAdjacentOwnedHandlers(t *testing.T) {
+	first := []byte(`{"type":"command","command":"node first-owned.mjs","timeout":3}`)
+	second := []byte(`{"type":"command","command":"node second-owned.mjs","timeout":4}`)
+	foreign := `{"command":"foreign-λ","type":"command","value":1.00}`
+	raw := []byte("{\n \"number\": 2.00, \"hooks\": {\"SessionStart\":[{\"hooks\":[\n  " + string(first) + ",\n  " + string(second) + ",\n  " + foreign + "\n ]}]}, \"tail\":{\"β\":1}\n}\n")
+	receipt := func(id string, handler []byte) legacyHandler {
+		compact := new(bytes.Buffer)
+		if json.Compact(compact, handler) != nil {
+			t.Fatal("handler")
+		}
+		return legacyHandler{Runtime: "codex", Event: "SessionStart", HandlerID: id, Digest: digestContent(compact.Bytes()), Handler: handler, ConfigPath: "/config.json"}
+	}
+	got, err := retireLegacyHandlers(raw, "/config.json", "codex", []legacyHandler{receipt("first", first), receipt("second", second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("{\n \"number\": 2.00, \"hooks\": {\"SessionStart\":[{\"hooks\":[\n  " + foreign + "\n ]}]}, \"tail\":{\"β\":1}\n}\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("lossless removal mismatch\n got: %s\nwant: %s", got, want)
+	}
+	for _, exact := range [][]byte{[]byte(`"number": 2.00`), []byte(foreign), []byte(`"tail":{"β":1}`)} {
+		if !bytes.Contains(got, exact) {
+			t.Fatalf("unrelated bytes changed: missing %q in %s", exact, got)
+		}
+	}
+	if bytes.Contains(got, []byte("owned.mjs")) || !json.Valid(got) {
+		t.Fatalf("owned handlers not safely removed: %s", got)
+	}
+	onlyOwned := []byte(`{"hooks":{"SessionStart":[{"hooks":[` + string(first) + `,` + string(second) + `]}]}}`)
+	got, err = retireLegacyHandlers(onlyOwned, "/config.json", "codex", []legacyHandler{receipt("first", first), receipt("second", second)})
+	if err != nil || string(got) != `{"hooks":{"SessionStart":[{"hooks":[]}]}}` {
+		t.Fatalf("complete owned run removal = %s, %v", got, err)
+	}
+}
+
 func TestLegacyHostCutoverRecoversInterruptedMutation(t *testing.T) {
 	root := t.TempDir()
 	layout, _ := ResolveLayout("linux", map[string]string{"XDG_DATA_HOME": filepath.Join(root, "data"), "CODEX_HOME": filepath.Join(root, "codex"), "CLAUDE_HOME": filepath.Join(root, "claude")})
