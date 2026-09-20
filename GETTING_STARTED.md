@@ -1,6 +1,14 @@
 # Project Kickoff + Agent-Team: first-time guide
 
-Agent-Team 7.3.1 uses one complete package for Codex and Claude Code. Installation lets you choose the host and whether to install for one project or your user account. The [standalone dark-green HTML guide](Getting_Started_with_Agent-Team.html) remains a historical guide; the [README](README.md) is the current release and workflow reference.
+The Node-based Agent-Team 7.3.1 instructions below are legacy during the vNext transition. The [standalone dark-green HTML guide](Getting_Started_with_Agent-Team.html) is historical; the [README](README.md) is the current release and workflow reference.
+
+## vNext quick start
+
+From a verified unpacked release, run `agent-teamctl install --host codex|claude|both`; choose Codex, Claude, or both explicitly. The native package supports Windows, macOS, and Linux without mutating hooks, MCP registrations, credentials, or unrelated host settings. Use `rollback --version <version>` or `uninstall` for the reversible manifest-owned lifecycle.
+
+Run `setup`, then use `status`, `start`, `task add`, or `one-off`. Operational controls are `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN denotes internal independent review and is not a public `review` action. After approved tracker cutover, Beads is authoritative and `TASKS.md` is retained as legacy provenance; `BLOCKERS.md` and `DECISIONS.md` remain bounded projections.
+
+Host switching stays in the foreground and transfers no lease. The dashboard is local-only, capacity caps still apply, and optional semantic, graph, compression, browser, and visual tools fall back to native Git/Go/file operations. Review the [benchmark evidence](docs/benchmarks/vnext-optional-8.0.0.md) and revision-bound release checks before installation.
 
 These are prompts to paste into Codex or Claude Code—not Bash commands.
 

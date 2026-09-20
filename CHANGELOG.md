@@ -1,5 +1,11 @@
 # Changelog
 
+## 8.0.0 - candidate
+
+- Document the native Codex/Claude install, rollback, tracker, foreground host-switching, local dashboard, and fallback contracts.
+- Label the Node-based v7.3.1 runtime and `TASKS.md` state as legacy provenance during the approved transition.
+- Bind release claims to executable native checks, benchmark evidence, deterministic artifacts, canaries, rollback, provider verification, and final readiness evidence.
+
 ## 7.3.1 - 2026-09-14
 
 Version 7.3.1 restores frictionless Claude Code↔Codex session continuity, separates companion-tool diagnostics from task readiness, and preserves exact release and path safety.

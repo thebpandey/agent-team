@@ -1,5 +1,13 @@
 # Prepared tools and selective skills
 
+## vNext native dependency boundary
+
+Install verified native bytes with `agent-teamctl install --host codex|claude|both`, explicitly selecting Codex, Claude, or both. The core works on Windows, macOS, and Linux with Go and Git primitives; optional tools never become required authority. The Node-based v7.3.1 hook/runtime is legacy and `TASKS.md` is provenance after an approved Beads cutover. `BLOCKERS.md` and `DECISIONS.md` remain projections rather than task stores.
+
+The supported foreground lifecycle is `setup`, `status`, `start`, `task add`, `one-off`, `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN is internal review, not a public `review` action. `rollback --version <version>` and `uninstall` retain changed or unknown files. Host switching transfers no lease; the dashboard is local-only; capacity caps and native fallbacks remain active when optional Serena, Graphify, LeanCTX, browser, or visual capabilities are absent.
+
+See the [vNext benchmark report](../docs/benchmarks/vnext-optional-8.0.0.md) and revision-bound release checks. Raw evidence stays outside release archives.
+
 Preparation makes a capability available; it does not load all its instructions or tool schemas into every agent. The project orchestrator owns setup and records source, tested version/revision, scope, prerequisites, compatibility profile and functional evidence. See [setup](SETUP.md).
 
 ## Catalog
