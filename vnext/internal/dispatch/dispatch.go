@@ -42,12 +42,7 @@ func (d *dispatcher) Dispatch(ctx context.Context, packet core.AssignmentPacket,
 		WritablePaths: append([]string(nil), worktree.WritablePaths...),
 		Reviewer:      false,
 	}
-	var handle contracts.WorkerHandle
-	err := lifecycle.WithAdmission(ctx, d.state, packet, func() error {
-		var startErr error
-		handle, startErr = d.adapter.StartWorker(ctx, request)
-		return startErr
-	})
+	handle, err := lifecycle.StartWorkerAllowed(ctx, d.state, packet, d.adapter, request)
 	if err != nil {
 		return contracts.WorkerHandle{}, err
 	}

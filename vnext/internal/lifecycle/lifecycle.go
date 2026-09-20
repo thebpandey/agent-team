@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/project"
 	"github.com/thebpandey/agent-team/vnext/internal/run"
@@ -91,34 +92,56 @@ func NewLifecycle(state *store.Store, supervisor EventSink) Lifecycle {
 // AdmissionAllowed reads the run and project barriers that can prevent a new
 // assignment before a caller constructs any host request.
 func AdmissionAllowed(ctx context.Context, state *store.Store, packet core.AssignmentPacket) error {
-	return WithAdmission(ctx, state, packet, nil)
+	state, mu, err := admissionStore(state)
+	if err != nil {
+		return err
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return admissionAllowedUnlocked(ctx, state, packet)
 }
 
-// WithAdmission keeps packet membership, barrier validation, and a foreground
-// start callback under the same root-wide lock used by lifecycle transitions.
-func WithAdmission(ctx context.Context, state *store.Store, packet core.AssignmentPacket, callback func() error) error {
-	if ctx == nil || ctx.Err() != nil || state == nil || packet.RunID == "" || packet.Team == "" || packet.Task == "" {
-		return core.ErrTransition
+// StartWorkerAllowed is the sole host-start admission operation. It holds the
+// lifecycle guard through canonical validation and the synchronous adapter call.
+func StartWorkerAllowed(ctx context.Context, state *store.Store, packet core.AssignmentPacket, adapter contracts.HostAdapter, request contracts.WorkerRequest) (contracts.WorkerHandle, error) {
+	if adapter == nil {
+		return contracts.WorkerHandle{}, core.ErrCapacity
 	}
-	root, err := canonicalStoreRoot(state)
+	state, mu, err := admissionStore(state)
 	if err != nil {
-		return core.ErrPath
+		return contracts.WorkerHandle{}, err
 	}
-	state = store.New(root, state.Limits)
-	value, _ := locks.LoadOrStore(root, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
 	mu.Lock()
 	defer mu.Unlock()
 	if err := admissionAllowedUnlocked(ctx, state, packet); err != nil {
-		return err
+		return contracts.WorkerHandle{}, err
 	}
-	if callback != nil {
-		return callback()
+	return adapter.StartWorker(ctx, request)
+}
+
+func admissionStore(state *store.Store) (*store.Store, *sync.Mutex, error) {
+	if state == nil {
+		return nil, nil, core.ErrTransition
+	}
+	root, err := canonicalStoreRoot(state)
+	if err != nil {
+		return nil, nil, core.ErrPath
+	}
+	value, _ := locks.LoadOrStore(root, &sync.Mutex{})
+	return store.New(root, state.Limits), value.(*sync.Mutex), nil
+}
+
+func validAdmissionPacket(ctx context.Context, packet core.AssignmentPacket) error {
+	if ctx == nil || ctx.Err() != nil || packet.RunID == "" || packet.Team == "" || packet.Task == "" {
+		return core.ErrTransition
 	}
 	return nil
 }
 
 func admissionAllowedUnlocked(ctx context.Context, state *store.Store, packet core.AssignmentPacket) error {
+	if err := validAdmissionPacket(ctx, packet); err != nil {
+		return err
+	}
 	manifest, err := run.NewRepositories(state).Runs.Read(ctx, packet.RunID)
 	if err != nil {
 		return core.ErrTransition
@@ -167,14 +190,18 @@ func validBarrierRecord(barrier record, runID core.RunID, scope core.Scope) erro
 		return core.ErrRevision
 	}
 	switch barrier.State {
-	case core.Ready, core.Paused, core.Interrupted, core.Cancelled:
-		return nil
-	case core.Working, core.Implementing, core.Reviewing, core.Fix, core.Clean, core.Gated, core.Integrated, core.Blocked, core.Archived, core.Idle:
-		if barrier.CheckpointDigest != "" {
-			return nil
+	case core.Ready, core.Working:
+		if barrier.Reason != "" {
+			return core.ErrRevision
 		}
+	case core.Paused, core.Interrupted, core.Cancelled:
+		if barrier.Reason == "" {
+			return core.ErrRevision
+		}
+	default:
+		return core.ErrRevision
 	}
-	return core.ErrRevision
+	return nil
 }
 
 func (c *controller) Pause(ctx context.Context, scope core.Scope, reason string) error {
