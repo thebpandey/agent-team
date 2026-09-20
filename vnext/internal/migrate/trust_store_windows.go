@@ -4,6 +4,7 @@ package migrate
 
 import (
 	"os"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -73,48 +74,52 @@ func systemTrustStoreOwner(path string, expected os.FileInfo) bool {
 	if syscall.GetFileInformationByHandle(handle, &information) != nil || information.FileAttributes&(windowsReparseAttribute|windowsDirectoryAttribute) != 0 {
 		return false
 	}
-	var owner, dacl, descriptor uintptr
+	var owner, dacl, descriptor unsafe.Pointer
 	status, _, _ := windowsGetSecurityInfo.Call(uintptr(handle), windowsSEFileObject, windowsOwnerSecurity|windowsDACLSecurity, uintptr(unsafe.Pointer(&owner)), 0, uintptr(unsafe.Pointer(&dacl)), 0, uintptr(unsafe.Pointer(&descriptor)))
-	if status != 0 || descriptor == 0 {
+	if status != 0 || descriptor == nil {
 		return false
 	}
-	defer windowsLocalFree.Call(descriptor)
+	defer func() {
+		windowsLocalFree.Call(uintptr(descriptor))
+		runtime.KeepAlive(descriptor)
+	}()
 	ownerTrusted := windowsTrustedSID(owner)
-	if dacl == 0 {
+	if dacl == nil {
 		return false
 	}
-	acl := (*windowsACL)(unsafe.Pointer(dacl))
+	acl := (*windowsACL)(dacl)
 	aces := make([]windowsTrustACE, 0, acl.aceCount)
 	for index := uint16(0); index < acl.aceCount; index++ {
-		var address uintptr
-		ok, _, _ := windowsGetACE.Call(dacl, uintptr(index), uintptr(unsafe.Pointer(&address)))
-		if ok == 0 || address == 0 {
+		var address unsafe.Pointer
+		ok, _, _ := windowsGetACE.Call(uintptr(dacl), uintptr(index), uintptr(unsafe.Pointer(&address)))
+		if ok == 0 || address == nil {
 			return false
 		}
-		header := (*windowsACEHeader)(unsafe.Pointer(address))
+		header := (*windowsACEHeader)(address)
 		ace := windowsTrustACE{known: header.typeID == windowsAccessAllowedACE || header.typeID == windowsAccessDeniedACE}
 		if !ace.known || header.size < windowsMinimumAccessACESize {
 			return false
 		}
 		ace.allow = header.typeID == windowsAccessAllowedACE
-		ace.mask = *(*uint32)(unsafe.Pointer(address + 4))
-		sid := address + 8
-		valid, _, _ := windowsIsValidSID.Call(sid)
+		ace.mask = *(*uint32)(unsafe.Add(address, 4))
+		sid := unsafe.Add(address, 8)
+		valid, _, _ := windowsIsValidSID.Call(uintptr(sid))
 		if valid == 0 {
 			return false
 		}
 		ace.trusted = windowsTrustedSID(sid)
 		aces = append(aces, ace)
 	}
+	runtime.KeepAlive(descriptor)
 	return trustedWindowsACL(ownerTrusted, true, aces)
 }
 
-func windowsTrustedSID(sid uintptr) bool {
-	if sid == 0 {
+func windowsTrustedSID(sid unsafe.Pointer) bool {
+	if sid == nil {
 		return false
 	}
 	for _, kind := range []uintptr{windowsLocalSystemSID, windowsBuiltinAdminsSID} {
-		if ok, _, _ := windowsIsWellKnownSID.Call(sid, kind); ok != 0 {
+		if ok, _, _ := windowsIsWellKnownSID.Call(uintptr(sid), kind); ok != 0 {
 			return true
 		}
 	}

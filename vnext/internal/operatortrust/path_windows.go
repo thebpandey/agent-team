@@ -4,6 +4,7 @@ package operatortrust
 
 import (
 	"os"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -71,39 +72,43 @@ func Owner(path string, expected os.FileInfo) bool {
 	if syscall.GetFileInformationByHandle(handle, &information) != nil || information.FileAttributes&(reparseAttribute|directoryAttribute) != 0 {
 		return false
 	}
-	var owner, dacl, descriptor uintptr
+	var owner, dacl, descriptor unsafe.Pointer
 	status, _, _ := getSecurityInfo.Call(uintptr(handle), seFileObject, ownerSecurity|daclSecurity, uintptr(unsafe.Pointer(&owner)), 0, uintptr(unsafe.Pointer(&dacl)), 0, uintptr(unsafe.Pointer(&descriptor)))
-	if status != 0 || descriptor == 0 || !trustedSID(owner) || dacl == 0 {
+	if status != 0 || descriptor == nil || !trustedSID(owner) || dacl == nil {
 		return false
 	}
-	defer localFree.Call(descriptor)
-	list := (*acl)(unsafe.Pointer(dacl))
+	defer func() {
+		localFree.Call(uintptr(descriptor))
+		runtime.KeepAlive(descriptor)
+	}()
+	list := (*acl)(dacl)
 	for index := uint16(0); index < list.aceCount; index++ {
-		var address uintptr
-		ok, _, _ := getACE.Call(dacl, uintptr(index), uintptr(unsafe.Pointer(&address)))
-		if ok == 0 || address == 0 {
+		var address unsafe.Pointer
+		ok, _, _ := getACE.Call(uintptr(dacl), uintptr(index), uintptr(unsafe.Pointer(&address)))
+		if ok == 0 || address == nil {
 			return false
 		}
-		header := (*aceHeader)(unsafe.Pointer(address))
+		header := (*aceHeader)(address)
 		if (header.typeID != accessAllowedACE && header.typeID != accessDeniedACE) || header.size < minimumAccessACESize {
 			return false
 		}
-		mask := *(*uint32)(unsafe.Pointer(address + 4))
-		sid := address + 8
-		valid, _, _ := isValidSID.Call(sid)
+		mask := *(*uint32)(unsafe.Add(address, 4))
+		sid := unsafe.Add(address, 8)
+		valid, _, _ := isValidSID.Call(uintptr(sid))
 		if valid == 0 || header.typeID == accessAllowedACE && mask&trustWriteMask != 0 && !trustedSID(sid) {
 			return false
 		}
 	}
+	runtime.KeepAlive(descriptor)
 	return true
 }
 
-func trustedSID(sid uintptr) bool {
-	if sid == 0 {
+func trustedSID(sid unsafe.Pointer) bool {
+	if sid == nil {
 		return false
 	}
 	for _, kind := range []uintptr{localSystemSID, builtinAdminsSID} {
-		if ok, _, _ := isWellKnownSID.Call(sid, kind); ok != 0 {
+		if ok, _, _ := isWellKnownSID.Call(uintptr(sid), kind); ok != 0 {
 			return true
 		}
 	}
