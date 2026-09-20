@@ -90,6 +90,117 @@ func TestHolderLivenessRequiresCreationIdentityAndKnownState(t *testing.T) {
 	}
 }
 
+func TestMutationOwnerReadRejectsSymlinkOversizeAndSwap(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{"symlink", func(t *testing.T, path string) {
+			target := path + ".target"
+			if err := os.Rename(path, target); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+		}},
+		{"oversize", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, make([]byte, (16<<10)+1), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"swap", func(t *testing.T, path string) {
+			ownerReadHook = func(got string) {
+				if got != path {
+					return
+				}
+				ownerReadHook = nil
+				if err := os.Rename(path, path+".opened"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("foreign"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			guard, err := AcquireProjectMutation(context.Background(), root, "test", "owner-read")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, filepath.FromSlash(projectMutationLock))
+			test.mutate(t, path)
+			t.Cleanup(func() { ownerReadHook = nil })
+			if err := guard.Release(); !errors.Is(err, core.ErrRevision) {
+				t.Fatalf("unsafe owner read accepted: %v", err)
+			}
+			if _, err := os.Lstat(path); err != nil {
+				t.Fatalf("replacement removed: %v", err)
+			}
+		})
+	}
+}
+
+func TestMutationRecoveryRejectsOwnerSwap(t *testing.T) {
+	root := t.TempDir()
+	guard, err := AcquireProjectMutation(context.Background(), root, "test", "owner-recovery-swap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, filepath.FromSlash(projectMutationLock))
+	ownerReadHook = func(got string) {
+		if got != path {
+			return
+		}
+		ownerReadHook = nil
+		if err := os.Rename(path, path+".opened"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("foreign"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { ownerReadHook = nil })
+	if _, err := RecoverProjectMutation(context.Background(), root, recoveryRequest(MutationLockPrimary, guard.Owner()), livenessProof{dead: true}); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("recovery accepted swapped owner: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "foreign" {
+		t.Fatalf("foreign replacement changed: %q, %v", got, err)
+	}
+}
+
+func TestMutationRecoveryRejectsSymlinkAndOversizeOwner(t *testing.T) {
+	for _, kind := range []string{"symlink", "oversize"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			guard, err := AcquireProjectMutation(context.Background(), root, "test", "unsafe-recovery")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, filepath.FromSlash(projectMutationLock))
+			if kind == "symlink" {
+				target := path + ".target"
+				if err := os.Rename(path, target); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			} else if err := os.WriteFile(path, make([]byte, (16<<10)+1), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := RecoverProjectMutation(context.Background(), root, recoveryRequest(MutationLockPrimary, guard.Owner()), livenessProof{dead: true}); !errors.Is(err, core.ErrRevision) {
+				t.Fatalf("unsafe recovery owner accepted: %v", err)
+			}
+			if _, err := os.Lstat(path); err != nil {
+				t.Fatalf("unsafe owner removed: %v", err)
+			}
+		})
+	}
+}
+
 type livenessProof struct {
 	dead    bool
 	err     error

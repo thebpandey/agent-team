@@ -28,6 +28,7 @@ const (
 )
 
 var ownerCandidateHook func(string)
+var ownerReadHook func(string)
 var syncGuardNamespace = syncGuardDirectory
 
 type MutationOwner struct {
@@ -273,12 +274,29 @@ func MutationLockOwner(root, target string) (MutationOwner, error) {
 }
 
 func readOwner(path string) (MutationOwner, error) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 16<<10 {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
 		return MutationOwner{}, core.ErrRevision
 	}
-	raw, err := os.ReadFile(path)
+	file, err := root.OpenFile(filepath.Base(path), os.O_RDONLY|guardReadFlags(), 0)
+	_ = root.Close()
 	if err != nil {
+		return MutationOwner{}, core.ErrRevision
+	}
+	defer file.Close()
+	if ownerReadHook != nil {
+		ownerReadHook(path)
+	}
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || opened.Size() < 0 || opened.Size() > 16<<10 {
+		return MutationOwner{}, core.ErrRevision
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, (16<<10)+1))
+	if err != nil || int64(len(raw)) != opened.Size() || len(raw) > 16<<10 {
+		return MutationOwner{}, core.ErrRevision
+	}
+	current, err := os.Lstat(path)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
 		return MutationOwner{}, core.ErrRevision
 	}
 	var owner MutationOwner
