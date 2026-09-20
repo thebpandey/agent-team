@@ -229,7 +229,12 @@ func publishOwner(root, relative string, owner MutationOwner) error {
 
 func removeExactOwner(root, relative string, expected MutationOwner) error {
 	path := filepath.Join(root, filepath.FromSlash(relative))
+	tombstoneRelative := relative + ".removed-" + expected.Token
+	tombstone := filepath.Join(root, filepath.FromSlash(tombstoneRelative))
 	before, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return removeOwnerTombstone(root, tombstoneRelative, expected, nil)
+	}
 	if err != nil {
 		return core.ErrRevision
 	}
@@ -237,22 +242,67 @@ func removeExactOwner(root, relative string, expected MutationOwner) error {
 	if err != nil || !reflect.DeepEqual(current, expected) {
 		return core.ErrRevision
 	}
-	tombstone := path + ".removed-" + expected.Token
-	if err := os.Rename(path, tombstone); err != nil {
-		return err
-	}
-	if err := syncGuardNamespace(filepath.Dir(path)); err != nil {
-		return err
-	}
-	after, statErr := os.Stat(tombstone)
-	current, readErr := readOwner(tombstone)
-	if statErr != nil || readErr != nil || !os.SameFile(before, after) || !reflect.DeepEqual(current, expected) {
+	confirmed, err := os.Stat(path)
+	if err != nil || !os.SameFile(before, confirmed) {
 		return core.ErrRevision
 	}
-	if err := os.Remove(tombstone); err != nil {
+	if err := os.Link(path, tombstone); err != nil {
+		if !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		tombstoneInfo, statErr := os.Stat(tombstone)
+		if statErr != nil || !os.SameFile(before, tombstoneInfo) {
+			return core.ErrRevision
+		}
+	} else if err := syncGuardNamespace(filepath.Dir(path)); err != nil {
 		return err
 	}
-	return syncGuardNamespace(filepath.Dir(path))
+	if err := removeOwnerPath(root, relative, expected, before); err != nil {
+		return err
+	}
+	return removeOwnerTombstone(root, tombstoneRelative, expected, before)
+}
+
+func removeOwnerTombstone(root, relative string, expected MutationOwner, identity os.FileInfo) error {
+	full := filepath.Join(root, filepath.FromSlash(relative))
+	if identity == nil {
+		var err error
+		identity, err = os.Stat(full)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return core.ErrRevision
+		}
+	}
+	return removeOwnerPath(root, relative, expected, identity)
+}
+
+func removeOwnerPath(root, relative string, expected MutationOwner, identity os.FileInfo) error {
+	full := filepath.Join(root, filepath.FromSlash(relative))
+	current, err := readOwner(full)
+	if err != nil || !reflect.DeepEqual(current, expected) {
+		return core.ErrRevision
+	}
+	confirmed, err := os.Stat(full)
+	if err != nil || !os.SameFile(identity, confirmed) {
+		return core.ErrRevision
+	}
+	opened, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer opened.Close()
+	if err := removeOwned(opened, ownedTemp{name: filepath.ToSlash(relative), info: identity}); err != nil {
+		return err
+	}
+	if _, err := opened.Lstat(filepath.ToSlash(relative)); err == nil {
+		_ = syncGuardNamespace(filepath.Dir(full))
+		return core.ErrRevision
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return syncGuardNamespace(filepath.Dir(full))
 }
 
 func readMutationOwner(root string) (MutationOwner, error) {

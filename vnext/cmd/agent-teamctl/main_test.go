@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -33,10 +34,13 @@ func TestRollbackRevisionDispatchWithJSONAndUniqueCompatibility(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
-			t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+			dataHome := filepath.Join(root, "data")
+			t.Setenv("LOCALAPPDATA", dataHome)
+			t.Setenv("APPDATA", filepath.Join(root, "roaming"))
+			t.Setenv("XDG_DATA_HOME", dataHome)
 			t.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
 			t.Setenv("CLAUDE_HOME", filepath.Join(root, "claude"))
-			layout, err := install.ResolveLayout("linux", map[string]string{"XDG_DATA_HOME": os.Getenv("XDG_DATA_HOME"), "CODEX_HOME": os.Getenv("CODEX_HOME"), "CLAUDE_HOME": os.Getenv("CLAUDE_HOME")})
+			layout, err := install.ResolveLayout(runtime.GOOS, map[string]string{"LOCALAPPDATA": os.Getenv("LOCALAPPDATA"), "XDG_DATA_HOME": os.Getenv("XDG_DATA_HOME"), "CODEX_HOME": os.Getenv("CODEX_HOME"), "CLAUDE_HOME": os.Getenv("CLAUDE_HOME")})
 			if err != nil {
 				t.Fatal(err)
 			}

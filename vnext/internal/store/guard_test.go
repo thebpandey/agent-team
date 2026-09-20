@@ -360,6 +360,102 @@ func TestMutationGuardReleaseRequiresExactOwner(t *testing.T) {
 	}
 }
 
+func TestMutationGuardReleaseResumesExactTombstoneAndIsIdempotent(t *testing.T) {
+	for _, crash := range []string{"linked", "canonical-removed"} {
+		t.Run(crash, func(t *testing.T) {
+			root := t.TempDir()
+			guard, err := AcquireProjectMutation(context.Background(), root, "install", "resume-release")
+			if err != nil {
+				t.Fatal(err)
+			}
+			canonical := filepath.Join(root, filepath.FromSlash(projectMutationLock))
+			tombstone := canonical + ".removed-" + guard.Owner().Token
+			if err := os.Link(canonical, tombstone); err != nil {
+				t.Fatal(err)
+			}
+			if crash == "canonical-removed" {
+				if err := os.Remove(canonical); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := guard.Release(); err != nil {
+				t.Fatal(err)
+			}
+			if err := guard.Release(); err != nil {
+				t.Fatalf("repeated release = %v", err)
+			}
+			for _, path := range []string{canonical, tombstone} {
+				if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("release residue %s: %v", path, err)
+				}
+			}
+			next, err := AcquireProjectMutation(context.Background(), root, "install", "after-resume")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := next.Release(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestMutationGuardReleaseRetainsReplacementAfterIdentityClaim(t *testing.T) {
+	root := t.TempDir()
+	guard, err := AcquireProjectMutation(context.Background(), root, "install", "replacement-release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalRelative := filepath.ToSlash(projectMutationLock)
+	canonical := filepath.Join(root, filepath.FromSlash(projectMutationLock))
+	ownedRemoveHook = func(opened *os.Root, owned ownedTemp) {
+		if owned.name != canonicalRelative {
+			return
+		}
+		ownedRemoveHook = nil
+		file, err := opened.OpenFile(canonicalRelative, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteString("foreign"); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { ownedRemoveHook = nil })
+	if err := guard.Release(); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("replacement release = %v", err)
+	}
+	if got, err := os.ReadFile(canonical); err != nil || string(got) != "foreign" {
+		t.Fatalf("replacement = %q, %v", got, err)
+	}
+}
+
+func TestMutationGuardReleaseRetainsTamperedTombstone(t *testing.T) {
+	root := t.TempDir()
+	guard, err := AcquireProjectMutation(context.Background(), root, "install", "tampered-tombstone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(root, filepath.FromSlash(projectMutationLock))
+	tombstone := canonical + ".removed-" + guard.Owner().Token
+	if err := os.Rename(canonical, tombstone); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tombstone, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := guard.Release(); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("tampered tombstone release = %v", err)
+	}
+	if got, err := os.ReadFile(tombstone); err != nil || string(got) != "tampered" {
+		t.Fatalf("tampered tombstone = %q, %v", got, err)
+	}
+}
+
 func TestMutationGuardOwnerRecordIsDurable(t *testing.T) {
 	root := t.TempDir()
 	guard, err := AcquireProjectMutation(context.Background(), root, "deploy", "batch-1")
