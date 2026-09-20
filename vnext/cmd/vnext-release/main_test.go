@@ -156,12 +156,16 @@ func TestFinalizeEvidenceValidCompletePipeline(t *testing.T) {
 	revision := "0123456789abcdef0123456789abcdef01234567"
 	native := writeEvents(t, root, "native.json", []string{"TestNative"}, "")
 	benchmark := writeEvents(t, root, "benchmark.json", []string{"TestReleaseReport"}, "")
+	phase1 := exactPhase1Evidence(t, root)
 	if err := collectEvidence(revision, out, native, benchmark); err != nil {
 		t.Fatal(err)
 	}
 	for index := 1; index <= 5; index++ {
 		phase := "phase" + string(rune('0'+index))
 		source := writeEvents(t, root, phase+".json", []string{"TestReview"}, "")
+		if index == 1 {
+			source = phase1
+		}
 		digest, _ := readPassingTest(source)
 		writeJSONTest(t, filepath.Join(out, phase+"-review.json"), ReviewEvidence{Phase: phase, Revision: revision, Author: "builder", Reviewer: "reviewer-" + phase, Source: source, Digest: digest, Result: "CLEAN"})
 	}
@@ -204,6 +208,21 @@ func TestFinalizeEvidenceValidCompletePipeline(t *testing.T) {
 	if err := release.VerifyReadinessEvidence(readinessPath, revision); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func exactPhase1Evidence(t *testing.T, root string) string {
+	t.Helper()
+	path := filepath.Join(root, "core-phase1.json")
+	command := exec.Command("go", "test", "-json", "./internal/core", "-count=1")
+	command.Dir = filepath.Clean(filepath.Join("..", ".."))
+	raw, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run exact phase 1 evidence command: %v\n%s", err, raw)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func writeEvents(t *testing.T, root, name string, tests []string, failure string) string {
