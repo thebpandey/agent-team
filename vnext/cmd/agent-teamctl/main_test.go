@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,11 +14,81 @@ import (
 
 	"github.com/thebpandey/agent-team/vnext/internal/cli"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/install"
 	releasepkg "github.com/thebpandey/agent-team/vnext/internal/release"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
 const testRevision = "0123456789abcdef0123456789abcdef01234567"
+
+func TestRollbackRevisionDispatchWithJSONAndUniqueCompatibility(t *testing.T) {
+	const nextRevision = "abcdef0123456789abcdef0123456789abcdef01"
+	for _, test := range []struct {
+		name      string
+		ambiguous bool
+		args      []string
+	}{
+		{name: "revision with JSON", ambiguous: true, args: []string{"rollback", "--version", "8.0.0", "--revision", testRevision, "--json"}},
+		{name: "unique without JSON", args: []string{"rollback", "--version", "8.0.0"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+			t.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
+			t.Setenv("CLAUDE_HOME", filepath.Join(root, "claude"))
+			layout, err := install.ResolveLayout("linux", map[string]string{"XDG_DATA_HOME": os.Getenv("XDG_DATA_HOME"), "CODEX_HOME": os.Getenv("CODEX_HOME"), "CLAUDE_HOME": os.Getenv("CLAUDE_HOME")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := cliReleaseFixture(t, filepath.Join(root, "old"), "8.0.0", testRevision, "old")
+			next := cliReleaseFixture(t, filepath.Join(root, "next"), "8.0.0", nextRevision, "next")
+			installed, err := install.Install(context.Background(), layout, old, []install.Host{install.Codex, install.Claude}, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated, err := install.Update(context.Background(), layout, next, installed.Manifest.Revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.ambiguous {
+				manifest := updated.Manifest
+				for index, file := range manifest.Files {
+					body, err := os.ReadFile(file.Path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					path := filepath.Join(layout.DataRoot, "backups", "ambiguous", fmt.Sprint(index))
+					writeTestFile(t, path, string(body))
+					manifest.Backups = append(manifest.Backups, install.Backup{Role: file.Role, Host: file.Host, Path: path, SHA256: file.SHA256, Version: file.Version, Revision: file.Revision, Bytes: file.Bytes})
+				}
+				manifest.Revision = 0
+				updated, err = install.NewManifestStore(layout).CompareAndSwap(context.Background(), updated.Manifest.Revision, manifest)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			var output bytes.Buffer
+			if code := cli.Run(context.Background(), test.args, core.Dependencies{Stdout: &output, Stderr: &output, Management: runManagement}); code != 0 {
+				t.Fatalf("code=%d output=%q", code, output.String())
+			}
+			got, err := install.NewManifestStore(layout).Read(context.Background())
+			if err != nil || got.ReleaseRevision != testRevision || got.Revision != updated.Manifest.Revision+1 {
+				t.Fatalf("manifest=%+v err=%v output=%q", got, err, output.String())
+			}
+		})
+	}
+}
+
+func cliReleaseFixture(t *testing.T, root, version, revision, marker string) install.Release {
+	t.Helper()
+	file := func(name string) install.ReleaseFile {
+		path := filepath.Join(root, name)
+		body := []byte(marker + " " + name)
+		writeTestFile(t, path, string(body))
+		return install.ReleaseFile{Path: path, SHA256: fmt.Sprintf("%x", sha256.Sum256(body)), Bytes: int64(len(body))}
+	}
+	return install.Release{Version: version, Revision: revision, Binary: file("agent-teamctl"), Contract: file("WORKER-CONTRACT"), Entrypoints: map[install.Host]install.ReleaseFile{install.Codex: file("codex.md"), install.Claude: file("claude.md")}}
+}
 
 type recoveryProof struct {
 	dead    bool

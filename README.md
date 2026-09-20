@@ -6,7 +6,7 @@ The Node-based **v7.3.1** package described in older sections is legacy during t
 
 ## vNext native transition
 
-Install one checksum-verified native package and select the host explicitly: `agent-teamctl install --host codex|claude|both`. The same package supports Codex and Claude on Windows, macOS, and Linux; switching hosts is a foreground action and transfers no lease or worker identity. `rollback --version <version>` and `uninstall` remove only exact manifest-owned bytes and retain changed or unknown files.
+Install one checksum-verified native package and select the host explicitly: `agent-teamctl install --host codex|claude|both`. The same package supports Codex and Claude on Windows, macOS, and Linux; switching hosts is a foreground action and transfers no lease or worker identity. `rollback --version <version>` selects a unique release backup; add `--revision <commit>` when that version has multiple revisions. Rollback and `uninstall` touch only exact manifest-owned bytes and retain changed or unknown files.
 
 The public lifecycle is `setup`, `status`, `start`, `task add`, and `one-off`, plus scoped `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN is an internal independent-review loop, not a public `review` command. Beads is the live tracker after an approved cutover; a pre-cutover `TASKS.md` is legacy provenance only. `BLOCKERS.md` and `DECISIONS.md` are bounded human-readable projections, never competing task stores.
 

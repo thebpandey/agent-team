@@ -109,8 +109,10 @@ func Parse(args []string) (Action, error) {
 		actionArgs, err = parseDeployArgs(args[1:])
 	case "install":
 		actionArgs, err = parseExactPair(args[1:], "--host", map[string]bool{"codex": true, "claude": true, "both": true})
-	case "update", "rollback":
+	case "update":
 		actionArgs, err = parseExactPair(args[1:], "--version", nil)
+	case "rollback":
+		actionArgs, err = parseRollbackArgs(args[1:])
 	case "uninstall":
 		if len(args) != 1 {
 			return Action{}, core.ErrPhase
@@ -123,6 +125,28 @@ func Parse(args []string) (Action, error) {
 	}
 
 	return Action{Name: name, Args: actionArgs, JSON: jsonOutput, ScopeRequired: name == "pause" || name == "stop" || name == "cancel" || name == "resume"}, nil
+}
+
+func parseRollbackArgs(args []string) ([]string, error) {
+	if len(args) != 2 && len(args) != 4 || len(args) < 2 || args[0] != "--version" || strings.TrimSpace(args[1]) == "" {
+		return nil, core.ErrPhase
+	}
+	if len(args) == 4 && (args[2] != "--revision" || !validRevision(args[3])) {
+		return nil, core.ErrPhase
+	}
+	return append([]string(nil), args...), nil
+}
+
+func validRevision(value string) bool {
+	if len(value) < 40 || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", character) {
+			return false
+		}
+	}
+	return true
 }
 
 func parseMutationCleanup(args []string) ([]string, error) {

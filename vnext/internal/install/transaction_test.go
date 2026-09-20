@@ -364,6 +364,108 @@ func TestUpdateJournalBudgetAcceptsReleaseSizedBinaries(t *testing.T) {
 	assertNoJournal(t, layout)
 }
 
+func TestSameVersionRevisionRetryRollbackAndReupdate(t *testing.T) {
+	layout, old := internalFixture(t, "old")
+	_, next := internalFixtureAt(t, filepath.Join(filepath.Dir(layout.DataRoot), "new"), "new")
+	next.Version = old.Version
+	next.Revision = "abcdef0123456789abcdef0123456789abcdef01"
+	unrelated := filepath.Join(filepath.Dir(layout.DataRoot), "settings.json")
+	if err := os.WriteFile(unrelated, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	installed, err := Install(context.Background(), layout, old, []Host{Codex, Claude}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := Update(context.Background(), layout, next, installed.Manifest.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupCount := len(updated.Manifest.Backups)
+	retried, err := Update(context.Background(), layout, next, updated.Manifest.Revision)
+	if err != nil || !retried.Idempotent || retried.Manifest.Revision != updated.Manifest.Revision || len(retried.Manifest.Backups) != backupCount {
+		t.Fatalf("retry=%+v err=%v", retried, err)
+	}
+
+	rolled, err := RollbackRelease(context.Background(), layout, old.Version, old.Revision, retried.Manifest.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertManifestRelease(t, rolled.Manifest, old.Version, old.Revision)
+	reupdated, err := Update(context.Background(), layout, next, rolled.Manifest.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertManifestRelease(t, reupdated.Manifest, next.Version, next.Revision)
+	if got, err := os.ReadFile(unrelated); err != nil || string(got) != "keep" {
+		t.Fatalf("unrelated=%q err=%v", got, err)
+	}
+}
+
+func TestRollbackVersionRejectsAmbiguousRevisionsBeforeMutation(t *testing.T) {
+	layout, old := internalFixture(t, "old")
+	_, next := internalFixtureAt(t, filepath.Join(filepath.Dir(layout.DataRoot), "new"), "new")
+	next.Version = old.Version
+	next.Revision = "abcdef0123456789abcdef0123456789abcdef01"
+	installed, err := Install(context.Background(), layout, old, []Host{Codex, Claude}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := Update(context.Background(), layout, next, installed.Manifest.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := addCurrentBackups(t, layout, updated.Manifest)
+	before := cloneManifest(current)
+	if _, err := Rollback(context.Background(), layout, old.Version, current.Revision); !errors.Is(err, core.ErrRevision) || !strings.Contains(err.Error(), "--revision") || !strings.Contains(err.Error(), old.Revision) || !strings.Contains(err.Error(), next.Revision) {
+		t.Fatalf("ambiguous rollback error = %v", err)
+	}
+	assertLifecycleUnchanged(t, layout, before)
+	rolled, err := RollbackRelease(context.Background(), layout, old.Version, old.Revision, current.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertManifestRelease(t, rolled.Manifest, old.Version, old.Revision)
+}
+
+func addCurrentBackups(t *testing.T, layout Layout, manifest InstallManifest) InstallManifest {
+	t.Helper()
+	next := cloneManifest(manifest)
+	for _, file := range manifest.Files {
+		path := backupPath(layout, file)
+		body, err := os.ReadFile(file.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		next.Backups = appendBackup(next.Backups, Backup{Role: file.Role, Host: file.Host, Path: path, SHA256: file.SHA256, Version: file.Version, Revision: file.Revision, Bytes: file.Bytes})
+	}
+	next.Revision = 0
+	outcome, err := NewManifestStore(layout).CompareAndSwap(context.Background(), manifest.Revision, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return outcome.Manifest
+}
+
+func assertManifestRelease(t *testing.T, manifest InstallManifest, version, revision string) {
+	t.Helper()
+	if manifest.Version != version || manifest.ReleaseRevision != revision {
+		t.Fatalf("manifest identity = %s@%s", manifest.Version, manifest.ReleaseRevision)
+	}
+	for _, file := range manifest.Files {
+		if file.Version != version || file.Revision != revision || !diskMatches(file.Path, file.SHA256, file.Bytes) {
+			t.Fatalf("incoherent file = %+v", file)
+		}
+	}
+}
+
 func TestLifecycleJournalBudgetBoundary(t *testing.T) {
 	budget := newJournalBudget()
 	if err := budget.accountMetadata(lifecycleJournal{}); err != nil {

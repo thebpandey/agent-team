@@ -505,16 +505,16 @@ func updateJournalPlan(layout Layout, release Release, current InstallManifest, 
 	return plan
 }
 
-func rollbackJournalPlan(layout Layout, current InstallManifest, version string, owner store.MutationOwner, expected uint64) lifecycleJournal {
+func rollbackJournalPlan(layout Layout, current InstallManifest, version, revision string, backups []Backup, owner store.MutationOwner, expected uint64) lifecycleJournal {
 	previous, intended := cloneManifest(current), cloneManifest(current)
-	intended.Revision, intended.Version = expected+1, version
+	intended.Revision, intended.Version, intended.ReleaseRevision = expected+1, version, revision
 	plan := lifecycleJournal{Schema: 1, Operation: "rollback", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended}
-	for _, backup := range current.Backups {
-		if backup.Version != version {
-			continue
-		}
+	for _, backup := range backups {
 		index := ownedIndex(plan.Intended.Files, backup.Role, backup.Host)
 		if index < 0 {
+			continue
+		}
+		if plan.Intended.Files[index].Version == version && plan.Intended.Files[index].Revision == revision {
 			continue
 		}
 		mode := uint32(0o600)
@@ -525,9 +525,56 @@ func rollbackJournalPlan(layout Layout, current InstallManifest, version string,
 		plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: file.Path, Existed: true, PreSHA256: strings.Repeat("0", 64), PreMode: plannedMode(file.Path), PostMode: mode, PostSHA256: backup.SHA256, PostBytes: backup.Bytes})
 		plan.Retained = append(plan.Retained, file.Path)
 		plan.Intended.Files[index].SHA256, plan.Intended.Files[index].Bytes, plan.Intended.Files[index].Version, plan.Intended.Files[index].Revision = backup.SHA256, backup.Bytes, backup.Version, backup.Revision
-		plan.Intended.ReleaseRevision = backup.Revision
 	}
 	return plan
+}
+
+func selectRollbackBackups(current InstallManifest, version, revision string) ([]Backup, string, error) {
+	revisions := map[string]bool{}
+	for _, backup := range current.Backups {
+		if backup.Version == version {
+			revisions[backup.Revision] = true
+		}
+	}
+	available := make([]string, 0, len(revisions))
+	for candidate := range revisions {
+		available = append(available, candidate)
+	}
+	sort.Strings(available)
+	if revision == "" {
+		if len(available) == 0 {
+			return nil, "", fmt.Errorf("%w: rollback %s unavailable", core.ErrRevision, version)
+		}
+		if len(available) > 1 {
+			return nil, "", fmt.Errorf("%w: rollback %s is ambiguous; use --revision with one of %v", core.ErrRevision, version, available)
+		}
+		revision = available[0]
+	} else if !revisions[revision] {
+		return nil, "", fmt.Errorf("%w: rollback %s@%s unavailable; revisions %v", core.ErrRevision, version, revision, available)
+	}
+	selected := []Backup{}
+	seen := map[string]bool{}
+	for _, backup := range current.Backups {
+		if backup.Version != version || backup.Revision != revision {
+			continue
+		}
+		key := string(backup.Role) + "\x00" + string(backup.Host)
+		if seen[key] {
+			return nil, "", fmt.Errorf("%w: duplicate rollback member for %s@%s", core.ErrRevision, version, revision)
+		}
+		seen[key] = true
+		selected = append(selected, backup)
+	}
+	for _, file := range current.Files {
+		if file.Version == version && file.Revision == revision {
+			continue
+		}
+		key := string(file.Role) + "\x00" + string(file.Host)
+		if !seen[key] {
+			return nil, "", fmt.Errorf("%w: incomplete rollback %s@%s", core.ErrRevision, version, revision)
+		}
+	}
+	return selected, revision, nil
 }
 
 func uninstallJournalPlan(current InstallManifest, owner store.MutationOwner, expected uint64) lifecycleJournal {
@@ -591,6 +638,13 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 		return stale, err
 	}
 	desired := releaseFiles(layout, release, current.Hosts)
+	if installedReleaseMatches(current, desired) {
+		if err := VerifyRelease(release); err != nil {
+			return CASOutcome{}, core.ErrRevision
+		}
+		return CASOutcome{Kind: CASDuplicate, Manifest: current, ExpectedRevision: expected, ObservedRevision: current.Revision, Idempotent: true, Retained: ownedPaths(current)}, nil
+	}
+	desired = pendingReleaseFiles(current, desired)
 	backups, err := snapshotUpdateBackups(layout, current, desired)
 	if err != nil {
 		return CASOutcome{}, err
@@ -674,8 +728,45 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 	return outcome, err
 }
 
+func installedReleaseMatches(current InstallManifest, desired []desiredFile) bool {
+	if len(desired) == 0 || len(current.Files) != len(desired) || current.Version != desired[0].owned.Version || current.ReleaseRevision != desired[0].owned.Revision {
+		return false
+	}
+	for _, target := range desired {
+		index := ownedIndex(current.Files, target.owned.Role, target.owned.Host)
+		if index < 0 || current.Files[index] != target.owned || !diskMatches(target.owned.Path, target.owned.SHA256, target.owned.Bytes) {
+			return false
+		}
+	}
+	return true
+}
+
+func pendingReleaseFiles(current InstallManifest, desired []desiredFile) []desiredFile {
+	pending := make([]desiredFile, 0, len(desired))
+	for _, target := range desired {
+		index := ownedIndex(current.Files, target.owned.Role, target.owned.Host)
+		if index < 0 || current.Files[index] != target.owned || !diskMatches(target.owned.Path, target.owned.SHA256, target.owned.Bytes) {
+			pending = append(pending, target)
+		}
+	}
+	return pending
+}
+
 func Rollback(ctx context.Context, layout Layout, version string, expected uint64) (CASOutcome, error) {
-	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", fmt.Sprintf("rollback:%d:%s", expected, version))
+	return rollback(ctx, layout, version, "", expected)
+}
+
+// RollbackRelease selects one exact release when a version has multiple backups.
+func RollbackRelease(ctx context.Context, layout Layout, version, revision string, expected uint64) (CASOutcome, error) {
+	return rollback(ctx, layout, version, revision, expected)
+}
+
+func rollback(ctx context.Context, layout Layout, version, revision string, expected uint64) (CASOutcome, error) {
+	operation := fmt.Sprintf("rollback:%d:%s", expected, version)
+	if revision != "" {
+		operation += "@" + revision
+	}
+	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", operation)
 	if err != nil {
 		return CASOutcome{}, err
 	}
@@ -684,11 +775,11 @@ func Rollback(ctx context.Context, layout Layout, version string, expected uint6
 	if err := recoverLifecycleJournal(ctx, layout, manifestStore); err != nil {
 		return CASOutcome{}, err
 	}
-	return rollbackLocked(ctx, layout, version, expected, releaseGuard.Owner())
+	return rollbackLocked(ctx, layout, version, revision, expected, releaseGuard.Owner())
 }
 
-func rollbackLocked(ctx context.Context, layout Layout, version string, expected uint64, owner store.MutationOwner) (CASOutcome, error) {
-	if ctx == nil || ctx.Err() != nil || ValidateLayout(layout) != nil || strings.TrimSpace(version) == "" {
+func rollbackLocked(ctx context.Context, layout Layout, version, revision string, expected uint64, owner store.MutationOwner) (CASOutcome, error) {
+	if ctx == nil || ctx.Err() != nil || ValidateLayout(layout) != nil || strings.TrimSpace(version) == "" || (revision != "" && !validReleaseRevision(revision)) {
 		return CASOutcome{}, core.ErrSettings
 	}
 	manifestStore := NewManifestStore(layout)
@@ -697,15 +788,16 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 	if err != nil {
 		return stale, err
 	}
-	if err := budget.accountMetadata(rollbackJournalPlan(layout, current, version, owner, expected)); err != nil {
+	selected, targetRevision, err := selectRollbackBackups(current, version, revision)
+	if err != nil {
 		return CASOutcome{}, err
 	}
-	for _, backup := range current.Backups {
-		if backup.Version != version {
-			continue
-		}
+	if err := budget.accountMetadata(rollbackJournalPlan(layout, current, version, targetRevision, selected, owner, expected)); err != nil {
+		return CASOutcome{}, err
+	}
+	for _, backup := range selected {
 		index := ownedIndex(current.Files, backup.Role, backup.Host)
-		if index >= 0 {
+		if index >= 0 && (current.Files[index].Version != version || current.Files[index].Revision != targetRevision) {
 			if err := budget.reserve(backup.Bytes, "replacement"); err != nil {
 				return CASOutcome{}, err
 			}
@@ -718,16 +810,16 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 	retained := manifestMismatches(current)
 	restored := 0
 	mutations := []lifecycleMutation{}
-	for _, backup := range current.Backups {
-		if backup.Version != version {
-			continue
-		}
+	for _, backup := range selected {
 		index := ownedIndex(next.Files, backup.Role, backup.Host)
-		if index < 0 || !diskMatches(next.Files[index].Path, next.Files[index].SHA256, next.Files[index].Bytes) || !diskMatches(backup.Path, backup.SHA256, backup.Bytes) {
-			if index >= 0 {
+		if index >= 0 && next.Files[index].Version == version && next.Files[index].Revision == targetRevision {
+			if !diskMatches(next.Files[index].Path, next.Files[index].SHA256, next.Files[index].Bytes) {
 				retained = append(retained, next.Files[index].Path)
 			}
 			continue
+		}
+		if index < 0 || !diskMatches(next.Files[index].Path, next.Files[index].SHA256, next.Files[index].Bytes) || !diskMatches(backup.Path, backup.SHA256, backup.Bytes) {
+			return CASOutcome{Retained: append(retained, backup.Path)}, core.ErrRevision
 		}
 		data, err := readStableRegular(ownedRoot(layout, backup.Path), backup.Path, backup.Bytes, nil, "")
 		if err != nil {
@@ -749,13 +841,7 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 	if restored == 0 {
 		return CASOutcome{Retained: retained}, core.ErrRevision
 	}
-	next.Version = version
-	for _, backup := range current.Backups {
-		if backup.Version == version {
-			next.ReleaseRevision = backup.Revision
-			break
-		}
-	}
+	next.Version, next.ReleaseRevision = version, targetRevision
 	previous := cloneManifest(current)
 	intended := cloneManifest(next)
 	intended.Revision = expected + 1
