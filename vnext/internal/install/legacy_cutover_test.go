@@ -264,6 +264,79 @@ func TestLegacyHostRollbackRejectsPostimagePathReplacementBeforeMutation(t *test
 	assertNoJournal(t, layout)
 }
 
+func TestLegacyHostRollbackRejectsSameInodeModeChangeDuringPreparation(t *testing.T) {
+	layout, release, request, receipt := legacyRollbackFixture(t)
+	target := receipt.Postimages[0].Path
+	targetRaw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetBefore, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotRollbackPaths(t, layout, receipt)
+	delete(before, target)
+	reads := 0
+	stableReadHook = func(path string) {
+		if path != target {
+			return
+		}
+		reads++
+		if reads == 2 {
+			if err := os.Chmod(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Cleanup(func() { stableReadHook = nil })
+	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("same-inode mode-change rollback = %v", err)
+	}
+	stableReadHook = nil
+	targetAfter, err := os.Stat(target)
+	afterRaw, readErr := os.ReadFile(target)
+	if err != nil || readErr != nil || !os.SameFile(targetBefore, targetAfter) || targetAfter.Mode().Perm() != 0o644 || !bytes.Equal(afterRaw, targetRaw) {
+		t.Fatalf("mode-changed path mutated: stat=%v read=%v", err, readErr)
+	}
+	assertRollbackPathsUnchanged(t, before)
+	assertNoJournal(t, layout)
+}
+
+func TestLegacyHostRollbackRecoveryRejectsPostimageModeDrift(t *testing.T) {
+	layout, release, request, receipt := legacyRollbackFixture(t)
+	lifecycleInterruptHook = func(operation string, index int) bool { return operation == "rollback" && index == 0 }
+	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); !errors.Is(err, core.ErrTransition) {
+		t.Fatalf("rollback interruption = %v", err)
+	}
+	lifecycleInterruptHook = nil
+	t.Cleanup(func() { lifecycleInterruptHook = nil })
+	journal, err := readLifecycleJournal(layout)
+	if err != nil || len(journal.Mutations) == 0 {
+		t.Fatalf("read interrupted journal: %v", err)
+	}
+	target := journal.Mutations[0].Path
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	targetBefore, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotRollbackPaths(t, layout, receipt)
+	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("mode-drift recovery = %v", err)
+	}
+	targetAfter, err := os.Stat(target)
+	if err != nil || !os.SameFile(targetBefore, targetAfter) || targetAfter.Mode().Perm() != 0o644 {
+		t.Fatalf("recovery changed drifted path: %v", err)
+	}
+	assertRollbackPathsUnchanged(t, before)
+	if _, err := readLifecycleJournal(layout); err != nil {
+		t.Fatalf("recovery removed journal: %v", err)
+	}
+}
+
 func TestLegacyHostRollbackRecoversInterruptedMixedState(t *testing.T) {
 	layout, release, request, receipt := legacyRollbackFixture(t)
 	already := receipt.Preimages[2]

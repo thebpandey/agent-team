@@ -185,7 +185,7 @@ func prepareMutation(layout Layout, path string, replacement []byte, mode fs.Fil
 	if ownedRoot(layout, path) == "" {
 		return lifecycleMutation{}, core.ErrPath
 	}
-	if len(replacement) > installJournalLimit {
+	if len(replacement) > installJournalLimit || !postAbsent && mode.Perm() == 0 {
 		return lifecycleMutation{}, core.ErrRevision
 	}
 	mutation := lifecycleMutation{Path: path, Replacement: replacement, PostMode: uint32(mode.Perm()), PostAbsent: postAbsent, Exclusive: exclusive}
@@ -204,11 +204,12 @@ func prepareMutation(layout Layout, path string, replacement []byte, mode fs.Fil
 		return lifecycleMutation{}, core.ErrRevision
 	}
 	mutation.Existed = true
-	mutation.PreMode = uint32(info.Mode().Perm())
-	mutation.Preimage, err = readStableRegular(ownedRoot(layout, path), path, info.Size(), budget, "preimage")
+	var preMode fs.FileMode
+	mutation.Preimage, preMode, err = readStableRegularMode(ownedRoot(layout, path), path, info.Size(), budget, "preimage")
 	if err != nil {
 		return lifecycleMutation{}, err
 	}
+	mutation.PreMode = uint32(preMode.Perm())
 	if int64(len(mutation.Preimage)) != info.Size() {
 		return lifecycleMutation{}, core.ErrRevision
 	}
@@ -265,7 +266,7 @@ func executeLifecycleJournal(ctx context.Context, layout Layout, manifestStore *
 	if err := verifyAuthoritativeManifest(ctx, manifestStore, journal.Intended, journal.Retained); err != nil {
 		return outcome, err
 	}
-	if err := verifyLifecyclePostimages(*journal); err != nil {
+	if err := verifyLifecyclePostimages(layout, *journal); err != nil {
 		return outcome, err
 	}
 	if err := removeLifecycleJournal(layout); err != nil {
@@ -275,16 +276,13 @@ func executeLifecycleJournal(ctx context.Context, layout Layout, manifestStore *
 }
 
 func applyLifecycleMutation(layout Layout, mutation lifecycleMutation) error {
-	if mutation.Existed && !diskMatches(mutation.Path, mutation.PreSHA256, int64(len(mutation.Preimage))) {
+	if mutation.Existed && !diskMatchesMode(layout, mutation.Path, mutation.PreSHA256, int64(len(mutation.Preimage)), mutation.PreMode) {
 		return core.ErrRevision
 	}
 	if mutation.PostAbsent {
 		return removeOwnedPath(layout, mutation.Path, mutation.PreSHA256)
 	}
 	mode := fs.FileMode(mutation.PostMode)
-	if mode == 0 {
-		mode = 0o600
-	}
 	if mutation.Exclusive {
 		return atomicCreate(layout, mutation.Path, mutation.Replacement, mode)
 	}
@@ -304,7 +302,7 @@ func recoverLifecycleJournal(ctx context.Context, layout Layout, manifestStore *
 		if err := verifyManifestFiles(current, journal.Retained); err != nil {
 			return err
 		}
-		if err := verifyLifecyclePostimages(journal); err != nil {
+		if err := verifyLifecyclePostimages(layout, journal); err != nil {
 			return err
 		}
 		return removeLifecycleJournal(layout)
@@ -327,7 +325,7 @@ func recoverLifecycleJournal(ctx context.Context, layout Layout, manifestStore *
 	return removeLifecycleJournal(layout)
 }
 
-func verifyLifecyclePostimages(journal lifecycleJournal) error {
+func verifyLifecyclePostimages(layout Layout, journal lifecycleJournal) error {
 	for _, mutation := range journal.Mutations {
 		if mutation.PostAbsent {
 			if _, err := os.Lstat(mutation.Path); !errors.Is(err, fs.ErrNotExist) {
@@ -335,7 +333,7 @@ func verifyLifecyclePostimages(journal lifecycleJournal) error {
 			}
 			continue
 		}
-		if !diskMatches(mutation.Path, mutation.PostSHA256, mutation.PostBytes) {
+		if !diskMatchesMode(layout, mutation.Path, mutation.PostSHA256, mutation.PostBytes, mutation.PostMode) {
 			return core.ErrRevision
 		}
 	}
@@ -373,10 +371,10 @@ func validateLifecycleJournal(layout Layout, journal lifecycleJournal) error {
 			return core.ErrRevision
 		}
 		if mutation.PostAbsent {
-			if mutation.PostSHA256 != "" || mutation.PostBytes != 0 || len(mutation.Replacement) != 0 {
+			if mutation.PostMode != 0 || mutation.PostSHA256 != "" || mutation.PostBytes != 0 || len(mutation.Replacement) != 0 {
 				return core.ErrRevision
 			}
-		} else if !validSHA256(mutation.PostSHA256) || mutation.PostBytes != int64(len(mutation.Replacement)) || digestContent(mutation.Replacement) != mutation.PostSHA256 {
+		} else if mutation.PostMode == 0 || !validSHA256(mutation.PostSHA256) || mutation.PostBytes != int64(len(mutation.Replacement)) || digestContent(mutation.Replacement) != mutation.PostSHA256 {
 			return core.ErrRevision
 		}
 		if mutation.Exclusive && (mutation.Existed || (journal.Operation != "install" && journal.Operation != "update")) {
@@ -404,14 +402,14 @@ func restoreLifecycleJournal(layout Layout, journal lifecycleJournal) error {
 	for index := journal.Progress - 1; index >= 0; index-- {
 		mutation := journal.Mutations[index]
 		if mutation.Existed {
-			if diskMatches(mutation.Path, mutation.PreSHA256, int64(len(mutation.Preimage))) {
+			if diskMatchesMode(layout, mutation.Path, mutation.PreSHA256, int64(len(mutation.Preimage)), mutation.PreMode) {
 				continue
 			}
 			if mutation.PostAbsent {
 				if _, err := os.Lstat(mutation.Path); !errors.Is(err, fs.ErrNotExist) {
 					return core.ErrRevision
 				}
-			} else if !diskMatches(mutation.Path, mutation.PostSHA256, mutation.PostBytes) {
+			} else if !diskMatchesMode(layout, mutation.Path, mutation.PostSHA256, mutation.PostBytes, mutation.PostMode) {
 				return core.ErrRevision
 			}
 			if err := AtomicReplace(layout, mutation.Path, mutation.Preimage, fs.FileMode(mutation.PreMode)); err != nil {
@@ -422,7 +420,7 @@ func restoreLifecycleJournal(layout Layout, journal lifecycleJournal) error {
 		if _, err := os.Lstat(mutation.Path); errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
-		if mutation.PostAbsent || !diskMatches(mutation.Path, mutation.PostSHA256, mutation.PostBytes) {
+		if mutation.PostAbsent || !diskMatchesMode(layout, mutation.Path, mutation.PostSHA256, mutation.PostBytes, mutation.PostMode) {
 			return core.ErrRevision
 		}
 		if err := removeOwnedPath(layout, mutation.Path, mutation.PostSHA256); err != nil {
@@ -1204,27 +1202,36 @@ func verifiedReleaseBytes(file ReleaseFile, sources map[string][]byte) ([]byte, 
 }
 
 func readStableRegular(rootPath, path string, expected int64, budget *journalBudget, field string) ([]byte, error) {
+	body, _, err := readStableRegularMode(rootPath, path, expected, budget, field)
+	return body, err
+}
+
+func readStableRegularMode(rootPath, path string, expected int64, budget *journalBudget, field string) ([]byte, fs.FileMode, error) {
 	file, size, err := openStableRegular(rootPath, path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer file.Close()
 	if expected >= 0 && size != expected {
-		return nil, core.ErrRevision
+		return nil, 0, core.ErrRevision
 	}
 	if budget != nil {
 		if err := budget.reserve(size, field); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	body, err := io.ReadAll(io.LimitReader(file, size+1))
 	if err != nil || int64(len(body)) != size {
-		return nil, core.ErrRevision
+		return nil, 0, core.ErrRevision
 	}
 	if err := verifyStableIdentity(file, path); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return body, nil
+	info, err := file.Stat()
+	if err != nil {
+		return nil, 0, core.ErrRevision
+	}
+	return body, info.Mode(), nil
 }
 
 func verifyStableIdentity(file *os.File, path string) error {
@@ -1274,6 +1281,11 @@ func diskMatches(path, digest string, bytes int64) bool {
 	}
 	gotDigest, gotBytes, err := sha256File(path)
 	return err == nil && gotDigest == digest && gotBytes == bytes
+}
+
+func diskMatchesMode(layout Layout, path, digest string, bytes int64, mode uint32) bool {
+	body, currentMode, err := readStableRegularMode(ownedRoot(layout, path), path, bytes, nil, "")
+	return err == nil && uint32(currentMode.Perm()) == mode && digestContent(body) == digest
 }
 
 func ownedIndex(files []OwnedFile, role FileRole, host Host) int {
