@@ -40,6 +40,7 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 	}
 	snapshot := knowledge.HandoffSnapshot{RecordEnvelope: manifest.RecordEnvelope, NextAction: "inspect", Freshness: "canonical run revision"}
 	receipts := make([]knowledge.Receipt, 0, len(manifest.Teams))
+	complete := true
 	for _, team := range manifest.Teams {
 		if err := project.ValidateSegment(string(team.ID)); err != nil {
 			return nil, core.ErrRevision
@@ -47,10 +48,12 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 		var receipt knowledge.Receipt
 		err := s.store.ReadJSON(".agent-team/receipts/"+string(team.ID)+".json", 1<<20, &receipt)
 		if errors.Is(err, fs.ErrNotExist) {
+			complete = false
 			continue
 		}
 		if err != nil || !validReceipt(manifest, team, receipt) {
-			return nil, core.ErrRevision
+			complete = false
+			continue
 		}
 		if snapshot.Team == "" {
 			snapshot.Team = receipt.Team
@@ -79,14 +82,14 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 			snapshot.Blockers = append(snapshot.Blockers, blocker)
 		}
 	}
-	if resumable(manifest, receipts, snapshot.Blockers) {
+	if resumable(manifest, receipts, snapshot.Blockers, complete, len(manifest.Teams)) {
 		snapshot.NextAction = "resume"
 	}
 	return knowledge.NewProjectionWriter(s.store).WriteHandoff(ctx, snapshot)
 }
 
-func resumable(manifest run.Run, receipts []knowledge.Receipt, blockers []knowledge.Blocker) bool {
-	if manifest.State == core.Cancelled || manifest.State == core.Archived || len(receipts) == 0 || len(blockers) != 0 {
+func resumable(manifest run.Run, receipts []knowledge.Receipt, blockers []knowledge.Blocker, complete bool, teams int) bool {
+	if manifest.State == core.Cancelled || manifest.State == core.Archived || !complete || len(receipts) != teams || len(receipts) == 0 || len(blockers) != 0 {
 		return false
 	}
 	paused := false
@@ -97,7 +100,7 @@ func resumable(manifest run.Run, receipts []knowledge.Receipt, blockers []knowle
 		switch receipt.State {
 		case core.Paused, core.Interrupted:
 			paused = true
-		case core.Cancelled, core.Clean, core.Integrated, core.Archived:
+		default:
 			return false
 		}
 	}

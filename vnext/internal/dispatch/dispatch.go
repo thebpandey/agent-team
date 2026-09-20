@@ -36,17 +36,18 @@ func (d *dispatcher) Dispatch(ctx context.Context, packet core.AssignmentPacket,
 	if err := ValidatePacket(packet, worktree); err != nil {
 		return contracts.WorkerHandle{}, err
 	}
-	if err := lifecycle.AdmissionAllowed(ctx, d.state, packet); err != nil {
-		return contracts.WorkerHandle{}, err
-	}
-
 	request := contracts.WorkerRequest{
 		Packet:        copyPacket(packet),
 		Worktree:      copyWorktreeSpec(worktree),
 		WritablePaths: append([]string(nil), worktree.WritablePaths...),
 		Reviewer:      false,
 	}
-	handle, err := d.adapter.StartWorker(ctx, request)
+	var handle contracts.WorkerHandle
+	err := lifecycle.WithAdmission(ctx, d.state, packet, func() error {
+		var startErr error
+		handle, startErr = d.adapter.StartWorker(ctx, request)
+		return startErr
+	})
 	if err != nil {
 		return contracts.WorkerHandle{}, err
 	}
