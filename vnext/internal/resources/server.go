@@ -49,7 +49,7 @@ func reusableServer(records []ServerRecord, want ServerRecord) *ServerRecord {
 		record := &records[i]
 		// Stable IDs make reuse explicit. Matching only worktree/revision/purpose
 		// would accidentally merge two independently requested server slots.
-		if record.ID == want.ID && record.Ownership == Managed && !terminal(record.State) && record.Owner == want.Owner && record.Target == want.Target && record.Purpose == want.Purpose && record.Port == want.Port && record.URL == want.URL && record.ExternalRef == want.ExternalRef {
+		if record.ID == want.ID && record.Ownership == want.Ownership && record.Ownership == Managed && !terminal(record.State) && record.Owner == want.Owner && record.Target == want.Target && record.Purpose == want.Purpose && record.Port == want.Port && record.URL == want.URL && record.ExternalRef == want.ExternalRef {
 			return record
 		}
 	}

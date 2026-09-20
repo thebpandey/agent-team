@@ -49,7 +49,7 @@ func reusableBrowser(records []BrowserRecord, want BrowserRecord) *BrowserRecord
 		record := &records[i]
 		// Stable IDs make reuse explicit; identical purpose alone is not an
 		// authorization to collapse two independently requested sessions.
-		if record.ID == want.ID && record.Ownership == Managed && !terminal(record.State) && record.Owner == want.Owner && record.Target == want.Target && record.Purpose == want.Purpose && record.Session == want.Session && record.URL == want.URL && record.ExternalRef == want.ExternalRef {
+		if record.ID == want.ID && record.Ownership == want.Ownership && record.Ownership == Managed && !terminal(record.State) && record.Owner == want.Owner && record.Target == want.Target && record.Purpose == want.Purpose && record.Session == want.Session && record.URL == want.URL && record.ExternalRef == want.ExternalRef {
 			return record
 		}
 	}

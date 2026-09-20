@@ -13,12 +13,12 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/tracker"
 )
 
-func newRegistry(t *testing.T, root string, runner tracker.CommandRunner) resources.Registry {
+func newRegistry(t *testing.T, root string, stopper resources.StopFunc) resources.Registry {
 	t.Helper()
-	if runner == nil {
-		runner = tracker.NewFakeRunner(tracker.CommandResult{})
+	if stopper == nil {
+		stopper = func(context.Context, resources.StopRequest) tracker.CommandResult { return tracker.CommandResult{} }
 	}
-	return resources.NewRegistry(store.New(root, core.StorageLimits{CanonicalBytes: 16 << 20}), runner)
+	return resources.NewRegistry(store.New(root, core.StorageLimits{CanonicalBytes: 16 << 20}), stopper)
 }
 
 func owner() resources.ResourceOwner {
@@ -168,7 +168,7 @@ func (r *recordingRunner) Stop(context.Context, resources.StopRequest) tracker.C
 
 func TestRegistryStopsOnlyExactManagedOwnership(t *testing.T) {
 	runner := &recordingRunner{}
-	r := newRegistry(t, t.TempDir(), runner)
+	r := newRegistry(t, t.TempDir(), runner.Stop)
 	reserved, err := r.ReserveServer(context.Background(), server("S-1", 3000, "http://localhost:3000"), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +234,8 @@ func TestRegistryExactRetryConvergesAcrossSeparateStores(t *testing.T) {
 }
 
 func TestRegistryCleansTerminalSlotOnlyAfterLifecycleEvidence(t *testing.T) {
-	r := newRegistry(t, t.TempDir(), &recordingRunner{})
+	runner := &recordingRunner{}
+	r := newRegistry(t, t.TempDir(), runner.Stop)
 	reserved, err := r.ReserveServer(context.Background(), server("S-1", 3000, "http://localhost:3000"), 0)
 	if err != nil {
 		t.Fatal(err)

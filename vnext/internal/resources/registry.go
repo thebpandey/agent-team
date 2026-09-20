@@ -94,13 +94,11 @@ type StopRequest struct {
 	Server  *ServerRecord
 	Browser *BrowserRecord
 }
-type Stopper interface {
-	Stop(context.Context, StopRequest) tracker.CommandResult
-}
+type StopFunc func(context.Context, StopRequest) tracker.CommandResult
 
 type registry struct {
 	store   *store.Store
-	stopper Stopper
+	stopper StopFunc
 }
 
 type registryDocument struct {
@@ -115,8 +113,7 @@ type stopIntent struct{ kind, id, token string }
 // NewRegistry returns the one durable project registry rooted in s. The lock
 // is a portable, scoped directory CAS, so independently constructed Stores
 // coordinating the same root serialize and then re-read durable state.
-func NewRegistry(s *store.Store, candidate any) Registry {
-	stopper, _ := candidate.(Stopper)
+func NewRegistry(s *store.Store, stopper StopFunc) Registry {
 	return &registry{store: s, stopper: stopper}
 }
 
@@ -215,7 +212,7 @@ func (r *registry) MarkStarted(ctx context.Context, id string, expected uint64, 
 			return err
 		}
 		if record := findServer(doc.Servers, id); record != nil {
-			if record.Ownership != Managed || terminal(record.State) {
+			if record.Ownership != Managed || record.State != "reserved" {
 				return fmt.Errorf("%w: server is not a startable managed reservation", core.ErrTransition)
 			}
 			record.State, record.TraceEvidence, record.ExternalRef, record.StartedAt = "started", trace, external, now()
@@ -225,7 +222,7 @@ func (r *registry) MarkStarted(ctx context.Context, id string, expected uint64, 
 			return nil
 		}
 		if record := findBrowser(doc.Browsers, id); record != nil {
-			if record.Ownership != Managed || terminal(record.State) {
+			if record.Ownership != Managed || record.State != "reserved" {
 				return fmt.Errorf("%w: browser is not a startable managed reservation", core.ErrTransition)
 			}
 			record.State, record.TraceEvidence, record.ExternalRef, record.StartedAt = "started", trace, external, now()
@@ -285,16 +282,16 @@ func (r *registry) Release(ctx context.Context, id string, expected uint64) (Rel
 }
 
 func (r *registry) StopManaged(ctx context.Context, id string, expected uint64) (ReleaseOutcome, error) {
+	if r.stopper == nil {
+		return ReleaseOutcome{}, fmt.Errorf("%w: nil resource stopper", core.ErrSettings)
+	}
 	intent, request, outcome, err := r.claimStop(ctx, id, expected)
 	if err != nil || outcome.Released {
 		return outcome, err
 	}
-	if r.stopper == nil {
-		return outcome, fmt.Errorf("%w: nil resource stopper", core.ErrSettings)
-	}
 	stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	result := r.stopper.Stop(stopCtx, request)
+	result := r.stopper(stopCtx, request)
 	return r.finishStop(ctx, intent, result)
 }
 
@@ -349,20 +346,26 @@ func (r *registry) claimStop(ctx context.Context, id string, expected uint64) (s
 
 func (r *registry) finishStop(ctx context.Context, intent stopIntent, result tracker.CommandResult) (ReleaseOutcome, error) {
 	var outcome ReleaseOutcome
+	var operationErr error
 	err := r.withDocument(ctx, func(doc *registryDocument) error {
 		if intent.kind == "server" {
 			if record := findServer(doc.Servers, intent.id); record != nil && record.State == "stopping" && record.StopAttempt == intent.token {
-				return finishServer(doc, record, result, &outcome)
+				operationErr = finishServer(doc, record, result, &outcome)
+				return nil
 			}
 		}
 		if intent.kind == "browser" {
 			if record := findBrowser(doc.Browsers, intent.id); record != nil && record.State == "stopping" && record.StopAttempt == intent.token {
-				return finishBrowser(doc, record, result, &outcome)
+				operationErr = finishBrowser(doc, record, result, &outcome)
+				return nil
 			}
 		}
 		return fmt.Errorf("%w: stop attempt changed", core.ErrRevision)
 	})
-	return outcome, err
+	if err != nil {
+		return outcome, err
+	}
+	return outcome, operationErr
 }
 
 func stopEvidence(result tracker.CommandResult) string {

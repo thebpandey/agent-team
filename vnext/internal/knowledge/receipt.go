@@ -205,7 +205,8 @@ func validateResourceReferences(resources core.ResourceSnapshot) error {
 		values []string
 	}{{"S-", resources.Servers}, {"B-", resources.Browsers}} {
 		for _, value := range group.values {
-			if !strings.HasPrefix(value, group.prefix) || strings.ContainsAny(value, "{}[]\" \\t\\r\\n") || seen[value] {
+			identifier := strings.TrimPrefix(value, group.prefix)
+			if len(value) > 128 || identifier == "" || !strings.HasPrefix(value, group.prefix) || strings.ContainsAny(identifier, "{}[]\" \\t\\r\\n/\\.") || seen[value] {
 				return fmt.Errorf("%w: invalid resource reference", core.ErrPath)
 			}
 			seen[value] = true
