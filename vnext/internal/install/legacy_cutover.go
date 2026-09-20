@@ -405,7 +405,7 @@ func hostRollbackPostMode(layout Layout, image hostCutoverPostimage) (uint32, bo
 	}
 	for _, host := range []Host{Codex, Claude} {
 		if sameHostPath(image.Path, filepath.Join(layout.SkillRoots[host], "SKILL.md")) || sameHostPath(image.Path, layout.ConfigPaths[host]) {
-			return 0o600, true
+			return lifecycleMode(0o600), true
 		}
 	}
 	return 0, false

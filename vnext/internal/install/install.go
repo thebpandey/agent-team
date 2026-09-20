@@ -188,7 +188,7 @@ func prepareMutation(layout Layout, path string, replacement []byte, mode fs.Fil
 	if len(replacement) > installJournalLimit || !postAbsent && mode.Perm() == 0 {
 		return lifecycleMutation{}, core.ErrRevision
 	}
-	mutation := lifecycleMutation{Path: path, Replacement: replacement, PostMode: uint32(mode.Perm()), PostAbsent: postAbsent, Exclusive: exclusive}
+	mutation := lifecycleMutation{Path: path, Replacement: replacement, PostMode: lifecycleMode(mode), PostAbsent: postAbsent, Exclusive: exclusive}
 	if !postAbsent {
 		sum := sha256.Sum256(replacement)
 		mutation.PostSHA256, mutation.PostBytes = hex.EncodeToString(sum[:]), int64(len(replacement))

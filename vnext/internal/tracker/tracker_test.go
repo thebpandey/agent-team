@@ -124,6 +124,9 @@ func TestExecutableResolverAcceptsBeadsPlatformNames(t *testing.T) {
 		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	for _, name := range []string{"bd", "bd.exe", "bd.cmd"} {
+		path := filepath.Join(dir, name)
 		got, err := resolveExecutable(path)
 		if err != nil || got == "" {
 			t.Fatalf("resolve %q = %q, %v", name, got, err)

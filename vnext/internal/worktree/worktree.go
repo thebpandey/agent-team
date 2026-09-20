@@ -539,7 +539,7 @@ func parseRawLine(output string) (string, error) {
 	} else if strings.HasSuffix(output, "\n") {
 		output = strings.TrimSuffix(output, "\n")
 	}
-	if output == "" || strings.ContainsAny(output, "\r\n") {
+	if output == "" || strings.ContainsAny(output, "\r\n") || strings.TrimSpace(output) != output {
 		return "", core.ErrPath
 	}
 	return output, nil

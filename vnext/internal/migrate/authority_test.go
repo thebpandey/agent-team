@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -584,7 +585,16 @@ func TestSystemTrustStoreRejectsWritableFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if systemTrustStoreOwner(path, info) {
+	trusted := systemTrustStoreOwner(path, info)
+	if runtime.GOOS == "windows" {
+		// Windows ignores POSIX chmod bits. Its trust decision comes from the
+		// owner/DACL contract covered by TestTrustedWindowsACL.
+		if trustedWindowsACL(true, true, []windowsTrustACE{{allow: true, known: true, mask: 0x40000000}}) {
+			t.Fatal("untrusted Windows writer accepted")
+		}
+		return
+	}
+	if trusted {
 		t.Fatal("group/world-writable trust store accepted")
 	}
 }
