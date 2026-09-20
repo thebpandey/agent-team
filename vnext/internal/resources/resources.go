@@ -36,7 +36,7 @@ type Reservation struct {
 // roles required by planned work. A single usable slot is valid only because
 // the developer and reviewer run sequentially.
 func ValidatePlannedAdmission(limits core.Limits, c contracts.HostCapabilities, teams int) error {
-	if limits.ParallelTeams < 1 || limits.ParallelTeams > 2 || teams < 1 || teams > 2 || teams > limits.ParallelTeams {
+	if limits.ParallelTeams < 1 || teams < 1 || teams > 2 || teams > limits.ParallelTeams {
 		return core.ErrCapacity
 	}
 	if c.Unknown {

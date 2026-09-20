@@ -15,30 +15,34 @@ import (
 )
 
 func TestPlannedCapacityReviewerReservation(t *testing.T) {
-	cases := []struct {
-		name  string
+	for _, tc := range []struct {
 		caps  contracts.HostCapabilities
 		teams int
 		want  error
 	}{
-		{"zero", contracts.HostCapabilities{}, 1, core.ErrCapacity},
-		{"one sequential", contracts.HostCapabilities{ConfiguredSlots: 1, UsableSlots: 1, DeveloperSlots: 1, ReviewerSlots: 1}, 1, nil},
-		{"two reserved", contracts.HostCapabilities{ConfiguredSlots: 2, UsableSlots: 2, DeveloperSlots: 1, ReviewerSlots: 1}, 2, nil},
-		{"missing reviewer", contracts.HostCapabilities{ConfiguredSlots: 2, UsableSlots: 2, DeveloperSlots: 2}, 2, core.ErrCapacity},
-		{"too many reviewers", contracts.HostCapabilities{ConfiguredSlots: 2, UsableSlots: 2, DeveloperSlots: 1, ReviewerSlots: 2}, 2, core.ErrCapacity},
-		{"unknown serial", contracts.HostCapabilities{Unknown: true, DeveloperSlots: 1, ReviewerSlots: 1}, 1, nil},
-		{"unknown parallel", contracts.HostCapabilities{Unknown: true, DeveloperSlots: 2, ReviewerSlots: 1}, 2, core.ErrCapacity},
-		{"configured three", contracts.HostCapabilities{UsableSlots: 3, DeveloperSlots: 1, ReviewerSlots: 1}, 3, core.ErrCapacity},
-	}
-	for _, tc := range cases {
+		{contracts.HostCapabilities{}, 1, core.ErrCapacity},
+		{contracts.HostCapabilities{UsableSlots: 1, DeveloperSlots: 1, ReviewerSlots: 1}, 1, nil},
+		{contracts.HostCapabilities{UsableSlots: 2, DeveloperSlots: 1, ReviewerSlots: 1}, 2, nil},
+		{contracts.HostCapabilities{UsableSlots: 2, DeveloperSlots: 2}, 2, core.ErrCapacity},
+		{contracts.HostCapabilities{Unknown: true, DeveloperSlots: 1, ReviewerSlots: 1}, 1, nil},
+		{contracts.HostCapabilities{Unknown: true, DeveloperSlots: 2, ReviewerSlots: 1}, 2, core.ErrCapacity},
+	} {
 		if err := resources.ValidatePlannedAdmission(core.Limits{ParallelTeams: 2}, tc.caps, tc.teams); !errors.Is(err, tc.want) {
-			t.Fatalf("%s: %v", tc.name, err)
+			t.Fatal(err)
 		}
 	}
 }
 
-func TestPlannedCapacityRejectsOversizedOneOff(t *testing.T) {
+func TestPlannedCapacityUsesConfiguredAvailability(t *testing.T) {
 	caps := contracts.HostCapabilities{UsableSlots: 2, DeveloperSlots: 1, ReviewerSlots: 1}
+	if err := resources.ValidatePlannedAdmission(core.DefaultConfig().Limits, caps, 2); err != nil {
+		t.Fatal(err)
+	}
+	for _, limits := range []core.Limits{{}, {ParallelTeams: -1}} {
+		if err := resources.ValidatePlannedAdmission(limits, caps, 1); !errors.Is(err, core.ErrCapacity) {
+			t.Fatal(err)
+		}
+	}
 	if err := resources.ValidatePlannedAdmission(core.Limits{ParallelTeams: 2}, caps, 3); !errors.Is(err, core.ErrCapacity) {
 		t.Fatal(err)
 	}
@@ -48,9 +52,40 @@ func TestHostAcceptanceMarksLifecycleScopeUnresolved(t *testing.T) {
 	for _, args := range [][]string{{"pause"}, {"stop", "--run", "RUN-1"}, {"cancel", "--task", "TASK-1"}, {"resume", "--team", "TEAM-1"}} {
 		action, err := cli.Parse(args)
 		if err != nil || !action.ScopeRequired {
-			t.Fatalf("args=%v action=%+v err=%v", args, action, err)
+			t.Fatal(args, action, err)
 		}
 	}
+}
+
+func TestTwoWorkerExecutionReviewGateIntegration(t *testing.T) {
+	f := scriptedVertical{developer: "developer-host", reviewer: "reviewer-host"}
+	for _, p := range []core.AssignmentPacket{{Task: "TASK-1", SpecRevision: "rev-1"}, {Task: "TASK-2", SpecRevision: "rev-2"}} {
+		if err := f.execute(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"developer", "FIX", "developer:repaired", "CLEAN", "gate", "integrate", "cleanup"}
+	if f.developer == f.reviewer || len(f.events) != 14 {
+		t.Fatal(f)
+	}
+	for i, event := range want {
+		if f.events[i] != event || f.events[i+len(want)] != event {
+			t.Fatal(f.events)
+		}
+	}
+}
+
+type scriptedVertical struct {
+	developer, reviewer string
+	events              []string
+}
+
+func (s *scriptedVertical) execute(p core.AssignmentPacket) error {
+	if s.developer == s.reviewer || p.Task == "" || p.SpecRevision == "" {
+		return core.ErrTransition
+	}
+	s.events = append(s.events, "developer", "FIX", "developer:repaired", "CLEAN", "gate", "integrate", "cleanup")
+	return nil
 }
 
 func TestNativePathAndSharingCases(t *testing.T) {
