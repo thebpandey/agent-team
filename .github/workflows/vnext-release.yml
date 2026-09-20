@@ -66,6 +66,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: stable }
+      - name: Use canonical test temp
+        shell: bash
+        run: |
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: go test ./... -count=1
         working-directory: vnext
       - run: go vet ./...
@@ -79,6 +83,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: stable }
+      - name: Use canonical test temp
+        shell: bash
+        run: |
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: go test ./... -count=1
         working-directory: vnext
       - run: go vet ./...
