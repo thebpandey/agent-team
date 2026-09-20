@@ -156,11 +156,11 @@ func ValidateProfile(profile TargetProfile) error {
 	if !validProfileID(profile.ID) {
 		return core.ErrSettings
 	}
-	if profile.DefaultBatchSize < 1 || profile.DefaultBatchSize > 100 {
-		return core.ErrBatch
-	}
 	if profile.Enabled && (profile.Target == "" || strings.EqualFold(profile.Target, "production") || profile.AuthorizationRef == "" || profile.ApprovalScope == "") {
 		return core.ErrSettings
+	}
+	if profile.DefaultBatchSize < 1 || profile.DefaultBatchSize > 100 {
+		return core.ErrBatch
 	}
 	for _, command := range [][]string{profile.ExecutorCommand, profile.QueryCommand, profile.VerificationCommand} {
 		if err := ValidateCommandTemplate(command); err != nil {
