@@ -23,8 +23,11 @@ import (
 )
 
 const (
-	installAttemptPath  = ".agent-team/install-attempt.json"
-	installJournalLimit = 16 << 20
+	installAttemptPath = ".agent-team/install-attempt.json"
+	// An update journals the old binary twice (target preimage and rollback
+	// backup) plus its replacement. Base64 expands the current 4.6 MiB release
+	// past 16 MiB; 32 MiB keeps that transaction bounded with room to grow.
+	installJournalLimit = 32 << 20
 )
 
 var installMutationHook func()

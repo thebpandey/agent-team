@@ -20,7 +20,7 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
 
-const maxStorageBytes int64 = 16 << 20
+const maxStorageBytes int64 = 32 << 20
 
 // ErrAlreadyExists marks a no-replace create whose canonical destination was
 // already published. It also wraps fs.ErrExist for callers using standard
