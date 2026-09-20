@@ -172,9 +172,9 @@ test("published static site and native CI use portable repository paths", async 
     ".github/workflows/vnext-install.yml",
   ]) {
     const workflow = await read(path);
-    for (const name of ["TMPDIR", "TMP", "TEMP"]) {
-      assert.ok(workflow.includes(name + ": ${{ runner.temp }}"), `${path} ${name}`);
-    }
+    assert.doesNotMatch(workflow, /\$\{\{\s*runner\.temp\s*\}\}/, path);
+    assert.match(workflow, /- name: Use canonical test temp\s+shell: bash\s+run: \|/, path);
+    assert.ok(workflow.includes(`printf 'TMPDIR=%s\\nTMP=%s\\nTEMP=%s\\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"`), path);
   }
 });
 

@@ -9,10 +9,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    env:
-      TMPDIR: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
-      TEMP: ${{ runner.temp }}
     defaults:
       run:
         working-directory: vnext
@@ -21,6 +17,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+      - name: Use canonical test temp
+        shell: bash
+        run: |
+          printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: go test ./... -count=1
       - run: go vet ./...
       - run: go test ./internal/install ./internal/migrate ./internal/cli -run 'Test(Install|Manifest|Inventory|Canary|Management)' -count=1
