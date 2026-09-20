@@ -159,7 +159,7 @@ func ValidateProfile(profile TargetProfile) error {
 	if profile.DefaultBatchSize < 1 || profile.DefaultBatchSize > 100 {
 		return core.ErrBatch
 	}
-	if profile.Enabled && (profile.Target == "" || strings.EqualFold(profile.Target, "production") || profile.AuthorizationRef == "" || profile.ApprovalScope == "" || !profile.Confirmed) {
+	if profile.Enabled && (profile.Target == "" || strings.EqualFold(profile.Target, "production") || profile.AuthorizationRef == "" || profile.ApprovalScope == "") {
 		return core.ErrSettings
 	}
 	for _, command := range [][]string{profile.ExecutorCommand, profile.QueryCommand, profile.VerificationCommand} {
