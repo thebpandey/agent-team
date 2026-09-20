@@ -1266,13 +1266,13 @@ func backupPath(layout Layout, file OwnedFile) string {
 	if host == "" {
 		host = "shared"
 	}
-	name := fmt.Sprintf("%s-%s-%s.bak", file.Role, host, file.SHA256)
+	name := fmt.Sprintf("%s-%s-%s-%s.bak", file.Role, host, file.Revision, file.SHA256)
 	return filepath.Join(layout.DataRoot, "backups", file.Version, name)
 }
 
 func appendBackup(backups []Backup, candidate Backup) []Backup {
 	for _, backup := range backups {
-		if backup.Role == candidate.Role && backup.Host == candidate.Host && backup.Version == candidate.Version && backup.SHA256 == candidate.SHA256 {
+		if backup.Role == candidate.Role && backup.Host == candidate.Host && backup.Version == candidate.Version && backup.Revision == candidate.Revision && backup.SHA256 == candidate.SHA256 {
 			return backups
 		}
 	}

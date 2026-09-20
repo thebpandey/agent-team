@@ -42,30 +42,24 @@ func TestRollbackRevisionDispatchWithJSONAndUniqueCompatibility(t *testing.T) {
 			}
 			old := cliReleaseFixture(t, filepath.Join(root, "old"), "8.0.0", testRevision, "old")
 			next := cliReleaseFixture(t, filepath.Join(root, "next"), "8.0.0", nextRevision, "next")
-			installed, err := install.Install(context.Background(), layout, old, []install.Host{install.Codex, install.Claude}, 0)
+			var installed install.CASOutcome
+			if test.ambiguous {
+				legacy := cliReleaseFixture(t, filepath.Join(root, "legacy"), "8.0.0", "fedcba9876543210fedcba9876543210fedcba98", "legacy")
+				old.Contract, old.Entrypoints = legacy.Contract, legacy.Entrypoints
+				next.Contract, next.Entrypoints = legacy.Contract, legacy.Entrypoints
+				installed, err = install.Install(context.Background(), layout, legacy, []install.Host{install.Codex, install.Claude}, 0)
+				if err == nil {
+					installed, err = install.Update(context.Background(), layout, old, installed.Manifest.Revision)
+				}
+			} else {
+				installed, err = install.Install(context.Background(), layout, old, []install.Host{install.Codex, install.Claude}, 0)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			updated, err := install.Update(context.Background(), layout, next, installed.Manifest.Revision)
 			if err != nil {
 				t.Fatal(err)
-			}
-			if test.ambiguous {
-				manifest := updated.Manifest
-				for index, file := range manifest.Files {
-					body, err := os.ReadFile(file.Path)
-					if err != nil {
-						t.Fatal(err)
-					}
-					path := filepath.Join(layout.DataRoot, "backups", "ambiguous", fmt.Sprint(index))
-					writeTestFile(t, path, string(body))
-					manifest.Backups = append(manifest.Backups, install.Backup{Role: file.Role, Host: file.Host, Path: path, SHA256: file.SHA256, Version: file.Version, Revision: file.Revision, Bytes: file.Bytes})
-				}
-				manifest.Revision = 0
-				updated, err = install.NewManifestStore(layout).CompareAndSwap(context.Background(), updated.Manifest.Revision, manifest)
-				if err != nil {
-					t.Fatal(err)
-				}
 			}
 			var output bytes.Buffer
 			if code := cli.Run(context.Background(), test.args, core.Dependencies{Stdout: &output, Stderr: &output, Management: runManagement}); code != 0 {
@@ -74,6 +68,11 @@ func TestRollbackRevisionDispatchWithJSONAndUniqueCompatibility(t *testing.T) {
 			got, err := install.NewManifestStore(layout).Read(context.Background())
 			if err != nil || got.ReleaseRevision != testRevision || got.Revision != updated.Manifest.Revision+1 {
 				t.Fatalf("manifest=%+v err=%v output=%q", got, err, output.String())
+			}
+			for _, file := range got.Files {
+				if file.Revision != testRevision {
+					t.Fatalf("incoherent rollback file: %+v", file)
+				}
 			}
 		})
 	}
