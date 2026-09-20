@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -258,7 +259,11 @@ func TestInstallRecoversInterruptedAttempt(t *testing.T) {
 	layout, release := internalFixture(t, "release")
 	desired := releaseFiles(layout, release, []Host{Codex})
 	data, _ := os.ReadFile(desired[0].source.Path)
-	mutation, err := prepareMutation(layout, desired[0].owned.Path, data, 0o700, false, true, newJournalBudget())
+	budget := newJournalBudget()
+	if err := budget.accountMetadata(lifecycleJournal{}); err != nil {
+		t.Fatal(err)
+	}
+	mutation, err := prepareMutation(layout, desired[0].owned.Path, data, 0o700, false, true, budget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,13 +345,88 @@ func TestLifecycleJournalBudgetRejectsBeforeMutation(t *testing.T) {
 
 func TestLifecycleJournalBudgetBoundary(t *testing.T) {
 	budget := newJournalBudget()
-	boundary := int64(installJournalLimit-journalMetadataSize) / 4 * 3
-	if err := budget.reserve(boundary); err != nil {
+	if err := budget.accountMetadata(lifecycleJournal{}); err != nil {
+		t.Fatal(err)
+	}
+	boundary := (budget.remaining - int64(len(`,"replacement":""`))) / 4 * 3
+	if err := budget.reserve(boundary, "replacement"); err != nil {
 		t.Fatalf("boundary rejected: %v", err)
 	}
-	if err := budget.reserve(1); !errors.Is(err, core.ErrRevision) {
+	if err := budget.reserve(1, "replacement"); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("overflow accepted: %v", err)
 	}
+}
+
+func TestLifecycleJournalBudgetCountsExactMetadataAndOverflow(t *testing.T) {
+	owner := store.MutationOwner{Token: "0123456789abcdef0123456789abcdef", Scope: "install", OperationID: "metadata", Host: "host", PID: 1, ProcessStart: "start", AcquiredAt: "acquired", HeartbeatAt: "heartbeat"}
+	journal := lifecycleJournal{Schema: 1, Operation: "uninstall", Owner: owner, Retained: []string{strings.Repeat("p", installJournalLimit)}}
+	if err := newJournalBudget().accountMetadata(journal); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("oversize metadata accepted: %v", err)
+	}
+	budget := newJournalBudget()
+	if err := budget.accountMetadata(lifecycleJournal{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := budget.reserve(int64(^uint64(0)>>1), "preimage"); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("integer overflow accepted: %v", err)
+	}
+}
+
+func TestInstallJournalBudgetJustUnderLimit(t *testing.T) {
+	layout, release := internalFixture(t, "near-budget")
+	for _, file := range []*ReleaseFile{&release.Binary, &release.Contract} {
+		resizeReleaseFile(t, file, 2900<<10)
+	}
+	for _, host := range []Host{Codex, Claude} {
+		file := release.Entrypoints[host]
+		resizeReleaseFile(t, &file, 2900<<10)
+		release.Entrypoints[host] = file
+	}
+	if _, err := Install(context.Background(), layout, release, []Host{Codex}, 0); err != nil {
+		t.Fatalf("just-under install rejected: %v", err)
+	}
+}
+
+func TestInstallRejectsSourceSwapAfterStableOpen(t *testing.T) {
+	layout, release := internalFixture(t, "stable-source")
+	original := release.Binary.Path + ".opened"
+	stableReadHook = func(path string) {
+		if path != release.Binary.Path {
+			return
+		}
+		stableReadHook = nil
+		if err := os.Rename(path, original); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("swapped source"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { stableReadHook = nil })
+	if _, err := Install(context.Background(), layout, release, []Host{Codex}, 0); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("source swap error = %v", err)
+	}
+	if _, err := os.Lstat(layout.BinaryPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source swap mutated target: %v", err)
+	}
+	assertNoJournal(t, layout)
+}
+
+func TestInstallRejectsSymlinkSourceWithoutMutation(t *testing.T) {
+	layout, release := internalFixture(t, "symlink-source")
+	if err := os.Remove(release.Binary.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(release.Contract.Path, release.Binary.Path); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := Install(context.Background(), layout, release, []Host{Codex}, 0); err == nil {
+		t.Fatal("symlink source accepted")
+	}
+	if _, err := os.Lstat(layout.BinaryPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("binary mutated: %v", err)
+	}
+	assertNoJournal(t, layout)
 }
 
 func resizeReleaseFile(t *testing.T, file *ReleaseFile, size int64) {

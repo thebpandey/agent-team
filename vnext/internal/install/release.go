@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -107,8 +106,8 @@ func VerifyRelease(release Release) error {
 		if !validSHA256(file.SHA256) || file.Bytes < 0 {
 			return fmt.Errorf("invalid release file metadata")
 		}
-		digest, size, err := sha256File(file.Path)
-		if err != nil || digest != file.SHA256 || size != file.Bytes {
+		body, err := readStableRegular(filepath.Dir(file.Path), file.Path, file.Bytes, nil, "")
+		if err != nil || digestContent(body) != file.SHA256 {
 			return fmt.Errorf("release file verification failed")
 		}
 	}
@@ -116,18 +115,17 @@ func VerifyRelease(release Release) error {
 }
 
 func sha256File(path string) (string, int64, error) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", 0, fmt.Errorf("release artifact is not a regular file")
-	}
-	file, err := os.Open(path)
+	file, size, err := openStableRegular(filepath.Dir(path), path)
 	if err != nil {
-		return "", 0, err
+		return "", 0, fmt.Errorf("release artifact is not a regular file")
 	}
 	defer file.Close()
 	hash := sha256.New()
-	size, err := io.Copy(hash, file)
-	if err != nil {
+	read, err := io.Copy(hash, io.LimitReader(file, size+1))
+	if err != nil || read != size {
+		return "", 0, err
+	}
+	if err := verifyStableIdentity(file, path); err != nil {
 		return "", 0, err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), size, nil

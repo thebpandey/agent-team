@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -24,7 +25,6 @@ import (
 const (
 	installAttemptPath  = ".agent-team/install-attempt.json"
 	installJournalLimit = 16 << 20
-	journalMetadataSize = 64 << 10
 )
 
 var installMutationHook func()
@@ -32,6 +32,7 @@ var installCreateHook func(int) error
 var lifecycleMutationHook func(string, int) error
 var lifecycleInterruptHook func(string, int) bool
 var errJournalBudget = fmt.Errorf("%w: lifecycle journal budget exceeded", core.ErrRevision)
+var stableReadHook func(string)
 
 type lifecycleMutation struct {
 	Path        string `json:"path"`
@@ -59,21 +60,41 @@ type lifecycleJournal struct {
 	Progress         int                 `json:"progress"`
 }
 
-type journalBudget struct{ remaining int64 }
-
-func newJournalBudget() *journalBudget {
-	return &journalBudget{remaining: installJournalLimit - journalMetadataSize}
+type journalBudget struct {
+	remaining int64
+	metadata  bool
 }
 
-func (b *journalBudget) reserve(size int64) error {
-	if b == nil || size < 0 || size > installJournalLimit {
+func newJournalBudget() *journalBudget {
+	return &journalBudget{remaining: installJournalLimit}
+}
+
+func (b *journalBudget) accountMetadata(journal lifecycleJournal) error {
+	if b == nil || b.metadata {
 		return errJournalBudget
+	}
+	raw, err := json.Marshal(journal)
+	if err != nil || int64(len(raw)) > b.remaining {
+		return errJournalBudget
+	}
+	b.remaining -= int64(len(raw))
+	b.metadata = true
+	return nil
+}
+
+func (b *journalBudget) reserve(size int64, field string) error {
+	if b == nil || !b.metadata || size < 0 || size > installJournalLimit {
+		return errJournalBudget
+	}
+	if size == 0 {
+		return nil
 	}
 	encoded := ((size + 2) / 3) * 4
-	if encoded > b.remaining {
+	wrapper := int64(len(`,"` + field + `":""`))
+	if (field != "preimage" && field != "replacement") || wrapper > b.remaining || encoded > b.remaining-wrapper {
 		return errJournalBudget
 	}
-	b.remaining -= encoded
+	b.remaining -= encoded + wrapper
 	return nil
 }
 
@@ -94,9 +115,8 @@ func Install(ctx context.Context, layout Layout, release Release, hosts []Host, 
 }
 
 func installLocked(ctx context.Context, layout Layout, release Release, hosts []Host, expected uint64, owner store.MutationOwner) (CASOutcome, error) {
-	budget := newJournalBudget()
-	if err := validateLifecycle(ctx, layout, release, budget); err != nil {
-		return CASOutcome{}, err
+	if ctx == nil || ctx.Err() != nil || ValidateLayout(layout) != nil {
+		return CASOutcome{}, core.ErrSettings
 	}
 	hosts, err := normalizeHosts(hosts)
 	if err != nil || len(hosts) == 0 {
@@ -119,8 +139,26 @@ func installLocked(ctx context.Context, layout Layout, release Release, hosts []
 	}
 	manifest := InstallManifest{Schema: 1, Revision: 1, Version: release.Version, ReleaseRevision: release.Revision, Hosts: hosts}
 	journal := lifecycleJournal{Schema: 1, Operation: "install", ExpectedRevision: expected, Owner: owner, Intended: manifest}
+	for _, file := range desired {
+		mode := uint32(0o600)
+		if file.owned.Role == BinaryRole {
+			mode = 0o700
+		}
+		journal.Mutations = append(journal.Mutations, lifecycleMutation{Path: file.owned.Path, PostMode: mode, PostSHA256: file.source.SHA256, PostBytes: file.source.Bytes, Exclusive: true})
+		journal.Intended.Files = append(journal.Intended.Files, file.owned)
+	}
+	budget := newJournalBudget()
+	if err := budget.accountMetadata(journal); err != nil {
+		return CASOutcome{}, err
+	}
+	sources, err := validateLifecycle(ctx, layout, release, selectedReleasePaths(desired), budget)
+	if err != nil {
+		return CASOutcome{}, err
+	}
+	journal.Mutations = journal.Mutations[:0]
+	journal.Intended.Files = journal.Intended.Files[:0]
 	for index, file := range desired {
-		data, err := verifiedReleaseBytes(file.source)
+		data, err := verifiedReleaseBytes(file.source, sources)
 		if err != nil {
 			return CASOutcome{}, err
 		}
@@ -128,7 +166,7 @@ func installLocked(ctx context.Context, layout Layout, release Release, hosts []
 		if file.owned.Role == BinaryRole {
 			mode = 0o700
 		}
-		mutation, err := prepareMutation(layout, file.owned.Path, data, mode, false, true, budget)
+		mutation, err := prepareMutation(layout, file.owned.Path, data, mode, false, true, nil)
 		if err != nil {
 			return CASOutcome{}, err
 		}
@@ -160,10 +198,7 @@ func prepareMutation(layout Layout, path string, replacement []byte, mode fs.Fil
 	}
 	mutation.Existed = true
 	mutation.PreMode = uint32(info.Mode().Perm())
-	if err := budget.reserve(info.Size()); err != nil {
-		return lifecycleMutation{}, err
-	}
-	mutation.Preimage, err = os.ReadFile(path)
+	mutation.Preimage, err = readStableRegular(ownedRoot(layout, path), path, info.Size(), budget, "preimage")
 	if err != nil {
 		return lifecycleMutation{}, err
 	}
@@ -439,6 +474,78 @@ func manifestMismatches(manifest InstallManifest) []string {
 	return paths
 }
 
+func updateJournalPlan(layout Layout, release Release, current InstallManifest, desired []desiredFile, owner store.MutationOwner, expected uint64) lifecycleJournal {
+	previous, intended := cloneManifest(current), cloneManifest(current)
+	intended.Revision, intended.Version, intended.ReleaseRevision = expected+1, release.Version, release.Revision
+	plan := lifecycleJournal{Schema: 1, Operation: "update", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended}
+	for _, target := range desired {
+		index := ownedIndex(plan.Intended.Files, target.owned.Role, target.owned.Host)
+		if index < 0 {
+			continue
+		}
+		old := plan.Intended.Files[index]
+		mode := uint32(0o600)
+		if target.owned.Role == BinaryRole {
+			mode = 0o700
+		}
+		if _, err := os.Lstat(backupPath(layout, old)); errors.Is(err, fs.ErrNotExist) {
+			plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: backupPath(layout, old), PostMode: 0o600, PostSHA256: old.SHA256, PostBytes: old.Bytes})
+		}
+		plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: old.Path, Existed: true, PreSHA256: strings.Repeat("0", 64), PreMode: plannedMode(old.Path), PostMode: mode, PostSHA256: target.source.SHA256, PostBytes: target.source.Bytes})
+		plan.Retained = append(plan.Retained, old.Path, backupPath(layout, old))
+		plan.Intended.Files[index] = target.owned
+	}
+	return plan
+}
+
+func rollbackJournalPlan(layout Layout, current InstallManifest, version string, owner store.MutationOwner, expected uint64) lifecycleJournal {
+	previous, intended := cloneManifest(current), cloneManifest(current)
+	intended.Revision, intended.Version = expected+1, version
+	plan := lifecycleJournal{Schema: 1, Operation: "rollback", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended}
+	for _, backup := range current.Backups {
+		if backup.Version != version {
+			continue
+		}
+		index := ownedIndex(plan.Intended.Files, backup.Role, backup.Host)
+		if index < 0 {
+			continue
+		}
+		mode := uint32(0o600)
+		if backup.Role == BinaryRole {
+			mode = 0o700
+		}
+		file := plan.Intended.Files[index]
+		plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: file.Path, Existed: true, PreSHA256: strings.Repeat("0", 64), PreMode: plannedMode(file.Path), PostMode: mode, PostSHA256: backup.SHA256, PostBytes: backup.Bytes})
+		plan.Retained = append(plan.Retained, file.Path)
+		plan.Intended.Files[index].SHA256, plan.Intended.Files[index].Bytes, plan.Intended.Files[index].Version, plan.Intended.Files[index].Revision = backup.SHA256, backup.Bytes, backup.Version, backup.Revision
+		plan.Intended.ReleaseRevision = backup.Revision
+	}
+	return plan
+}
+
+func uninstallJournalPlan(current InstallManifest, owner store.MutationOwner, expected uint64) lifecycleJournal {
+	previous, intended := cloneManifest(current), cloneManifest(current)
+	intended.Revision = expected + 1
+	plan := lifecycleJournal{Schema: 1, Operation: "uninstall", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended}
+	for _, file := range current.Files {
+		plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: file.Path, Existed: true, PreSHA256: strings.Repeat("0", 64), PreMode: plannedMode(file.Path), PostAbsent: true})
+		plan.Retained = append(plan.Retained, file.Path)
+	}
+	for _, backup := range current.Backups {
+		plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: backup.Path, Existed: true, PreSHA256: strings.Repeat("0", 64), PreMode: plannedMode(backup.Path), PostAbsent: true})
+		plan.Retained = append(plan.Retained, backup.Path)
+	}
+	return plan
+}
+
+func plannedMode(path string) uint32 {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return 0o777
+	}
+	return uint32(info.Mode().Perm())
+}
+
 func Update(ctx context.Context, layout Layout, release Release, expected uint64) (CASOutcome, error) {
 	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", fmt.Sprintf("update:%d:%s", expected, release.Revision))
 	if err != nil {
@@ -453,16 +560,33 @@ func Update(ctx context.Context, layout Layout, release Release, expected uint64
 }
 
 func updateLocked(ctx context.Context, layout Layout, release Release, expected uint64, owner store.MutationOwner) (CASOutcome, error) {
-	budget := newJournalBudget()
-	if err := validateLifecycle(ctx, layout, release, budget); err != nil {
-		return CASOutcome{}, err
-	}
 	manifestStore := NewManifestStore(layout)
 	current, stale, err := currentManifest(ctx, manifestStore, expected)
 	if err != nil {
 		return stale, err
 	}
 	desired := releaseFiles(layout, release, current.Hosts)
+	budget := newJournalBudget()
+	if err := budget.accountMetadata(updateJournalPlan(layout, release, current, desired, owner, expected)); err != nil {
+		return CASOutcome{}, err
+	}
+	for _, target := range desired {
+		index := ownedIndex(current.Files, target.owned.Role, target.owned.Host)
+		if index >= 0 {
+			if err := budget.reserve(current.Files[index].Bytes, "preimage"); err != nil {
+				return CASOutcome{}, err
+			}
+			if _, statErr := os.Lstat(backupPath(layout, current.Files[index])); errors.Is(statErr, fs.ErrNotExist) {
+				if err := budget.reserve(current.Files[index].Bytes, "replacement"); err != nil {
+					return CASOutcome{}, err
+				}
+			}
+		}
+	}
+	sources, err := validateLifecycle(ctx, layout, release, selectedReleasePaths(desired), budget)
+	if err != nil {
+		return CASOutcome{}, err
+	}
 	next := cloneManifest(current)
 	next.Version = release.Version
 	next.ReleaseRevision = release.Revision
@@ -474,7 +598,7 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			retained = append(retained, target.owned.Path)
 			continue
 		}
-		oldBytes, err := readRegular(next.Files[index].Path, budget)
+		oldBytes, err := readStableRegular(ownedRoot(layout, next.Files[index].Path), next.Files[index].Path, next.Files[index].Bytes, nil, "")
 		if err != nil {
 			retained = append(retained, target.owned.Path)
 			continue
@@ -490,7 +614,7 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 		} else if !errors.Is(statErr, fs.ErrNotExist) {
 			return CASOutcome{Retained: append(retained, target.owned.Path)}, statErr
 		}
-		data, err := verifiedReleaseBytes(target.source)
+		data, err := verifiedReleaseBytes(target.source, sources)
 		if err != nil {
 			return CASOutcome{Retained: append(retained, target.owned.Path)}, err
 		}
@@ -498,12 +622,12 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 		if target.owned.Role == BinaryRole {
 			mode = 0o700
 		}
-		targetMutation, err := prepareMutation(layout, target.owned.Path, data, mode, false, false, budget)
+		targetMutation, err := prepareMutation(layout, target.owned.Path, data, mode, false, false, nil)
 		if err != nil {
 			return CASOutcome{Retained: append(retained, target.owned.Path)}, err
 		}
 		if !backupExists {
-			backupMutation, err := prepareMutation(layout, backup.Path, oldBytes, 0o600, false, false, budget)
+			backupMutation, err := prepareMutation(layout, backup.Path, oldBytes, 0o600, false, false, nil)
 			if err != nil {
 				return CASOutcome{Retained: append(retained, target.owned.Path)}, err
 			}
@@ -545,6 +669,23 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 	if err != nil {
 		return stale, err
 	}
+	if err := budget.accountMetadata(rollbackJournalPlan(layout, current, version, owner, expected)); err != nil {
+		return CASOutcome{}, err
+	}
+	for _, backup := range current.Backups {
+		if backup.Version != version {
+			continue
+		}
+		index := ownedIndex(current.Files, backup.Role, backup.Host)
+		if index >= 0 {
+			if err := budget.reserve(backup.Bytes, "replacement"); err != nil {
+				return CASOutcome{}, err
+			}
+			if err := budget.reserve(current.Files[index].Bytes, "preimage"); err != nil {
+				return CASOutcome{}, err
+			}
+		}
+	}
 	next := cloneManifest(current)
 	retained := manifestMismatches(current)
 	restored := 0
@@ -560,7 +701,7 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 			}
 			continue
 		}
-		data, err := readRegular(backup.Path, budget)
+		data, err := readStableRegular(ownedRoot(layout, backup.Path), backup.Path, backup.Bytes, nil, "")
 		if err != nil {
 			return CASOutcome{Retained: retained}, err
 		}
@@ -568,7 +709,7 @@ func rollbackLocked(ctx context.Context, layout Layout, version string, expected
 		if backup.Role == BinaryRole {
 			mode = 0o700
 		}
-		mutation, err := prepareMutation(layout, next.Files[index].Path, data, mode, false, false, budget)
+		mutation, err := prepareMutation(layout, next.Files[index].Path, data, mode, false, false, nil)
 		if err != nil {
 			return CASOutcome{Retained: append(retained, next.Files[index].Path)}, err
 		}
@@ -619,6 +760,19 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64, owner 
 	if err != nil {
 		return stale.Retained, stale, err
 	}
+	if err := budget.accountMetadata(uninstallJournalPlan(current, owner, expected)); err != nil {
+		return nil, CASOutcome{}, err
+	}
+	for _, file := range current.Files {
+		if err := budget.reserve(file.Bytes, "preimage"); err != nil {
+			return nil, CASOutcome{}, err
+		}
+	}
+	for _, backup := range current.Backups {
+		if err := budget.reserve(backup.Bytes, "preimage"); err != nil {
+			return nil, CASOutcome{}, err
+		}
+	}
 	next := cloneManifest(current)
 	retained := []string{}
 	mutations := []lifecycleMutation{}
@@ -629,7 +783,7 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64, owner 
 			next.Files = append(next.Files, file)
 			continue
 		}
-		mutation, err := prepareMutation(layout, file.Path, nil, 0, true, false, budget)
+		mutation, err := prepareMutation(layout, file.Path, nil, 0, true, false, nil)
 		if err != nil {
 			if errors.Is(err, errJournalBudget) {
 				return retained, CASOutcome{Retained: retained}, err
@@ -647,7 +801,7 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64, owner 
 			next.Backups = append(next.Backups, backup)
 			continue
 		}
-		mutation, err := prepareMutation(layout, backup.Path, nil, 0, true, false, budget)
+		mutation, err := prepareMutation(layout, backup.Path, nil, 0, true, false, nil)
 		if err != nil {
 			if errors.Is(err, errJournalBudget) {
 				return retained, CASOutcome{Retained: retained}, err
@@ -823,23 +977,59 @@ func releaseFiles(layout Layout, release Release, hosts []Host) []desiredFile {
 	return files
 }
 
-func validateLifecycle(ctx context.Context, layout Layout, release Release, budget *journalBudget) error {
+func selectedReleasePaths(desired []desiredFile) map[string]bool {
+	paths := make(map[string]bool, len(desired))
+	for _, file := range desired {
+		paths[file.source.Path] = true
+	}
+	return paths
+}
+
+func validateLifecycle(ctx context.Context, layout Layout, release Release, selected map[string]bool, budget *journalBudget) (map[string][]byte, error) {
 	if ctx == nil || ctx.Err() != nil {
-		return core.ErrSettings
+		return nil, core.ErrSettings
 	}
 	if err := ValidateLayout(layout); err != nil {
-		return err
+		return nil, err
 	}
-	for _, file := range []ReleaseFile{release.Binary, release.Contract, release.Entrypoints[Codex], release.Entrypoints[Claude]} {
-		info, err := os.Lstat(file.Path)
-		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() != file.Bytes {
-			return core.ErrRevision
+	if strings.TrimSpace(release.Version) == "" || !validReleaseRevision(release.Revision) || len(release.Entrypoints) != 2 {
+		return nil, core.ErrRevision
+	}
+	sources := make(map[string][]byte, 4)
+	files := []ReleaseFile{release.Binary, release.Contract, release.Entrypoints[Codex], release.Entrypoints[Claude]}
+	for _, file := range files {
+		if !validSHA256(file.SHA256) || file.Bytes < 0 {
+			return nil, core.ErrRevision
 		}
-		if err := budget.reserve(info.Size()); err != nil {
-			return err
+		opened, size, err := openStableRegular(filepath.Dir(file.Path), file.Path)
+		if err != nil || size != file.Bytes {
+			if opened != nil {
+				_ = opened.Close()
+			}
+			return nil, core.ErrRevision
+		}
+		_ = opened.Close()
+		if selected[file.Path] {
+			if err := budget.reserve(size, "replacement"); err != nil {
+				return nil, err
+			}
 		}
 	}
-	return VerifyRelease(release)
+	for _, file := range files {
+		if !selected[file.Path] {
+			digest, size, err := sha256File(file.Path)
+			if err != nil || digest != file.SHA256 || size != file.Bytes {
+				return nil, core.ErrRevision
+			}
+			continue
+		}
+		body, err := readStableRegular(filepath.Dir(file.Path), file.Path, file.Bytes, nil, "")
+		if err != nil || digestContent(body) != file.SHA256 {
+			return nil, core.ErrRevision
+		}
+		sources[file.Path] = body
+	}
+	return sources, nil
 }
 
 func normalizeHosts(hosts []Host) ([]Host, error) {
@@ -867,28 +1057,76 @@ func currentManifest(ctx context.Context, manifestStore *ManifestStore, expected
 	return current, CASOutcome{}, nil
 }
 
-func verifiedReleaseBytes(file ReleaseFile) ([]byte, error) {
-	if !diskMatches(file.Path, file.SHA256, file.Bytes) {
-		return nil, core.ErrRevision
-	}
-	return readRegular(file.Path, nil)
-}
-
-func readRegular(path string, budget *journalBudget) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, core.ErrPath
-	}
-	if budget != nil {
-		if err := budget.reserve(info.Size()); err != nil {
-			return nil, err
-		}
-	}
-	body, err := os.ReadFile(path)
-	if err != nil || int64(len(body)) != info.Size() {
+func verifiedReleaseBytes(file ReleaseFile, sources map[string][]byte) ([]byte, error) {
+	body, ok := sources[file.Path]
+	if !ok || int64(len(body)) != file.Bytes || digestContent(body) != file.SHA256 {
 		return nil, core.ErrRevision
 	}
 	return body, nil
+}
+
+func readStableRegular(rootPath, path string, expected int64, budget *journalBudget, field string) ([]byte, error) {
+	file, size, err := openStableRegular(rootPath, path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	if expected >= 0 && size != expected {
+		return nil, core.ErrRevision
+	}
+	if budget != nil {
+		if err := budget.reserve(size, field); err != nil {
+			return nil, err
+		}
+	}
+	body, err := io.ReadAll(io.LimitReader(file, size+1))
+	if err != nil || int64(len(body)) != size {
+		return nil, core.ErrRevision
+	}
+	if err := verifyStableIdentity(file, path); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func verifyStableIdentity(file *os.File, path string) error {
+	opened, err := file.Stat()
+	if err != nil {
+		return core.ErrRevision
+	}
+	current, err := os.Lstat(path)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
+		return core.ErrRevision
+	}
+	return nil
+}
+
+func openStableRegular(rootPath, path string) (*os.File, int64, error) {
+	if rootPath == "" {
+		return nil, 0, core.ErrPath
+	}
+	relative, err := filepath.Rel(rootPath, path)
+	if err != nil || relative == "." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, 0, core.ErrPath
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, 0, err
+	}
+	file, err := root.OpenFile(relative, os.O_RDONLY|stableReadFlags(), 0)
+	_ = root.Close()
+	if err != nil {
+		return nil, 0, core.ErrPath
+	}
+	if stableReadHook != nil {
+		stableReadHook(path)
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > installJournalLimit {
+		_ = file.Close()
+		return nil, 0, core.ErrPath
+	}
+	return file, info.Size(), nil
 }
 
 func diskMatches(path, digest string, bytes int64) bool {
