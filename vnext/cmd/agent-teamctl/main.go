@@ -69,6 +69,16 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 			if err := readStrictJSON(args[2], &request); err != nil {
 				return managementError(args, stdout, stderr, err)
 			}
+			if request.AuthorityReceipt != "" {
+				request.LegacyReceiptSHA256 = request.AuthorityReceiptSHA256
+				if request.Action == "host-cutover" {
+					inventories, verifyErr := migrate.VerifiedHostInventories(request.AuthorityReceipt, request.AuthorityReceiptSHA256)
+					if verifyErr != nil {
+						return managementError(args, stdout, stderr, verifyErr)
+					}
+					request.Inventories = inventories
+				}
+			}
 			var release install.Release
 			if request.Action == "host-cutover" {
 				var releaseErr error
@@ -87,7 +97,12 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		if err != nil {
 			return managementError(args, stdout, stderr, err)
 		}
-		return managementResult(args, stdout, map[string]any{"ok": true, "action": result.Action, "revision": result.TargetRevision, "receipt_digest": result.ReceiptDigest, "held": result.Held, "idempotent": result.Idempotent})
+		output := map[string]any{"ok": true, "action": result.Action, "revision": result.TargetRevision, "receipt_digest": result.ReceiptDigest, "held": result.Held, "idempotent": result.Idempotent}
+		if result.Action == "prepare" {
+			output["payload_path"], output["payload_sha256"] = result.PayloadPath, result.PayloadSHA256
+			output["request_path"], output["request_sha256"] = result.RequestPath, result.RequestSHA256
+		}
+		return managementResult(args, stdout, output)
 	}
 	layout, err := install.ResolveLayout(runtime.GOOS, map[string]string{
 		"LOCALAPPDATA":  os.Getenv("LOCALAPPDATA"),

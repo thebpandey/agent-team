@@ -15,11 +15,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/install"
 	"github.com/thebpandey/agent-team/vnext/internal/release"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
@@ -84,7 +86,28 @@ type AuthorityRequest struct {
 	Tests                 []EvidenceReference `json:"tests"`
 	Readiness             EvidenceReference   `json:"readiness"`
 	Approval              EvidenceReference   `json:"approval,omitempty"`
+	ApprovalSignature     EvidenceReference   `json:"approvalSignature,omitempty"`
+	ApprovalSignerKeyID   string              `json:"approvalSignerKeyId,omitempty"`
+	Prepare               *AuthorityPrepare   `json:"prepare,omitempty"`
 	ExpectedReceiptDigest string              `json:"expectedReceiptDigest,omitempty"`
+}
+
+type AuthorityPrepare struct {
+	ApprovalID          string                  `json:"approvalId"`
+	SignerKeyID         string                  `json:"signerKeyId"`
+	IssuedAt            string                  `json:"issuedAt"`
+	ExpiresAt           string                  `json:"expiresAt"`
+	Cause               string                  `json:"cause"`
+	RecoveryDisposition string                  `json:"recoveryDisposition"`
+	RemoteName          string                  `json:"remoteName"`
+	BaseRef             string                  `json:"baseRef"`
+	TargetRef           string                  `json:"targetRef"`
+	RemoteMainDeploys   bool                    `json:"remoteMainDeploys"`
+	PayloadPath         string                  `json:"payloadPath"`
+	RequestPath         string                  `json:"requestPath"`
+	SignaturePath       string                  `json:"signaturePath"`
+	NativeManifest      string                  `json:"nativeManifest"`
+	HostRoots           map[install.Host]string `json:"hostRoots"`
 }
 
 type authorityArchive struct {
@@ -103,27 +126,30 @@ type authorityPreimage struct {
 }
 
 type AuthorityReceipt struct {
-	Schema              int                  `json:"schema"`
-	Project             string               `json:"project"`
-	OperationID         string               `json:"operationId"`
-	RequestDigest       string               `json:"requestDigest"`
-	TargetRevision      string               `json:"targetRevision"`
-	Tracker             TrackerAuthority     `json:"tracker"`
-	Reviews             []EvidenceReference  `json:"reviews"`
-	Tests               []EvidenceReference  `json:"tests"`
-	Readiness           EvidenceReference    `json:"readiness"`
-	Remote              RemoteObservation    `json:"remote"`
-	Authorization       CutoverAuthorization `json:"authorization"`
-	RecoveryDisposition string               `json:"recoveryDisposition"`
-	ApprovalID          string               `json:"approvalId"`
-	ApprovalSHA256      string               `json:"approvalSha256"`
-	ArchivePath         string               `json:"archivePath"`
-	ArchiveSHA256       string               `json:"archiveSha256"`
-	Held                bool                 `json:"held"`
-	HoldCause           string               `json:"holdCause,omitempty"`
-	WrittenAt           string               `json:"writtenAt"`
-	ReceiptDigest       string               `json:"receiptDigest"`
-	Mutated             []string             `json:"mutated"`
+	Schema              int                           `json:"schema"`
+	Project             string                        `json:"project"`
+	OperationID         string                        `json:"operationId"`
+	RequestDigest       string                        `json:"requestDigest"`
+	TargetRevision      string                        `json:"targetRevision"`
+	Tracker             TrackerAuthority              `json:"tracker"`
+	Reviews             []EvidenceReference           `json:"reviews"`
+	Tests               []EvidenceReference           `json:"tests"`
+	Readiness           EvidenceReference             `json:"readiness"`
+	Remote              RemoteObservation             `json:"remote"`
+	Authorization       CutoverAuthorization          `json:"authorization"`
+	RecoveryDisposition string                        `json:"recoveryDisposition"`
+	ApprovalID          string                        `json:"approvalId"`
+	ApprovalSHA256      string                        `json:"approvalSha256"`
+	ArchivePath         string                        `json:"archivePath"`
+	ArchiveSHA256       string                        `json:"archiveSha256"`
+	Held                bool                          `json:"held"`
+	HoldCause           string                        `json:"holdCause,omitempty"`
+	WrittenAt           string                        `json:"writtenAt"`
+	ReceiptDigest       string                        `json:"receiptDigest"`
+	Mutated             []string                      `json:"mutated"`
+	HostInventories     []install.LegacyHostInventory `json:"hostInventories,omitempty"`
+	ApprovalSignature   EvidenceReference             `json:"approvalSignature,omitempty"`
+	ApprovalSignerKeyID string                        `json:"approvalSignerKeyId,omitempty"`
 }
 
 type trustedAuthority struct {
@@ -132,6 +158,7 @@ type trustedAuthority struct {
 	Approval    CutoverAuthorization
 	Recovery    string
 	EvidenceSHA string
+	Hosts       []install.LegacyHostInventory
 }
 
 type signedApprovalTrust struct {
@@ -146,30 +173,33 @@ type operatorTrustStore struct {
 }
 
 type signedCutoverApproval struct {
-	Schema              int                 `json:"schema"`
-	ID                  string              `json:"id"`
-	IssuedAt            string              `json:"issuedAt"`
-	ExpiresAt           string              `json:"expiresAt"`
-	Project             string              `json:"project"`
-	OperationID         string              `json:"operationId"`
-	TargetRevision      string              `json:"targetRevision"`
-	TrackerFingerprint  string              `json:"trackerFingerprint"`
-	ParentID            string              `json:"parentId"`
-	Cause               string              `json:"cause"`
-	RecoveryDisposition string              `json:"recoveryDisposition"`
-	SignerKeyID         string              `json:"signerKeyId"`
-	Signature           string              `json:"signature"`
-	TaskIDs             []string            `json:"taskIds"`
-	Reviews             []EvidenceReference `json:"reviews"`
-	Tests               []EvidenceReference `json:"tests"`
-	Readiness           EvidenceReference   `json:"readiness"`
-	Remote              RemoteObservation   `json:"remote"`
-	RemoteMainDeploys   bool                `json:"remoteMainDeploys"`
+	Schema              int                           `json:"schema"`
+	ID                  string                        `json:"id"`
+	IssuedAt            string                        `json:"issuedAt"`
+	ExpiresAt           string                        `json:"expiresAt"`
+	Project             string                        `json:"project"`
+	OperationID         string                        `json:"operationId"`
+	TargetRevision      string                        `json:"targetRevision"`
+	TrackerFingerprint  string                        `json:"trackerFingerprint"`
+	ParentID            string                        `json:"parentId"`
+	Cause               string                        `json:"cause"`
+	RecoveryDisposition string                        `json:"recoveryDisposition"`
+	SignerKeyID         string                        `json:"signerKeyId"`
+	Signature           string                        `json:"signature"`
+	TaskIDs             []string                      `json:"taskIds"`
+	Reviews             []EvidenceReference           `json:"reviews"`
+	Tests               []EvidenceReference           `json:"tests"`
+	Readiness           EvidenceReference             `json:"readiness"`
+	Remote              RemoteObservation             `json:"remote"`
+	RemoteMainDeploys   bool                          `json:"remoteMainDeploys"`
+	HostInventories     []install.LegacyHostInventory `json:"hostInventories"`
 }
 
 type AuthorityResult struct {
 	Action, ReceiptDigest, TargetRevision string
 	Held, Idempotent                      bool
+	PayloadPath, PayloadSHA256            string
+	RequestPath, RequestSHA256            string
 }
 
 type authorityJournal struct {
@@ -194,6 +224,9 @@ func ExecuteAuthorityRequest(ctx context.Context, requestPath string) (Authority
 			return AuthorityResult{}, statusErr
 		}
 		return AuthorityResult{Action: "status", ReceiptDigest: receipt.ReceiptDigest, TargetRevision: receipt.TargetRevision, Held: receipt.Held}, nil
+	}
+	if request.Action == "prepare" {
+		return prepareAuthority(ctx, request)
 	}
 	guard, err := store.AcquireProjectMutation(ctx, request.Project, "authority-cutover", request.OperationID+":"+request.Action)
 	if err != nil {
@@ -230,6 +263,28 @@ func AuthorityStatus(project string) (AuthorityReceipt, error) {
 	return receipt, nil
 }
 
+// VerifiedHostInventories returns host activation authority only after
+// re-verifying the signed payload against the operator trust store.
+func VerifiedHostInventories(receiptPath, expectedDigest string) ([]install.LegacyHostInventory, error) {
+	if !filepath.IsAbs(receiptPath) || !validDigest(expectedDigest) {
+		return nil, core.ErrPath
+	}
+	raw, err := readAbsoluteBounded(receiptPath)
+	if err != nil || digestBytes(raw) != expectedDigest {
+		return nil, core.ErrRevision
+	}
+	var receipt AuthorityReceipt
+	if json.Unmarshal(raw, &receipt) != nil || validateAuthorityReceipt(receipt) != nil || len(receipt.HostInventories) == 0 || filepath.Clean(receiptPath) != filepath.Join(receipt.Project, filepath.FromSlash(authorityReceiptPath)) {
+		return nil, core.ErrRevision
+	}
+	request := AuthorityRequest{Schema: 1, Action: "cutover", Project: receipt.Project, OperationID: receipt.OperationID, TargetRevision: receipt.TargetRevision, Tracker: receipt.Tracker, Reviews: receipt.Reviews, Tests: receipt.Tests, Readiness: receipt.Readiness, Approval: EvidenceReference{ID: receipt.ApprovalID, Path: receipt.Authorization.Source, SHA256: receipt.ApprovalSHA256}, ApprovalSignature: receipt.ApprovalSignature, ApprovalSignerKeyID: receipt.ApprovalSignerKeyID}
+	trusted, err := loadSignedAuthority(request)
+	if err != nil || !reflect.DeepEqual(trusted.Hosts, receipt.HostInventories) {
+		return nil, core.ErrRevision
+	}
+	return append([]install.LegacyHostInventory(nil), receipt.HostInventories...), nil
+}
+
 func cutoverAuthority(ctx context.Context, request AuthorityRequest, requestDigest string) (AuthorityResult, error) {
 	if existing, err := AuthorityStatus(request.Project); err == nil {
 		if existing.RequestDigest == requestDigest {
@@ -254,7 +309,7 @@ func cutoverAuthority(ctx context.Context, request AuthorityRequest, requestDige
 	}
 	archiveSum := sha256.Sum256(append(archiveRaw, '\n'))
 	mutated := []string{".agent-team/setup.json", ".agent-team/state.json"}
-	receipt := AuthorityReceipt{Schema: 1, Project: request.Project, OperationID: request.OperationID, RequestDigest: requestDigest, TargetRevision: request.TargetRevision, Tracker: request.Tracker, Reviews: request.Reviews, Tests: request.Tests, Readiness: request.Readiness, Remote: trusted.Remote, Authorization: trusted.Approval, RecoveryDisposition: trusted.Recovery, ApprovalID: trusted.ID, ApprovalSHA256: trusted.EvidenceSHA, ArchivePath: archiveRelative, ArchiveSHA256: hex.EncodeToString(archiveSum[:]), Held: true, HoldCause: trusted.Approval.Cause, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano), Mutated: mutated}
+	receipt := AuthorityReceipt{Schema: 1, Project: request.Project, OperationID: request.OperationID, RequestDigest: requestDigest, TargetRevision: request.TargetRevision, Tracker: request.Tracker, Reviews: request.Reviews, Tests: request.Tests, Readiness: request.Readiness, Remote: trusted.Remote, Authorization: trusted.Approval, RecoveryDisposition: trusted.Recovery, ApprovalID: trusted.ID, ApprovalSHA256: trusted.EvidenceSHA, ApprovalSignature: request.ApprovalSignature, ApprovalSignerKeyID: request.ApprovalSignerKeyID, HostInventories: trusted.Hosts, ArchivePath: archiveRelative, ArchiveSHA256: hex.EncodeToString(archiveSum[:]), Held: true, HoldCause: trusted.Approval.Cause, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano), Mutated: mutated}
 	receipt.ReceiptDigest = digestReceipt(receipt)
 	receiptSHA256 := jsonStoredDigest(receipt)
 	journal := authorityJournal{Schema: 1, OperationID: request.OperationID, RequestDigest: requestDigest, Archive: archive, Created: []string{archiveRelative, authorityReceiptPath}, Restore: mutated, ReceiptSHA256: receiptSHA256}
@@ -483,6 +538,12 @@ func loadSignedAuthority(request AuthorityRequest) (trustedAuthority, error) {
 	if decoder.Decode(&approval) != nil || decoder.Decode(&struct{}{}) != io.EOF || approval.Schema != 1 || approval.ID == "" || approval.ID != request.Approval.ID || !canonicalTaskIDs(approval.TaskIDs) {
 		return trustedAuthority{}, fmt.Errorf("%w: malformed signed approval", core.ErrRevision)
 	}
+	if request.ApprovalSignature.Path != "" {
+		canonical, marshalErr := json.Marshal(approval)
+		if marshalErr != nil || !bytes.Equal(raw, canonical) {
+			return trustedAuthority{}, fmt.Errorf("%w: detached approval is not canonical", core.ErrRevision)
+		}
+	}
 	trust, err := readOperatorTrustStore()
 	if err != nil {
 		return trustedAuthority{}, err
@@ -498,10 +559,28 @@ func loadSignedAuthority(request AuthorityRequest) (trustedAuthority, error) {
 	if err != nil || trustedKey.Algorithm != "ed25519" || len(publicKey) != ed25519.PublicKeySize || digestBytes(publicKey) != trustedKey.KeyID {
 		return trustedAuthority{}, fmt.Errorf("%w: approval signer is not operator-trusted", core.ErrRevision)
 	}
-	signature, err := base64.StdEncoding.DecodeString(approval.Signature)
-	approval.Signature = ""
-	payload, marshalErr := json.Marshal(approval)
-	if err != nil || marshalErr != nil || !ed25519.Verify(publicKey, payload, signature) {
+	var signature, payload []byte
+	if request.ApprovalSignature.Path != "" {
+		if approval.Signature != "" || request.ApprovalSignerKeyID != approval.SignerKeyID || request.ApprovalSignature.ID != approval.ID+"-signature" || !filepath.IsAbs(request.ApprovalSignature.Path) || request.ApprovalSignature.SHA256 != "" && !validDigest(request.ApprovalSignature.SHA256) {
+			return trustedAuthority{}, fmt.Errorf("%w: invalid detached approval signature", core.ErrRevision)
+		}
+		signatureRaw, readErr := readAbsoluteBounded(request.ApprovalSignature.Path)
+		if readErr != nil || request.ApprovalSignature.SHA256 != "" && digestBytes(signatureRaw) != request.ApprovalSignature.SHA256 {
+			return trustedAuthority{}, fmt.Errorf("%w: detached approval signature changed", core.ErrRevision)
+		}
+		signature = signatureRaw
+		if len(signature) != ed25519.SignatureSize {
+			if decoded, decodeErr := base64.StdEncoding.DecodeString(string(bytes.TrimSpace(signatureRaw))); decodeErr == nil {
+				signature = decoded
+			}
+		}
+		payload = raw
+	} else {
+		signature, err = base64.StdEncoding.DecodeString(approval.Signature)
+		approval.Signature = ""
+		payload, err = json.Marshal(approval)
+	}
+	if err != nil || !ed25519.Verify(publicKey, payload, signature) {
 		return trustedAuthority{}, fmt.Errorf("%w: signed approval verification failed", core.ErrRevision)
 	}
 	issued, issueErr := time.Parse(time.RFC3339Nano, approval.IssuedAt)
@@ -514,7 +593,7 @@ func loadSignedAuthority(request AuthorityRequest) (trustedAuthority, error) {
 		return trustedAuthority{}, fmt.Errorf("%w: signed approval scope differs", core.ErrRevision)
 	}
 	derived := CutoverAuthorization{GrantedBy: trustedKey.KeyID, Source: request.Approval.Path, Cause: approval.Cause, Scope: approval.ParentID, GrantedAt: approval.IssuedAt, Revision: approval.TargetRevision, TaskIDs: append([]string(nil), approval.TaskIDs...), RemoteMainDeploys: approval.RemoteMainDeploys}
-	return trustedAuthority{ID: approval.ID, Remote: approval.Remote, Approval: derived, Recovery: approval.RecoveryDisposition, EvidenceSHA: request.Approval.SHA256}, nil
+	return trustedAuthority{ID: approval.ID, Remote: approval.Remote, Approval: derived, Recovery: approval.RecoveryDisposition, EvidenceSHA: request.Approval.SHA256, Hosts: approval.HostInventories}, nil
 }
 
 func validateEvidenceIdentities(refs []EvidenceReference) error {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
@@ -79,6 +80,87 @@ func TestLegacyHostCutoverRollbackAndRetry(t *testing.T) {
 	}
 	for _, host := range request.Hosts {
 		assertFileDigest(t, filepath.Join(layout.SkillRoots[host], "SKILL.md"), release.Entrypoints[host].SHA256)
+	}
+}
+
+func TestLegacyHostCutoverAcceptsOnlyVerifiedSourceInventory(t *testing.T) {
+	root := t.TempDir()
+	layout, err := ResolveLayout("linux", map[string]string{"XDG_DATA_HOME": filepath.Join(root, "data"), "CODEX_HOME": filepath.Join(root, "codex"), "CLAUDE_HOME": filepath.Join(root, "claude")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := legacyReleaseFixture(t, root)
+	if _, err := Install(context.Background(), layout, release, []Host{Codex, Claude}, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []Host{Codex, Claude} {
+		skill := []byte("legacy-" + string(host) + "\n")
+		if err := os.WriteFile(filepath.Join(layout.SkillRoots[host], "SKILL.md"), skill, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		source := map[string]any{"version": "7.3.1", "sourceRevision": strings.Repeat("a", 40), "packageFileMap": map[string]any{"SKILL.md": map[string]any{"sha256": digestBytesInstall(skill), "mode": 384, "size": len(skill)}}}
+		raw, _ := json.Marshal(source)
+		if err := os.WriteFile(filepath.Join(layout.SkillRoots[host], ".agent-team-source.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		config := []byte(`{"unrelated":1,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"node $HOME/skills/agent-team/hooks/agent-team-hook.mjs --runtime ` + string(host) + ` --event SessionStart"},{"type":"command","command":"foreign"}]}]}}`)
+		if err := os.MkdirAll(filepath.Dir(layout.ConfigPaths[host]), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(layout.ConfigPaths[host], config, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inventories, err := InventoryLegacyHosts(layout, []Host{Codex, Claude})
+	if err != nil || len(inventories) != 2 {
+		t.Fatalf("inventory = %#v, %v", inventories, err)
+	}
+	request := LegacyHostCutoverRequest{Schema: 1, Action: "host-cutover", OperationID: "signed-source", LegacyReceiptSHA256: strings.Repeat("b", 64), ExpectedManifestRevision: 1, Hosts: []Host{Codex, Claude}}
+	configBefore := map[Host][]byte{}
+	for _, host := range request.Hosts {
+		configBefore[host], _ = os.ReadFile(layout.ConfigPaths[host])
+	}
+	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); err == nil {
+		t.Fatal("unsigned source metadata accepted")
+	}
+	request.Inventories = inventories
+	sourcePath := filepath.Join(layout.SkillRoots[Codex], ".agent-team-source.json")
+	sourceBefore, _ := os.ReadFile(sourcePath)
+	if err := os.WriteFile(sourcePath, []byte(`{"version":"foreign"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); err == nil {
+		t.Fatal("changed signed inventory accepted")
+	}
+	if err := os.WriteFile(sourcePath, sourceBefore, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := CutoverLegacyHosts(context.Background(), layout, release, request)
+	if err != nil || result.ManifestRevision != 2 {
+		t.Fatalf("signed inventory cutover = %#v, %v", result, err)
+	}
+	for _, host := range []Host{Codex, Claude} {
+		raw, err := os.ReadFile(layout.ConfigPaths[host])
+		if err != nil || bytes.Contains(raw, []byte("agent-team-hook.mjs")) || !bytes.Contains(raw, []byte("foreign")) {
+			t.Fatalf("%s config = %s, %v", host, raw, err)
+		}
+	}
+	cutoverDigest := result.ReceiptDigest
+	request.Action, request.ExpectedReceiptDigest, request.ExpectedManifestRevision = "host-rollback", cutoverDigest, result.ManifestRevision
+	result, err = CutoverLegacyHosts(context.Background(), layout, release, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range request.Hosts {
+		raw, _ := os.ReadFile(layout.ConfigPaths[host])
+		if !bytes.Equal(raw, configBefore[host]) {
+			t.Fatalf("%s signed rollback config differs", host)
+		}
+	}
+	request.Action, request.ExpectedReceiptDigest, request.ExpectedManifestRevision = "host-cutover", "", result.ManifestRevision
+	result, err = CutoverLegacyHosts(context.Background(), layout, release, request)
+	if err != nil || result.Idempotent {
+		t.Fatalf("signed reapply = %#v, %v", result, err)
 	}
 }
 

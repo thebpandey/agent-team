@@ -32,7 +32,41 @@ type LegacyHostCutoverRequest struct {
 	LegacyReceiptSHA256      string `json:"legacyReceiptSha256"`
 	ExpectedManifestRevision uint64 `json:"expectedManifestRevision"`
 	ExpectedReceiptDigest    string `json:"expectedReceiptDigest,omitempty"`
+	AuthorityReceipt         string `json:"authorityReceipt,omitempty"`
+	AuthorityReceiptSHA256   string `json:"authorityReceiptSha256,omitempty"`
 	Hosts                    []Host `json:"hosts"`
+	// Inventories is populated only after the CLI verifies the signed project
+	// authority receipt. It is deliberately not accepted from request JSON.
+	Inventories []LegacyHostInventory `json:"-"`
+}
+
+type LegacyFileIdentity struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	Mode   uint32 `json:"mode"`
+	Size   int64  `json:"size"`
+}
+
+type LegacyHandlerInventory struct {
+	Runtime    string          `json:"runtime"`
+	Event      string          `json:"event"`
+	HandlerID  string          `json:"handlerId"`
+	Digest     string          `json:"digest"`
+	ConfigPath string          `json:"configPath"`
+	Handler    json.RawMessage `json:"handler"`
+}
+
+type LegacyHostInventory struct {
+	Host           Host                     `json:"host"`
+	Root           string                   `json:"root"`
+	Source         LegacyFileIdentity       `json:"source"`
+	Skill          LegacyFileIdentity       `json:"skill"`
+	Config         *LegacyFileIdentity      `json:"config,omitempty"`
+	Handlers       []LegacyHandlerInventory `json:"handlers"`
+	NativeManifest LegacyFileIdentity       `json:"nativeManifest"`
+	NativeRevision uint64                   `json:"nativeRevision"`
+	NativeRelease  string                   `json:"nativeReleaseRevision"`
+	NativeFiles    []OwnedFile              `json:"nativeFiles"`
 }
 
 type LegacyHostCutoverResult struct {
@@ -151,11 +185,8 @@ func cutoverLegacyHosts(ctx context.Context, layout Layout, release Release, req
 	if err != nil || len(hosts) == 0 || len(layout.ConfigPaths) != 2 {
 		return LegacyHostCutoverResult{}, core.ErrSettings
 	}
-	legacy, err := readLegacyInstallReceipt(request.LegacyReceipt, request.LegacyReceiptSHA256)
+	legacy, signedInventory, err := legacyAuthority(layout, request, hosts)
 	if err != nil {
-		return LegacyHostCutoverResult{}, err
-	}
-	if err := verifyLegacyOwnership(layout, legacy, hosts); err != nil {
 		return LegacyHostCutoverResult{}, err
 	}
 	current, err := NewManifestStore(layout).Read(ctx)
@@ -167,6 +198,13 @@ func cutoverLegacyHosts(ctx context.Context, layout Layout, release Release, req
 	journal := lifecycleJournal{Schema: 1, Operation: "update", ExpectedRevision: current.Revision, Owner: owner, Previous: &previous, Intended: intended}
 	receipt := hostCutoverReceipt{Schema: 1, LegacySchema: legacy.SchemaVersion, OperationID: request.OperationID, Version: release.Version, Revision: release.Revision, LegacyReceipt: request.LegacyReceipt, LegacyReceiptSHA256: request.LegacyReceiptSHA256, Previous: previous, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	for _, host := range hosts {
+		inventory := inventoryForHost(request.Inventories, host)
+		if signedInventory {
+			sourceIdentity, _, sourceErr := stableLegacyIdentity(inventory.Source.Path, legacyReceiptLimit)
+			if sourceErr != nil || sourceIdentity != inventory.Source {
+				return LegacyHostCutoverResult{}, fmt.Errorf("%w: signed host provenance changed", core.ErrRevision)
+			}
+		}
 		for relative, file := range legacy.InstalledFileMaps[string(host)].Files {
 			path := filepath.Join(layout.SkillRoots[host], filepath.FromSlash(relative))
 			if relative != "SKILL.md" && path != filepath.Join(layout.SkillRoots[host], "agent-team-vnext", "SKILL.md") {
@@ -184,11 +222,20 @@ func cutoverLegacyHosts(ctx context.Context, layout Layout, release Release, req
 		if err != nil {
 			return LegacyHostCutoverResult{}, err
 		}
+		if signedInventory && !mutationMatchesLegacyIdentity(mutation, inventory.Skill) {
+			return LegacyHostCutoverResult{}, fmt.Errorf("%w: signed top-level skill changed", core.ErrRevision)
+		}
 		journal.Mutations = append(journal.Mutations, mutation)
 		receipt.addMutation(mutation)
 		mutation, err = prepareMutation(layout, nested, nil, 0, true, false, nil)
 		if err != nil {
 			return LegacyHostCutoverResult{}, err
+		}
+		if signedInventory {
+			index := ownedIndex(current.Files, EntrypointRole, host)
+			if index < 0 || !mutation.Existed || mutation.PreSHA256 != current.Files[index].SHA256 || int64(len(mutation.Preimage)) != current.Files[index].Bytes {
+				return LegacyHostCutoverResult{}, fmt.Errorf("%w: staged native entrypoint changed", core.ErrRevision)
+			}
 		}
 		journal.Mutations = append(journal.Mutations, mutation)
 		receipt.addMutation(mutation)
@@ -197,19 +244,24 @@ func cutoverLegacyHosts(ctx context.Context, layout Layout, release Release, req
 			return LegacyHostCutoverResult{}, core.ErrRevision
 		}
 		journal.Intended.Files[index].Path = top
-		mutation, err = prepareMutation(layout, layout.ConfigPaths[host], nil, 0o600, false, false, nil)
-		if err != nil {
-			return LegacyHostCutoverResult{}, err
+		if !signedInventory || inventory.Config != nil && len(inventory.Handlers) > 0 {
+			mutation, err = prepareMutation(layout, layout.ConfigPaths[host], nil, 0o600, false, false, nil)
+			if err != nil {
+				return LegacyHostCutoverResult{}, err
+			}
+			if signedInventory && !mutationMatchesLegacyIdentity(mutation, *inventory.Config) {
+				return LegacyHostCutoverResult{}, fmt.Errorf("%w: signed host config changed", core.ErrRevision)
+			}
+			configReplacement, err := retireLegacyHandlers(mutation.Preimage, layout.ConfigPaths[host], string(host), legacy.Handlers)
+			if err != nil {
+				return LegacyHostCutoverResult{}, err
+			}
+			mutation.Replacement = configReplacement
+			mutation.PostSHA256 = digestContent(configReplacement)
+			mutation.PostBytes = int64(len(configReplacement))
+			journal.Mutations = append(journal.Mutations, mutation)
+			receipt.addMutation(mutation)
 		}
-		configReplacement, err := retireLegacyHandlers(mutation.Preimage, layout.ConfigPaths[host], string(host), legacy.Handlers)
-		if err != nil {
-			return LegacyHostCutoverResult{}, err
-		}
-		mutation.Replacement = configReplacement
-		mutation.PostSHA256 = digestContent(configReplacement)
-		mutation.PostBytes = int64(len(configReplacement))
-		journal.Mutations = append(journal.Mutations, mutation)
-		receipt.addMutation(mutation)
 	}
 	sort.Slice(receipt.Retained, func(i, j int) bool { return receipt.Retained[i].Path < receipt.Retained[j].Path })
 	receipt.ReceiptDigest = digestHostReceipt(receipt)
@@ -302,6 +354,75 @@ func readLegacyInstallReceipt(path, expectedDigest string) (legacyInstallReceipt
 		return legacyInstallReceipt{}, core.ErrRevision
 	}
 	return receipt, nil
+}
+
+func legacyAuthority(layout Layout, request LegacyHostCutoverRequest, hosts []Host) (legacyInstallReceipt, bool, error) {
+	if len(request.Inventories) == 0 {
+		legacy, err := readLegacyInstallReceipt(request.LegacyReceipt, request.LegacyReceiptSHA256)
+		if err != nil {
+			return legacyInstallReceipt{}, false, err
+		}
+		if err := verifyLegacyOwnership(layout, legacy, hosts); err != nil {
+			return legacyInstallReceipt{}, false, err
+		}
+		return legacy, false, nil
+	}
+	observed, err := InventoryLegacyHosts(layout, hosts)
+	if err != nil || !sameLegacyInventories(observed, request.Inventories) {
+		return legacyInstallReceipt{}, true, fmt.Errorf("%w: signed legacy inventory changed", core.ErrRevision)
+	}
+	legacy := legacyInstallReceipt{SchemaVersion: 4, Version: "signed-inventory", InstalledFileMaps: map[string]legacyInstalledMap{}}
+	for _, inventory := range request.Inventories {
+		files := map[string]legacyInstalledFile{"SKILL.md": {SHA256: inventory.Skill.SHA256, Mode: inventory.Skill.Mode, Size: inventory.Skill.Size}}
+		legacy.InstalledFileMaps[string(inventory.Host)] = legacyInstalledMap{Target: inventory.Root, Digest: legacyFileMapDigest(files), Files: files}
+		for _, handler := range inventory.Handlers {
+			legacy.Handlers = append(legacy.Handlers, legacyHandler{Runtime: handler.Runtime, Event: handler.Event, HandlerID: handler.HandlerID, Digest: handler.Digest, ConfigPath: handler.ConfigPath, Handler: append(json.RawMessage(nil), handler.Handler...)})
+		}
+	}
+	return legacy, true, nil
+}
+
+func sameLegacyInventories(a, b []LegacyHostInventory) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	normalize := func(values []LegacyHostInventory) []LegacyHostInventory {
+		copyValues := append([]LegacyHostInventory(nil), values...)
+		for i := range copyValues {
+			copyValues[i].Handlers = append([]LegacyHandlerInventory(nil), copyValues[i].Handlers...)
+			for j := range copyValues[i].Handlers {
+				compact := new(bytes.Buffer)
+				if json.Compact(compact, copyValues[i].Handlers[j].Handler) == nil {
+					copyValues[i].Handlers[j].Handler = compact.Bytes()
+				}
+			}
+		}
+		return copyValues
+	}
+	observed, signed := normalize(a), normalize(b)
+	for i := range observed {
+		if observed[i].NativeManifest.Path != signed[i].NativeManifest.Path || observed[i].NativeRevision < signed[i].NativeRevision || (observed[i].NativeRevision-signed[i].NativeRevision)%2 != 0 {
+			return false
+		}
+		// A completed cutover followed by its exact rollback advances the CAS
+		// revision by two while restoring the signed native file set.
+		observed[i].NativeRevision = signed[i].NativeRevision
+		observed[i].NativeManifest = signed[i].NativeManifest
+	}
+	return reflect.DeepEqual(observed, signed)
+}
+
+func inventoryForHost(inventories []LegacyHostInventory, host Host) LegacyHostInventory {
+	for _, inventory := range inventories {
+		if inventory.Host == host {
+			return inventory
+		}
+	}
+	return LegacyHostInventory{}
+}
+
+func mutationMatchesLegacyIdentity(mutation lifecycleMutation, identity LegacyFileIdentity) bool {
+	return mutation.Existed && mutation.Path == identity.Path && mutation.PreSHA256 == identity.SHA256 && mutation.PreMode == identity.Mode && int64(len(mutation.Preimage)) == identity.Size
 }
 
 func verifyLegacyOwnership(layout Layout, receipt legacyInstallReceipt, hosts []Host) error {
