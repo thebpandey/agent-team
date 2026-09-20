@@ -175,7 +175,10 @@ type Dependencies struct {
 	Stderr           io.Writer                                     `json:"-"`
 	Confirmations    map[string]bool                               `json:"confirmations"`
 	ExecuteLifecycle func(context.Context, string, []string) error `json:"-"`
+	Deployment       DeploymentAction                              `json:"-"`
 }
+
+type DeploymentAction func(context.Context, []string, io.Writer, io.Writer) int
 
 type ErrorCode string
 

@@ -42,6 +42,15 @@ func Run(ctx context.Context, args []string, deps core.Dependencies) int {
 		}
 		return 0
 	}
+	if action.Name == "deploy" {
+		if deps.Deployment != nil {
+			callbackArgs := append([]string{"deploy"}, action.Args...)
+			if action.JSON {
+				callbackArgs = append(callbackArgs, "--json")
+			}
+			return deps.Deployment(ctx, callbackArgs, stdout, deps.Stderr)
+		}
+	}
 	if action.ScopeRequired {
 		if deps.ExecuteLifecycle == nil {
 			return writeFailure(stdout, deps.Stderr, args, core.ErrTransition)

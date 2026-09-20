@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/deploy"
 )
 
 // Action is the deliberately small, argument-only command representation used
@@ -185,39 +186,18 @@ func parseScope(value string) ([]string, error) {
 }
 
 func parseDeployArgs(args []string) ([]string, error) {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(args))
-	for i := 0; i < len(args); i += 2 {
-		if i+1 >= len(args) || seen[args[i]] {
-			return nil, core.ErrPhase
-		}
-		flag, value := args[i], strings.TrimSpace(args[i+1])
-		if value == "" {
-			return nil, core.ErrPhase
-		}
-		switch flag {
-		case "--run", "--target":
-		case "--batch-size":
-			if !canonicalPositiveDecimal(value) {
+	normalized := append([]string(nil), args...)
+	for i := 0; i < len(normalized); i++ {
+		if normalized[i] != "--resume" {
+			if i+1 >= len(normalized) {
 				return nil, core.ErrPhase
 			}
-		default:
-			return nil, core.ErrPhase
-		}
-		seen[flag] = true
-		out = append(out, flag, value)
-	}
-	return out, nil
-}
-
-func canonicalPositiveDecimal(value string) bool {
-	if value == "" || value[0] < '1' || value[0] > '9' {
-		return false
-	}
-	for _, char := range value[1:] {
-		if char < '0' || char > '9' {
-			return false
+			normalized[i+1] = strings.TrimSpace(normalized[i+1])
+			i++
 		}
 	}
-	return true
+	if _, err := deploy.ParseDeployArgs(append([]string{"deploy"}, normalized...)); err != nil {
+		return nil, core.ErrPhase
+	}
+	return normalized, nil
 }
