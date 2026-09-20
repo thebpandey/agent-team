@@ -5,10 +5,12 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/dispatch"
 	"github.com/thebpandey/agent-team/vnext/internal/gate"
 	"github.com/thebpandey/agent-team/vnext/internal/integrate"
+	"github.com/thebpandey/agent-team/vnext/internal/resources"
 	"github.com/thebpandey/agent-team/vnext/internal/review"
 	"github.com/thebpandey/agent-team/vnext/internal/run"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
@@ -21,12 +23,29 @@ type Orchestrator interface {
 	Start(context.Context, core.RunID) error
 	Execute(context.Context, core.RunID) error
 	Resume(context.Context, core.RunID) error
+	DispatchPlanned(context.Context, core.Limits, contracts.HostCapabilities, int, core.AssignmentPacket, contracts.WorktreeSpec) (contracts.WorkerHandle, error)
 }
 
-type foreground struct{ store *store.Store }
+type foreground struct {
+	store      *store.Store
+	dispatcher dispatch.Dispatcher
+}
 
-func New(state *store.Store, _ tracker.Tracker, _ dispatch.Dispatcher, _ supervise.Supervisor, _ review.Reviewer, _ gate.Gate, _ integrate.Integrator) Orchestrator {
-	return &foreground{store: state}
+func New(state *store.Store, _ tracker.Tracker, dispatcher dispatch.Dispatcher, _ supervise.Supervisor, _ review.Reviewer, _ gate.Gate, _ integrate.Integrator) Orchestrator {
+	return &foreground{store: state, dispatcher: dispatcher}
+}
+
+// DispatchPlanned is the host-start boundary for planned work. It performs
+// capacity admission before giving a request to the dispatcher, whose adapter
+// may create host-side worker state.
+func (o *foreground) DispatchPlanned(ctx context.Context, limits core.Limits, capabilities contracts.HostCapabilities, teams int, packet core.AssignmentPacket, worktree contracts.WorktreeSpec) (contracts.WorkerHandle, error) {
+	if err := resources.ValidatePlannedAdmission(limits, capabilities, teams); err != nil {
+		return contracts.WorkerHandle{}, err
+	}
+	if ctx == nil || ctx.Err() != nil || o == nil || o.dispatcher == nil {
+		return contracts.WorkerHandle{}, core.ErrTransition
+	}
+	return o.dispatcher.Dispatch(ctx, packet, worktree)
 }
 
 func NewOrchestrator(state *store.Store, tasks tracker.Tracker, dispatcher dispatch.Dispatcher, supervisor supervise.Supervisor, reviewer review.Reviewer, gate gate.Gate, integrator integrate.Integrator) Orchestrator {

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"io"
 )
 
@@ -168,10 +169,11 @@ func (packet AssignmentPacket) Clone() AssignmentPacket {
 }
 
 type Dependencies struct {
-	ProjectRoot   string          `json:"projectRoot"`
-	Stdout        io.Writer       `json:"-"`
-	Stderr        io.Writer       `json:"-"`
-	Confirmations map[string]bool `json:"confirmations"`
+	ProjectRoot      string                                        `json:"projectRoot"`
+	Stdout           io.Writer                                     `json:"-"`
+	Stderr           io.Writer                                     `json:"-"`
+	Confirmations    map[string]bool                               `json:"confirmations"`
+	ExecuteLifecycle func(context.Context, string, []string) error `json:"-"`
 }
 
 type ErrorCode string

@@ -21,7 +21,7 @@ type outcome struct {
 	Message string `json:"message"`
 }
 
-func Run(_ context.Context, args []string, deps core.Dependencies) int {
+func Run(ctx context.Context, args []string, deps core.Dependencies) int {
 	stdout := deps.Stdout
 	if stdout == nil {
 		stdout = io.Discard
@@ -41,6 +41,14 @@ func Run(_ context.Context, args []string, deps core.Dependencies) int {
 			return 1
 		}
 		return 0
+	}
+	if action.ScopeRequired {
+		if deps.ExecuteLifecycle == nil {
+			return writeFailure(stdout, deps.Stderr, args, core.ErrTransition)
+		}
+		if err := deps.ExecuteLifecycle(ctx, action.Name, action.Args); err != nil {
+			return writeFailure(stdout, deps.Stderr, args, err)
+		}
 	}
 
 	status := "accepted"

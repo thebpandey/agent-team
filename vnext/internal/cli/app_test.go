@@ -10,7 +10,60 @@ import (
 
 	"github.com/thebpandey/agent-team/vnext/internal/cli"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/lifecycle"
 )
+
+type lifecycleRecorder struct {
+	action string
+	scope  core.Scope
+}
+
+func (r *lifecycleRecorder) Pause(_ context.Context, scope core.Scope, _ string) error {
+	r.action, r.scope = "pause", scope
+	return nil
+}
+
+func (r *lifecycleRecorder) Stop(_ context.Context, scope core.Scope, _ string) error {
+	r.action, r.scope = "stop", scope
+	return nil
+}
+
+func (r *lifecycleRecorder) Cancel(_ context.Context, scope core.Scope, _ string) error {
+	r.action, r.scope = "cancel", scope
+	return nil
+}
+
+func (r *lifecycleRecorder) Resume(_ context.Context, scope core.Scope) error {
+	r.action, r.scope = "resume", scope
+	return nil
+}
+
+func (r *lifecycleRecorder) Checkpoint(context.Context, core.Scope, string) error { return nil }
+
+type membershipLookup struct {
+	team    bool
+	task    bool
+	teamRun core.RunID
+	taskRun core.RunID
+	teamID  core.TeamID
+	taskID  core.TaskID
+}
+
+func (l *membershipLookup) TeamMember(_ context.Context, run core.RunID, team core.TeamID) (bool, error) {
+	l.teamRun, l.teamID = run, team
+	return l.team, nil
+}
+
+func (l *membershipLookup) TaskMember(_ context.Context, run core.RunID, task core.TaskID) (bool, error) {
+	l.taskRun, l.taskID = run, task
+	return l.task, nil
+}
+
+func executeLifecycle(active []core.RunID, lookup lifecycle.ScopeLookup, executor lifecycle.Lifecycle) func(context.Context, string, []string) error {
+	return func(ctx context.Context, name string, selector []string) error {
+		return lifecycle.ExecuteLifecycle(ctx, lifecycle.ParsedAction{Name: name, Selector: selector, ScopeRequired: true}, active, lookup, executor)
+	}
+}
 
 func TestCoreAndCLIContracts(t *testing.T) {
 	var _ core.TaskID = "TASK-1"
@@ -201,6 +254,66 @@ func TestDeferredJSONOutcomesRetainPhaseExit(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &envelope); err != nil || envelope["status"] == "accepted" {
 			t.Fatalf("args=%v output=%q err=%v", args, out.String(), err)
 		}
+	}
+}
+
+func TestRunExecutesLifecycleForOneActiveRun(t *testing.T) {
+	var out bytes.Buffer
+	recorded := &lifecycleRecorder{}
+	code := cli.Run(context.Background(), []string{"pause", "--json"}, core.Dependencies{
+		Stdout:           &out,
+		Stderr:           &out,
+		ExecuteLifecycle: executeLifecycle([]core.RunID{"RUN-1"}, nil, recorded),
+	})
+	if code != 0 || recorded.action != "pause" || recorded.scope != (core.Scope{Kind: core.ScopeRun, ID: "RUN-1"}) || !bytes.Contains(out.Bytes(), []byte(`"status":"accepted"`)) {
+		t.Fatalf("code=%d action=%q scope=%+v output=%q", code, recorded.action, recorded.scope, out.String())
+	}
+}
+
+func TestRunRejectsLifecycleWhenScopeIsAmbiguous(t *testing.T) {
+	var out bytes.Buffer
+	recorded := &lifecycleRecorder{}
+	code := cli.Run(context.Background(), []string{"pause", "--json"}, core.Dependencies{
+		Stdout:           &out,
+		Stderr:           &out,
+		ExecuteLifecycle: executeLifecycle([]core.RunID{"RUN-1", "RUN-2"}, nil, recorded),
+	})
+	if code != 1 || recorded.action != "" || !bytes.Contains(out.Bytes(), []byte(`"message":"transition"`)) || bytes.Contains(out.Bytes(), []byte("accepted")) {
+		t.Fatalf("code=%d action=%q output=%q", code, recorded.action, out.String())
+	}
+}
+
+func TestRunExecutesLifecycleForExplicitMembership(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		team, task bool
+		want       core.Scope
+	}{
+		{name: "team", args: []string{"stop", "--team", "TEAM-1"}, team: true, want: core.Scope{Kind: core.ScopeTeam, ID: "TEAM-1"}},
+		{name: "task", args: []string{"cancel", "--task", "TASK-1"}, task: true, want: core.Scope{Kind: core.ScopeTask, ID: "TASK-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			recorded := &lifecycleRecorder{}
+			lookup := &membershipLookup{team: tc.team, task: tc.task}
+			code := cli.Run(context.Background(), tc.args, core.Dependencies{
+				Stdout:           &out,
+				Stderr:           &out,
+				ExecuteLifecycle: executeLifecycle([]core.RunID{"RUN-1"}, lookup, recorded),
+			})
+			if code != 0 || recorded.scope != tc.want || !bytes.Contains(out.Bytes(), []byte(tc.args[0]+" accepted")) || (tc.team && (lookup.teamRun != "RUN-1" || lookup.teamID != "TEAM-1")) || (tc.task && (lookup.taskRun != "RUN-1" || lookup.taskID != "TASK-1")) {
+				t.Fatalf("code=%d scope=%+v lookup=%+v output=%q", code, recorded.scope, lookup, out.String())
+			}
+		})
+	}
+}
+
+func TestRunRejectsLifecycleWithoutDependencies(t *testing.T) {
+	var out bytes.Buffer
+	code := cli.Run(context.Background(), []string{"resume", "--run", "RUN-1"}, core.Dependencies{Stdout: &out, Stderr: &out})
+	if code != 1 || !bytes.Contains(out.Bytes(), []byte("transition")) || bytes.Contains(out.Bytes(), []byte("accepted")) {
+		t.Fatalf("code=%d output=%q", code, out.String())
 	}
 }
 

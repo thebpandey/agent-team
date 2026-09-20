@@ -57,7 +57,7 @@ func TestPhase1Acceptance(t *testing.T) {
 		{"feature", []string{"one-off", "feature", "--objective", "feature work", "--json"}, 0, cliEnvelope{Schema: 1, Action: "one-off feature", Status: "accepted", Message: "one-off feature accepted"}},
 		{"audit", []string{"one-off", "audit", "--objective", "audit work", "--json"}, 0, cliEnvelope{Schema: 1, Action: "one-off audit", Status: "accepted", Message: "one-off audit accepted"}},
 		{"review", []string{"one-off", "review", "--objective", "review work", "--json"}, 0, cliEnvelope{Schema: 1, Action: "one-off review", Status: "accepted", Message: "one-off review accepted"}},
-		{"pause", []string{"pause", "--scope", "team:TEAM-1", "--json"}, 0, cliEnvelope{Schema: 1, Action: "pause", Status: "accepted", Message: "pause accepted"}},
+		{"pause", []string{"pause", "--scope", "team:TEAM-1", "--json"}, 1, cliEnvelope{Schema: 1, Action: "pause", Status: "rejected", Message: "transition"}},
 		{"inspect", []string{"inspect", "--run", "RUN-1", "--json"}, 0, cliEnvelope{Schema: 1, Action: "inspect", Status: "accepted", Message: "inspect accepted"}},
 		{"cleanup deferred", []string{"cleanup", "--team", "TEAM-1", "--json"}, 2, cliEnvelope{Schema: 1, Action: "cleanup", Status: "deferred", Message: "cleanup deferred"}},
 		{"deploy deferred", []string{"deploy", "--run", "RUN-1", "--target", "staging", "--json"}, 2, cliEnvelope{Schema: 1, Action: "deploy", Status: "deferred", Message: "deploy deferred"}},
