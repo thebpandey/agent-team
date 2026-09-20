@@ -1,0 +1,149 @@
+name: vnext-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer release version without v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify-phases:
+    permissions: { contents: read }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - run: mkdir -p release-evidence
+        working-directory: vnext
+      - run: go test ./internal/core -count=1 && printf '{"Phase":"phase1","Revision":"%s","Passed":true}\n' "$GITHUB_SHA" > release-evidence/phase1-review.json
+        working-directory: vnext
+      - run: go test ./internal/host -count=1 && printf '{"Phase":"phase2","Revision":"%s","Passed":true}\n' "$GITHUB_SHA" > release-evidence/phase2-review.json
+        working-directory: vnext
+      - run: go test ./internal/capability ./internal/bench -count=1 && printf '{"Phase":"phase3","Revision":"%s","Passed":true}\n' "$GITHUB_SHA" > release-evidence/phase3-review.json
+        working-directory: vnext
+      - run: go test ./internal/deploy -count=1 && printf '{"Phase":"phase4","Revision":"%s","Passed":true}\n' "$GITHUB_SHA" > release-evidence/phase4-review.json
+        working-directory: vnext
+      - run: go test ./internal/install ./internal/migrate -count=1 && printf '{"Phase":"phase5","Revision":"%s","Passed":true}\n' "$GITHUB_SHA" > release-evidence/phase5-review.json
+        working-directory: vnext
+      - uses: actions/upload-artifact@v4
+        with: { name: vnext-phase-reviews, path: vnext/release-evidence/phase*-review.json }
+
+  verify-linux:
+    needs: verify-phases
+    permissions: { contents: read }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - uses: actions/download-artifact@v4
+        with: { name: vnext-phase-reviews, path: vnext/release-evidence }
+      - run: go test ./... -count=1
+        working-directory: vnext
+      - run: go vet ./...
+        working-directory: vnext
+      - run: mkdir -p release-evidence && go test -json ./... > release-evidence/native-test.json
+        working-directory: vnext
+      - run: go test -json ./internal/bench > release-evidence/benchmark-test.json
+        working-directory: vnext
+      - run: go run ./cmd/vnext-release collect-evidence --revision "${GITHUB_SHA}" --out release-evidence --native release-evidence/native-test.json --benchmark release-evidence/benchmark-test.json
+        working-directory: vnext
+      - uses: actions/upload-artifact@v4
+        with: { name: vnext-phase-evidence, path: vnext/release-evidence/* }
+
+  verify-macos:
+    needs: verify-linux
+    permissions: { contents: read }
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - run: go test ./... -count=1
+        working-directory: vnext
+      - run: go vet ./...
+        working-directory: vnext
+
+  verify-windows:
+    needs: verify-linux
+    permissions: { contents: read }
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - run: go test ./... -count=1
+        working-directory: vnext
+      - run: go vet ./...
+        working-directory: vnext
+
+  package:
+    needs: [verify-linux, verify-macos, verify-windows]
+    permissions: { contents: read }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - run: go run ./cmd/vnext-release package --version "${{ inputs.version }}" --commit "${GITHUB_SHA}"
+        working-directory: vnext
+      - run: test "$(jq -r .version release-artifacts/RELEASE.json)" = "${{ inputs.version }}"
+        working-directory: vnext
+      - uses: actions/upload-artifact@v4
+        with: { name: vnext-release-artifacts, path: vnext/release-artifacts/* }
+
+  canary:
+    needs: package
+    permissions: { contents: read }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - uses: actions/download-artifact@v4
+        with: { name: vnext-release-artifacts, path: vnext/release-artifacts }
+      - uses: actions/download-artifact@v4
+        with: { name: vnext-phase-evidence, path: vnext/release-evidence }
+      - run: go test ./internal/release -run 'Test(CodexCanary|ClaudeCanary|BothHostsRollbackAndActions|ArchiveCanaryFixture|PackagedArchiveCanary|Cutover|FinalGate|ReleasePackageOutputs)' -count=1
+        working-directory: vnext
+      - run: go test ./internal/deploy -run '^TestProviderVerification$' -count=1
+        working-directory: vnext
+      - run: go run ./cmd/vnext-release finalize-evidence --revision "${GITHUB_SHA}" --out release-evidence --artifact release-artifacts/RELEASE.json --sbom release-artifacts/SBOM.cdx.json --canary release-evidence/canary-test.json --rollback release-evidence/rollback-test.json --provider release-evidence/provider-test.json --installed release-evidence/installed-test.json
+        working-directory: vnext
+      - run: go run ./cmd/vnext-release write-readiness --revision "${GITHUB_SHA}" --gates release-evidence/release-gates.json --benchmark release-evidence/benchmark.json --artifact release-artifacts/RELEASE.json --sbom release-artifacts/SBOM.cdx.json --canary release-evidence/canary.json --rollback release-evidence/rollback.json --provider release-evidence/provider.json --installed release-evidence/installed-skill.json
+        working-directory: vnext
+      - uses: actions/upload-artifact@v4
+        with: { name: vnext-release-readiness, path: vnext/release-readiness.json }
+
+  publish:
+    needs: [verify-linux, verify-macos, verify-windows, package, canary]
+    permissions: { contents: write }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - uses: actions/download-artifact@v4
+        with: { name: vnext-release-artifacts, path: vnext/release-artifacts }
+      - uses: actions/download-artifact@v4
+        with: { name: vnext-release-readiness, path: vnext/release-evidence }
+      - run: sha256sum -c vnext/release-artifacts/SHA256SUMS
+      - run: go run ./cmd/vnext-release verify-gates --evidence release-evidence/release-readiness.json --revision "${GITHUB_SHA}"
+        working-directory: vnext
+      - run: |
+          test "$(jq -r .version vnext/release-artifacts/RELEASE.json)" = "${{ inputs.version }}"
+          test "$(jq -r .commit vnext/release-artifacts/RELEASE.json)" = "${GITHUB_SHA}"
+          git fetch --tags
+          ! git rev-parse --verify --quiet "refs/tags/v${{ inputs.version }}"
+          git tag -a "v${{ inputs.version }}" -m "Agent-Team v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+      - uses: softprops/action-gh-release@v2
+        with: { tag_name: "v${{ inputs.version }}", files: vnext/release-artifacts/*, generate_release_notes: true }

@@ -5,6 +5,10 @@
 - Document the native Codex/Claude install, rollback, tracker, foreground host-switching, local dashboard, and fallback contracts.
 - Label the Node-based v7.3.1 runtime and `TASKS.md` state as legacy provenance during the approved transition.
 - Bind release claims to executable native checks, benchmark evidence, deterministic artifacts, canaries, rollback, provider verification, and final readiness evidence.
+- Migrate side by side: hash and redact v7 metadata, require explicit per-project approval, and cut over only after independent Codex and Claude observations succeed.
+- Roll back only exact manifest-owned bytes; retain user-changed, unknown, or unverifiable paths and persist rollback evidence.
+- Known limitations: the dashboard is local-only, optional capability measurements depend on real counters, and no package-registry or production-service deployment is introduced.
+- Publish a deterministic ZIP, `RELEASE.json`, native CycloneDX `SBOM.cdx.json`, and `SHA256SUMS`; see [benchmark evidence](docs/benchmarks/vnext-optional-8.0.0.md).
 
 ## 7.3.1 - 2026-09-14
 
