@@ -288,7 +288,7 @@ func TestInstallRecoversInterruptedAttempt(t *testing.T) {
 }
 
 func TestLifecycleJournalBudgetRejectsBeforeMutation(t *testing.T) {
-	const oversize = 13 << 20
+	const oversize = 25 << 20
 	t.Run("install replacement", func(t *testing.T) {
 		layout, release := internalFixture(t, "oversize-install")
 		resizeReleaseFile(t, &release.Binary, oversize)
@@ -334,13 +334,34 @@ func TestLifecycleJournalBudgetRejectsBeforeMutation(t *testing.T) {
 
 	t.Run("aggregate preimages", func(t *testing.T) {
 		layout, _, _, current := installedFixture(t)
-		current = resizeManagedFile(t, layout, current, BinaryRole, 6<<20)
-		current = resizeManagedFile(t, layout, current, ContractRole, 6<<20)
+		current = resizeManagedFile(t, layout, current, BinaryRole, 13<<20)
+		current = resizeManagedFile(t, layout, current, ContractRole, 13<<20)
 		if _, _, err := Uninstall(context.Background(), layout, current.Revision); !errors.Is(err, core.ErrRevision) {
 			t.Fatalf("uninstall error = %v", err)
 		}
 		assertLifecycleUnchanged(t, layout, current)
 	})
+}
+
+func TestUpdateJournalBudgetAcceptsReleaseSizedBinaries(t *testing.T) {
+	const oldBinaryBytes = 4_547_236
+	const newBinaryBytes = 4_563_612
+
+	layout, _, release, current := installedFixture(t)
+	current = resizeManagedFile(t, layout, current, BinaryRole, oldBinaryBytes)
+	resizeReleaseFile(t, &release.Binary, newBinaryBytes)
+
+	outcome, err := Update(context.Background(), layout, release, current.Revision)
+	if err != nil {
+		t.Fatalf("release-sized update rejected: %v", err)
+	}
+	if outcome.Manifest.ReleaseRevision != release.Revision {
+		t.Fatalf("release revision = %q", outcome.Manifest.ReleaseRevision)
+	}
+	if err := verifyManifestFiles(outcome.Manifest, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertNoJournal(t, layout)
 }
 
 func TestLifecycleJournalBudgetBoundary(t *testing.T) {

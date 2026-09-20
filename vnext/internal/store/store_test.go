@@ -447,8 +447,8 @@ func TestStoreRetainsDiscoverableLastGoodRecoveryOnRestoreFailure(t *testing.T) 
 	}
 }
 
-func TestStoreCanonicalHardLimitIsSixteenMiB(t *testing.T) {
-	const hard = 16 << 20
+func TestStoreCanonicalHardLimitIsThirtyTwoMiB(t *testing.T) {
+	const hard = 32 << 20
 	boundary := bytes.Repeat([]byte("x"), hard)
 	for _, limits := range []core.StorageLimits{{}, {CanonicalBytes: 64 << 20}} {
 		s := New(t.TempDir(), limits)
