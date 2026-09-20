@@ -27,37 +27,37 @@ type TeamSummary struct {
 type DashboardStatus string
 
 const (
-	Current DashboardStatus = "current"
-	Stale DashboardStatus = "stale"
+	Current     DashboardStatus = "current"
+	Stale       DashboardStatus = "stale"
 	Unavailable DashboardStatus = "unavailable"
 )
 
 // Snapshot is the complete, bounded dashboard input for one integration.
 type Snapshot struct {
-	Schema int
+	Schema                                             int
 	Project, RunID, CanonicalRevision, LastIntegration string
-	Status                                           DashboardStatus
-	Tasks                                            []TaskSummary
-	Teams                                            []TeamSummary
-	Resources                                        core.ResourceSnapshot
-	Evidence                                         []string
-	GeneratedAt                                      string
+	Status                                             DashboardStatus
+	Tasks                                              []TaskSummary
+	Teams                                              []TeamSummary
+	Resources                                          core.ResourceSnapshot
+	Evidence                                           []string
+	GeneratedAt                                        string
 }
 
 type IntegrationResult struct {
-	Success                                      bool
+	Success                                 bool
 	RunID, TaskID, CanonicalRevision, Error string
-	EvidencePointers                             []string
-	Revision                                     uint64
+	EvidencePointers                        []string
+	Revision                                uint64
 }
 
 type DashboardRefreshReceipt struct {
 	core.RecordEnvelope
 	RunID, TaskID, CanonicalRevision string
-	Status           DashboardStatus
-	Success          bool
-	Error            string
-	EvidencePointers []string
+	Status                           DashboardStatus
+	Success                          bool
+	Error                            string
+	EvidencePointers                 []string
 }
 
 // Renderer has one operation so a caller cannot accidentally render twice.
@@ -71,9 +71,16 @@ type IntegrationObserver interface {
 	AfterIntegration(context.Context, IntegrationResult, Snapshot) error
 }
 
-type renderer struct{ store *store.Store }
+type renderFunc func(Snapshot) ([]byte, error)
 
-func NewRenderer(s *store.Store) Renderer { return &renderer{store: s} }
+type renderer struct {
+	store  *store.Store
+	render renderFunc
+}
+
+func NewRenderer(s *store.Store) Renderer {
+	return &renderer{store: s, render: renderSnapshot}
+}
 
 func (r *renderer) Publish(ctx context.Context, snapshot Snapshot) error {
 	if err := ctx.Err(); err != nil {
@@ -85,8 +92,10 @@ func (r *renderer) Publish(ctx context.Context, snapshot Snapshot) error {
 	if err := validate(snapshot); err != nil {
 		return err
 	}
-	html, err := render(snapshot)
-	if err != nil { return err }
+	html, err := r.render(snapshot)
+	if err != nil {
+		return err
+	}
 	_, err = r.store.WriteMarkdown(dashboardPath, html, maxSnapshotBytes)
 	return err
 }
@@ -103,11 +112,11 @@ func NewIntegrationObserver(renderer Renderer, receipts ReceiptWriter) Integrati
 // AfterIntegration deliberately absorbs dashboard failures: integration remains authoritative.
 func (o *observer) AfterIntegration(ctx context.Context, result IntegrationResult, snapshot Snapshot) error {
 	receipt := DashboardRefreshReceipt{
-		RecordEnvelope: core.RecordEnvelope{Schema: snapshot.Schema, Project: snapshot.Project, RunID: core.RunID(result.RunID), WrittenAt: snapshot.GeneratedAt, Revision: result.Revision},
-		RunID:          result.RunID,
-		TaskID:         result.TaskID,
+		RecordEnvelope:    core.RecordEnvelope{Schema: snapshot.Schema, Project: snapshot.Project, RunID: core.RunID(result.RunID), WrittenAt: snapshot.GeneratedAt, Revision: result.Revision},
+		RunID:             result.RunID,
+		TaskID:            result.TaskID,
 		CanonicalRevision: result.CanonicalRevision,
-		EvidencePointers: append([]string(nil), result.EvidencePointers...),
+		EvidencePointers:  append([]string(nil), result.EvidencePointers...),
 	}
 	if !result.Success {
 		receipt.Status, receipt.Error = Stale, result.Error
