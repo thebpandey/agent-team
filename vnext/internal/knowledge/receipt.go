@@ -37,7 +37,10 @@ type Receipt struct {
 	Gate             string         `json:"gate,omitempty"`
 	Review           string         `json:"review,omitempty"`
 	EvidencePointers []string       `json:"evidencePointers,omitempty"`
-	NextAction       string         `json:"nextAction"`
+	// Resources intentionally contains only stable registry references. The
+	// registry remains the lifecycle authority for resource payloads.
+	Resources  core.ResourceSnapshot `json:"resources,omitempty"`
+	NextAction string                `json:"nextAction"`
 }
 
 var knowledgeLocks sync.Map

@@ -90,6 +90,25 @@ func TestKnowledgeRecordsRed(t *testing.T) {
 	}
 }
 
+func TestReceiptStoresOnlyResourceReferences(t *testing.T) {
+	ctx := context.Background()
+	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	r := Receipt{
+		RecordEnvelope: envelope("RUN-1", 1), Team: "TEAM-1", Task: "TASK-1", Attempt: 1, State: core.Working, NextAction: "review",
+		Resources: core.ResourceSnapshot{Servers: []string{"S-1"}, Browsers: []string{"B-1"}, External: []string{"evidence/TASK-1/1/browser.json"}},
+	}
+	if err := WriteReceipt(ctx, s, r); err != nil {
+		t.Fatal(err)
+	}
+	var got Receipt
+	if err := s.ReadJSON(".agent-team/receipts/TEAM-1.json", 16<<20, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Resources.Servers) != 1 || got.Resources.Servers[0] != "S-1" || len(got.Resources.Browsers) != 1 || got.Resources.Browsers[0] != "B-1" {
+		t.Fatalf("resource references = %#v", got.Resources)
+	}
+}
+
 func TestBlockerCASAndProjectionRed(t *testing.T) {
 	ctx := context.Background()
 	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20, HandoffHardBytes: 256 << 10})
