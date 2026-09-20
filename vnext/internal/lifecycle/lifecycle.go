@@ -103,10 +103,11 @@ func AdmissionAllowed(ctx context.Context, state *store.Store, packet core.Assig
 
 // StartWorkerAllowed is the sole host-start admission operation. It holds the
 // lifecycle guard through canonical validation and the synchronous adapter call.
-func StartWorkerAllowed(ctx context.Context, state *store.Store, packet core.AssignmentPacket, adapter contracts.HostAdapter, request contracts.WorkerRequest) (contracts.WorkerHandle, error) {
+func StartWorkerAllowed(ctx context.Context, state *store.Store, adapter contracts.HostAdapter, request contracts.WorkerRequest) (contracts.WorkerHandle, error) {
 	if adapter == nil {
 		return contracts.WorkerHandle{}, core.ErrCapacity
 	}
+	packet := request.Packet
 	state, mu, err := admissionStore(state)
 	if err != nil {
 		return contracts.WorkerHandle{}, err

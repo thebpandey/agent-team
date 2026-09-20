@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
@@ -58,6 +59,49 @@ func TestDispatcherRejectsPausedTaskBeforeAdapter(t *testing.T) {
 	}
 	if adapter.request.Packet.RunID != "" {
 		t.Fatalf("adapter called: %#v", adapter.request)
+	}
+}
+
+func TestDispatcherHoldsAdmissionGuardThroughWorkerStart(t *testing.T) {
+	state := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	packet := canonicalPacket(t, state)
+	adapter := &recordingAdapter{entered: make(chan contracts.WorkerRequest, 2), release: make(chan struct{})}
+	dispatcher := NewDispatcher(state, adapter)
+	spec := specForTest(packet, filepath.Join(t.TempDir(), "task"), "src")
+	dispatchDone := make(chan error, 1)
+	go func() {
+		_, err := dispatcher.Dispatch(context.Background(), packet, spec)
+		dispatchDone <- err
+	}()
+	<-adapter.entered
+
+	pauseStarted := make(chan struct{})
+	pauseDone := make(chan error, 1)
+	go func() {
+		close(pauseStarted)
+		pauseDone <- lifecycle.New(state, eventSink{}).Pause(context.Background(), core.Scope{Kind: core.ScopeTask, ID: string(packet.Task)}, "user")
+	}()
+	<-pauseStarted
+	select {
+	case err := <-pauseDone:
+		t.Fatalf("Pause() completed before worker start: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(adapter.release)
+	if err := <-dispatchDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-pauseDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dispatcher.Dispatch(context.Background(), packet, spec); !errors.Is(err, core.ErrTransition) {
+		t.Fatalf("Dispatch() error = %v, want ErrTransition", err)
+	}
+	select {
+	case request := <-adapter.entered:
+		t.Fatalf("adapter called after pause: %#v", request)
+	default:
 	}
 }
 
@@ -135,13 +179,25 @@ func canonicalPacket(t *testing.T, state *store.Store) core.AssignmentPacket {
 type recordingAdapter struct {
 	request contracts.WorkerRequest
 	handle  contracts.WorkerHandle
+	entered chan contracts.WorkerRequest
+	release chan struct{}
 }
 
 func (a *recordingAdapter) Probe(context.Context) (contracts.HostCapabilities, error) {
 	return contracts.HostCapabilities{}, nil
 }
-func (a *recordingAdapter) StartWorker(_ context.Context, request contracts.WorkerRequest) (contracts.WorkerHandle, error) {
+func (a *recordingAdapter) StartWorker(ctx context.Context, request contracts.WorkerRequest) (contracts.WorkerHandle, error) {
 	a.request = request
+	if a.entered != nil {
+		a.entered <- request
+	}
+	if a.release != nil {
+		select {
+		case <-a.release:
+		case <-ctx.Done():
+			return contracts.WorkerHandle{}, ctx.Err()
+		}
+	}
 	if a.handle.Identity != "" {
 		return a.handle, nil
 	}

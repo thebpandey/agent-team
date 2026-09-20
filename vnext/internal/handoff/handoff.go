@@ -31,10 +31,15 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 	if ctx == nil || ctx.Err() != nil || s == nil || s.store == nil {
 		return nil, core.ErrRevision
 	}
+	root, err := project.Contain(s.store.Root, s.store.Root)
+	if err != nil {
+		return nil, fmt.Errorf("%w: canonical store root", core.ErrPath)
+	}
+	state := store.New(root, s.store.Limits)
 	if err := project.ValidateSegment(string(id)); err != nil {
 		return nil, core.ErrTransition
 	}
-	manifest, err := run.NewRepositories(s.store).Runs.Read(ctx, id)
+	manifest, err := run.NewRepositories(state).Runs.Read(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("%w: canonical run: %v", core.ErrRevision, err)
 	}
@@ -45,21 +50,20 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 		if err := project.ValidateSegment(string(team.ID)); err != nil {
 			return nil, core.ErrRevision
 		}
+		snapshot.Resources.External = append(snapshot.Resources.External, team.Resources...)
 		var receipt knowledge.Receipt
-		err := s.store.ReadJSON(".agent-team/receipts/"+string(team.ID)+".json", 1<<20, &receipt)
+		err := state.ReadJSON(".agent-team/receipts/"+string(team.ID)+".json", 1<<20, &receipt)
 		if errors.Is(err, fs.ErrNotExist) {
 			complete = false
 			continue
 		}
 		if err != nil || !validReceipt(manifest, team, receipt) {
-			complete = false
-			continue
+			return nil, fmt.Errorf("%w: canonical receipt", core.ErrRevision)
 		}
 		if snapshot.Team == "" {
 			snapshot.Team = receipt.Team
 		}
 		receipts = append(receipts, receipt)
-		snapshot.Resources.External = append(snapshot.Resources.External, team.Resources...)
 		if receipt.Gate != "" {
 			snapshot.Gates = append(snapshot.Gates, receipt.Gate)
 		}
@@ -73,7 +77,7 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 	snapshot.Gates = unique(snapshot.Gates)
 	snapshot.Reviews = unique(snapshot.Reviews)
 	snapshot.Resources.External = unique(snapshot.Resources.External)
-	blockers, err := knowledge.NewProjectionWriter(s.store).RegenerateBlockers(ctx, nil, receipts, snapshot.Resources)
+	blockers, err := knowledge.NewProjectionWriter(state).RegenerateBlockers(ctx, nil, receipts, snapshot.Resources)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +89,7 @@ func (s *service) Derive(ctx context.Context, id core.RunID) ([]byte, error) {
 	if resumable(manifest, receipts, snapshot.Blockers, complete, len(manifest.Teams)) {
 		snapshot.NextAction = "resume"
 	}
-	return knowledge.NewProjectionWriter(s.store).WriteHandoff(ctx, snapshot)
+	return knowledge.NewProjectionWriter(state).WriteHandoff(ctx, snapshot)
 }
 
 func resumable(manifest run.Run, receipts []knowledge.Receipt, blockers []knowledge.Blocker, complete bool, teams int) bool {

@@ -3,6 +3,9 @@ package lifecycle_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thebpandey/agent-team/vnext/internal/contracts"
@@ -66,6 +69,50 @@ func TestScopedResumeIsDurableAndIdempotent(t *testing.T) {
 	}
 	if err := l.Resume(context.Background(), scope); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAdmissionRejectsForgedBarrierState(t *testing.T) {
+	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	manifest, err := run.CreateOneOff(context.Background(), t.TempDir(), run.OneOffFeature, "x", []core.Task{{ID: "T1", Objective: "x", State: core.Ready, Criteria: []string{"done"}, WritablePaths: []string{"x"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.NewRepositories(s).Runs.Initialize(context.Background(), manifest); err != nil {
+		t.Fatal(err)
+	}
+	scope := core.Scope{Kind: core.ScopeTask, ID: "T1"}
+	if err := lifecycle.New(s, &supervisor{}).Pause(context.Background(), scope, "user"); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(s.Root, ".agent-team", "lifecycle", string(manifest.ID))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var barrier string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), string(core.ScopeTask)+"-") {
+			barrier = entry.Name()
+			break
+		}
+	}
+	if barrier == "" {
+		t.Fatalf("no task barrier in %v", entries)
+	}
+	forged := struct {
+		Scope    core.Scope     `json:"scope"`
+		Run      core.RunID     `json:"runId"`
+		State    core.TaskState `json:"state"`
+		Reason   string         `json:"reason"`
+		Revision uint64         `json:"revision"`
+	}{Scope: scope, Run: manifest.ID, State: core.Blocked, Reason: "user", Revision: 1}
+	relative := filepath.ToSlash(filepath.Join(".agent-team", "lifecycle", string(manifest.ID), barrier))
+	if _, err := s.WriteJSON(relative, forged, 64<<10); err != nil {
+		t.Fatal(err)
+	}
+	if err := lifecycle.AdmissionAllowed(context.Background(), s, packetFor(manifest)); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("AdmissionAllowed() error = %v, want ErrRevision", err)
 	}
 }
 
