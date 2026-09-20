@@ -88,6 +88,7 @@ func TestInstallUsesActualArtifactProbeAndRestoresOnProbeFailure(t *testing.T) {
 	f := &fakeRunner{results: []tracker.CommandResult{{}, {Exit: 1}, {}}, run: func(n string) {
 		if n == c.Install.Argv[0] {
 			_ = os.WriteFile(artifact, []byte("new"), 0755)
+			_ = os.Chmod(artifact, 0755)
 		}
 	}}
 	if _, err := capability.Install(context.Background(), f, plan); err == nil {
@@ -103,6 +104,63 @@ func TestInstallUsesActualArtifactProbeAndRestoresOnProbeFailure(t *testing.T) {
 	}
 	if len(f.calls) != 3 || f.calls[1][0] != artifact {
 		t.Fatalf("calls=%#v", f.calls)
+	}
+}
+
+func TestRollbackReplacesInstallerSymlinkWithoutTouchingOutside(t *testing.T) {
+	if os.Getenv("GOOS") == "windows" {
+		t.Skip("symlink setup")
+	}
+	p, c, m, artifact := fixture(t)
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	plan := mustPlan(t, p, c, m)
+	f := &fakeRunner{results: []tracker.CommandResult{{}, {Exit: 1}, {}}, run: func(n string) {
+		if n == c.Install.Argv[0] {
+			_ = os.Remove(artifact)
+			_ = os.Symlink(outside, artifact)
+		}
+	}}
+	if _, err := capability.Install(context.Background(), f, plan); err == nil {
+		t.Fatal("symlink swap accepted")
+	}
+	got, err := os.ReadFile(artifact)
+	if err != nil || string(got) != "old" {
+		t.Fatalf("restored=%q err=%v", got, err)
+	}
+	out, _ := os.ReadFile(outside)
+	if string(out) != "outside" {
+		t.Fatal("outside target changed")
+	}
+}
+
+func TestRollbackRemovesSymlinkForPreviouslyAbsentLeaf(t *testing.T) {
+	if os.Getenv("GOOS") == "windows" {
+		t.Skip("symlink setup")
+	}
+	p, c, m, artifact := fixture(t)
+	_ = os.Remove(artifact)
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	plan := mustPlan(t, p, c, m)
+	f := &fakeRunner{results: []tracker.CommandResult{{}, {Exit: 1}, {}}, run: func(n string) {
+		if n == c.Install.Argv[0] {
+			_ = os.Symlink(outside, artifact)
+		}
+	}}
+	if _, err := capability.Install(context.Background(), f, plan); err == nil {
+		t.Fatal("absent symlink swap accepted")
+	}
+	if _, err := os.Lstat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("leaf remains: %v", err)
+	}
+	out, _ := os.ReadFile(outside)
+	if string(out) != "outside" {
+		t.Fatal("outside target changed")
 	}
 }
 func TestRollbackHelperFailureStillRestores(t *testing.T) {

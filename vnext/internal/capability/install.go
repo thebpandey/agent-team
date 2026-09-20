@@ -79,14 +79,11 @@ func rollbackLocked(ctx context.Context, runner tracker.CommandRunner, state *pl
 		helperErr = fmt.Errorf("rollback action failed: %s", commandReason(result))
 	}
 	for _, backup := range state.backups {
-		if err := noFollow(state.root, backup.path); err != nil {
+		if err := noFollowParents(state.root, backup.path); err != nil {
 			return err
 		}
 		if backup.exists {
-			if err := os.MkdirAll(filepath.Dir(backup.path), 0o700); err != nil {
-				return err
-			}
-			if err := os.WriteFile(backup.path, backup.bytes, os.FileMode(backup.mode)); err != nil {
+			if err := replaceLeaf(backup.path, backup.bytes, os.FileMode(backup.mode)); err != nil {
 				return err
 			}
 		} else if err := os.Remove(backup.path); err != nil && !os.IsNotExist(err) {
@@ -155,6 +152,10 @@ func verifyBackups(backups []backup) error {
 		if err != nil || hash(data) != backup.hash {
 			return fmt.Errorf("backup restoration verification failed")
 		}
+		info, err := os.Lstat(backup.path)
+		if err != nil || uint32(info.Mode().Perm()) != backup.mode {
+			return fmt.Errorf("backup mode restoration verification failed")
+		}
 	}
 	return nil
 }
@@ -213,6 +214,16 @@ func unsafePortablePath(path string) bool {
 }
 
 func noFollow(root, path string) error {
+	if err := noFollowParents(root, path); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("symlink managed path")
+	}
+	return nil
+}
+
+func noFollowParents(root, path string) error {
 	if !within(root, path) {
 		return fmt.Errorf("managed root escape")
 	}
@@ -227,10 +238,32 @@ func noFollow(root, path string) error {
 			return fmt.Errorf("managed root escape")
 		}
 	}
-	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("symlink managed path")
-	}
 	return nil
+}
+
+func replaceLeaf(path string, data []byte, mode os.FileMode) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".agent-team-restore-")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(mode); err == nil {
+		_, err = tmp.Write(data)
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	return os.Chmod(path, mode)
 }
 func planBinding(s *planState) string {
 	parts := []string{s.source.Identity, s.source.Digest, s.source.Version, s.root}
