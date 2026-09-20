@@ -20,6 +20,7 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/install"
 	"github.com/thebpandey/agent-team/vnext/internal/release"
+	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
 func TestAuthorityPrepareWritesCanonicalDetachedArtifacts(t *testing.T) {
@@ -227,6 +228,16 @@ func TestAuthorityCutoverReconcileStatusAndRollback(t *testing.T) {
 	if err != nil || result.Held {
 		t.Fatalf("reconcile = %#v, %v", result, err)
 	}
+	status, err = AuthorityStatus(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(project, filepath.FromSlash(status.ArchivePath))
+	archiveBefore, err := os.Stat(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveDigest := digestFileTest(t, archivePath)
 
 	rollback := reconcile
 	rollback.Action = "rollback"
@@ -242,10 +253,160 @@ func TestAuthorityCutoverReconcileStatusAndRollback(t *testing.T) {
 			t.Fatalf("%s not restored: %q %v", name, raw, err)
 		}
 	}
-	reapplyPath := authorityRequestFixture(t, project)
-	result, err = ExecuteAuthorityRequest(context.Background(), reapplyPath)
+	result, err = ExecuteAuthorityRequest(context.Background(), request)
 	if err != nil || !result.Held || result.Idempotent {
 		t.Fatalf("reapply = %#v, %v", result, err)
+	}
+	archiveAfter, err := os.Stat(archivePath)
+	if err != nil || !os.SameFile(archiveBefore, archiveAfter) || digestFileTest(t, archivePath) != archiveDigest {
+		t.Fatalf("archive changed across rollback/reapply: %v", err)
+	}
+}
+
+func TestAuthorityReapplyRejectsArchiveCollisionBeforeMutation(t *testing.T) {
+	project := authorityFixture(t)
+	request := authorityRequestFixture(t, project)
+	result, err := ExecuteAuthorityRequest(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconcile := readAuthorityRequestTest(t, request)
+	reconcile.Action, reconcile.ExpectedReceiptDigest = "reconcile", result.ReceiptDigest
+	result, err = ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "reconcile.json", reconcile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := AuthorityStatus(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollback := reconcile
+	rollback.Action, rollback.ExpectedReceiptDigest = "rollback", result.ReceiptDigest
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "rollback.json", rollback)); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(project, filepath.FromSlash(status.ArchivePath))
+	collision := []byte("foreign archive\n")
+	if err := os.WriteFile(archivePath, collision, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExecuteAuthorityRequest(context.Background(), request); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("collision reapply = %v", err)
+	}
+	if raw, err := os.ReadFile(archivePath); err != nil || !bytes.Equal(raw, collision) {
+		t.Fatalf("collision changed: %q, %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(project, filepath.FromSlash(authorityJournalPath))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("journal exists after rejected collision: %v", err)
+	}
+	for _, name := range []string{".agent-team/setup.json", ".agent-team/state.json"} {
+		raw, err := os.ReadFile(filepath.Join(project, name))
+		var legacy map[string]any
+		if err != nil || json.Unmarshal(raw, &legacy) != nil || legacy["schemaVersion"] != float64(1) {
+			t.Fatalf("%s mutated: %q, %v", name, raw, err)
+		}
+	}
+}
+
+func TestAuthorityReapplyReusesLegacyArchiveWithMutationLock(t *testing.T) {
+	project := authorityFixture(t)
+	request := authorityRequestFixture(t, project)
+	result, err := ExecuteAuthorityRequest(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconcile := readAuthorityRequestTest(t, request)
+	reconcile.Action, reconcile.ExpectedReceiptDigest = "reconcile", result.ReceiptDigest
+	result, err = ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "reconcile.json", reconcile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := AuthorityStatus(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollback := reconcile
+	rollback.Action, rollback.ExpectedReceiptDigest = "rollback", result.ReceiptDigest
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "rollback.json", rollback)); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(project, filepath.FromSlash(status.ArchivePath))
+	var archive authorityArchive
+	archiveRaw, err := os.ReadFile(archivePath)
+	if err != nil || json.Unmarshal(archiveRaw, &archive) != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+	owner := store.MutationOwner{Token: strings.Repeat("a", 32), Scope: "authority-cutover", OperationID: reconcile.OperationID + ":cutover", Host: "legacy-host", PID: 1, ProcessStart: "legacy-process", AcquiredAt: "2026-01-01T00:00:00Z", HeartbeatAt: "2026-01-01T00:00:00Z"}
+	ownerRaw, err := json.Marshal(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerRaw = append(ownerRaw, '\n')
+	archive.Files = append(archive.Files, authorityPreimage{Path: ".agent-team/mutation.lock", Mode: 0o600, SHA256: digestBytes(ownerRaw), Bytes: ownerRaw})
+	sort.Slice(archive.Files, func(i, j int) bool { return archive.Files[i].Path < archive.Files[j].Path })
+	if _, err := store.New(project, core.StorageLimits{CanonicalBytes: authorityLimit}).WriteJSON(status.ArchivePath, archive, authorityLimit); err != nil {
+		t.Fatal(err)
+	}
+	archiveBefore, err := os.Stat(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveDigest := digestFileTest(t, archivePath)
+	result, err = ExecuteAuthorityRequest(context.Background(), request)
+	if err != nil || !result.Held {
+		t.Fatalf("legacy archive reapply = %#v, %v", result, err)
+	}
+	archiveAfter, err := os.Stat(archivePath)
+	if err != nil || !os.SameFile(archiveBefore, archiveAfter) || digestFileTest(t, archivePath) != archiveDigest {
+		t.Fatalf("legacy archive changed during reapply: %v", err)
+	}
+}
+
+func TestAuthorityReapplyCrashRecoveryRetainsReusedArchive(t *testing.T) {
+	project := authorityFixture(t)
+	request := authorityRequestFixture(t, project)
+	result, err := ExecuteAuthorityRequest(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconcile := readAuthorityRequestTest(t, request)
+	reconcile.Action, reconcile.ExpectedReceiptDigest = "reconcile", result.ReceiptDigest
+	result, err = ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "reconcile.json", reconcile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := AuthorityStatus(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollback := reconcile
+	rollback.Action, rollback.ExpectedReceiptDigest = "rollback", result.ReceiptDigest
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "rollback.json", rollback)); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(project, filepath.FromSlash(status.ArchivePath))
+	archiveBefore, err := os.Stat(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveDigest := digestFileTest(t, archivePath)
+	authorityMutationHook = func(index int) bool { return index == 0 }
+	if _, err := ExecuteAuthorityRequest(context.Background(), request); !errors.Is(err, core.ErrTransition) {
+		t.Fatalf("interrupted reapply = %v", err)
+	}
+	archiveAfterCrash, err := os.Stat(archivePath)
+	if err != nil || !os.SameFile(archiveBefore, archiveAfterCrash) || digestFileTest(t, archivePath) != archiveDigest {
+		t.Fatalf("reused archive changed by interrupted reapply: %v", err)
+	}
+	authorityMutationHook = nil
+	t.Cleanup(func() { authorityMutationHook = nil })
+	result, err = ExecuteAuthorityRequest(context.Background(), request)
+	if err != nil || !result.Held {
+		t.Fatalf("recovered reapply = %#v, %v", result, err)
+	}
+	archiveAfter, err := os.Stat(archivePath)
+	if err != nil || !os.SameFile(archiveBefore, archiveAfter) || digestFileTest(t, archivePath) != archiveDigest {
+		t.Fatalf("reused archive changed during recovery: %v", err)
 	}
 }
 
