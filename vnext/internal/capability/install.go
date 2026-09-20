@@ -229,12 +229,18 @@ func shellLauncher(argv0 string) bool {
 	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
 		name = name[slash+1:]
 	}
-	switch name {
-	case "sh", "sh.exe", "bash", "bash.exe", "dash", "dash.exe", "zsh", "zsh.exe", "fish", "fish.exe", "cmd", "cmd.exe", "command.com", "powershell", "powershell.exe", "pwsh", "pwsh.exe":
-		return true
-	default:
-		return false
-	}
+	_, prohibited := shellBasenames[name]
+	return prohibited
+}
+
+// shellBasenames is a closed denial set. Concrete Task21 adapters must use
+// code-reviewed exact launchers; this is deliberately not a public allowlist.
+var shellBasenames = map[string]struct{}{
+	"sh": {}, "sh.exe": {}, "bash": {}, "bash.exe": {}, "dash": {}, "dash.exe": {},
+	"zsh": {}, "zsh.exe": {}, "fish": {}, "fish.exe": {}, "ash": {}, "ash.exe": {},
+	"ksh": {}, "ksh.exe": {}, "mksh": {}, "mksh.exe": {}, "csh": {}, "csh.exe": {},
+	"tcsh": {}, "tcsh.exe": {}, "yash": {}, "yash.exe": {}, "cmd": {}, "cmd.exe": {},
+	"command.com": {}, "powershell": {}, "powershell.exe": {}, "pwsh": {}, "pwsh.exe": {},
 }
 
 func runInstall(ctx context.Context, runner NativeRunner, argv []string) tracker.CommandResult {

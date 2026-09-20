@@ -276,7 +276,7 @@ func TestInstallRejectsStageChangedDuringDirectProbe(t *testing.T) {
 }
 
 func TestAdapterSpecRejectsShellLaunchers(t *testing.T) {
-	for _, launcher := range []string{"sh", "sh.exe", "bash", "bash.exe", "dash", "dash.exe", "zsh", "zsh.exe", "fish", "fish.exe", "cmd", "cmd.exe", "command.com", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "/bin/SH", `C:\\Windows\\System32\\CMD.EXE`} {
+	for _, launcher := range []string{"sh", "sh.exe", "bash", "bash.exe", "dash", "dash.exe", "zsh", "zsh.exe", "fish", "fish.exe", "ash", "ash.exe", "ksh", "ksh.exe", "mksh", "mksh.exe", "csh", "csh.exe", "tcsh", "tcsh.exe", "yash", "yash.exe", "cmd", "cmd.exe", "command.com", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "/bin/SH", `/usr/local/bin/MKSH.EXE`, `C:\\Windows\\System32\\CMD.EXE`} {
 		t.Run(launcher, func(t *testing.T) {
 			_, spec, _, _ := stagedPlan(t)
 			spec.installArgv = []string{launcher}
