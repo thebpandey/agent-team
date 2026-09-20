@@ -91,6 +91,12 @@ func NewLifecycle(state *store.Store, supervisor EventSink) Lifecycle {
 // AdmissionAllowed reads the run and project barriers that can prevent a new
 // assignment before a caller constructs any host request.
 func AdmissionAllowed(ctx context.Context, state *store.Store, packet core.AssignmentPacket) error {
+	return WithAdmission(ctx, state, packet, nil)
+}
+
+// WithAdmission keeps packet membership, barrier validation, and a foreground
+// start callback under the same root-wide lock used by lifecycle transitions.
+func WithAdmission(ctx context.Context, state *store.Store, packet core.AssignmentPacket, callback func() error) error {
 	if ctx == nil || ctx.Err() != nil || state == nil || packet.RunID == "" || packet.Team == "" || packet.Task == "" {
 		return core.ErrTransition
 	}
@@ -99,6 +105,20 @@ func AdmissionAllowed(ctx context.Context, state *store.Store, packet core.Assig
 		return core.ErrPath
 	}
 	state = store.New(root, state.Limits)
+	value, _ := locks.LoadOrStore(root, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	if err := admissionAllowedUnlocked(ctx, state, packet); err != nil {
+		return err
+	}
+	if callback != nil {
+		return callback()
+	}
+	return nil
+}
+
+func admissionAllowedUnlocked(ctx context.Context, state *store.Store, packet core.AssignmentPacket) error {
 	manifest, err := run.NewRepositories(state).Runs.Read(ctx, packet.RunID)
 	if err != nil {
 		return core.ErrTransition
@@ -125,7 +145,10 @@ func AdmissionAllowed(ctx context.Context, state *store.Store, packet core.Assig
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		if err != nil || barrier.Run != packet.RunID || barrier.Scope != scope || barrier.Revision == 0 {
+		if err != nil {
+			return core.ErrRevision
+		}
+		if err := validBarrierRecord(barrier, packet.RunID, scope); err != nil {
 			return core.ErrRevision
 		}
 		switch barrier.State {
@@ -134,6 +157,24 @@ func AdmissionAllowed(ctx context.Context, state *store.Store, packet core.Assig
 		}
 	}
 	return nil
+}
+
+func validBarrierRecord(barrier record, runID core.RunID, scope core.Scope) error {
+	if barrier.Run != runID || barrier.Scope != scope || barrier.Revision == 0 || len(barrier.Reason) > 4096 || strings.Contains(barrier.Reason, "\x00") {
+		return core.ErrRevision
+	}
+	if barrier.CheckpointDigest != "" && !validDigest(barrier.CheckpointDigest) {
+		return core.ErrRevision
+	}
+	switch barrier.State {
+	case core.Ready, core.Paused, core.Interrupted, core.Cancelled:
+		return nil
+	case core.Working, core.Implementing, core.Reviewing, core.Fix, core.Clean, core.Gated, core.Integrated, core.Blocked, core.Archived, core.Idle:
+		if barrier.CheckpointDigest != "" {
+			return nil
+		}
+	}
+	return core.ErrRevision
 }
 
 func (c *controller) Pause(ctx context.Context, scope core.Scope, reason string) error {
@@ -349,8 +390,8 @@ func (c *controller) read(target target) (record, bool, error) {
 	if err != nil {
 		return record{}, false, err
 	}
-	if current.Scope != target.scope || current.Run != target.run || current.Revision == 0 {
-		return record{}, false, core.ErrRevision
+	if err := validBarrierRecord(current, target.run, target.scope); err != nil {
+		return record{}, false, err
 	}
 	return current, true, nil
 }
