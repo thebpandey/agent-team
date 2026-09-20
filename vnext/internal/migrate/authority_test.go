@@ -95,7 +95,13 @@ func TestAuthorityPrepareWritesCanonicalDetachedArtifacts(t *testing.T) {
 	if err != nil || digestBytes(payload) != result.ReceiptDigest {
 		t.Fatalf("payload: %v", err)
 	}
-	if info, statErr := os.Stat(request.Prepare.PayloadPath); statErr != nil || info.Mode().Perm() != 0o600 {
+	wantMode := os.FileMode(0o600)
+	if runtime.GOOS == "windows" {
+		// Windows reports regular files as 0666; privacy comes from the
+		// containing user-owned directory's ACL rather than POSIX mode bits.
+		wantMode = 0o666
+	}
+	if info, statErr := os.Stat(request.Prepare.PayloadPath); statErr != nil || info.Mode().Perm() != wantMode {
 		t.Fatalf("payload mode = %v, %v", info, statErr)
 	}
 	var approval signedCutoverApproval

@@ -234,6 +234,8 @@ func TestLegacyHostRollbackRejectsPostimagePathReplacementBeforeMutation(t *test
 	}
 	before := snapshotRollbackPaths(t, layout, receipt)
 	var replacement os.FileInfo
+	var replacementErr, rollbackErr error
+	replacementDenied := new(int)
 	stableReadHook = func(path string) {
 		if path != target {
 			return
@@ -243,19 +245,37 @@ func TestLegacyHostRollbackRejectsPostimagePathReplacementBeforeMutation(t *test
 		if err := os.WriteFile(temporary, targetRaw, 0o600); err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = os.Remove(temporary) })
 		replacement, err = os.Stat(temporary)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Rename(temporary, target); err != nil {
+			replacementErr = err
+			if nativeOpenReplacementDenied(err) {
+				panic(replacementDenied)
+			}
 			t.Fatal(err)
 		}
 	}
 	t.Cleanup(func() { stableReadHook = nil })
-	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); !errors.Is(err, core.ErrRevision) {
-		t.Fatalf("replacement rollback = %v", err)
-	}
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil && recovered != replacementDenied {
+				panic(recovered)
+			}
+		}()
+		_, rollbackErr = CutoverLegacyHosts(context.Background(), layout, release, request)
+	}()
 	stableReadHook = nil
+	if replacementErr != nil {
+		assertRollbackPathsUnchanged(t, before)
+		assertNoJournal(t, layout)
+		return
+	}
+	if !errors.Is(rollbackErr, core.ErrRevision) {
+		t.Fatalf("replacement rollback = %v", rollbackErr)
+	}
 	after, err := os.Stat(target)
 	if err != nil || replacement == nil || !os.SameFile(replacement, after) {
 		t.Fatalf("replacement path changed: %v", err)
