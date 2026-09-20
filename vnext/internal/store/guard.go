@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -29,6 +30,7 @@ const (
 
 var ownerCandidateHook func(string)
 var ownerReadHook func(string)
+var ownerRemoveClaimHook func(string)
 var syncGuardNamespace = syncGuardDirectory
 
 type MutationOwner struct {
@@ -228,31 +230,138 @@ func publishOwner(root, relative string, owner MutationOwner) error {
 }
 
 func removeExactOwner(root, relative string, expected MutationOwner) error {
-	path := filepath.Join(root, filepath.FromSlash(relative))
-	before, err := os.Stat(path)
+	full := filepath.Join(root, filepath.FromSlash(relative))
+	parentRelative := path.Dir(relative)
+	parentBefore, err := os.Lstat(filepath.Dir(full))
+	if err != nil || parentBefore.Mode()&os.ModeSymlink != 0 || !parentBefore.IsDir() {
+		return core.ErrRevision
+	}
+	claim := relative + ".removed-" + expected.Token
+	claimed := path.Join(claim, "owned")
+	before, err := os.Stat(full)
+	if errors.Is(err, fs.ErrNotExist) {
+		return finishOwnerClaim(root, relative, claim, claimed, expected, nil)
+	}
 	if err != nil {
 		return core.ErrRevision
 	}
-	current, err := readOwner(path)
+	current, err := readOwner(full)
 	if err != nil || !reflect.DeepEqual(current, expected) {
 		return core.ErrRevision
 	}
-	tombstone := path + ".removed-" + expected.Token
-	if err := os.Rename(path, tombstone); err != nil {
-		return err
-	}
-	if err := syncGuardNamespace(filepath.Dir(path)); err != nil {
-		return err
-	}
-	after, statErr := os.Stat(tombstone)
-	current, readErr := readOwner(tombstone)
-	if statErr != nil || readErr != nil || !os.SameFile(before, after) || !reflect.DeepEqual(current, expected) {
+	confirmed, err := os.Stat(full)
+	if err != nil || !os.SameFile(before, confirmed) {
 		return core.ErrRevision
 	}
-	if err := os.Remove(tombstone); err != nil {
+	parentConfirmed, err := os.Lstat(filepath.Dir(full))
+	if err != nil || !os.SameFile(parentBefore, parentConfirmed) {
+		return core.ErrRevision
+	}
+	if ownerRemoveClaimHook != nil {
+		ownerRemoveClaimHook(full)
+	}
+	opened, err := os.OpenRoot(root)
+	if err != nil {
 		return err
 	}
-	return syncGuardNamespace(filepath.Dir(path))
+	defer opened.Close()
+	parentCurrent, err := opened.Lstat(filepath.ToSlash(parentRelative))
+	if err != nil || parentCurrent.Mode()&os.ModeSymlink != 0 || !parentCurrent.IsDir() || !os.SameFile(parentBefore, parentCurrent) {
+		return core.ErrRevision
+	}
+	if err := opened.Mkdir(filepath.ToSlash(claim), 0o700); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return core.ErrRevision
+		}
+		return err
+	}
+	claimInfo, err := opened.Lstat(filepath.ToSlash(claim))
+	if err != nil || claimInfo.Mode()&os.ModeSymlink != 0 || !claimInfo.IsDir() {
+		return core.ErrRevision
+	}
+	if _, err := opened.Lstat(filepath.ToSlash(claimed)); err == nil {
+		// A completed prior claim is recoverable only after the canonical name
+		// is gone.  Retain both on ambiguity.
+		return core.ErrRevision
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return core.ErrRevision
+	} else {
+		if err := opened.Rename(filepath.ToSlash(relative), filepath.ToSlash(claimed)); err != nil {
+			// Retain the claim: without a durable owner record it cannot be
+			// distinguished from an independently created collision.
+			return core.ErrRevision
+		}
+		if err := syncGuardNamespace(filepath.Dir(full)); err != nil {
+			return err
+		}
+	}
+	return finishOwnerClaimAt(opened, root, relative, claim, claimed, expected, before)
+}
+
+func finishOwnerClaim(root, relative, claim, claimed string, expected MutationOwner, identity os.FileInfo) error {
+	opened, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer opened.Close()
+	parentInfo, err := opened.Lstat(filepath.ToSlash(path.Dir(relative)))
+	if err != nil || parentInfo.Mode()&os.ModeSymlink != 0 || !parentInfo.IsDir() {
+		return core.ErrRevision
+	}
+	claimInfo, err := opened.Lstat(filepath.ToSlash(claim))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil || claimInfo.Mode()&os.ModeSymlink != 0 || !claimInfo.IsDir() {
+		return core.ErrRevision
+	}
+	return finishOwnerClaimAt(opened, root, relative, claim, claimed, expected, identity)
+}
+
+func finishOwnerClaimAt(opened *os.Root, root, relative, claim, claimed string, expected MutationOwner, identity os.FileInfo) error {
+	info, err := opened.Lstat(filepath.ToSlash(claimed))
+	if err != nil {
+		return core.ErrRevision
+	}
+	current, readErr := readOwnerAt(opened, filepath.ToSlash(claimed), filepath.Join(root, filepath.FromSlash(claimed)))
+	exact := readErr == nil && reflect.DeepEqual(current, expected) && (identity == nil || os.SameFile(identity, info))
+	if !exact {
+		// A claim discovered during recovery has no independently pinned source
+		// identity. Retain it on mismatch instead of guessing where it belongs.
+		if identity == nil {
+			return core.ErrRevision
+		}
+		if _, statErr := opened.Lstat(filepath.ToSlash(relative)); !errors.Is(statErr, fs.ErrNotExist) {
+			return core.ErrRevision
+		}
+		if linkErr := opened.Link(filepath.ToSlash(claimed), filepath.ToSlash(relative)); linkErr != nil {
+			return core.ErrRevision
+		}
+		if syncErr := syncGuardNamespace(filepath.Dir(filepath.Join(root, filepath.FromSlash(relative)))); syncErr != nil {
+			return syncErr
+		}
+		if removeErr := removeOwned(opened, ownedTemp{name: filepath.ToSlash(claimed), info: info}); removeErr != nil {
+			return removeErr
+		}
+		if removeErr := opened.Remove(filepath.ToSlash(claim)); removeErr != nil {
+			return removeErr
+		}
+		if syncErr := syncGuardNamespace(filepath.Dir(filepath.Join(root, filepath.FromSlash(relative)))); syncErr != nil {
+			return syncErr
+		}
+		return core.ErrRevision
+	}
+	if err := removeOwned(opened, ownedTemp{name: filepath.ToSlash(claimed), info: info}); err != nil {
+		return err
+	}
+	if _, err := opened.Lstat(filepath.ToSlash(claimed)); err == nil {
+		return core.ErrRevision
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := opened.Remove(filepath.ToSlash(claim)); err != nil {
+		return err
+	}
+	return syncGuardNamespace(filepath.Dir(filepath.Join(root, filepath.FromSlash(relative))))
 }
 
 func readMutationOwner(root string) (MutationOwner, error) {
@@ -278,14 +387,18 @@ func readOwner(path string) (MutationOwner, error) {
 	if err != nil {
 		return MutationOwner{}, core.ErrRevision
 	}
-	file, err := root.OpenFile(filepath.Base(path), os.O_RDONLY|guardReadFlags(), 0)
-	_ = root.Close()
+	defer root.Close()
+	return readOwnerAt(root, filepath.Base(path), path)
+}
+
+func readOwnerAt(root *os.Root, relative, hookPath string) (MutationOwner, error) {
+	file, err := root.OpenFile(relative, os.O_RDONLY|guardReadFlags(), 0)
 	if err != nil {
 		return MutationOwner{}, core.ErrRevision
 	}
 	defer file.Close()
 	if ownerReadHook != nil {
-		ownerReadHook(path)
+		ownerReadHook(hookPath)
 	}
 	opened, err := file.Stat()
 	if err != nil || !opened.Mode().IsRegular() || opened.Size() < 0 || opened.Size() > 16<<10 {
@@ -295,7 +408,7 @@ func readOwner(path string) (MutationOwner, error) {
 	if err != nil || int64(len(raw)) != opened.Size() || len(raw) > 16<<10 {
 		return MutationOwner{}, core.ErrRevision
 	}
-	current, err := os.Lstat(path)
+	current, err := root.Lstat(relative)
 	if err != nil || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
 		return MutationOwner{}, core.ErrRevision
 	}

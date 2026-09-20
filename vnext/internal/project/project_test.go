@@ -142,12 +142,12 @@ func TestBeadsTraversalRejectsNestedLink(t *testing.T) {
 
 func TestValidateAndRefusalLeaveFilesystemUntouched(t *testing.T) {
 	root := testkit.GitRepo(t)
-	before := testkit.SnapshotTree(t, root)
+	before := testkit.SnapshotProjectTree(t, root)
 	refused := SetupInput{Root: root, Mode: PlanMode, Artifacts: []ArtifactDecision{{Path: "TASKS.md", Mode: ExistingArtifact, Confirmation: Refused}}}
 	if _, err := NewSetupService(store.New(root, core.DefaultConfig().Storage)).Validate(context.Background(), refused); !errors.Is(err, core.ErrSettings) {
 		t.Fatalf("refused validation error = %v", err)
 	}
-	if after := testkit.SnapshotTree(t, root); !equalTree(before, after) {
+	if after := testkit.SnapshotProjectTree(t, root); !equalTree(before, after) {
 		t.Fatal("Validate/refusal changed filesystem")
 	}
 }
