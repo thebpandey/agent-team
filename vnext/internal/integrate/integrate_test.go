@@ -175,7 +175,9 @@ func TestIntegratorsShareResolvedAliasGuardAndPinnedStore(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if transitions != 1 || manager.integrations != 1 || manager.max != 1 {
+	// The second caller may overlap and get ErrTransition, or arrive after the
+	// first commits and reuse its durable result.
+	if transitions > 1 || manager.integrations != 1 || manager.max != 1 {
 		t.Fatalf("alias calls transitions=%d manager=%+v", transitions, manager)
 	}
 	if err := os.Remove(stateAlias); err != nil {

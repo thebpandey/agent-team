@@ -112,12 +112,12 @@ func TestSetupAndTrackerAcceptance(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	before := testkit.SnapshotTree(t, root)
+	before := testkit.SnapshotProjectTree(t, root)
 	refused := project.SetupInput{Root: root, Mode: project.PlanMode, Artifacts: []project.ArtifactDecision{{Path: "TASKS.md", Mode: project.ExistingArtifact, Confirmation: project.Refused}}}
 	if _, err := project.ValidateSetup(ctx, refused); !errors.Is(err, core.ErrSettings) {
 		t.Fatalf("refused setup error=%v, want ErrSettings", err)
 	}
-	testkit.RequireNoWrites(t, root, before)
+	testkit.RequireNoProjectWrites(t, root, before)
 
 	for _, count := range []int{900, 1000, 1001} {
 		t.Run(fmt.Sprintf("tasks-md-%d", count), func(t *testing.T) {

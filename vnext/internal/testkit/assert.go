@@ -66,17 +66,34 @@ func RequireNoWrites(t *testing.T, root string, before map[string]string) {
 
 func requireNoWrites(t *testing.T, before, after map[string]string) {
 	t.Helper()
-	if len(before) != len(after) {
-		t.Fatalf("tree changed: before=%d after=%d", len(before), len(after))
+	if changes := snapshotChanges(before, after); len(changes) != 0 {
+		t.Fatalf("tree changed: %v", changes)
 	}
-	keys := make([]string, 0, len(before))
+}
+
+func snapshotChanges(before, after map[string]string) []string {
+	keys := make([]string, 0, len(before)+len(after))
 	for key := range before {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		if before[key] != after[key] {
-			t.Fatalf("file changed: %s", key)
+	for key := range after {
+		if _, ok := before[key]; !ok {
+			keys = append(keys, key)
 		}
 	}
+	sort.Strings(keys)
+	changes := make([]string, 0)
+	for _, key := range keys {
+		beforeDigest, beforeOK := before[key]
+		afterDigest, afterOK := after[key]
+		switch {
+		case !beforeOK:
+			changes = append(changes, "added "+key)
+		case !afterOK:
+			changes = append(changes, "removed "+key)
+		case beforeDigest != afterDigest:
+			changes = append(changes, "changed "+key)
+		}
+	}
+	return changes
 }
