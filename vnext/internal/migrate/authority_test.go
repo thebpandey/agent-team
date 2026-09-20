@@ -60,9 +60,7 @@ func TestAuthorityCutoverReconcileStatusAndRollback(t *testing.T) {
 			t.Fatalf("%s not restored: %q %v", name, raw, err)
 		}
 	}
-	reapply := readAuthorityRequestTest(t, request)
-	reapply.OperationID = "cutover-reapply"
-	reapplyPath := writeAuthorityJSON(t, project, "reapply.json", reapply)
+	reapplyPath := authorityRequestFixture(t, project)
 	result, err = ExecuteAuthorityRequest(context.Background(), reapplyPath)
 	if err != nil || !result.Held || result.Idempotent {
 		t.Fatalf("reapply = %#v, %v", result, err)
@@ -96,9 +94,21 @@ func TestAuthorityCutoverRejectsForgedApprovalAndRemoteObservation(t *testing.T)
 	project := authorityFixture(t)
 	requestPath := authorityRequestFixture(t, project)
 	request := readAuthorityRequestTest(t, requestPath)
-	request.ApprovalOperationID = "caller-invented"
+	request.Approval.ID = "caller-invented"
 	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "forged.json", request)); err == nil {
 		t.Fatal("forged approval accepted")
+	}
+	request = readAuthorityRequestTest(t, requestPath)
+	var signed signedCutoverApproval
+	signedRaw, _ := os.ReadFile(request.Approval.Path)
+	if json.Unmarshal(signedRaw, &signed) != nil {
+		t.Fatal("approval")
+	}
+	signed.Cause = "forged cause with retained signature"
+	forgedPath := writeAuthorityJSON(t, project, "forged-signature.json", signed)
+	request.Approval.Path, request.Approval.SHA256 = forgedPath, digestFileTest(t, forgedPath)
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "forged-signature-request.json", request)); err == nil {
+		t.Fatal("forged signature accepted")
 	}
 	request = readAuthorityRequestTest(t, requestPath)
 	if err := os.WriteFile(filepath.Join(project, "approval.json"), []byte("{}\n"), 0o600); err != nil {
@@ -124,6 +134,83 @@ func TestAuthorityCutoverRejectsForgedApprovalAndRemoteObservation(t *testing.T)
 	}
 }
 
+func TestAuthorityCutoverRejectsUnsignedEvidenceChanges(t *testing.T) {
+	project := authorityFixture(t)
+	requestPath := authorityRequestFixture(t, project)
+	request := readAuthorityRequestTest(t, requestPath)
+	request.Reviews[0] = EvidenceReference{ID: request.Reviews[0].ID, Path: request.Tests[0].Path, SHA256: request.Tests[0].SHA256}
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "path-swap.json", request)); err == nil {
+		t.Fatal("signed review path swap accepted")
+	}
+	request = readAuthorityRequestTest(t, requestPath)
+	request.Tests = append(request.Tests, request.Tests[0])
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "duplicate-evidence.json", request)); err == nil {
+		t.Fatal("duplicate signed evidence accepted")
+	}
+	request = readAuthorityRequestTest(t, requestPath)
+	request.Tests[0], request.Tests[1] = request.Tests[1], request.Tests[0]
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "reordered-evidence.json", request)); err == nil {
+		t.Fatal("reordered signed evidence accepted")
+	}
+	request = readAuthorityRequestTest(t, requestPath)
+	request.Reviews = request.Reviews[:1]
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "omitted-evidence.json", request)); err == nil {
+		t.Fatal("omitted signed evidence accepted")
+	}
+	request = readAuthorityRequestTest(t, requestPath)
+	if err := os.WriteFile(request.Readiness.Path, []byte("stale\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "stale-evidence.json", request)); err == nil {
+		t.Fatal("stale signed evidence accepted")
+	}
+}
+
+func TestAuthorityCutoverRejectsReplayAndRequestSelectedLegacyAuthority(t *testing.T) {
+	project := authorityFixture(t)
+	requestPath := authorityRequestFixture(t, project)
+	request := readAuthorityRequestTest(t, requestPath)
+	request.OperationID = "replayed-operation"
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "replay.json", request)); err == nil {
+		t.Fatal("approval replay under another operation accepted")
+	}
+	raw, _ := os.ReadFile(requestPath)
+	var body map[string]any
+	if json.Unmarshal(raw, &body) != nil {
+		t.Fatal("request")
+	}
+	body["legacy"] = []any{map[string]any{"path": ".agent-team/state.json", "sha256": strings.Repeat("a", 64)}}
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "caller-legacy.json", body)); err == nil {
+		t.Fatal("request-selected legacy authority accepted")
+	}
+}
+
+func TestAuthorityCutoverRejectsMutableOperatorTrustStore(t *testing.T) {
+	project := authorityFixture(t)
+	requestPath := authorityRequestFixture(t, project)
+	authorityTrustStoreOwner = func(os.FileInfo) bool { return false }
+	if _, err := ExecuteAuthorityRequest(context.Background(), requestPath); err == nil {
+		t.Fatal("mutable operator trust store accepted")
+	}
+}
+
+func TestSystemTrustStoreRejectsWritableFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trust.json")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if systemTrustStoreOwner(info) {
+		t.Fatal("group/world-writable trust store accepted")
+	}
+}
+
 func TestAuthorityCutoverRechecksRemoteBeforeReceiptPublication(t *testing.T) {
 	project := authorityFixture(t)
 	requestPath := authorityRequestFixture(t, project)
@@ -131,9 +218,9 @@ func TestAuthorityCutoverRechecksRemoteBeforeReceiptPublication(t *testing.T) {
 	var calls int
 	authorityRemoteObserver = func(context.Context, string, string, string, string) (RemoteObservation, error) {
 		calls++
-		remote := RemoteObservation{Name: "origin", BaseRef: "refs/heads/main", BaseRevision: request.TargetRevision, TargetRef: "refs/heads/main", TargetRevision: request.TargetRevision}
+		remote := RemoteObservation{Name: "origin", URL: "file:///trusted/origin.git", BaseRef: "refs/heads/main", BaseRevision: request.TargetRevision, TargetRef: "refs/heads/main", TargetRevision: request.TargetRevision}
 		if calls == 2 {
-			remote.TargetRevision = strings.Repeat("0", 40)
+			remote.URL = "file:///foreign/origin.git"
 		}
 		return remote, nil
 	}
@@ -153,7 +240,30 @@ func TestAuthorityCutoverRechecksRemoteBeforeReceiptPublication(t *testing.T) {
 	}
 }
 
-func TestAuthorityCutoverSignedApprovalBridgesStaleTrackerState(t *testing.T) {
+func TestAuthorityCutoverRechecksOperatorTrustBeforeReceiptPublication(t *testing.T) {
+	project := authorityFixture(t)
+	requestPath := authorityRequestFixture(t, project)
+	authorityMutationHook = func(index int) bool {
+		if index == 1 {
+			authorityTrustStoreOwner = func(os.FileInfo) bool { return false }
+		}
+		return false
+	}
+	t.Cleanup(func() { authorityMutationHook = nil })
+	if _, err := ExecuteAuthorityRequest(context.Background(), requestPath); err == nil {
+		t.Fatal("late operator trust change accepted")
+	}
+	if _, err := os.Stat(filepath.Join(project, authorityReceiptPath)); !os.IsNotExist(err) {
+		t.Fatal("failed cutover left authority receipt")
+	}
+	raw, _ := os.ReadFile(filepath.Join(project, ".agent-team", "state.json"))
+	var state map[string]any
+	if json.Unmarshal(raw, &state) != nil || state["schemaVersion"] != float64(1) {
+		t.Fatalf("legacy state not restored: %s", raw)
+	}
+}
+
+func TestAuthorityCutoverRejectsProjectLocalSelfPinnedApproval(t *testing.T) {
 	project := authorityFixture(t)
 	requestPath := authorityRequestFixture(t, project)
 	request := readAuthorityRequestTest(t, requestPath)
@@ -169,18 +279,14 @@ func TestAuthorityCutoverSignedApprovalBridgesStaleTrackerState(t *testing.T) {
 	}
 	setup["cutoverApproval"] = signedApprovalTrust{Algorithm: "ed25519", KeyID: keyID, PublicKey: base64.StdEncoding.EncodeToString(publicKey)}
 	writeAuthorityJSON(t, filepath.Join(project, ".agent-team"), "setup.json", setup)
+	writeAuthorityJSON(t, filepath.Join(project, ".agent-team"), "state.json", map[string]any{"schemaVersion": 1, "operationReceipts": map[string]any{"self-pinned": map[string]any{"signature": strings.Repeat("a", 64)}}})
 	issued := time.Now().UTC()
-	approval := signedCutoverApproval{Schema: 1, ID: "user-approved-v8-cutover", IssuedAt: issued.Format(time.RFC3339Nano), ExpiresAt: issued.Add(time.Hour).Format(time.RFC3339Nano), TargetRevision: request.TargetRevision, TrackerFingerprint: request.Tracker.Fingerprint, ParentID: request.Tracker.ParentID, Cause: "publish the independently reviewed 43-task v8 implementation", RecoveryDisposition: "restore archived v7 state and leave the remote unchanged", SignerKeyID: keyID, TaskIDs: request.Tracker.TaskIDs, Remote: RemoteObservation{Name: "origin", BaseRef: "refs/heads/main", BaseRevision: request.TargetRevision, TargetRef: "refs/heads/main", TargetRevision: request.TargetRevision}, RemoteMainDeploys: true}
+	approval := signedCutoverApproval{Schema: 1, ID: "user-approved-v8-cutover", IssuedAt: issued.Format(time.RFC3339Nano), ExpiresAt: issued.Add(time.Hour).Format(time.RFC3339Nano), Project: request.Project, OperationID: request.OperationID, TargetRevision: request.TargetRevision, TrackerFingerprint: request.Tracker.Fingerprint, ParentID: request.Tracker.ParentID, Cause: "publish the independently reviewed 43-task v8 implementation", RecoveryDisposition: "restore archived v7 state and leave the remote unchanged", SignerKeyID: keyID, TaskIDs: request.Tracker.TaskIDs, Reviews: request.Reviews, Tests: request.Tests, Readiness: request.Readiness, Remote: RemoteObservation{Name: "origin", URL: "file:///trusted/origin.git", BaseRef: "refs/heads/main", BaseRevision: request.TargetRevision, TargetRef: "refs/heads/main", TargetRevision: request.TargetRevision}, RemoteMainDeploys: true}
 	payload, _ := json.Marshal(approval)
 	approval.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
 	approvalPath := writeAuthorityJSON(t, project, "signed-approval.json", approval)
-	request.ApprovalOperationID = ""
-	request.Approval = EvidenceReference{Path: approvalPath, SHA256: digestFileTest(t, approvalPath)}
-	for index := range request.Legacy {
-		if request.Legacy[index].Path == ".agent-team/setup.json" {
-			request.Legacy[index].SHA256 = digestFileTest(t, setupPath)
-		}
-	}
+	request.Approval = EvidenceReference{ID: approval.ID, Path: approvalPath, SHA256: digestFileTest(t, approvalPath)}
+	authorityTrustStorePath = filepath.Join(t.TempDir(), "missing-trust.json")
 	forged := approval
 	forged.Cause = "caller supplied cause"
 	forgedPath := writeAuthorityJSON(t, project, "forged-signed-approval.json", forged)
@@ -190,13 +296,8 @@ func TestAuthorityCutoverSignedApprovalBridgesStaleTrackerState(t *testing.T) {
 		t.Fatal("forged signed approval accepted")
 	}
 	requestPath = writeAuthorityJSON(t, project, "signed-request.json", request)
-	result, err := ExecuteAuthorityRequest(context.Background(), requestPath)
-	if err != nil || !result.Held {
-		t.Fatalf("signed cutover = %#v, %v", result, err)
-	}
-	receipt, err := AuthorityStatus(project)
-	if err != nil || receipt.ApprovalOperationID != approval.ID || receipt.Authorization.GrantedBy != keyID || receipt.Authorization.Cause != approval.Cause || receipt.RecoveryDisposition != approval.RecoveryDisposition {
-		t.Fatalf("signed receipt = %#v, %v", receipt, err)
+	if _, err := ExecuteAuthorityRequest(context.Background(), requestPath); err == nil {
+		t.Fatal("project-local self-pinned approval accepted")
 	}
 }
 
@@ -211,7 +312,7 @@ func TestObserveGitRemoteReadsConfiguredRefs(t *testing.T) {
 	}
 	head, _ := exec.Command("git", "-C", project, "rev-parse", "HEAD").Output()
 	got, err := observeGitRemote(context.Background(), project, "origin", "refs/heads/master", "refs/heads/master")
-	if err != nil || got.BaseRevision != string(bytesTrim(head)) || got.TargetRevision != got.BaseRevision || got.TargetAbsent {
+	if err != nil || got.URL != remote || got.BaseRevision != string(bytesTrim(head)) || got.TargetRevision != got.BaseRevision || got.TargetAbsent {
 		t.Fatalf("observation = %#v, %v", got, err)
 	}
 }
@@ -297,8 +398,14 @@ func authorityRequestFixture(t *testing.T, project string) string {
 	if err := os.WriteFile(testSource, []byte("{\"Action\":\"pass\",\"Package\":\"example\",\"Test\":\"TestCutover\"}\n{\"Action\":\"pass\",\"Package\":\"example\"}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	testSourceB := filepath.Join(project, "tests-b.json")
+	if err := os.WriteFile(testSourceB, []byte("{\"Action\":\"pass\",\"Package\":\"example/b\",\"Test\":\"TestCutoverB\"}\n{\"Action\":\"pass\",\"Package\":\"example/b\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	review := map[string]any{"phase": "cutover", "revision": string(bytesTrim(head)), "author": "builder", "reviewer": "independent", "source": testSource, "digest": digestFileTest(t, testSource), "result": "CLEAN"}
 	reviewPath := writeAuthorityJSON(t, project, "review.json", review)
+	reviewB := map[string]any{"phase": "cutover", "revision": string(bytesTrim(head)), "author": "builder-b", "reviewer": "independent-b", "source": testSourceB, "digest": digestFileTest(t, testSourceB), "result": "CLEAN"}
+	reviewPathB := writeAuthorityJSON(t, project, "review-b.json", reviewB)
 	evidencePaths := map[string]string{}
 	for _, name := range []string{"benchmark", "artifact", "sbom", "canary", "rollback", "provider", "installed"} {
 		path := filepath.Join(project, name+"-evidence.json")
@@ -314,27 +421,34 @@ func authorityRequestFixture(t *testing.T, project string) string {
 	if err != nil || release.WriteReadinessEvidence(readiness, readinessValue) != nil {
 		t.Fatal(err)
 	}
-	approvalID := "trusted-integration-approval"
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	remote := RemoteObservation{Name: "origin", BaseRef: "refs/heads/main", BaseRevision: string(bytesTrim(head)), TargetRef: "refs/heads/main", TargetRevision: string(bytesTrim(head)), ObservedAt: now}
+	remote := RemoteObservation{Name: "origin", URL: "file:///trusted/origin.git", BaseRef: "refs/heads/main", BaseRevision: string(bytesTrim(head)), TargetRef: "refs/heads/main", TargetRevision: string(bytesTrim(head)), ObservedAt: now}
 	authorityRemoteObserver = func(context.Context, string, string, string, string) (RemoteObservation, error) { return remote, nil }
 	t.Cleanup(func() { authorityRemoteObserver = observeGitRemote })
-	approvalEvidence := map[string]any{"status": "passed", "revision": string(bytesTrim(head)), "taskIds": ids,
-		"remote":        map[string]any{"name": "origin", "baseRef": "refs/heads/main", "revision": string(bytesTrim(head)), "targetRef": "refs/heads/main", "targetRevision": string(bytesTrim(head))},
-		"authorization": map[string]any{"source": "explicit user-approved legacy-v8 cutover", "scope": "integration", "ownerSessionId": "trusted-owner", "revision": string(bytesTrim(head)), "taskIds": ids},
-		"recovery":      map[string]any{"status": "reconciled", "revision": string(bytesTrim(head)), "taskIds": ids, "action": "restore archived v7 authority and keep remote unchanged"}, "preview": map[string]any{"required": false}, "remoteMainDeploys": true}
-	approvalPath := writeAuthorityJSON(t, project, "approval.json", approvalEvidence)
-	legacyState := map[string]any{"schemaVersion": 1, "stateVersion": 59,
-		"integration": map[string]any{"hold": true, "ownerSessionId": "trusted-owner", "recordedEvidence": map[string]any{"path": approvalPath, "fingerprint": digestFileTest(t, approvalPath), "revision": string(bytesTrim(head)), "taskIds": ids, "operationId": approvalID, "observedAt": now}},
-		"release":     map[string]any{"hold": true}, "operationReceipts": map[string]any{approvalID: map[string]any{"signature": strings.Repeat("a", 64), "result": map[string]any{"gate": "integration", "trackerFingerprint": digestFileTest(t, tracker), "revision": string(bytesTrim(head))}, "appliedAt": now}}}
-	writeAuthorityJSON(t, filepath.Join(project, ".agent-team"), "state.json", legacyState)
+	reviews := []EvidenceReference{{ID: "review-a", Path: reviewPath, SHA256: digestFileTest(t, reviewPath)}, {ID: "review-b", Path: reviewPathB, SHA256: digestFileTest(t, reviewPathB)}}
+	tests := []EvidenceReference{{ID: "go-test-a", Path: testSource, SHA256: digestFileTest(t, testSource)}, {ID: "go-test-b", Path: testSourceB, SHA256: digestFileTest(t, testSourceB)}}
+	readinessRef := EvidenceReference{ID: "release-readiness", Path: readiness, SHA256: digestFileTest(t, readiness)}
+	seed := bytes.Repeat([]byte{3}, ed25519.SeedSize)
+	privateKey := ed25519.NewKeyFromSeed(seed)
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	keyID := digestBytes(publicKey)
+	trustPath := writeAuthorityJSON(t, t.TempDir(), "cutover-trust.json", operatorTrustStore{Schema: 1, Keys: []signedApprovalTrust{{Algorithm: "ed25519", KeyID: keyID, PublicKey: base64.StdEncoding.EncodeToString(publicKey)}}})
+	authorityTrustStorePath = trustPath
+	authorityTrustStoreOwner = func(os.FileInfo) bool { return true }
+	t.Cleanup(func() {
+		authorityTrustStorePath = systemTrustStorePath()
+		authorityTrustStoreOwner = systemTrustStoreOwner
+	})
+	issued := time.Now().UTC()
+	approval := signedCutoverApproval{Schema: 1, ID: "trusted-operator-approval", IssuedAt: issued.Format(time.RFC3339Nano), ExpiresAt: issued.Add(time.Hour).Format(time.RFC3339Nano), Project: project, OperationID: "cutover-fixture", TargetRevision: string(bytesTrim(head)), TrackerFingerprint: digestFileTest(t, tracker), ParentID: "atv-5sh", Cause: "explicit user-approved legacy-v8 cutover", RecoveryDisposition: "restore archived v7 authority and keep remote unchanged", SignerKeyID: keyID, TaskIDs: ids, Reviews: reviews, Tests: tests, Readiness: readinessRef, Remote: remote, RemoteMainDeploys: true}
+	payload, _ := json.Marshal(approval)
+	approval.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
+	approvalPath := writeAuthorityJSON(t, project, "approval.json", approval)
 	request := AuthorityRequest{
 		Schema: 1, Action: "cutover", Project: project, OperationID: "cutover-fixture", TargetRevision: string(bytesTrim(head)),
 		Tracker: TrackerAuthority{Export: tracker, SHA256: digestFileTest(t, tracker), Fingerprint: digestFileTest(t, tracker), ParentID: "atv-5sh", TaskIDs: ids, TaskCount: 44},
-		Reviews: []EvidenceReference{{Path: reviewPath, SHA256: digestFileTest(t, reviewPath)}},
-		Tests:   []EvidenceReference{{Path: testSource, SHA256: digestFileTest(t, testSource)}}, Readiness: EvidenceReference{Path: readiness, SHA256: digestFileTest(t, readiness)},
-		Legacy:              []OwnedLegacyFile{{Path: ".agent-team/setup.json", SHA256: digestFileTest(t, filepath.Join(project, ".agent-team/setup.json"))}, {Path: ".agent-team/state.json", SHA256: digestFileTest(t, filepath.Join(project, ".agent-team/state.json"))}},
-		ApprovalOperationID: approvalID,
+		Reviews: reviews, Tests: tests, Readiness: readinessRef,
+		Approval: EvidenceReference{ID: approval.ID, Path: approvalPath, SHA256: digestFileTest(t, approvalPath)},
 	}
 	return writeAuthorityJSON(t, project, "request.json", request)
 }
