@@ -149,10 +149,28 @@ test("Graphify guidance accepts AST-origin inferred structural leads only", asyn
 test("GitHub release publication remains tag-driven and checked", async () => {
   const workflow = await read(".github/workflows/release.yml");
   for (const pattern of [
-    /tags:\s*\n\s*- ['"]v\*['"]/, /permissions:\s*\n\s*contents:\s*write/,
+    /tags:\s*\n\s*- ['"]v7\.\*['"]/, /permissions:\s*\n\s*contents:\s*write/,
     /node --test tests\/hooks-\*\.test\.mjs/, /check-package/, /build-artifacts/,
     /check-artifacts/, /gh release create/, /sha256sum \*\.zip > SHA256SUMS/,
   ]) assert.match(workflow, pattern);
+  assert.doesNotMatch(workflow, /- ['"]v\*['"]/);
+});
+
+test("published static site and native CI use portable repository paths", async () => {
+  await read(".nojekyll");
+  const attributes = await read(".gitattributes");
+  assert.match(attributes, /\*\.go\s+text\s+eol=lf/);
+  assert.match(attributes, /\*\.ya?ml\s+text\s+eol=lf/);
+  for (const path of [
+    ".github/workflows/vnext-host.yml",
+    ".github/workflows/vnext-native.yml",
+    ".github/workflows/vnext-install.yml",
+  ]) {
+    const workflow = await read(path);
+    for (const name of ["TMPDIR", "TMP", "TEMP"]) {
+      assert.ok(workflow.includes(name + ": ${{ runner.temp }}"), `${path} ${name}`);
+    }
+  }
 });
 
 test("installation docs keep canonical release provenance and complete checksum examples", async () => {
