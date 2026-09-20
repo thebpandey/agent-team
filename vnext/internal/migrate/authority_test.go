@@ -57,7 +57,11 @@ func TestAuthorityPrepareWritesCanonicalDetachedArtifacts(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(layout.SkillRoots[host], "SKILL.md"), skill, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		metadata := map[string]any{"version": "7.3.1", "sourceRevision": strings.Repeat("a", 40), "packageFileMap": map[string]any{"SKILL.md": map[string]any{"sha256": digestBytes(skill), "mode": 384, "size": len(skill)}}}
+		info, err := os.Stat(filepath.Join(layout.SkillRoots[host], "SKILL.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata := map[string]any{"version": "7.3.1", "sourceRevision": strings.Repeat("a", 40), "packageFileMap": map[string]any{"SKILL.md": map[string]any{"sha256": digestBytes(skill), "mode": info.Mode().Perm(), "size": len(skill)}}}
 		if raw, marshalErr := json.Marshal(metadata); marshalErr != nil || os.WriteFile(filepath.Join(layout.SkillRoots[host], ".agent-team-source.json"), raw, 0o600) != nil {
 			t.Fatal(marshalErr)
 		}

@@ -171,7 +171,8 @@ func TestLegacyHostRollbackRejectsThirdStateBeforeMutation(t *testing.T) {
 	if err := os.WriteFile(tampered.Path, tampered.Bytes, os.FileMode(tampered.Mode)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(tampered.Path, 0o644); err != nil {
+	driftMode := lifecycleDriftMode()
+	if err := os.Chmod(tampered.Path, driftMode); err != nil {
 		t.Fatal(err)
 	}
 	untouched := receipt.Postimages[0].Path
@@ -185,7 +186,7 @@ func TestLegacyHostRollbackRejectsThirdStateBeforeMutation(t *testing.T) {
 	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); !errors.Is(err, core.ErrRevision) {
 		t.Fatalf("third state rollback = %v", err)
 	}
-	if info, err := os.Stat(tampered.Path); err != nil || info.Mode().Perm() != 0o644 {
+	if info, err := os.Stat(tampered.Path); err != nil || info.Mode().Perm() != driftMode.Perm() {
 		t.Fatalf("tampered mode changed: %v", err)
 	}
 	after, err := os.Stat(untouched)
@@ -211,7 +212,7 @@ func TestLegacyHostRollbackRejectsPostimageModeDriftBeforeMutation(t *testing.T)
 			if name == "transformed settings" {
 				target = layout.ConfigPaths[Claude]
 			}
-			if err := os.Chmod(target, 0o644); err != nil {
+			if err := os.Chmod(target, lifecycleDriftMode()); err != nil {
 				t.Fatal(err)
 			}
 			before := snapshotRollbackPaths(t, layout, receipt)
@@ -284,7 +285,7 @@ func TestLegacyHostRollbackRejectsSameInodeModeChangeDuringPreparation(t *testin
 		}
 		reads++
 		if reads == 2 {
-			if err := os.Chmod(path, 0o644); err != nil {
+			if err := os.Chmod(path, lifecycleDriftMode()); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -296,7 +297,7 @@ func TestLegacyHostRollbackRejectsSameInodeModeChangeDuringPreparation(t *testin
 	stableReadHook = nil
 	targetAfter, err := os.Stat(target)
 	afterRaw, readErr := os.ReadFile(target)
-	if err != nil || readErr != nil || !os.SameFile(targetBefore, targetAfter) || targetAfter.Mode().Perm() != 0o644 || !bytes.Equal(afterRaw, targetRaw) {
+	if err != nil || readErr != nil || !os.SameFile(targetBefore, targetAfter) || targetAfter.Mode().Perm() != lifecycleDriftMode().Perm() || !bytes.Equal(afterRaw, targetRaw) {
 		t.Fatalf("mode-changed path mutated: stat=%v read=%v", err, readErr)
 	}
 	assertRollbackPathsUnchanged(t, before)
@@ -316,7 +317,7 @@ func TestLegacyHostRollbackRecoveryRejectsPostimageModeDrift(t *testing.T) {
 		t.Fatalf("read interrupted journal: %v", err)
 	}
 	target := journal.Mutations[0].Path
-	if err := os.Chmod(target, 0o644); err != nil {
+	if err := os.Chmod(target, lifecycleDriftMode()); err != nil {
 		t.Fatal(err)
 	}
 	targetBefore, err := os.Stat(target)
@@ -328,7 +329,7 @@ func TestLegacyHostRollbackRecoveryRejectsPostimageModeDrift(t *testing.T) {
 		t.Fatalf("mode-drift recovery = %v", err)
 	}
 	targetAfter, err := os.Stat(target)
-	if err != nil || !os.SameFile(targetBefore, targetAfter) || targetAfter.Mode().Perm() != 0o644 {
+	if err != nil || !os.SameFile(targetBefore, targetAfter) || targetAfter.Mode().Perm() != lifecycleDriftMode().Perm() {
 		t.Fatalf("recovery changed drifted path: %v", err)
 	}
 	assertRollbackPathsUnchanged(t, before)
@@ -388,7 +389,11 @@ func TestLegacyHostCutoverAcceptsOnlyVerifiedSourceInventory(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(layout.SkillRoots[host], "SKILL.md"), skill, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		source := map[string]any{"version": "7.3.1", "sourceRevision": strings.Repeat("a", 40), "packageFileMap": map[string]any{"SKILL.md": map[string]any{"sha256": digestBytesInstall(skill), "mode": 384, "size": len(skill)}}}
+		info, err := os.Stat(filepath.Join(layout.SkillRoots[host], "SKILL.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := map[string]any{"version": "7.3.1", "sourceRevision": strings.Repeat("a", 40), "packageFileMap": map[string]any{"SKILL.md": map[string]any{"sha256": digestBytesInstall(skill), "mode": info.Mode().Perm(), "size": len(skill)}}}
 		raw, _ := json.Marshal(source)
 		if err := os.WriteFile(filepath.Join(layout.SkillRoots[host], ".agent-team-source.json"), raw, 0o600); err != nil {
 			t.Fatal(err)

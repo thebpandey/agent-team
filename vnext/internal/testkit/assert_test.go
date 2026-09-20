@@ -66,6 +66,22 @@ func TestSnapshotProjectTreeIncludesNestedGitContent(t *testing.T) {
 	}
 }
 
+func TestSnapshotChangesNamesAddedRemovedAndChangedPaths(t *testing.T) {
+	got := snapshotChanges(
+		map[string]string{"removed": "old", "changed": "old", "same": "same"},
+		map[string]string{"added": "new", "changed": "new", "same": "same"},
+	)
+	want := []string{"added added", "changed changed", "removed removed"}
+	if len(got) != len(want) {
+		t.Fatalf("snapshotChanges() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("snapshotChanges() = %v, want %v", got, want)
+		}
+	}
+}
+
 func sameSnapshot(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false
