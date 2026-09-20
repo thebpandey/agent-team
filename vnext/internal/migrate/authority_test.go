@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/release"
@@ -77,6 +79,83 @@ func TestAuthorityCutoverRejectsForeignLegacyAndStaleEvidence(t *testing.T) {
 	request = writeAuthorityJSON(t, project, "stale.json", candidate)
 	if _, err := ExecuteAuthorityRequest(context.Background(), request); err == nil {
 		t.Fatal("stale head accepted")
+	}
+}
+
+func TestAuthorityCutoverRejectsForgedApprovalAndRemoteObservation(t *testing.T) {
+	project := authorityFixture(t)
+	requestPath := authorityRequestFixture(t, project)
+	request := readAuthorityRequestTest(t, requestPath)
+	request.ApprovalOperationID = "caller-invented"
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "forged.json", request)); err == nil {
+		t.Fatal("forged approval accepted")
+	}
+	request = readAuthorityRequestTest(t, requestPath)
+	if err := os.WriteFile(filepath.Join(project, "approval.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "tampered.json", request)); err == nil {
+		t.Fatal("tampered approval accepted")
+	}
+	requestPath = authorityRequestFixture(t, project)
+
+	request = readAuthorityRequestTest(t, requestPath)
+	authorityRemoteObserver = func(context.Context, string, string, string, string) (RemoteObservation, error) {
+		return RemoteObservation{Name: "origin", BaseRef: "refs/heads/main", BaseRevision: strings.Repeat("0", 40), TargetRef: "refs/heads/main", TargetRevision: strings.Repeat("0", 40)}, nil
+	}
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "remote-mismatch.json", request)); err == nil {
+		t.Fatal("remote mismatch accepted")
+	}
+	authorityRemoteObserver = func(context.Context, string, string, string, string) (RemoteObservation, error) {
+		return RemoteObservation{}, errors.New("unavailable")
+	}
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "remote-unavailable.json", request)); err == nil {
+		t.Fatal("unavailable remote accepted")
+	}
+}
+
+func TestAuthorityCutoverRechecksRemoteBeforeReceiptPublication(t *testing.T) {
+	project := authorityFixture(t)
+	requestPath := authorityRequestFixture(t, project)
+	request := readAuthorityRequestTest(t, requestPath)
+	var calls int
+	authorityRemoteObserver = func(context.Context, string, string, string, string) (RemoteObservation, error) {
+		calls++
+		remote := RemoteObservation{Name: "origin", BaseRef: "refs/heads/main", BaseRevision: request.TargetRevision, TargetRef: "refs/heads/main", TargetRevision: request.TargetRevision}
+		if calls == 2 {
+			remote.TargetRevision = strings.Repeat("0", 40)
+		}
+		return remote, nil
+	}
+	if _, err := ExecuteAuthorityRequest(context.Background(), requestPath); err == nil {
+		t.Fatal("late remote change accepted")
+	}
+	if calls != 2 {
+		t.Fatalf("remote observations = %d", calls)
+	}
+	if _, err := os.Stat(filepath.Join(project, authorityReceiptPath)); !os.IsNotExist(err) {
+		t.Fatal("failed cutover left authority receipt")
+	}
+	raw, _ := os.ReadFile(filepath.Join(project, ".agent-team", "state.json"))
+	var state map[string]any
+	if json.Unmarshal(raw, &state) != nil || state["schemaVersion"] != float64(1) {
+		t.Fatalf("legacy state not restored: %s", raw)
+	}
+}
+
+func TestObserveGitRemoteReadsConfiguredRefs(t *testing.T) {
+	project := authorityFixture(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	if output, err := exec.Command("git", "clone", "-q", "--bare", project, remote).CombinedOutput(); err != nil {
+		t.Fatalf("clone: %s: %v", output, err)
+	}
+	if output, err := exec.Command("git", "-C", project, "remote", "add", "origin", remote).CombinedOutput(); err != nil {
+		t.Fatalf("remote: %s: %v", output, err)
+	}
+	head, _ := exec.Command("git", "-C", project, "rev-parse", "HEAD").Output()
+	got, err := observeGitRemote(context.Background(), project, "origin", "refs/heads/master", "refs/heads/master")
+	if err != nil || got.BaseRevision != string(bytesTrim(head)) || got.TargetRevision != got.BaseRevision || got.TargetAbsent {
+		t.Fatalf("observation = %#v, %v", got, err)
 	}
 }
 
@@ -178,15 +257,27 @@ func authorityRequestFixture(t *testing.T, project string) string {
 	if err != nil || release.WriteReadinessEvidence(readiness, readinessValue) != nil {
 		t.Fatal(err)
 	}
+	approvalID := "trusted-integration-approval"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	remote := RemoteObservation{Name: "origin", BaseRef: "refs/heads/main", BaseRevision: string(bytesTrim(head)), TargetRef: "refs/heads/main", TargetRevision: string(bytesTrim(head)), ObservedAt: now}
+	authorityRemoteObserver = func(context.Context, string, string, string, string) (RemoteObservation, error) { return remote, nil }
+	t.Cleanup(func() { authorityRemoteObserver = observeGitRemote })
+	approvalEvidence := map[string]any{"status": "passed", "revision": string(bytesTrim(head)), "taskIds": ids,
+		"remote":        map[string]any{"name": "origin", "baseRef": "refs/heads/main", "revision": string(bytesTrim(head)), "targetRef": "refs/heads/main", "targetRevision": string(bytesTrim(head))},
+		"authorization": map[string]any{"source": "explicit user-approved legacy-v8 cutover", "scope": "integration", "ownerSessionId": "trusted-owner", "revision": string(bytesTrim(head)), "taskIds": ids},
+		"recovery":      map[string]any{"status": "reconciled", "revision": string(bytesTrim(head)), "taskIds": ids, "action": "restore archived v7 authority and keep remote unchanged"}, "preview": map[string]any{"required": false}, "remoteMainDeploys": true}
+	approvalPath := writeAuthorityJSON(t, project, "approval.json", approvalEvidence)
+	legacyState := map[string]any{"schemaVersion": 1, "stateVersion": 59,
+		"integration": map[string]any{"hold": true, "ownerSessionId": "trusted-owner", "recordedEvidence": map[string]any{"path": approvalPath, "fingerprint": digestFileTest(t, approvalPath), "revision": string(bytesTrim(head)), "taskIds": ids, "operationId": approvalID, "observedAt": now}},
+		"release":     map[string]any{"hold": true}, "operationReceipts": map[string]any{approvalID: map[string]any{"signature": strings.Repeat("a", 64), "result": map[string]any{"gate": "integration", "trackerFingerprint": digestFileTest(t, tracker), "revision": string(bytesTrim(head))}, "appliedAt": now}}}
+	writeAuthorityJSON(t, filepath.Join(project, ".agent-team"), "state.json", legacyState)
 	request := AuthorityRequest{
 		Schema: 1, Action: "cutover", Project: project, OperationID: "cutover-fixture", TargetRevision: string(bytesTrim(head)),
 		Tracker: TrackerAuthority{Export: tracker, SHA256: digestFileTest(t, tracker), Fingerprint: digestFileTest(t, tracker), ParentID: "atv-5sh", TaskIDs: ids, TaskCount: 44},
 		Reviews: []EvidenceReference{{Path: reviewPath, SHA256: digestFileTest(t, reviewPath)}},
 		Tests:   []EvidenceReference{{Path: testSource, SHA256: digestFileTest(t, testSource)}}, Readiness: EvidenceReference{Path: readiness, SHA256: digestFileTest(t, readiness)},
 		Legacy:              []OwnedLegacyFile{{Path: ".agent-team/setup.json", SHA256: digestFileTest(t, filepath.Join(project, ".agent-team/setup.json"))}, {Path: ".agent-team/state.json", SHA256: digestFileTest(t, filepath.Join(project, ".agent-team/state.json"))}},
-		Remote:              RemoteObservation{Name: "origin", BaseRef: "refs/heads/main", BaseRevision: string(bytesTrim(head)), TargetRef: "refs/heads/main", TargetRevision: string(bytesTrim(head)), ObservedAt: "2026-09-20T00:00:00Z"},
-		Authorization:       CutoverAuthorization{GrantedBy: "user", Source: "explicit request", Cause: "legacy-v7-authority", Scope: "atv-5sh and 43 children", GrantedAt: "2026-09-20T00:00:00Z", Revision: string(bytesTrim(head)), TaskIDs: ids, RemoteMainDeploys: true},
-		RecoveryDisposition: "restore archived v7 authority and keep remote unchanged",
+		ApprovalOperationID: approvalID,
 	}
 	return writeAuthorityJSON(t, project, "request.json", request)
 }
