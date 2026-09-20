@@ -480,7 +480,7 @@ func loadSignedAuthority(request AuthorityRequest) (trustedAuthority, error) {
 	var approval signedCutoverApproval
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&approval) != nil || decoder.Decode(&struct{}{}) != io.EOF || approval.Schema != 1 || approval.ID == "" || approval.ID != request.Approval.ID {
+	if decoder.Decode(&approval) != nil || decoder.Decode(&struct{}{}) != io.EOF || approval.Schema != 1 || approval.ID == "" || approval.ID != request.Approval.ID || !canonicalTaskIDs(approval.TaskIDs) {
 		return trustedAuthority{}, fmt.Errorf("%w: malformed signed approval", core.ErrRevision)
 	}
 	trust, err := readOperatorTrustStore()
@@ -510,18 +510,11 @@ func loadSignedAuthority(request AuthorityRequest) (trustedAuthority, error) {
 	if issueErr != nil || expiryErr != nil || now.Before(issued) || !now.Before(expires) || expires.Sub(issued) > 24*time.Hour {
 		return trustedAuthority{}, fmt.Errorf("%w: signed approval is stale", core.ErrRevision)
 	}
-	if validateEvidenceIdentities(approval.Reviews) != nil || validateEvidenceIdentities(approval.Tests) != nil || validateEvidenceIdentities([]EvidenceReference{approval.Readiness}) != nil || !equalEvidence(approval.Reviews, request.Reviews) || !equalEvidence(approval.Tests, request.Tests) || !equalEvidence([]EvidenceReference{approval.Readiness}, []EvidenceReference{request.Readiness}) || approval.Project != request.Project || approval.OperationID != request.OperationID || approval.TargetRevision != request.TargetRevision || approval.TrackerFingerprint != request.Tracker.Fingerprint || approval.ParentID != request.Tracker.ParentID || approval.Cause == "" || approval.RecoveryDisposition == "" || !sameTasks(approval.TaskIDs, request.Tracker.TaskIDs) || approval.Remote.Name == "" || approval.Remote.URL == "" || approval.Remote.BaseRef == "" || approval.Remote.TargetRef == "" || !validRevision(approval.Remote.BaseRevision) || approval.Remote.TargetAbsent == (approval.Remote.TargetRevision != "") || (!approval.Remote.TargetAbsent && !validRevision(approval.Remote.TargetRevision)) {
+	if validateEvidenceIdentities(approval.Reviews) != nil || validateEvidenceIdentities(approval.Tests) != nil || validateEvidenceIdentities([]EvidenceReference{approval.Readiness}) != nil || !equalEvidence(approval.Reviews, request.Reviews) || !equalEvidence(approval.Tests, request.Tests) || !equalEvidence([]EvidenceReference{approval.Readiness}, []EvidenceReference{request.Readiness}) || approval.Project != request.Project || approval.OperationID != request.OperationID || approval.TargetRevision != request.TargetRevision || approval.TrackerFingerprint != request.Tracker.Fingerprint || approval.ParentID != request.Tracker.ParentID || approval.Cause == "" || approval.RecoveryDisposition == "" || !equalStrings(approval.TaskIDs, request.Tracker.TaskIDs) || approval.Remote.Name == "" || approval.Remote.URL == "" || approval.Remote.BaseRef == "" || approval.Remote.TargetRef == "" || !validRevision(approval.Remote.BaseRevision) || approval.Remote.TargetAbsent == (approval.Remote.TargetRevision != "") || (!approval.Remote.TargetAbsent && !validRevision(approval.Remote.TargetRevision)) {
 		return trustedAuthority{}, fmt.Errorf("%w: signed approval scope differs", core.ErrRevision)
 	}
 	derived := CutoverAuthorization{GrantedBy: trustedKey.KeyID, Source: request.Approval.Path, Cause: approval.Cause, Scope: approval.ParentID, GrantedAt: approval.IssuedAt, Revision: approval.TargetRevision, TaskIDs: append([]string(nil), approval.TaskIDs...), RemoteMainDeploys: approval.RemoteMainDeploys}
 	return trustedAuthority{ID: approval.ID, Remote: approval.Remote, Approval: derived, Recovery: approval.RecoveryDisposition, EvidenceSHA: request.Approval.SHA256}, nil
-}
-
-func sameTasks(left, right []string) bool {
-	a, b := append([]string(nil), left...), append([]string(nil), right...)
-	sort.Strings(a)
-	sort.Strings(b)
-	return equalStrings(a, b)
 }
 
 func validateEvidenceIdentities(refs []EvidenceReference) error {
@@ -630,7 +623,7 @@ func validateLegacyAuthority(project string) error {
 }
 
 func validateTracker(tracker TrackerAuthority) error {
-	if tracker.Export == "" || !filepath.IsAbs(tracker.Export) || tracker.SHA256 == "" || tracker.Fingerprint != tracker.SHA256 || tracker.ParentID == "" || tracker.TaskCount != len(tracker.TaskIDs) || tracker.TaskCount < 2 {
+	if tracker.Export == "" || !filepath.IsAbs(tracker.Export) || tracker.SHA256 == "" || tracker.Fingerprint != tracker.SHA256 || tracker.ParentID == "" || tracker.TaskCount != len(tracker.TaskIDs) || tracker.TaskCount < 2 || !canonicalTaskIDs(tracker.TaskIDs) {
 		return fmt.Errorf("%w: invalid tracker evidence", core.ErrRevision)
 	}
 	raw, err := readAbsoluteBounded(tracker.Export)
@@ -643,8 +636,6 @@ func validateTracker(tracker TrackerAuthority) error {
 	if json.Unmarshal(raw, &tasks) != nil {
 		return fmt.Errorf("%w: malformed tracker export", core.ErrRevision)
 	}
-	want := append([]string(nil), tracker.TaskIDs...)
-	sort.Strings(want)
 	seen := make([]string, 0, len(tasks))
 	parentSeen := false
 	for _, task := range tasks {
@@ -659,10 +650,24 @@ func validateTracker(tracker TrackerAuthority) error {
 		seen = append(seen, task.ID)
 	}
 	sort.Strings(seen)
-	if !parentSeen || len(seen) != tracker.TaskCount || !equalStrings(seen, want) {
+	if !parentSeen || len(seen) != tracker.TaskCount || !equalStrings(seen, tracker.TaskIDs) {
 		return fmt.Errorf("%w: tracker scope differs", core.ErrRevision)
 	}
 	return nil
+}
+
+func canonicalTaskIDs(ids []string) bool {
+	for index, id := range ids {
+		if id == "" || len(id) > 128 || id == "." || id == ".." || index > 0 && ids[index-1] >= id {
+			return false
+		}
+		for _, character := range id {
+			if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' || character == '_' || character == '.') {
+				return false
+			}
+		}
+	}
+	return len(ids) > 0
 }
 
 func validateReview(reference EvidenceReference, revision string) error {

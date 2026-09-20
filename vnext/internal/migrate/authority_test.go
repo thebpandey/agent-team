@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -163,6 +164,41 @@ func TestAuthorityCutoverRejectsUnsignedEvidenceChanges(t *testing.T) {
 	}
 	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "stale-evidence.json", request)); err == nil {
 		t.Fatal("stale signed evidence accepted")
+	}
+}
+
+func TestAuthorityCutoverRejectsNoncanonicalTaskIDsBeforeMutation(t *testing.T) {
+	tests := []struct {
+		name          string
+		mutateRequest func(*AuthorityRequest)
+		mutateSigned  func(*signedCutoverApproval)
+	}{
+		{name: "reordered signed payload", mutateSigned: func(approval *signedCutoverApproval) {
+			approval.TaskIDs[1], approval.TaskIDs[2] = approval.TaskIDs[2], approval.TaskIDs[1]
+		}},
+		{name: "duplicate signed payload", mutateSigned: func(approval *signedCutoverApproval) {
+			approval.TaskIDs[2] = approval.TaskIDs[1]
+		}},
+		{name: "reordered request", mutateRequest: func(request *AuthorityRequest) {
+			request.Tracker.TaskIDs[1], request.Tracker.TaskIDs[2] = request.Tracker.TaskIDs[2], request.Tracker.TaskIDs[1]
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			project := authorityFixture(t)
+			requestPath := authorityRequestFixture(t, project)
+			request := readAuthorityRequestTest(t, requestPath)
+			if test.mutateSigned != nil {
+				resignAuthorityApprovalTest(t, project, &request, test.mutateSigned)
+			}
+			if test.mutateRequest != nil {
+				test.mutateRequest(&request)
+			}
+			if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "noncanonical-request.json", request)); err == nil {
+				t.Fatal("noncanonical task IDs accepted")
+			}
+			assertLegacyAuthorityUnchanged(t, project)
+		})
 	}
 }
 
@@ -393,6 +429,7 @@ func authorityRequestFixture(t *testing.T, project string) string {
 		tasks = append(tasks, map[string]any{"id": id, "status": "closed", "parent": "atv-5sh"})
 		ids = append(ids, id)
 	}
+	sort.Strings(ids)
 	tracker := writeAuthorityJSON(t, project, "tracker.json", tasks)
 	testSource := filepath.Join(project, "tests.json")
 	if err := os.WriteFile(testSource, []byte("{\"Action\":\"pass\",\"Package\":\"example\",\"Test\":\"TestCutover\"}\n{\"Action\":\"pass\",\"Package\":\"example\"}\n"), 0o600); err != nil {
@@ -451,6 +488,38 @@ func authorityRequestFixture(t *testing.T, project string) string {
 		Approval: EvidenceReference{ID: approval.ID, Path: approvalPath, SHA256: digestFileTest(t, approvalPath)},
 	}
 	return writeAuthorityJSON(t, project, "request.json", request)
+}
+
+func resignAuthorityApprovalTest(t *testing.T, project string, request *AuthorityRequest, mutate func(*signedCutoverApproval)) {
+	t.Helper()
+	raw, err := os.ReadFile(request.Approval.Path)
+	var approval signedCutoverApproval
+	if err != nil || json.Unmarshal(raw, &approval) != nil {
+		t.Fatal(err)
+	}
+	mutate(&approval)
+	approval.Signature = ""
+	payload, err := json.Marshal(approval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{3}, ed25519.SeedSize))
+	approval.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
+	path := writeAuthorityJSON(t, project, "noncanonical-approval.json", approval)
+	request.Approval.Path = path
+	request.Approval.SHA256 = digestFileTest(t, path)
+}
+
+func assertLegacyAuthorityUnchanged(t *testing.T, project string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(project, authorityReceiptPath)); !os.IsNotExist(err) {
+		t.Fatal("rejected cutover left an authority receipt")
+	}
+	raw, err := os.ReadFile(filepath.Join(project, ".agent-team", "state.json"))
+	var state map[string]any
+	if err != nil || json.Unmarshal(raw, &state) != nil || state["schemaVersion"] != float64(1) {
+		t.Fatalf("legacy state changed: %s (%v)", raw, err)
+	}
 }
 
 func readAuthorityRequestTest(t *testing.T, path string) AuthorityRequest {
