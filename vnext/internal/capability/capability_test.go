@@ -5,12 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/tracker"
 )
 
@@ -19,6 +22,29 @@ type fakeRunner struct {
 	calls   [][]string
 	envs    [][]string
 	onRun   func([]string)
+}
+
+type timeoutRunner struct {
+	blockOn int
+	calls   int
+	started chan struct{}
+	install func()
+}
+
+func (r *timeoutRunner) Run(ctx context.Context, _ []string, _ []string) tracker.CommandResult {
+	r.calls++
+	if r.calls == 1 && r.install != nil {
+		r.install()
+	}
+	if r.calls == r.blockOn {
+		close(r.started)
+		<-ctx.Done()
+		return tracker.CommandResult{Transport: ctx.Err()}
+	}
+	if r.calls == 2 {
+		return tracker.CommandResult{Stdout: []byte("1\n")}
+	}
+	return tracker.CommandResult{}
 }
 
 func (f *fakeRunner) Run(_ context.Context, argv, env []string) tracker.CommandResult {
@@ -250,7 +276,7 @@ func TestInstallRejectsStageChangedDuringDirectProbe(t *testing.T) {
 }
 
 func TestAdapterSpecRejectsShellLaunchers(t *testing.T) {
-	for _, launcher := range []string{"sh", "bash", "dash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "/bin/SH", `C:\\Windows\\System32\\CMD.EXE`} {
+	for _, launcher := range []string{"sh", "sh.exe", "bash", "bash.exe", "dash", "dash.exe", "zsh", "zsh.exe", "fish", "fish.exe", "cmd", "cmd.exe", "command.com", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "/bin/SH", `C:\\Windows\\System32\\CMD.EXE`} {
 		t.Run(launcher, func(t *testing.T) {
 			_, spec, _, _ := stagedPlan(t)
 			spec.installArgv = []string{launcher}
@@ -258,6 +284,55 @@ func TestAdapterSpecRejectsShellLaunchers(t *testing.T) {
 			consent := Consent{Name: Serena, Enabled: true, Mode: ReadOnlyMCP, InstallerPackage: "serena", Source: "registry.example/serena@1"}
 			if _, err := buildInstallPlan(spec, probe, consent); err == nil {
 				t.Fatal("accepted shell launcher")
+			}
+		})
+	}
+}
+
+func TestAdapterSpecBoundsArgv(t *testing.T) {
+	probe := Probe{Name: Serena, Mode: ReadOnlyMCP, Available: true, Healthy: true, Version: "1"}
+	consent := Consent{Name: Serena, Enabled: true, Mode: ReadOnlyMCP, InstallerPackage: "serena", Source: "registry.example/serena@1"}
+	_, spec, _, _ := stagedPlan(t)
+	spec.installArgv = make([]string, maxInstallArgv+1)
+	for i := range spec.installArgv {
+		spec.installArgv[i] = "tool"
+	}
+	if _, err := buildInstallPlan(spec, probe, consent); err == nil {
+		t.Fatal("accepted too many argv entries")
+	}
+	_, spec, _, _ = stagedPlan(t)
+	spec.installArgv = []string{strings.Repeat("x", int(core.DefaultConfig().Storage.ArgumentBytes)+1)}
+	if _, err := buildInstallPlan(spec, probe, consent); err == nil {
+		t.Fatal("accepted oversized argv")
+	}
+}
+
+func TestInstallEnforcesDeadlineForEveryRunnerCall(t *testing.T) {
+	old := installTimeout
+	installTimeout = time.Millisecond
+	defer func() { installTimeout = old }()
+	for _, blockOn := range []int{1, 2} {
+		t.Run(fmt.Sprintf("call-%d", blockOn), func(t *testing.T) {
+			plan, spec, _, _ := stagedPlan(t)
+			stage := filepath.Join(spec.project, spec.stage)
+			runner := &timeoutRunner{blockOn: blockOn, started: make(chan struct{}), install: func() {
+				if err := os.MkdirAll(filepath.Dir(stage), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(stage, []byte("built artifact"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}}
+			if _, err := Install(context.Background(), runner, plan); err == nil || !strings.Contains(err.Error(), "timed out") {
+				t.Fatalf("deadline error = %v", err)
+			}
+			select {
+			case <-runner.started:
+			default:
+				t.Fatal("runner never received bounded context")
+			}
+			if _, err := os.Stat(filepath.Join(spec.project, spec.destination)); !os.IsNotExist(err) {
+				t.Fatalf("published timed-out install: %v", err)
 			}
 		})
 	}

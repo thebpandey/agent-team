@@ -2,6 +2,7 @@ package capability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,8 +10,14 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/tracker"
 )
+
+const maxInstallArgv = 64
+
+// installTimeout is a test seam; production stays aligned with ProbeAll.
+var installTimeout = probeTimeout
 
 // buildInstallPlan is intentionally package-private: Task 21's concrete
 // adapters provide fixed specs here, while the public entry point stays
@@ -74,13 +81,13 @@ func Install(ctx context.Context, runner NativeRunner, plan InstallPlan) (Probe,
 	if _, err := sourceBytes(state.spec.sourceArtifact, state.spec.sourceDigest); err != nil {
 		return Probe{}, fmt.Errorf("verified source changed: %w", err)
 	}
-	if result := runner.Run(ctx, append([]string(nil), state.spec.installArgv...), []string{}); failed(result) {
+	if result := runInstall(ctx, runner, state.spec.installArgv); failed(result) {
 		return Probe{}, failStage(root, state.spec.stage, "install action failed: "+commandReason(result))
 	}
 	if err := verifyStaged(root, state.spec.stage, state.spec.stageDigest); err != nil {
 		return Probe{}, failStage(root, state.spec.stage, "staged artifact verification failed: "+err.Error())
 	}
-	result := runner.Run(ctx, append([]string(nil), state.spec.probeArgv...), []string{})
+	result := runInstall(ctx, runner, state.spec.probeArgv)
 	if failed(result) || len(result.Stdout) > probeOutputLimit || strings.TrimSpace(string(result.Stdout)) != state.spec.version {
 		reason := "post-install probe failed"
 		if failed(result) {
@@ -201,11 +208,16 @@ func absent(root *os.Root, path string) error {
 }
 
 func validArgv(argv []string) bool {
-	if len(argv) == 0 || argv[0] == "" || shellLauncher(argv[0]) {
+	if len(argv) == 0 || len(argv) > maxInstallArgv || argv[0] == "" || shellLauncher(argv[0]) {
 		return false
 	}
+	var bytes int64
 	for _, arg := range argv {
 		if strings.IndexByte(arg, 0) >= 0 {
+			return false
+		}
+		bytes += int64(len(arg))
+		if bytes > core.DefaultConfig().Storage.ArgumentBytes {
 			return false
 		}
 	}
@@ -218,11 +230,23 @@ func shellLauncher(argv0 string) bool {
 		name = name[slash+1:]
 	}
 	switch name {
-	case "sh", "bash", "dash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe":
+	case "sh", "sh.exe", "bash", "bash.exe", "dash", "dash.exe", "zsh", "zsh.exe", "fish", "fish.exe", "cmd", "cmd.exe", "command.com", "powershell", "powershell.exe", "pwsh", "pwsh.exe":
 		return true
 	default:
 		return false
 	}
+}
+
+func runInstall(ctx context.Context, runner NativeRunner, argv []string) tracker.CommandResult {
+	callCtx, cancel := context.WithTimeout(ctx, installTimeout)
+	defer cancel()
+	result := runner.Run(callCtx, append([]string(nil), argv...), []string{})
+	if errors.Is(callCtx.Err(), context.DeadlineExceeded) {
+		result.Exit = -1
+		result.TimedOut = true
+		result.Transport = nil
+	}
+	return result
 }
 
 func validRelative(path string) bool {
