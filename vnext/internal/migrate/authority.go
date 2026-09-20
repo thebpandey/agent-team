@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -84,6 +86,7 @@ type AuthorityRequest struct {
 	Readiness             EvidenceReference   `json:"readiness"`
 	Legacy                []OwnedLegacyFile   `json:"legacy"`
 	ApprovalOperationID   string              `json:"approvalOperationId,omitempty"`
+	Approval              EvidenceReference   `json:"approval,omitempty"`
 	ExpectedReceiptDigest string              `json:"expectedReceiptDigest,omitempty"`
 }
 
@@ -127,6 +130,7 @@ type AuthorityReceipt struct {
 }
 
 type trustedAuthority struct {
+	ID          string
 	Remote      RemoteObservation
 	Approval    CutoverAuthorization
 	Recovery    string
@@ -168,6 +172,29 @@ type trustedIntegrationEvidence struct {
 		TaskIDs                  []string `json:"taskIds"`
 	} `json:"recovery"`
 	RemoteMainDeploys bool `json:"remoteMainDeploys"`
+}
+
+type signedApprovalTrust struct {
+	Algorithm string `json:"algorithm"`
+	KeyID     string `json:"keyId"`
+	PublicKey string `json:"publicKey"`
+}
+
+type signedCutoverApproval struct {
+	Schema              int               `json:"schema"`
+	ID                  string            `json:"id"`
+	IssuedAt            string            `json:"issuedAt"`
+	ExpiresAt           string            `json:"expiresAt"`
+	TargetRevision      string            `json:"targetRevision"`
+	TrackerFingerprint  string            `json:"trackerFingerprint"`
+	ParentID            string            `json:"parentId"`
+	Cause               string            `json:"cause"`
+	RecoveryDisposition string            `json:"recoveryDisposition"`
+	SignerKeyID         string            `json:"signerKeyId"`
+	Signature           string            `json:"signature"`
+	TaskIDs             []string          `json:"taskIds"`
+	Remote              RemoteObservation `json:"remote"`
+	RemoteMainDeploys   bool              `json:"remoteMainDeploys"`
 }
 
 type AuthorityResult struct {
@@ -262,7 +289,7 @@ func cutoverAuthority(ctx context.Context, request AuthorityRequest, requestDige
 			mutated = append(mutated, legacy.Path)
 		}
 	}
-	receipt := AuthorityReceipt{Schema: 1, Project: request.Project, OperationID: request.OperationID, RequestDigest: requestDigest, TargetRevision: request.TargetRevision, Tracker: request.Tracker, Reviews: request.Reviews, Tests: request.Tests, Readiness: request.Readiness, Remote: trusted.Remote, Authorization: trusted.Approval, RecoveryDisposition: trusted.Recovery, ApprovalOperationID: request.ApprovalOperationID, ApprovalSHA256: trusted.EvidenceSHA, ArchivePath: archiveRelative, ArchiveSHA256: hex.EncodeToString(archiveSum[:]), Held: true, HoldCause: trusted.Approval.Cause, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano), Mutated: mutated}
+	receipt := AuthorityReceipt{Schema: 1, Project: request.Project, OperationID: request.OperationID, RequestDigest: requestDigest, TargetRevision: request.TargetRevision, Tracker: request.Tracker, Reviews: request.Reviews, Tests: request.Tests, Readiness: request.Readiness, Remote: trusted.Remote, Authorization: trusted.Approval, RecoveryDisposition: trusted.Recovery, ApprovalOperationID: trusted.ID, ApprovalSHA256: trusted.EvidenceSHA, ArchivePath: archiveRelative, ArchiveSHA256: hex.EncodeToString(archiveSum[:]), Held: true, HoldCause: trusted.Approval.Cause, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano), Mutated: mutated}
 	receipt.ReceiptDigest = digestReceipt(receipt)
 	receiptSHA256 := jsonStoredDigest(receipt)
 	journal := authorityJournal{Schema: 1, OperationID: request.OperationID, RequestDigest: requestDigest, Archive: archive, Created: []string{archiveRelative, authorityReceiptPath}, Restore: mutated, ReceiptSHA256: receiptSHA256}
@@ -324,7 +351,7 @@ func reconcileAuthority(ctx context.Context, request AuthorityRequest) (Authorit
 	if !receipt.Held {
 		return AuthorityResult{Action: "reconcile", ReceiptDigest: receipt.ReceiptDigest, TargetRevision: receipt.TargetRevision, Idempotent: true}, nil
 	}
-	if request.ExpectedReceiptDigest == "" || request.ExpectedReceiptDigest != receipt.ReceiptDigest || request.TargetRevision != receipt.TargetRevision || request.ApprovalOperationID != receipt.ApprovalOperationID {
+	if request.ExpectedReceiptDigest == "" || request.ExpectedReceiptDigest != receipt.ReceiptDigest || request.TargetRevision != receipt.TargetRevision || !requestMatchesApproval(request, receipt) {
 		return AuthorityResult{}, fmt.Errorf("%w: hold reconciliation does not match recorded authority", core.ErrRevision)
 	}
 	if err := revalidateEvidence(receipt); err != nil {
@@ -399,7 +426,7 @@ func rollbackAuthority(request AuthorityRequest) (AuthorityResult, error) {
 	if err != nil {
 		return AuthorityResult{}, err
 	}
-	if request.ExpectedReceiptDigest != receipt.ReceiptDigest || request.TargetRevision != receipt.TargetRevision || request.ApprovalOperationID != receipt.ApprovalOperationID {
+	if request.ExpectedReceiptDigest != receipt.ReceiptDigest || request.TargetRevision != receipt.TargetRevision || !requestMatchesApproval(request, receipt) {
 		return AuthorityResult{}, fmt.Errorf("%w: rollback authority mismatch", core.ErrRevision)
 	}
 	if digestFile(receipt.ArchivePath, request.Project) != receipt.ArchiveSHA256 {
@@ -419,8 +446,12 @@ func rollbackAuthority(request AuthorityRequest) (AuthorityResult, error) {
 	return AuthorityResult{Action: "rollback", TargetRevision: receipt.TargetRevision}, nil
 }
 
+func requestMatchesApproval(request AuthorityRequest, receipt AuthorityReceipt) bool {
+	return request.ApprovalOperationID != "" && request.ApprovalOperationID == receipt.ApprovalOperationID || request.Approval.Path == receipt.Authorization.Source && request.Approval.SHA256 == receipt.ApprovalSHA256
+}
+
 func validateAuthorityRequest(ctx context.Context, request AuthorityRequest) (trustedAuthority, error) {
-	if ctx == nil || ctx.Err() != nil || request.Schema != 1 || request.Action != "cutover" || request.OperationID == "" || request.ApprovalOperationID == "" {
+	if ctx == nil || ctx.Err() != nil || request.Schema != 1 || request.Action != "cutover" || request.OperationID == "" || (request.ApprovalOperationID == "" && request.Approval.Path == "") {
 		return trustedAuthority{}, core.ErrPhase
 	}
 	project, err := cleanProject(request.Project)
@@ -465,6 +496,9 @@ func validateAuthorityRequest(ctx context.Context, request AuthorityRequest) (tr
 }
 
 func loadTrustedAuthority(request AuthorityRequest) (trustedAuthority, error) {
+	if request.Approval.Path != "" {
+		return loadSignedAuthority(request)
+	}
 	var state trustedLegacyState
 	if err := store.New(request.Project, core.StorageLimits{CanonicalBytes: authorityLimit}).ReadJSON(".agent-team/state.json", authorityLimit, &state); err != nil {
 		return trustedAuthority{}, fmt.Errorf("%w: trusted legacy state unavailable", core.ErrRevision)
@@ -501,7 +535,50 @@ func loadTrustedAuthority(request AuthorityRequest) (trustedAuthority, error) {
 		return trustedAuthority{}, fmt.Errorf("%w: approval remote is invalid", core.ErrRevision)
 	}
 	approval := CutoverAuthorization{GrantedBy: state.Integration.OwnerSessionID, Source: pointer.Path, Cause: evidence.Authorization.Source, Scope: "integration", GrantedAt: operation.AppliedAt, Revision: request.TargetRevision, TaskIDs: trackerTasks, RemoteMainDeploys: evidence.RemoteMainDeploys}
-	return trustedAuthority{Remote: remote, Approval: approval, Recovery: evidence.Recovery.Action, EvidenceSHA: pointer.Fingerprint}, nil
+	return trustedAuthority{ID: request.ApprovalOperationID, Remote: remote, Approval: approval, Recovery: evidence.Recovery.Action, EvidenceSHA: pointer.Fingerprint}, nil
+}
+
+func loadSignedAuthority(request AuthorityRequest) (trustedAuthority, error) {
+	if request.ApprovalOperationID != "" || verifyEvidenceReference(request.Approval) != nil {
+		return trustedAuthority{}, fmt.Errorf("%w: invalid signed approval reference", core.ErrRevision)
+	}
+	var setup struct {
+		CutoverApproval signedApprovalTrust `json:"cutoverApproval"`
+	}
+	if err := store.New(request.Project, core.StorageLimits{CanonicalBytes: authorityLimit}).ReadJSON(".agent-team/setup.json", authorityLimit, &setup); err != nil {
+		return trustedAuthority{}, fmt.Errorf("%w: pinned cutover approval key unavailable", core.ErrRevision)
+	}
+	publicKey, err := base64.StdEncoding.DecodeString(setup.CutoverApproval.PublicKey)
+	if err != nil || setup.CutoverApproval.Algorithm != "ed25519" || len(publicKey) != ed25519.PublicKeySize || digestBytes(publicKey) != setup.CutoverApproval.KeyID {
+		return trustedAuthority{}, fmt.Errorf("%w: invalid pinned cutover approval key", core.ErrRevision)
+	}
+	raw, err := readAbsoluteBounded(request.Approval.Path)
+	if err != nil || digestBytes(raw) != request.Approval.SHA256 {
+		return trustedAuthority{}, fmt.Errorf("%w: signed approval changed", core.ErrRevision)
+	}
+	var approval signedCutoverApproval
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&approval) != nil || approval.Schema != 1 || approval.ID == "" || approval.SignerKeyID != setup.CutoverApproval.KeyID {
+		return trustedAuthority{}, fmt.Errorf("%w: malformed signed approval", core.ErrRevision)
+	}
+	signature, err := base64.StdEncoding.DecodeString(approval.Signature)
+	approval.Signature = ""
+	payload, marshalErr := json.Marshal(approval)
+	if err != nil || marshalErr != nil || !ed25519.Verify(publicKey, payload, signature) {
+		return trustedAuthority{}, fmt.Errorf("%w: signed approval verification failed", core.ErrRevision)
+	}
+	issued, issueErr := time.Parse(time.RFC3339Nano, approval.IssuedAt)
+	expires, expiryErr := time.Parse(time.RFC3339Nano, approval.ExpiresAt)
+	now := time.Now().UTC()
+	if issueErr != nil || expiryErr != nil || now.Before(issued) || !now.Before(expires) || expires.Sub(issued) > 24*time.Hour {
+		return trustedAuthority{}, fmt.Errorf("%w: signed approval is stale", core.ErrRevision)
+	}
+	if approval.TargetRevision != request.TargetRevision || approval.TrackerFingerprint != request.Tracker.Fingerprint || approval.ParentID != request.Tracker.ParentID || approval.Cause == "" || approval.RecoveryDisposition == "" || !sameTasks(approval.TaskIDs, request.Tracker.TaskIDs) || approval.Remote.Name == "" || approval.Remote.BaseRef == "" || approval.Remote.TargetRef == "" || !validRevision(approval.Remote.BaseRevision) || approval.Remote.TargetAbsent == (approval.Remote.TargetRevision != "") || (!approval.Remote.TargetAbsent && !validRevision(approval.Remote.TargetRevision)) {
+		return trustedAuthority{}, fmt.Errorf("%w: signed approval scope differs", core.ErrRevision)
+	}
+	derived := CutoverAuthorization{GrantedBy: setup.CutoverApproval.KeyID, Source: request.Approval.Path, Cause: approval.Cause, Scope: approval.ParentID, GrantedAt: approval.IssuedAt, Revision: approval.TargetRevision, TaskIDs: append([]string(nil), approval.TaskIDs...), RemoteMainDeploys: approval.RemoteMainDeploys}
+	return trustedAuthority{ID: approval.ID, Remote: approval.Remote, Approval: derived, Recovery: approval.RecoveryDisposition, EvidenceSHA: request.Approval.SHA256}, nil
 }
 
 func sameTasks(left, right []string) bool {

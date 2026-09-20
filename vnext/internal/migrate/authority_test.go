@@ -1,8 +1,11 @@
 package migrate
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -140,6 +143,53 @@ func TestAuthorityCutoverRechecksRemoteBeforeReceiptPublication(t *testing.T) {
 	var state map[string]any
 	if json.Unmarshal(raw, &state) != nil || state["schemaVersion"] != float64(1) {
 		t.Fatalf("legacy state not restored: %s", raw)
+	}
+}
+
+func TestAuthorityCutoverSignedApprovalBridgesStaleTrackerState(t *testing.T) {
+	project := authorityFixture(t)
+	requestPath := authorityRequestFixture(t, project)
+	request := readAuthorityRequestTest(t, requestPath)
+	seed := bytes.Repeat([]byte{7}, ed25519.SeedSize)
+	privateKey := ed25519.NewKeyFromSeed(seed)
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	keyID := digestBytes(publicKey)
+	setupPath := filepath.Join(project, ".agent-team", "setup.json")
+	var setup map[string]any
+	setupRaw, _ := os.ReadFile(setupPath)
+	if json.Unmarshal(setupRaw, &setup) != nil {
+		t.Fatal("setup")
+	}
+	setup["cutoverApproval"] = signedApprovalTrust{Algorithm: "ed25519", KeyID: keyID, PublicKey: base64.StdEncoding.EncodeToString(publicKey)}
+	writeAuthorityJSON(t, filepath.Join(project, ".agent-team"), "setup.json", setup)
+	issued := time.Now().UTC()
+	approval := signedCutoverApproval{Schema: 1, ID: "user-approved-v8-cutover", IssuedAt: issued.Format(time.RFC3339Nano), ExpiresAt: issued.Add(time.Hour).Format(time.RFC3339Nano), TargetRevision: request.TargetRevision, TrackerFingerprint: request.Tracker.Fingerprint, ParentID: request.Tracker.ParentID, Cause: "publish the independently reviewed 43-task v8 implementation", RecoveryDisposition: "restore archived v7 state and leave the remote unchanged", SignerKeyID: keyID, TaskIDs: request.Tracker.TaskIDs, Remote: RemoteObservation{Name: "origin", BaseRef: "refs/heads/main", BaseRevision: request.TargetRevision, TargetRef: "refs/heads/main", TargetRevision: request.TargetRevision}, RemoteMainDeploys: true}
+	payload, _ := json.Marshal(approval)
+	approval.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
+	approvalPath := writeAuthorityJSON(t, project, "signed-approval.json", approval)
+	request.ApprovalOperationID = ""
+	request.Approval = EvidenceReference{Path: approvalPath, SHA256: digestFileTest(t, approvalPath)}
+	for index := range request.Legacy {
+		if request.Legacy[index].Path == ".agent-team/setup.json" {
+			request.Legacy[index].SHA256 = digestFileTest(t, setupPath)
+		}
+	}
+	forged := approval
+	forged.Cause = "caller supplied cause"
+	forgedPath := writeAuthorityJSON(t, project, "forged-signed-approval.json", forged)
+	forgedRequest := request
+	forgedRequest.Approval = EvidenceReference{Path: forgedPath, SHA256: digestFileTest(t, forgedPath)}
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "forged-signed-request.json", forgedRequest)); err == nil {
+		t.Fatal("forged signed approval accepted")
+	}
+	requestPath = writeAuthorityJSON(t, project, "signed-request.json", request)
+	result, err := ExecuteAuthorityRequest(context.Background(), requestPath)
+	if err != nil || !result.Held {
+		t.Fatalf("signed cutover = %#v, %v", result, err)
+	}
+	receipt, err := AuthorityStatus(project)
+	if err != nil || receipt.ApprovalOperationID != approval.ID || receipt.Authorization.GrantedBy != keyID || receipt.Authorization.Cause != approval.Cause || receipt.RecoveryDisposition != approval.RecoveryDisposition {
+		t.Fatalf("signed receipt = %#v, %v", receipt, err)
 	}
 }
 
