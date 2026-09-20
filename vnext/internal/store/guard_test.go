@@ -361,7 +361,7 @@ func TestMutationGuardReleaseRequiresExactOwner(t *testing.T) {
 }
 
 func TestMutationGuardReleaseResumesExactTombstoneAndIsIdempotent(t *testing.T) {
-	for _, crash := range []string{"linked", "canonical-removed"} {
+	for _, crash := range []string{"claim-created", "owner-claimed"} {
 		t.Run(crash, func(t *testing.T) {
 			root := t.TempDir()
 			guard, err := AcquireProjectMutation(context.Background(), root, "install", "resume-release")
@@ -369,12 +369,12 @@ func TestMutationGuardReleaseResumesExactTombstoneAndIsIdempotent(t *testing.T) 
 				t.Fatal(err)
 			}
 			canonical := filepath.Join(root, filepath.FromSlash(projectMutationLock))
-			tombstone := canonical + ".removed-" + guard.Owner().Token
-			if err := os.Link(canonical, tombstone); err != nil {
+			claim := canonical + ".removed-" + guard.Owner().Token
+			if err := os.Mkdir(claim, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if crash == "canonical-removed" {
-				if err := os.Remove(canonical); err != nil {
+			if crash == "owner-claimed" {
+				if err := os.Rename(canonical, filepath.Join(claim, "owned")); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -384,7 +384,7 @@ func TestMutationGuardReleaseResumesExactTombstoneAndIsIdempotent(t *testing.T) 
 			if err := guard.Release(); err != nil {
 				t.Fatalf("repeated release = %v", err)
 			}
-			for _, path := range []string{canonical, tombstone} {
+			for _, path := range []string{canonical, claim} {
 				if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("release residue %s: %v", path, err)
 				}
@@ -400,20 +400,99 @@ func TestMutationGuardReleaseResumesExactTombstoneAndIsIdempotent(t *testing.T) 
 	}
 }
 
-func TestMutationGuardReleaseRetainsReplacementAfterIdentityClaim(t *testing.T) {
+func TestMutationGuardReleaseRejectsSourceReplacementBeforeClaim(t *testing.T) {
 	root := t.TempDir()
 	guard, err := AcquireProjectMutation(context.Background(), root, "install", "replacement-release")
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonicalRelative := filepath.ToSlash(projectMutationLock)
 	canonical := filepath.Join(root, filepath.FromSlash(projectMutationLock))
+	original := canonical + ".original"
+	claim := canonical + ".removed-" + guard.Owner().Token
+	ownerRemoveClaimHook = func(got string) {
+		if got != canonical {
+			return
+		}
+		ownerRemoveClaimHook = nil
+		if err := os.Rename(canonical, original); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(canonical, []byte("foreign"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { ownerRemoveClaimHook = nil })
+	if err := guard.Release(); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("replacement release = %v", err)
+	}
+	if got, err := os.ReadFile(canonical); err != nil || string(got) != "foreign" {
+		t.Fatalf("replacement = %q, %v", got, err)
+	}
+	if _, err := os.Stat(original); err != nil {
+		t.Fatalf("original owner changed: %v", err)
+	}
+	if _, err := os.Lstat(claim); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement claim retained: %v", err)
+	}
+}
+
+func TestMutationGuardReleaseRejectsParentSwapBeforeClaim(t *testing.T) {
+	root := t.TempDir()
+	guard, err := AcquireProjectMutation(context.Background(), root, "install", "parent-swap-release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(root, filepath.FromSlash(projectMutationLock))
+	agentTeam := filepath.Dir(canonical)
+	original := agentTeam + ".original"
+	external := t.TempDir()
+	sentinel := filepath.Join(external, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ownerRemoveClaimHook = func(got string) {
+		if got != canonical {
+			return
+		}
+		ownerRemoveClaimHook = nil
+		if err := os.Rename(agentTeam, original); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(external, agentTeam); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+	}
+	t.Cleanup(func() { ownerRemoveClaimHook = nil })
+	if err := guard.Release(); err == nil {
+		t.Fatal("parent replacement accepted")
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "unchanged" {
+		t.Fatalf("external sentinel = %q, %v", got, err)
+	}
+	entries, err := os.ReadDir(external)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "sentinel" {
+		t.Fatalf("external directory changed: %v, %v", entries, err)
+	}
+	if _, err := os.Stat(filepath.Join(original, "mutation.lock")); err != nil {
+		t.Fatalf("owner moved through replacement: %v", err)
+	}
+}
+
+func TestMutationGuardReleaseRetainsReplacementAfterPrivateClaim(t *testing.T) {
+	root := t.TempDir()
+	guard, err := AcquireProjectMutation(context.Background(), root, "install", "claimed-replacement-release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(root, filepath.FromSlash(projectMutationLock))
+	claim := canonical + ".removed-" + guard.Owner().Token
+	claimedRelative := filepath.ToSlash(projectMutationLock + ".removed-" + guard.Owner().Token + "/owned")
 	ownedRemoveHook = func(opened *os.Root, owned ownedTemp) {
-		if owned.name != canonicalRelative {
+		if owned.name != claimedRelative {
 			return
 		}
 		ownedRemoveHook = nil
-		file, err := opened.OpenFile(canonicalRelative, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		file, err := opened.OpenFile(claimedRelative, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -427,10 +506,13 @@ func TestMutationGuardReleaseRetainsReplacementAfterIdentityClaim(t *testing.T) 
 	}
 	t.Cleanup(func() { ownedRemoveHook = nil })
 	if err := guard.Release(); !errors.Is(err, core.ErrRevision) {
-		t.Fatalf("replacement release = %v", err)
+		t.Fatalf("claimed replacement release = %v", err)
 	}
-	if got, err := os.ReadFile(canonical); err != nil || string(got) != "foreign" {
-		t.Fatalf("replacement = %q, %v", got, err)
+	if _, err := os.Lstat(canonical); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canonical owner restored: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(claim, "owned")); err != nil || string(got) != "foreign" {
+		t.Fatalf("claimed replacement = %q, %v", got, err)
 	}
 }
 
@@ -441,7 +523,11 @@ func TestMutationGuardReleaseRetainsTamperedTombstone(t *testing.T) {
 		t.Fatal(err)
 	}
 	canonical := filepath.Join(root, filepath.FromSlash(projectMutationLock))
-	tombstone := canonical + ".removed-" + guard.Owner().Token
+	claim := canonical + ".removed-" + guard.Owner().Token
+	if err := os.Mkdir(claim, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tombstone := filepath.Join(claim, "owned")
 	if err := os.Rename(canonical, tombstone); err != nil {
 		t.Fatal(err)
 	}
