@@ -228,7 +228,7 @@ func TestStoreProbeCleansOwnedFilesAfterReplaceFailure(t *testing.T) {
 	defer root.Close()
 	if err := probeSameDirectoryReplaceWith(root, ".", func(*os.Root, string, string) error {
 		return errors.New("replace failed")
-	}); err == nil {
+	}, removeOwned); err == nil {
 		t.Fatal("replace failure accepted")
 	}
 	entries, err := os.ReadDir(rootPath)
@@ -249,7 +249,7 @@ func TestStoreProbeCleansOwnedDestinationAfterReportedReplaceFailure(t *testing.
 			return err
 		}
 		return errors.New("replace reported failure")
-	}); err == nil {
+	}, removeOwned); err == nil {
 		t.Fatal("reported replace failure accepted")
 	}
 	entries, err := os.ReadDir(rootPath)
@@ -278,7 +278,7 @@ func TestStoreProbeRetainsExchangedDestination(t *testing.T) {
 		_, writeErr := file.Write([]byte("foreign"))
 		closeErr := file.Close()
 		return errors.Join(errors.New("replace failed"), writeErr, closeErr)
-	})
+	}, removeOwned)
 	if err == nil {
 		t.Fatal("exchanged replacement accepted")
 	}
@@ -315,6 +315,75 @@ func TestOwnedCleanupNeverDeletesAnExchangedTemporary(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(rootPath, owned.name)); err != nil || string(got) != "unknown" {
 		t.Fatalf("exchanged file was removed or changed: %q, %v", got, err)
+	}
+}
+
+func TestOwnedCleanupNeverDeletesReplacementAfterIdentityCheck(t *testing.T) {
+	rootPath := t.TempDir()
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	owned, file, err := createOwnedTemp(root, ".", ".agent-team-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checked, swapped := make(chan struct{}), make(chan struct{})
+	ownedRemoveHook = func(*os.Root, ownedTemp) {
+		close(checked)
+		<-swapped
+	}
+	defer func() { ownedRemoveHook = nil }()
+	done := make(chan error, 1)
+	go func() { done <- removeOwned(root, owned) }()
+	<-checked
+	original := filepath.Join(rootPath, owned.name)
+	held := original + "-held"
+	if err := os.Rename(original, held); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	defer os.Remove(held)
+	if err := os.WriteFile(original, []byte("foreign"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	close(swapped)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(original); err != nil || string(got) != "foreign" {
+		t.Fatalf("replacement = %q, %v", got, err)
+	}
+}
+
+func TestStoreProbeSurfacesCleanupFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		bodyErr error
+	}{
+		{name: "successful body"},
+		{name: "failed body", bodyErr: errors.New("replace failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			cleanupErr := errors.New("cleanup failed")
+			err = probeSameDirectoryReplaceWith(root, ".", func(root *os.Root, from, to string) error {
+				if tc.bodyErr != nil {
+					return tc.bodyErr
+				}
+				return replaceFile(root, from, to)
+			}, func(*os.Root, ownedTemp) error { return cleanupErr })
+			if !errors.Is(err, cleanupErr) || (tc.bodyErr != nil && !errors.Is(err, tc.bodyErr)) {
+				t.Fatalf("probe error = %v", err)
+			}
+		})
 	}
 }
 
