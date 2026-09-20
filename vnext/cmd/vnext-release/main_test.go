@@ -163,6 +163,21 @@ func TestFinalizeEvidenceValidCompletePipeline(t *testing.T) {
 	if json.Unmarshal(raw, &gates) != nil || gates.Validate() != nil {
 		t.Fatalf("invalid gates: %s", raw)
 	}
+	readiness, err := release.BuildReadinessEvidence(revision, filepath.Join(out, "release-gates.json"), map[string]string{
+		"benchmark": filepath.Join(out, "benchmark.json"), "artifact": artifact, "sbom": sbomPath,
+		"canary": filepath.Join(out, "canary.json"), "rollback": filepath.Join(out, "rollback.json"),
+		"provider": filepath.Join(out, "provider.json"), "installed": filepath.Join(out, "installed-skill.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readinessPath := filepath.Join(root, "release-readiness.json")
+	if err := release.WriteReadinessEvidence(readinessPath, readiness); err != nil {
+		t.Fatal(err)
+	}
+	if err := release.VerifyReadinessEvidence(readinessPath, revision); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeEvents(t *testing.T, root, name string, tests []string, failure string) string {
