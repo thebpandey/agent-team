@@ -18,6 +18,7 @@ const (
 	registryPath = ".agent-team/resources/registry.json"
 	registryLock = ".agent-team/resources/registry.lock"
 	registryMax  = 1 << 20
+	recordLimit  = 64
 	serverSlots  = 2
 	browserSlots = 2
 )
@@ -54,11 +55,11 @@ type ServerRecord struct {
 
 type BrowserRecord struct {
 	core.RecordEnvelope
-	ID, Session, URL, Target, Purpose     string
-	Owner                                 ResourceOwner
-	State                                 string
-	Ownership                             Ownership
-	StartedAt, TraceEvidence, ExternalRef string
+	ID, Command, Session, URL, Target, Purpose string
+	Owner                                      ResourceOwner
+	State                                      string
+	Ownership                                  Ownership
+	StartedAt, TraceEvidence, ExternalRef      string
 }
 
 type ReserveOutcome struct {
@@ -99,6 +100,11 @@ type registryDocument struct {
 	Browsers []BrowserRecord `json:"browsers"`
 }
 
+type stopIntent struct {
+	kind, id, command, external, trace string
+	owner                              ResourceOwner
+}
+
 // NewRegistry returns the one durable project registry rooted in s. The lock
 // is a portable, scoped directory CAS, so independently constructed Stores
 // coordinating the same root serialize and then re-read durable state.
@@ -135,9 +141,6 @@ func (r *registry) ReserveServer(ctx context.Context, record ServerRecord, expec
 	}
 	var outcome ReserveOutcome
 	err := r.withDocument(ctx, func(doc *registryDocument) error {
-		if err := checkReserveRevision(expected, doc.Revision); err != nil {
-			return err
-		}
 		cleanupTerminals(doc)
 		if reused := reusableServer(doc.Servers, record); reused != nil {
 			outcome = reserveOutcome(*reused, expected, doc.Revision)
@@ -147,13 +150,16 @@ func (r *registry) ReserveServer(ctx context.Context, record ServerRecord, expec
 			outcome = ReserveOutcome{ID: record.ID, ExpectedRevision: expected, Revision: doc.Revision, CollisionKey: key}
 			return fmt.Errorf("%w: server %s", core.ErrCapacity, key)
 		}
-		if managedServerCount(doc.Servers) >= serverSlots {
+		if err := checkReserveRevision(expected, doc.Revision); err != nil {
+			return err
+		}
+		if len(doc.Servers) >= recordLimit || reserveManaged("server", managedServerCount(doc.Servers)) != nil {
 			return fmt.Errorf("%w: two server slots are occupied", core.ErrCapacity)
 		}
 		record.State = initialState(record.Ownership)
 		doc.Servers = append(doc.Servers, record)
 		doc.Revision++
-		stampDocument(doc, record.Owner)
+		stampServer(&doc.Servers[len(doc.Servers)-1], record.Owner, doc.Revision)
 		outcome = reserveOutcome(record, expected, doc.Revision)
 		return nil
 	})
@@ -166,9 +172,6 @@ func (r *registry) ReserveBrowser(ctx context.Context, record BrowserRecord, exp
 	}
 	var outcome ReserveOutcome
 	err := r.withDocument(ctx, func(doc *registryDocument) error {
-		if err := checkReserveRevision(expected, doc.Revision); err != nil {
-			return err
-		}
 		cleanupTerminals(doc)
 		if reused := reusableBrowser(doc.Browsers, record); reused != nil {
 			outcome = browserOutcome(*reused, expected, doc.Revision)
@@ -178,13 +181,16 @@ func (r *registry) ReserveBrowser(ctx context.Context, record BrowserRecord, exp
 			outcome = ReserveOutcome{ID: record.ID, ExpectedRevision: expected, Revision: doc.Revision, CollisionKey: key}
 			return fmt.Errorf("%w: browser %s", core.ErrCapacity, key)
 		}
-		if managedBrowserCount(doc.Browsers) >= browserSlots {
+		if err := checkReserveRevision(expected, doc.Revision); err != nil {
+			return err
+		}
+		if len(doc.Browsers) >= recordLimit || reserveManaged("browser", managedBrowserCount(doc.Browsers)) != nil {
 			return fmt.Errorf("%w: two browser slots are occupied", core.ErrCapacity)
 		}
 		record.State = initialState(record.Ownership)
 		doc.Browsers = append(doc.Browsers, record)
 		doc.Revision++
-		stampDocument(doc, record.Owner)
+		stampBrowser(&doc.Browsers[len(doc.Browsers)-1], record.Owner, doc.Revision)
 		outcome = browserOutcome(record, expected, doc.Revision)
 		return nil
 	})
@@ -206,7 +212,7 @@ func (r *registry) MarkStarted(ctx context.Context, id string, expected uint64, 
 			}
 			record.State, record.TraceEvidence, record.ExternalRef, record.StartedAt = "started", trace, external, now()
 			doc.Revision++
-			stampDocument(doc, record.Owner)
+			stampServer(record, record.Owner, doc.Revision)
 			outcome = reserveOutcome(*record, expected, doc.Revision)
 			return nil
 		}
@@ -216,7 +222,7 @@ func (r *registry) MarkStarted(ctx context.Context, id string, expected uint64, 
 			}
 			record.State, record.TraceEvidence, record.ExternalRef, record.StartedAt = "started", trace, external, now()
 			doc.Revision++
-			stampDocument(doc, record.Owner)
+			stampBrowser(record, record.Owner, doc.Revision)
 			outcome = browserOutcome(*record, expected, doc.Revision)
 			return nil
 		}
@@ -237,14 +243,14 @@ func (r *registry) MarkUnknown(ctx context.Context, id string, expected uint64, 
 		if record := findServer(doc.Servers, id); record != nil {
 			record.Ownership, record.State, record.TraceEvidence = Unknown, "unknown", reason
 			doc.Revision++
-			stampDocument(doc, record.Owner)
+			stampServer(record, record.Owner, doc.Revision)
 			outcome = releaseServer(*record, expected, doc.Revision, false, "")
 			return nil
 		}
 		if record := findBrowser(doc.Browsers, id); record != nil {
 			record.Ownership, record.State, record.TraceEvidence = Unknown, "unknown", reason
 			doc.Revision++
-			stampDocument(doc, record.Owner)
+			stampBrowser(record, record.Owner, doc.Revision)
 			outcome = releaseBrowser(*record, expected, doc.Revision, false, "")
 			return nil
 		}
@@ -271,20 +277,75 @@ func (r *registry) Release(ctx context.Context, id string, expected uint64) (Rel
 }
 
 func (r *registry) StopManaged(ctx context.Context, id string, expected uint64) (ReleaseOutcome, error) {
-	var outcome ReleaseOutcome
-	err := r.withDocument(ctx, func(doc *registryDocument) error {
+	intent, outcome, err := r.captureStop(ctx, id, expected)
+	if err != nil {
+		return outcome, err
+	}
+	if r.runner == nil {
+		return outcome, fmt.Errorf("%w: nil resource command runner", core.ErrSettings)
+	}
+	result := r.runner.Run(ctx, intent.command, intent.id, intent.external)
+	if result.Transport != nil || result.TimedOut || result.Exit != 0 {
+		return outcome, fmt.Errorf("%w: managed resource stop failed", core.ErrTransition)
+	}
+	outcome = ReleaseOutcome{}
+	err = r.withDocument(ctx, func(doc *registryDocument) error {
 		if err := checkRevision(expected, doc.Revision); err != nil {
 			return err
 		}
 		if record := findServer(doc.Servers, id); record != nil {
-			return r.stopServer(ctx, doc, record, expected, &outcome)
+			if record.Ownership != Managed || record.State != "started" || record.ExternalRef != intent.external || record.TraceEvidence != intent.trace || record.Owner != intent.owner {
+				return fmt.Errorf("%w: resource changed during stop", core.ErrRevision)
+			}
+			record.State, record.TraceEvidence = "stopped", record.TraceEvidence+";stop:"+record.ExternalRef
+			doc.Revision++
+			stampServer(record, record.Owner, doc.Revision)
+			outcome = releaseServer(*record, expected, doc.Revision, true, "")
+			return nil
 		}
 		if record := findBrowser(doc.Browsers, id); record != nil {
-			return r.stopBrowser(ctx, doc, record, expected, &outcome)
+			if record.Ownership != Managed || record.State != "started" || record.ExternalRef != intent.external || record.TraceEvidence != intent.trace || record.Owner != intent.owner {
+				return fmt.Errorf("%w: resource changed during stop", core.ErrRevision)
+			}
+			record.State, record.TraceEvidence = "stopped", record.TraceEvidence+";stop:"+record.ExternalRef
+			doc.Revision++
+			stampBrowser(record, record.Owner, doc.Revision)
+			outcome = releaseBrowser(*record, expected, doc.Revision, true, "")
+			return nil
 		}
 		return fmt.Errorf("%w: resource %q", core.ErrRevision, id)
 	})
 	return outcome, err
+}
+
+func (r *registry) captureStop(ctx context.Context, id string, expected uint64) (stopIntent, ReleaseOutcome, error) {
+	if err := acquireLock(ctx, r.store.Root); err != nil {
+		return stopIntent{}, ReleaseOutcome{}, err
+	}
+	defer func() { _ = os.Remove(filepath.Join(r.store.Root, filepath.FromSlash(registryLock))) }()
+	doc, err := r.read()
+	if err != nil {
+		return stopIntent{}, ReleaseOutcome{}, err
+	}
+	if err := checkRevision(expected, doc.Revision); err != nil {
+		return stopIntent{}, ReleaseOutcome{}, err
+	}
+	if record := findServer(doc.Servers, id); record != nil {
+		return stopIntentFor("server", record.ID, record.Command, record.ExternalRef, record.TraceEvidence, record.Owner, expected, doc.Revision, record.State, record.Ownership)
+	}
+	if record := findBrowser(doc.Browsers, id); record != nil {
+		return stopIntentFor("browser", record.ID, record.Command, record.ExternalRef, record.TraceEvidence, record.Owner, expected, doc.Revision, record.State, record.Ownership)
+	}
+	return stopIntent{}, ReleaseOutcome{}, fmt.Errorf("%w: resource %q", core.ErrRevision, id)
+}
+
+func stopIntentFor(kind, id, command, external, trace string, owner ResourceOwner, expected, revision uint64, state string, ownership Ownership) (stopIntent, ReleaseOutcome, error) {
+	out := ReleaseOutcome{ID: id, ExpectedRevision: expected, Revision: revision, State: state, TraceEvidence: trace, ExternalRef: external}
+	if ownership != Managed || state != "started" || command == "" || external == "" || trace == "" {
+		out.ProtectedReason = "exact managed start evidence is required"
+		return stopIntent{}, out, fmt.Errorf("%w: resource %q is not authorized for stop", core.ErrRevision, id)
+	}
+	return stopIntent{kind: kind, id: id, command: command, external: external, trace: trace, owner: owner}, out, nil
 }
 
 func (r *registry) read() (registryDocument, error) {
@@ -299,7 +360,7 @@ func (r *registry) read() (registryDocument, error) {
 	if err != nil {
 		return registryDocument{}, fmt.Errorf("%w: registry read: %v", core.ErrRevision, err)
 	}
-	if doc.Schema != 1 || len(doc.Servers) > serverSlots || len(doc.Browsers) > browserSlots {
+	if doc.Schema != 1 || len(doc.Servers) > recordLimit || len(doc.Browsers) > recordLimit {
 		return registryDocument{}, fmt.Errorf("%w: invalid registry", core.ErrRevision)
 	}
 	return doc, nil
@@ -359,7 +420,7 @@ func acquireLock(ctx context.Context, root string) error {
 }
 
 func checkReserveRevision(expected, actual uint64) error {
-	if expected != 0 && expected != actual {
+	if expected != actual {
 		return fmt.Errorf("%w: expected registry revision %d, current %d", core.ErrRevision, expected, actual)
 	}
 	return nil
@@ -381,6 +442,10 @@ func initialState(ownership Ownership) string {
 	default:
 		return "observed"
 	}
+}
+
+func reserveManaged(kind string, used int) error {
+	return Reserve([]Capacity{{Name: kind, Effective: 2}}, []Reservation{{Name: kind, Count: used + 1}})
 }
 
 func terminal(state string) bool { return state == "released" || state == "stopped" }
@@ -410,14 +475,30 @@ func keepBrowsers(records []BrowserRecord) []BrowserRecord {
 	return kept
 }
 
-func stampDocument(doc *registryDocument, owner ResourceOwner) {
-	stamp := core.RecordEnvelope{Schema: 1, Project: filepath.Base(owner.Worktree), RunID: owner.Run, WrittenAt: now(), Revision: doc.Revision}
-	for i := range doc.Servers {
-		doc.Servers[i].RecordEnvelope = stamp
+func stampServer(record *ServerRecord, owner ResourceOwner, revision uint64) {
+	if record.Schema == 0 {
+		record.Schema = 1
 	}
-	for i := range doc.Browsers {
-		doc.Browsers[i].RecordEnvelope = stamp
+	if record.Project == "" {
+		record.Project = filepath.Base(owner.Worktree)
 	}
+	if record.RunID == "" {
+		record.RunID = owner.Run
+	}
+	record.WrittenAt, record.Revision = now(), revision
+}
+
+func stampBrowser(record *BrowserRecord, owner ResourceOwner, revision uint64) {
+	if record.Schema == 0 {
+		record.Schema = 1
+	}
+	if record.Project == "" {
+		record.Project = filepath.Base(owner.Worktree)
+	}
+	if record.RunID == "" {
+		record.RunID = owner.Run
+	}
+	record.WrittenAt, record.Revision = now(), revision
 }
 
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }

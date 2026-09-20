@@ -26,11 +26,11 @@ func owner() resources.ResourceOwner {
 }
 
 func server(id string, port int, url string) resources.ServerRecord {
-	return resources.ServerRecord{ID: id, Port: port, URL: url, Target: "dev", Purpose: "ui", Owner: owner(), Ownership: resources.Managed}
+	return resources.ServerRecord{ID: id, Command: "stop-server", Port: port, URL: url, Target: "dev", Purpose: "ui", Owner: owner(), Ownership: resources.Managed}
 }
 
 func browser(id, session, url string) resources.BrowserRecord {
-	return resources.BrowserRecord{ID: id, Session: session, URL: url, Target: "dev", Purpose: "ui", Owner: owner(), Ownership: resources.Managed}
+	return resources.BrowserRecord{ID: id, Command: "stop-browser", Session: session, URL: url, Target: "dev", Purpose: "ui", Owner: owner(), Ownership: resources.Managed}
 }
 
 func TestRegistryCapsCASAndOwnership(t *testing.T) {
@@ -52,12 +52,15 @@ func TestRegistryCapsCASAndOwnership(t *testing.T) {
 
 func TestRegistryServerAndBrowserCapsAndIndependentCollisions(t *testing.T) {
 	r := newRegistry(t, t.TempDir(), nil)
+	var revision uint64
 	for i := 0; i < 2; i++ {
-		if _, err := r.ReserveServer(context.Background(), server(fmt.Sprintf("S-%d", i), 3000+i, fmt.Sprintf("http://localhost:%d", 3000+i)), 0); err != nil {
+		out, err := r.ReserveServer(context.Background(), server(fmt.Sprintf("S-%d", i), 3000+i, fmt.Sprintf("http://localhost:%d", 3000+i)), revision)
+		if err != nil {
 			t.Fatal(err)
 		}
+		revision = out.Revision
 	}
-	if _, err := r.ReserveServer(context.Background(), server("S-3", 3010, "http://localhost:3010"), 0); !errors.Is(err, core.ErrCapacity) {
+	if _, err := r.ReserveServer(context.Background(), server("S-3", 3010, "http://localhost:3010"), revision); !errors.Is(err, core.ErrCapacity) {
 		t.Fatalf("third server = %v, want ErrCapacity", err)
 	}
 
@@ -80,12 +83,15 @@ func TestRegistryServerAndBrowserCapsAndIndependentCollisions(t *testing.T) {
 	}
 
 	r = newRegistry(t, t.TempDir(), nil)
+	revision = 0
 	for i := 0; i < 2; i++ {
-		if _, err := r.ReserveBrowser(context.Background(), browser(fmt.Sprintf("B-%d", i), fmt.Sprintf("session-%d", i), fmt.Sprintf("http://localhost:%d", 4000+i)), 0); err != nil {
+		out, err := r.ReserveBrowser(context.Background(), browser(fmt.Sprintf("B-%d", i), fmt.Sprintf("session-%d", i), fmt.Sprintf("http://localhost:%d", 4000+i)), revision)
+		if err != nil {
 			t.Fatal(err)
 		}
+		revision = out.Revision
 	}
-	if _, err := r.ReserveBrowser(context.Background(), browser("B-3", "session-3", "http://localhost:4003"), 0); !errors.Is(err, core.ErrCapacity) {
+	if _, err := r.ReserveBrowser(context.Background(), browser("B-3", "session-3", "http://localhost:4003"), revision); !errors.Is(err, core.ErrCapacity) {
 		t.Fatalf("third browser = %v, want ErrCapacity", err)
 	}
 }
@@ -116,10 +122,11 @@ func TestUnknownOccupiesSlotAndUserOwnedIsProtected(t *testing.T) {
 	if _, err := r.ReserveServer(context.Background(), unknown, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.ReserveServer(context.Background(), server("S-1", 3100, "http://localhost:3100"), 0); err != nil {
+	second, err := r.ReserveServer(context.Background(), server("S-1", 3100, "http://localhost:3100"), 1)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.ReserveServer(context.Background(), server("S-2", 3200, "http://localhost:3200"), 0); !errors.Is(err, core.ErrCapacity) {
+	if _, err := r.ReserveServer(context.Background(), server("S-2", 3200, "http://localhost:3200"), second.Revision); !errors.Is(err, core.ErrCapacity) {
 		t.Fatalf("unknown slot was not counted: %v", err)
 	}
 
@@ -174,6 +181,51 @@ func TestRegistryStopsOnlyExactManagedOwnership(t *testing.T) {
 	}
 }
 
+func TestRegistryCannotReleaseStartedResourceWithoutStopEvidence(t *testing.T) {
+	r := newRegistry(t, t.TempDir(), nil)
+	reserved, err := r.ReserveServer(context.Background(), server("S-1", 3000, "http://localhost:3000"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := r.MarkStarted(context.Background(), "S-1", reserved.Revision, "trace:S-1", "process:S-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Release(context.Background(), "S-1", started.Revision); !errors.Is(err, core.ErrTransition) {
+		t.Fatalf("released started resource: %v", err)
+	}
+	servers, _, err := r.List(context.Background(), "R-1")
+	if err != nil || len(servers) != 1 || servers[0].State != "started" {
+		t.Fatalf("started record = %#v, %v", servers, err)
+	}
+}
+
+func TestRegistryRejectsCrossKindAndMalformedIDs(t *testing.T) {
+	r := newRegistry(t, t.TempDir(), nil)
+	bad := server("server-1", 3000, "http://localhost:3000")
+	if _, err := r.ReserveServer(context.Background(), bad, 0); !errors.Is(err, core.ErrPath) {
+		t.Fatalf("malformed server ID: %v", err)
+	}
+	if _, err := r.ReserveServer(context.Background(), server("S-shared", 3000, "http://localhost:3000"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ReserveBrowser(context.Background(), browser("S-shared", "session-1", "http://localhost:4000"), 0); !errors.Is(err, core.ErrPath) {
+		t.Fatalf("wrong browser kind: %v", err)
+	}
+}
+
+func TestRegistryExactRetryConvergesAcrossSeparateStores(t *testing.T) {
+	root := t.TempDir()
+	left, right := newRegistry(t, root, nil), newRegistry(t, root, nil)
+	first, err := left.ReserveServer(context.Background(), server("S-1", 3000, "http://localhost:3000"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := right.ReserveServer(context.Background(), server("S-1", 3000, "http://localhost:3000"), first.ExpectedRevision); err != nil {
+		t.Fatalf("exact stale retry did not converge: %v", err)
+	}
+}
+
 func TestRegistryCleansTerminalSlotOnlyAfterLifecycleEvidence(t *testing.T) {
 	r := newRegistry(t, t.TempDir(), nil)
 	reserved, err := r.ReserveServer(context.Background(), server("S-1", 3000, "http://localhost:3000"), 0)
@@ -184,10 +236,10 @@ func TestRegistryCleansTerminalSlotOnlyAfterLifecycleEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	servers, _, _ := r.List(context.Background(), "R-1")
-	if _, err := r.Release(context.Background(), "S-1", servers[0].Revision); err != nil {
+	if _, err := r.StopManaged(context.Background(), "S-1", servers[0].Revision); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.ReserveServer(context.Background(), server("S-2", 3100, "http://localhost:3100"), 0); err != nil {
+	if _, err := r.ReserveServer(context.Background(), server("S-2", 3100, "http://localhost:3100"), 3); err != nil {
 		t.Fatalf("terminal slot cleanup: %v", err)
 	}
 }
@@ -205,7 +257,7 @@ func TestRegistrySeparateStoresConvergeAfterRace(t *testing.T) {
 	}()
 	go func() {
 		<-start
-		_, err := right.ReserveServer(context.Background(), server("S-2", 3100, "http://localhost:3100"), 0)
+		_, err := right.ReserveServer(context.Background(), server("S-1", 3000, "http://localhost:3000"), 0)
 		results <- err
 	}()
 	close(start)
@@ -215,7 +267,7 @@ func TestRegistrySeparateStoresConvergeAfterRace(t *testing.T) {
 		}
 	}
 	servers, _, err := left.List(context.Background(), "R-1")
-	if err != nil || len(servers) != 2 {
+	if err != nil || len(servers) != 1 {
 		t.Fatalf("durable registry after race = %#v, %v", servers, err)
 	}
 }

@@ -184,10 +184,41 @@ func validateReceipt(r Receipt) error {
 			return err
 		}
 	}
+	if err := validateResourceReferences(r.Resources); err != nil {
+		return err
+	}
 	for name, value := range map[string]string{"base": r.Base, "head": r.Head, "gate": r.Gate, "review": r.Review, "nextAction": r.NextAction} {
 		if err := validateText(value, name); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateResourceReferences(resources core.ResourceSnapshot) error {
+	if len(resources.Servers) > 64 || len(resources.Browsers) > 64 || len(resources.External) > 128 {
+		return fmt.Errorf("%w: too many resource references", core.ErrLimit)
+	}
+	seen := map[string]bool{}
+	for _, group := range []struct {
+		prefix string
+		values []string
+	}{{"S-", resources.Servers}, {"B-", resources.Browsers}} {
+		for _, value := range group.values {
+			if !strings.HasPrefix(value, group.prefix) || strings.ContainsAny(value, "{}[]\" \\t\\r\\n") || seen[value] {
+				return fmt.Errorf("%w: invalid resource reference", core.ErrPath)
+			}
+			seen[value] = true
+		}
+	}
+	for _, value := range resources.External {
+		if strings.ContainsAny(value, " \t\r\n") || seen[value] {
+			return fmt.Errorf("%w: invalid resource reference", core.ErrPath)
+		}
+		if err := validatePointer(value); err != nil {
+			return err
+		}
+		seen[value] = true
 	}
 	return nil
 }

@@ -1,8 +1,8 @@
 package resources
 
 import (
-	"context"
 	"fmt"
+	"strings"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
@@ -10,6 +10,9 @@ import (
 func validateBrowser(record BrowserRecord) error {
 	if err := validateOwner(record.Owner); err != nil {
 		return err
+	}
+	if !strings.HasPrefix(record.ID, "B-") {
+		return fmt.Errorf("%w: browser ID must use B- prefix", core.ErrPath)
 	}
 	if err := validateText(record.ID); err != nil {
 		return err
@@ -89,38 +92,15 @@ func releaseManagedBrowser(doc *registryDocument, record *BrowserRecord, expecte
 		*outcome = releaseBrowser(*record, expected, doc.Revision, true, "")
 		return nil
 	}
-	if record.State == "started" && (record.TraceEvidence == "" || record.ExternalRef == "") {
-		return fmt.Errorf("%w: started browser lacks lifecycle evidence", core.ErrTransition)
+	if record.State != "reserved" && record.State != "stopped" {
+		return fmt.Errorf("%w: only unstarted or durably stopped browsers can release", core.ErrTransition)
+	}
+	if record.State == "stopped" && !strings.Contains(record.TraceEvidence, "stop:") {
+		return fmt.Errorf("%w: stopped browser lacks stop evidence", core.ErrTransition)
 	}
 	record.State = "released"
 	doc.Revision++
-	stampDocument(doc, record.Owner)
-	*outcome = releaseBrowser(*record, expected, doc.Revision, true, "")
-	return nil
-}
-
-func (r *registry) stopBrowser(ctx context.Context, doc *registryDocument, record *BrowserRecord, expected uint64, outcome *ReleaseOutcome) error {
-	if record.Ownership != Managed || record.State != "started" || record.ExternalRef == "" || record.TraceEvidence == "" {
-		*outcome = releaseBrowser(*record, expected, doc.Revision, false, "exact managed start evidence is required")
-		return fmt.Errorf("%w: resource %q is not authorized for stop", core.ErrRevision, record.ID)
-	}
-	if r.runner == nil {
-		return fmt.Errorf("%w: nil resource command runner", core.ErrSettings)
-	}
-	result := r.runner.Run(ctx, "agent-team-resource-stop", "browser", record.ID, record.ExternalRef)
-	if result.Transport != nil || result.TimedOut || result.Exit != 0 {
-		record.Ownership, record.State = Unknown, "unknown"
-		if record.TraceEvidence == "" {
-			record.TraceEvidence = "stop-failed"
-		}
-		doc.Revision++
-		stampDocument(doc, record.Owner)
-		*outcome = releaseBrowser(*record, expected, doc.Revision, false, "stop failed; retained as unknown")
-		return fmt.Errorf("%w: managed browser stop failed", core.ErrTransition)
-	}
-	record.State = "stopped"
-	doc.Revision++
-	stampDocument(doc, record.Owner)
+	stampBrowser(record, record.Owner, doc.Revision)
 	*outcome = releaseBrowser(*record, expected, doc.Revision, true, "")
 	return nil
 }

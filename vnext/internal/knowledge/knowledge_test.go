@@ -109,6 +109,18 @@ func TestReceiptStoresOnlyResourceReferences(t *testing.T) {
 	}
 }
 
+func TestReceiptRejectsInvalidResourceReferences(t *testing.T) {
+	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20})
+	base := Receipt{RecordEnvelope: envelope("RUN-1", 1), Team: "TEAM-1", Task: "TASK-1", Attempt: 1, State: core.Working, NextAction: "review"}
+	for _, resources := range []core.ResourceSnapshot{{Servers: []string{"server-1"}}, {Servers: []string{"S-1", "S-1"}}, {Servers: []string{"{\"id\":\"S-1\"}"}}, {External: []string{"not a pointer"}}} {
+		r := base
+		r.Resources = resources
+		if err := WriteReceipt(context.Background(), s, r); err == nil {
+			t.Fatalf("invalid resource refs accepted: %#v", resources)
+		}
+	}
+}
+
 func TestBlockerCASAndProjectionRed(t *testing.T) {
 	ctx := context.Background()
 	s := store.New(t.TempDir(), core.StorageLimits{CanonicalBytes: 16 << 20, HandoffHardBytes: 256 << 10})

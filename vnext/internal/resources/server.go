@@ -1,8 +1,8 @@
 package resources
 
 import (
-	"context"
 	"fmt"
+	"strings"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
@@ -10,6 +10,9 @@ import (
 func validateServer(record ServerRecord) error {
 	if err := validateOwner(record.Owner); err != nil {
 		return err
+	}
+	if !strings.HasPrefix(record.ID, "S-") {
+		return fmt.Errorf("%w: server ID must use S- prefix", core.ErrPath)
 	}
 	if err := validateText(record.ID); err != nil {
 		return err
@@ -89,38 +92,15 @@ func releaseManagedServer(doc *registryDocument, record *ServerRecord, expected 
 		*outcome = releaseServer(*record, expected, doc.Revision, true, "")
 		return nil
 	}
-	if record.State == "started" && (record.TraceEvidence == "" || record.ExternalRef == "") {
-		return fmt.Errorf("%w: started server lacks lifecycle evidence", core.ErrTransition)
+	if record.State != "reserved" && record.State != "stopped" {
+		return fmt.Errorf("%w: only unstarted or durably stopped servers can release", core.ErrTransition)
+	}
+	if record.State == "stopped" && !strings.Contains(record.TraceEvidence, "stop:") {
+		return fmt.Errorf("%w: stopped server lacks stop evidence", core.ErrTransition)
 	}
 	record.State = "released"
 	doc.Revision++
-	stampDocument(doc, record.Owner)
-	*outcome = releaseServer(*record, expected, doc.Revision, true, "")
-	return nil
-}
-
-func (r *registry) stopServer(ctx context.Context, doc *registryDocument, record *ServerRecord, expected uint64, outcome *ReleaseOutcome) error {
-	if record.Ownership != Managed || record.State != "started" || record.ExternalRef == "" || record.TraceEvidence == "" {
-		*outcome = releaseServer(*record, expected, doc.Revision, false, "exact managed start evidence is required")
-		return fmt.Errorf("%w: resource %q is not authorized for stop", core.ErrRevision, record.ID)
-	}
-	if r.runner == nil {
-		return fmt.Errorf("%w: nil resource command runner", core.ErrSettings)
-	}
-	result := r.runner.Run(ctx, "agent-team-resource-stop", "server", record.ID, record.ExternalRef)
-	if result.Transport != nil || result.TimedOut || result.Exit != 0 {
-		record.Ownership, record.State = Unknown, "unknown"
-		if record.TraceEvidence == "" {
-			record.TraceEvidence = "stop-failed"
-		}
-		doc.Revision++
-		stampDocument(doc, record.Owner)
-		*outcome = releaseServer(*record, expected, doc.Revision, false, "stop failed; retained as unknown")
-		return fmt.Errorf("%w: managed server stop failed", core.ErrTransition)
-	}
-	record.State = "stopped"
-	doc.Revision++
-	stampDocument(doc, record.Owner)
+	stampServer(record, record.Owner, doc.Revision)
 	*outcome = releaseServer(*record, expected, doc.Revision, true, "")
 	return nil
 }
