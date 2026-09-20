@@ -249,6 +249,9 @@ func (r *registry) MarkUnknown(ctx context.Context, id string, expected uint64, 
 			return err
 		}
 		if record := findServer(doc.Servers, id); record != nil {
+			if !mayMarkUnknown(record.Ownership, record.State) {
+				return fmt.Errorf("%w: server is protected or terminal", core.ErrTransition)
+			}
 			record.Ownership, record.State, record.TraceEvidence = Unknown, "unknown", reason
 			doc.Revision++
 			stampServer(record, record.Owner, doc.Revision)
@@ -256,6 +259,9 @@ func (r *registry) MarkUnknown(ctx context.Context, id string, expected uint64, 
 			return nil
 		}
 		if record := findBrowser(doc.Browsers, id); record != nil {
+			if !mayMarkUnknown(record.Ownership, record.State) {
+				return fmt.Errorf("%w: browser is protected or terminal", core.ErrTransition)
+			}
 			record.Ownership, record.State, record.TraceEvidence = Unknown, "unknown", reason
 			doc.Revision++
 			stampBrowser(record, record.Owner, doc.Revision)
@@ -512,6 +518,10 @@ func reserveManaged(kind string, used int) error {
 }
 
 func terminal(state string) bool { return state == "released" || state == "stopped" }
+
+func mayMarkUnknown(ownership Ownership, state string) bool {
+	return ownership == Managed && (state == "reserved" || state == "started" || state == "stopping")
+}
 
 func cleanupTerminals(doc *registryDocument) {
 	doc.Servers = keepServers(doc.Servers)

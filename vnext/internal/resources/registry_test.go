@@ -391,3 +391,45 @@ func TestNilStopperDoesNotClaim(t *testing.T) {
 		t.Fatal(servers[0].State)
 	}
 }
+
+func TestMarkUnknownRejectsProtectedAndTerminalResources(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		browser   bool
+		ownership resources.Ownership
+		state     string
+	}{
+		{"user-server", false, resources.UserOwned, "observed"}, {"unknown-server", false, resources.Unknown, "unknown"}, {"released-server", false, resources.Managed, "released"}, {"user-browser", true, resources.UserOwned, "observed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRegistry(t, t.TempDir(), nil)
+			var id string
+			var rev uint64
+			var err error
+			if tc.browser {
+				b := browser("B-x", "x", "http://localhost:5000")
+				b.Ownership = tc.ownership
+				out, e := r.ReserveBrowser(context.Background(), b, 0)
+				id, rev, err = b.ID, out.Revision, e
+			} else {
+				s := server("S-x", 3500, "http://localhost:3500")
+				s.Ownership = tc.ownership
+				out, e := r.ReserveServer(context.Background(), s, 0)
+				id, rev, err = s.ID, out.Revision, e
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.state == "released" {
+				out, e := r.Release(context.Background(), id, rev)
+				if e != nil {
+					t.Fatal(e)
+				}
+				rev = out.Revision
+			}
+			if _, err := r.MarkUnknown(context.Background(), id, rev, "reason"); err == nil {
+				t.Fatal("protected transition accepted")
+			}
+		})
+	}
+}
