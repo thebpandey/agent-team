@@ -10,9 +10,10 @@ import (
 // Action is the deliberately small, argument-only command representation used
 // by the native CLI boundary. Args never contain the command name or --json.
 type Action struct {
-	Name string
-	Args []string
-	JSON bool
+	Name          string
+	Args          []string
+	JSON          bool
+	ScopeRequired bool
 }
 
 // Request is retained as a source-compatible name for the original version
@@ -106,7 +107,7 @@ func Parse(args []string) (Action, error) {
 		return Action{}, err
 	}
 
-	return Action{Name: name, Args: actionArgs, JSON: jsonOutput}, nil
+	return Action{Name: name, Args: actionArgs, JSON: jsonOutput, ScopeRequired: name == "pause" || name == "stop" || name == "cancel" || name == "resume"}, nil
 }
 
 func parseSetupArgs(args []string) ([]string, error) {

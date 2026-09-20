@@ -1,0 +1,23 @@
+name: vnext-host
+
+on: [push, pull_request]
+
+jobs:
+  host:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: vnext
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      # vnext-native already runs the full suite and vet on this matrix. Keep
+      # this lane dedicated to the host-sensitive acceptance surface.
+      - run: go test ./internal/acceptance -count=1
+      - run: go test ./internal/command -run 'TestRunner(SemanticsAndIndependentLimits|DrainsNoisyChildAndReportsDeadline)$' -count=1

@@ -5,6 +5,7 @@ package resources
 import (
 	"fmt"
 
+	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
 
@@ -29,6 +30,31 @@ type Reservation struct {
 	Name  string
 	Count int
 	State string
+}
+
+// ValidatePlannedAdmission verifies that a host can reserve both independent
+// roles required by planned work. A single usable slot is valid only because
+// the developer and reviewer run sequentially.
+func ValidatePlannedAdmission(c contracts.HostCapabilities) error {
+	if c.Unknown {
+		if c.DeveloperSlots != 1 || c.ReviewerSlots != 1 {
+			return core.ErrCapacity
+		}
+		return nil
+	}
+	if c.UsableSlots <= 0 || c.DeveloperSlots < 1 || c.ReviewerSlots < 1 {
+		return core.ErrCapacity
+	}
+	if c.UsableSlots == 1 {
+		if c.DeveloperSlots == 1 && c.ReviewerSlots == 1 {
+			return nil
+		}
+		return core.ErrCapacity
+	}
+	if c.DeveloperSlots+c.ReviewerSlots > c.UsableSlots {
+		return core.ErrCapacity
+	}
+	return nil
 }
 
 // Reserve validates that reservations fit within the supplied effective
