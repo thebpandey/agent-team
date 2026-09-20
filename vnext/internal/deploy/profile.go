@@ -182,11 +182,12 @@ func ValidateCommandTemplate(command []string) error {
 	}
 	base := strings.ToLower(filepath.Base(strings.ReplaceAll(command[0], "\\", "/")))
 	switch strings.TrimSuffix(base, filepath.Ext(base)) {
-	case "sh", "bash", "dash", "zsh", "cmd", "powershell", "pwsh":
+	case "sh", "bash", "dash", "zsh", "fish", "cmd", "powershell", "pwsh", "busybox":
 		return core.ErrSettings
 	}
-	for _, arg := range command {
-		if len(arg) > 4096 || strings.ContainsAny(arg, "\x00\r\n") {
+	for _, arg := range command[1:] {
+		lower := strings.ToLower(arg)
+		if len(arg) > 4096 || strings.ContainsAny(arg, "\x00\r\n") || strings.Contains(arg, "$(") || strings.Contains(arg, "${") || strings.Contains(arg, "`") || strings.Contains(arg, "%") || strings.Contains(arg, "..") || lower == "-c" || lower == "/c" || lower == "-command" || lower == "--command" {
 			return core.ErrSettings
 		}
 	}
