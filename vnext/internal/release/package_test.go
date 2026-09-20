@@ -108,7 +108,8 @@ func TestReleaseMetadata(t *testing.T) {
 	workflow, _ := os.ReadFile(filepath.Join(repository, ".github", "workflows", "vnext-release.yml"))
 	workflowText := string(workflow)
 	checksumStep := "- run: sha256sum -c SHA256SUMS\n        working-directory: vnext/release-artifacts"
-	if !strings.Contains(workflowText, "${{ inputs.version }}") || !strings.Contains(workflowText, "permissions:\n  contents: read") || !strings.Contains(workflowText, "permissions: { contents: write }") || !strings.Contains(workflowText, "${{ github.workspace }}/vnext/release-artifacts") || strings.Count(workflowText, checksumStep) != 2 {
+	canonicalTempStep := "- name: Use canonical test temp\n        shell: bash\n        run: |\n          printf 'TMPDIR=%s\\nTMP=%s\\nTEMP=%s\\n' \"$RUNNER_TEMP\" \"$RUNNER_TEMP\" \"$RUNNER_TEMP\" >> \"$GITHUB_ENV\""
+	if !strings.Contains(workflowText, "${{ inputs.version }}") || !strings.Contains(workflowText, "permissions:\n  contents: read") || !strings.Contains(workflowText, "permissions: { contents: write }") || !strings.Contains(workflowText, "${{ github.workspace }}/vnext/release-artifacts") || strings.Count(workflowText, checksumStep) != 2 || strings.Count(workflowText, canonicalTempStep) != 2 {
 		t.Fatal("workflow release contract is incomplete")
 	}
 }
