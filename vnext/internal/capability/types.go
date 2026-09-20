@@ -38,11 +38,13 @@ type Probe struct {
 	Path      string
 	Version   string
 	Digest    string
-	Source    string
+	Source    VerifiedSource
 	Available bool
 	Healthy   bool
 	Reason    string
 }
+
+type VerifiedSource struct{ Identity, Digest, Version string }
 
 type FileRole string
 
@@ -67,15 +69,23 @@ type Consent struct {
 	Name             Name
 	Enabled          bool
 	Mode             Mode
-	Source           string
+	Source           VerifiedSource
 	VerifiedVersion  string
 	InstallerPackage string
 	ProjectRoot      string
 	Install          Action
-	Probe            Action
+	ProbeArgs        []string
 	Rollback         Action
 	OwnedFiles       []OwnedFile
 }
+
+type Installer struct {
+	Name                         Name
+	Executable                   string
+	Source                       VerifiedSource
+	Install, Rollback, ProbeArgs []string
+}
+type Installers map[Name]Installer
 
 // InstallPlan intentionally exposes no mutable authorization fields.
 type InstallPlan struct{ state *planState }
@@ -83,11 +93,13 @@ type InstallPlan struct{ state *planState }
 type planState struct {
 	mu sync.Mutex
 
-	name                       Name
-	source, version, pkg, root string
-	install, probe, rollback   []string
-	owned                      []OwnedFile
-	backups                    []backup
+	name                     Name
+	source                   VerifiedSource
+	version, root            string
+	install, probe, rollback []string
+	owned                    []OwnedFile
+	backups                  []backup
+	binding                  string
 }
 
 type backup struct {

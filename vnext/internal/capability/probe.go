@@ -37,7 +37,7 @@ func ProbeAll(ctx context.Context, runner tracker.CommandRunner, names []Name) (
 		}
 		seen[name] = struct{}{}
 		if name == Native {
-			probes = append(probes, Probe{Name: Native, Mode: CLI, Source: "native", Version: "native", Available: true, Healthy: true})
+			probes = append(probes, Probe{Name: Native, Mode: CLI, Source: VerifiedSource{Identity: "native", Digest: "sha256:native", Version: "native"}, Version: "native", Available: true, Healthy: true})
 			continue
 		}
 		if modeFor(name) == SkillContent {
@@ -54,7 +54,7 @@ func probeExecutable(ctx context.Context, runner tracker.CommandRunner, name Nam
 	if err != nil {
 		return Probe{Name: name, Mode: modeFor(name), Reason: "executable unavailable"}
 	}
-	p := Probe{Name: name, Mode: modeFor(name), Path: path, Source: "verified:" + path}
+	p := Probe{Name: name, Mode: modeFor(name), Path: path}
 	if runner == nil {
 		p.Reason = "probe runner unavailable"
 		return p
@@ -71,6 +71,13 @@ func probeExecutable(ctx context.Context, runner tracker.CommandRunner, name Nam
 		p.Reason = "empty version output"
 		return p
 	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		p.Reason = "executable unreadable"
+		return p
+	}
+	sum := sha256.Sum256(data)
+	p.Source = VerifiedSource{Identity: path, Digest: "sha256:" + hex.EncodeToString(sum[:]), Version: p.Version}
 	p.Available, p.Healthy = true, true
 	return p
 }
@@ -78,7 +85,7 @@ func probeExecutable(ctx context.Context, runner tracker.CommandRunner, name Nam
 func probeSkill(name Name) Probe {
 	root := os.Getenv("AGENT_TEAM_SKILL_ROOT")
 	path := filepath.Join(root, string(name), "SKILL.md")
-	p := Probe{Name: name, Mode: SkillContent, Path: path, Source: "verified:" + path}
+	p := Probe{Name: name, Mode: SkillContent, Path: path}
 	if root == "" {
 		p.Reason = "skill root unavailable"
 		return p
@@ -95,6 +102,7 @@ func probeSkill(name Name) Probe {
 	}
 	sum := sha256.Sum256(data)
 	p.Digest = "sha256:" + hex.EncodeToString(sum[:])
+	p.Source = VerifiedSource{Identity: path, Digest: p.Digest, Version: p.Digest}
 	p.Available, p.Healthy = true, true
 	return p
 }

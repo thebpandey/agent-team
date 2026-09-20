@@ -74,10 +74,14 @@ func rollbackLocked(ctx context.Context, runner tracker.CommandRunner, state *pl
 	if len(state.backups) != len(state.owned) {
 		return fmt.Errorf("rollback has no verified backup")
 	}
+	helperErr := error(nil)
 	if result := run(ctx, runner, state.rollback); failed(result) {
-		return fmt.Errorf("rollback action failed: %s", commandReason(result))
+		helperErr = fmt.Errorf("rollback action failed: %s", commandReason(result))
 	}
 	for _, backup := range state.backups {
+		if err := noFollow(state.root, backup.path); err != nil {
+			return err
+		}
 		if backup.exists {
 			if err := os.MkdirAll(filepath.Dir(backup.path), 0o700); err != nil {
 				return err
@@ -92,6 +96,9 @@ func rollbackLocked(ctx context.Context, runner tracker.CommandRunner, state *pl
 	if err := verifyBackups(state.backups); err != nil {
 		return err
 	}
+	if helperErr != nil {
+		return helperErr
+	}
 	return nil
 }
 
@@ -102,7 +109,10 @@ func capture(state *planState) ([]backup, error) {
 		if filepath.Dir(path) == "" || !within(state.root, path) {
 			return nil, fmt.Errorf("unsafe owned path")
 		}
-		info, err := os.Stat(path)
+		if err := noFollow(state.root, path); err != nil {
+			return nil, err
+		}
+		info, err := os.Lstat(path)
 		if os.IsNotExist(err) {
 			backups = append(backups, backup{path: path})
 			continue
@@ -121,7 +131,11 @@ func capture(state *planState) ([]backup, error) {
 
 func verifyOwned(state *planState) error {
 	for _, owned := range state.owned {
-		data, err := readRegular(filepath.Join(state.root, owned.Path))
+		path := filepath.Join(state.root, owned.Path)
+		if err := noFollow(state.root, path); err != nil {
+			return err
+		}
+		data, err := readRegular(path)
 		if err != nil || hash(data) != owned.SHA256 {
 			return fmt.Errorf("owned file verification failed")
 		}
@@ -146,7 +160,7 @@ func verifyBackups(backups []backup) error {
 }
 
 func readRegular(path string) ([]byte, error) {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
@@ -157,17 +171,11 @@ func readRegular(path string) ([]byte, error) {
 }
 
 func validateState(state *planState) error {
-	if state == nil || !known(state.name) || state.name == Native || !verified(state.source) || state.version == "" || packageVersion(state.pkg) != state.version {
+	if state == nil || !known(state.name) || state.name == Native || !validSource(state.source) || state.version == "" || state.source.Version != state.version || state.binding != planBinding(state) {
 		return fmt.Errorf("invalid consent-bound plan")
 	}
-	if err := validateAction("install", state.install, state.root, state.pkg, state.version); err != nil {
-		return err
-	}
-	if err := validateAction("probe", state.probe, state.root, state.pkg, state.version); err != nil {
-		return err
-	}
-	if err := validateAction("rollback", state.rollback, state.root, state.pkg, state.version); err != nil {
-		return err
+	if len(state.install) == 0 || len(state.rollback) == 0 || len(state.probe) < 2 || state.probe[0] != filepath.Join(state.root, state.owned[0].Path) {
+		return fmt.Errorf("invalid consent-bound actions")
 	}
 	for _, file := range state.owned {
 		if !validOwned(file) {
@@ -202,4 +210,35 @@ func unsafePortablePath(path string) bool {
 		return true
 	}
 	return len(path) > 2 && path[1] == ':' && ((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z')) && (path[2] == '/' || path[2] == '\\')
+}
+
+func noFollow(root, path string) error {
+	if !within(root, path) {
+		return fmt.Errorf("managed root escape")
+	}
+	for p := filepath.Dir(path); ; p = filepath.Dir(p) {
+		if info, err := os.Lstat(p); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink managed path")
+		}
+		if p == root {
+			break
+		}
+		if p == filepath.Dir(p) {
+			return fmt.Errorf("managed root escape")
+		}
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("symlink managed path")
+	}
+	return nil
+}
+func planBinding(s *planState) string {
+	parts := []string{s.source.Identity, s.source.Digest, s.source.Version, s.root}
+	parts = append(parts, s.install...)
+	parts = append(parts, s.probe...)
+	parts = append(parts, s.rollback...)
+	for _, f := range s.owned {
+		parts = append(parts, f.Path, string(f.Role), f.SHA256)
+	}
+	return hash([]byte(strings.Join(parts, "\x00")))
 }
