@@ -33,6 +33,7 @@ var lifecycleMutationHook func(string, int) error
 var lifecycleInterruptHook func(string, int) bool
 var errJournalBudget = fmt.Errorf("%w: lifecycle journal budget exceeded", core.ErrRevision)
 var stableReadHook func(string)
+var updateBackupSnapshotHook func()
 
 type lifecycleMutation struct {
 	Path        string `json:"path"`
@@ -196,6 +197,9 @@ func prepareMutation(layout Layout, path string, replacement []byte, mode fs.Fil
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return lifecycleMutation{}, core.ErrPath
 	}
+	if exclusive {
+		return lifecycleMutation{}, core.ErrRevision
+	}
 	mutation.Existed = true
 	mutation.PreMode = uint32(info.Mode().Perm())
 	mutation.Preimage, err = readStableRegular(ownedRoot(layout, path), path, info.Size(), budget, "preimage")
@@ -348,7 +352,7 @@ func validateLifecycleJournal(layout Layout, journal lifecycleJournal) error {
 		} else if !validSHA256(mutation.PostSHA256) || mutation.PostBytes != int64(len(mutation.Replacement)) || digestContent(mutation.Replacement) != mutation.PostSHA256 {
 			return core.ErrRevision
 		}
-		if mutation.Exclusive && (mutation.Existed || journal.Operation != "install") {
+		if mutation.Exclusive && (mutation.Existed || (journal.Operation != "install" && journal.Operation != "update")) {
 			return core.ErrRevision
 		}
 	}
@@ -474,7 +478,7 @@ func manifestMismatches(manifest InstallManifest) []string {
 	return paths
 }
 
-func updateJournalPlan(layout Layout, release Release, current InstallManifest, desired []desiredFile, owner store.MutationOwner, expected uint64) lifecycleJournal {
+func updateJournalPlan(layout Layout, release Release, current InstallManifest, desired []desiredFile, backups map[string]bool, owner store.MutationOwner, expected uint64) lifecycleJournal {
 	previous, intended := cloneManifest(current), cloneManifest(current)
 	intended.Revision, intended.Version, intended.ReleaseRevision = expected+1, release.Version, release.Revision
 	plan := lifecycleJournal{Schema: 1, Operation: "update", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended}
@@ -488,8 +492,8 @@ func updateJournalPlan(layout Layout, release Release, current InstallManifest, 
 		if target.owned.Role == BinaryRole {
 			mode = 0o700
 		}
-		if _, err := os.Lstat(backupPath(layout, old)); errors.Is(err, fs.ErrNotExist) {
-			plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: backupPath(layout, old), PostMode: 0o600, PostSHA256: old.SHA256, PostBytes: old.Bytes})
+		if !backups[backupPath(layout, old)] {
+			plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: backupPath(layout, old), PostMode: 0o600, PostSHA256: old.SHA256, PostBytes: old.Bytes, Exclusive: true})
 		}
 		plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: old.Path, Existed: true, PreSHA256: strings.Repeat("0", 64), PreMode: plannedMode(old.Path), PostMode: mode, PostSHA256: target.source.SHA256, PostBytes: target.source.Bytes})
 		plan.Retained = append(plan.Retained, old.Path, backupPath(layout, old))
@@ -546,6 +550,24 @@ func plannedMode(path string) uint32 {
 	return uint32(info.Mode().Perm())
 }
 
+func snapshotUpdateBackups(layout Layout, current InstallManifest, desired []desiredFile) (map[string]bool, error) {
+	backups := make(map[string]bool, len(desired))
+	for _, target := range desired {
+		index := ownedIndex(current.Files, target.owned.Role, target.owned.Host)
+		if index < 0 {
+			continue
+		}
+		path := backupPath(layout, current.Files[index])
+		_, err := os.Lstat(path)
+		if err == nil {
+			backups[path] = true
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+	}
+	return backups, nil
+}
+
 func Update(ctx context.Context, layout Layout, release Release, expected uint64) (CASOutcome, error) {
 	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", fmt.Sprintf("update:%d:%s", expected, release.Revision))
 	if err != nil {
@@ -566,8 +588,12 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 		return stale, err
 	}
 	desired := releaseFiles(layout, release, current.Hosts)
+	backups, err := snapshotUpdateBackups(layout, current, desired)
+	if err != nil {
+		return CASOutcome{}, err
+	}
 	budget := newJournalBudget()
-	if err := budget.accountMetadata(updateJournalPlan(layout, release, current, desired, owner, expected)); err != nil {
+	if err := budget.accountMetadata(updateJournalPlan(layout, release, current, desired, backups, owner, expected)); err != nil {
 		return CASOutcome{}, err
 	}
 	for _, target := range desired {
@@ -576,12 +602,15 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			if err := budget.reserve(current.Files[index].Bytes, "preimage"); err != nil {
 				return CASOutcome{}, err
 			}
-			if _, statErr := os.Lstat(backupPath(layout, current.Files[index])); errors.Is(statErr, fs.ErrNotExist) {
+			if !backups[backupPath(layout, current.Files[index])] {
 				if err := budget.reserve(current.Files[index].Bytes, "replacement"); err != nil {
 					return CASOutcome{}, err
 				}
 			}
 		}
+	}
+	if updateBackupSnapshotHook != nil {
+		updateBackupSnapshotHook()
 	}
 	sources, err := validateLifecycle(ctx, layout, release, selectedReleasePaths(desired), budget)
 	if err != nil {
@@ -604,15 +633,11 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			continue
 		}
 		backup := Backup{Role: next.Files[index].Role, Host: next.Files[index].Host, Path: backupPath(layout, next.Files[index]), SHA256: next.Files[index].SHA256, Version: next.Files[index].Version, Revision: next.Files[index].Revision, Bytes: next.Files[index].Bytes}
-		backupExists := false
-		if _, statErr := os.Lstat(backup.Path); statErr == nil {
+		backupExists := backups[backup.Path]
+		if backupExists {
 			if !diskMatches(backup.Path, backup.SHA256, backup.Bytes) {
-				retained = append(retained, target.owned.Path, backup.Path)
-				continue
+				return CASOutcome{Retained: append(retained, target.owned.Path, backup.Path)}, core.ErrRevision
 			}
-			backupExists = true
-		} else if !errors.Is(statErr, fs.ErrNotExist) {
-			return CASOutcome{Retained: append(retained, target.owned.Path)}, statErr
 		}
 		data, err := verifiedReleaseBytes(target.source, sources)
 		if err != nil {
@@ -627,7 +652,7 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			return CASOutcome{Retained: append(retained, target.owned.Path)}, err
 		}
 		if !backupExists {
-			backupMutation, err := prepareMutation(layout, backup.Path, oldBytes, 0o600, false, false, nil)
+			backupMutation, err := prepareMutation(layout, backup.Path, oldBytes, 0o600, false, true, nil)
 			if err != nil {
 				return CASOutcome{Retained: append(retained, target.owned.Path)}, err
 			}

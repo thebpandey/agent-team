@@ -387,6 +387,48 @@ func TestInstallJournalBudgetJustUnderLimit(t *testing.T) {
 	}
 }
 
+func TestUpdateBackupSnapshotPresentToAbsentFailsBeforeMutation(t *testing.T) {
+	layout, _, release, current := installedFixture(t)
+	for _, file := range []*ReleaseFile{&release.Binary, &release.Contract} {
+		resizeReleaseFile(t, file, 3800<<10)
+	}
+	entrypoint := release.Entrypoints[Codex]
+	resizeReleaseFile(t, &entrypoint, 3800<<10)
+	release.Entrypoints[Codex] = entrypoint
+	paths := []string{}
+	for _, file := range current.Files {
+		path := backupPath(layout, file)
+		body, err := os.ReadFile(file.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	updateBackupSnapshotHook = func() {
+		updateBackupSnapshotHook = nil
+		for _, path := range paths {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Cleanup(func() { updateBackupSnapshotHook = nil })
+	if _, err := Update(context.Background(), layout, release, current.Revision); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("backup disappearance error = %v", err)
+	}
+	got, err := NewManifestStore(layout).Read(context.Background())
+	if err != nil || !reflect.DeepEqual(got, current) {
+		t.Fatalf("manifest drift: %#v, %v", got, err)
+	}
+	assertNoJournal(t, layout)
+}
+
 func TestInstallRejectsSourceSwapAfterStableOpen(t *testing.T) {
 	layout, release := internalFixture(t, "stable-source")
 	original := release.Binary.Path + ".opened"
