@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/deploy"
 )
 
 // Action is the deliberately small, argument-only command representation used
@@ -96,10 +97,24 @@ func Parse(args []string) (Action, error) {
 			}
 			actionArgs, err = parseSelectors(args[1:], allowed, false)
 		}
-	case "inspect", "cleanup":
+	case "cleanup":
+		if len(args) > 1 && args[1] == "--mutation-lock" {
+			actionArgs, err = parseMutationCleanup(args[1:])
+		} else {
+			actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true, "--team": true, "--task": true}, false)
+		}
+	case "inspect":
 		actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true, "--team": true, "--task": true}, false)
 	case "deploy":
 		actionArgs, err = parseDeployArgs(args[1:])
+	case "install":
+		actionArgs, err = parseExactPair(args[1:], "--host", map[string]bool{"codex": true, "claude": true, "both": true})
+	case "update", "rollback":
+		actionArgs, err = parseExactPair(args[1:], "--version", nil)
+	case "uninstall":
+		if len(args) != 1 {
+			return Action{}, core.ErrPhase
+		}
 	default:
 		return Action{}, core.ErrPhase
 	}
@@ -108,6 +123,29 @@ func Parse(args []string) (Action, error) {
 	}
 
 	return Action{Name: name, Args: actionArgs, JSON: jsonOutput, ScopeRequired: name == "pause" || name == "stop" || name == "cancel" || name == "resume"}, nil
+}
+
+func parseMutationCleanup(args []string) ([]string, error) {
+	if len(args) != 7 || args[0] != "--mutation-lock" || (args[1] != "primary" && args[1] != "recovery") || args[2] != "--owner-token" || len(args[3]) != 32 || args[4] != "--operation" || strings.TrimSpace(args[5]) == "" || args[5] != strings.TrimSpace(args[5]) || args[6] != "--confirm-dead" {
+		return nil, core.ErrPhase
+	}
+	for _, character := range args[3] {
+		if !strings.ContainsRune("0123456789abcdef", character) {
+			return nil, core.ErrPhase
+		}
+	}
+	return append([]string(nil), args...), nil
+}
+
+func parseExactPair(args []string, flag string, allowed map[string]bool) ([]string, error) {
+	if len(args) != 2 || args[0] != flag {
+		return nil, core.ErrPhase
+	}
+	value := strings.TrimSpace(args[1])
+	if value == "" || (allowed != nil && !allowed[value]) {
+		return nil, core.ErrPhase
+	}
+	return []string{flag, value}, nil
 }
 
 func parseSetupArgs(args []string) ([]string, error) {
@@ -185,39 +223,18 @@ func parseScope(value string) ([]string, error) {
 }
 
 func parseDeployArgs(args []string) ([]string, error) {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(args))
-	for i := 0; i < len(args); i += 2 {
-		if i+1 >= len(args) || seen[args[i]] {
-			return nil, core.ErrPhase
-		}
-		flag, value := args[i], strings.TrimSpace(args[i+1])
-		if value == "" {
-			return nil, core.ErrPhase
-		}
-		switch flag {
-		case "--run", "--target":
-		case "--batch-size":
-			if !canonicalPositiveDecimal(value) {
+	normalized := append([]string(nil), args...)
+	for i := 0; i < len(normalized); i++ {
+		if normalized[i] != "--resume" {
+			if i+1 >= len(normalized) {
 				return nil, core.ErrPhase
 			}
-		default:
-			return nil, core.ErrPhase
-		}
-		seen[flag] = true
-		out = append(out, flag, value)
-	}
-	return out, nil
-}
-
-func canonicalPositiveDecimal(value string) bool {
-	if value == "" || value[0] < '1' || value[0] > '9' {
-		return false
-	}
-	for _, char := range value[1:] {
-		if char < '0' || char > '9' {
-			return false
+			normalized[i+1] = strings.TrimSpace(normalized[i+1])
+			i++
 		}
 	}
-	return true
+	if _, err := deploy.ParseDeployArgs(append([]string{"deploy"}, normalized...)); err != nil {
+		return nil, core.ErrPhase
+	}
+	return normalized, nil
 }

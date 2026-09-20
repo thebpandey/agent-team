@@ -1,8 +1,16 @@
-# Agent-Team 7.3.1
+# Agent-Team
 
 Created by [thebpandey](https://github.com/thebpandey). Agent-Team coordinates bounded development in Codex and Claude Code with isolated writers, independent review, verified integration, durable recovery, and explicit release authority.
 
-The current skill version is **7.3.1**. This README documents the current package only. For release history, see the [changelog](CHANGELOG.md); for the compact operator walkthrough, see [Getting Started](GETTING_STARTED.md).
+The Node-based **v7.3.1** package described in older sections is legacy during the vNext transition. For release history, see the [changelog](CHANGELOG.md); for the compact operator walkthrough, see [Getting Started](GETTING_STARTED.md).
+
+## vNext native transition
+
+Install one checksum-verified native package and select the host explicitly: `agent-teamctl install --host codex|claude|both`. The same package supports Codex and Claude on Windows, macOS, and Linux; switching hosts is a foreground action and transfers no lease or worker identity. `rollback --version <version>` and `uninstall` remove only exact manifest-owned bytes and retain changed or unknown files.
+
+The public lifecycle is `setup`, `status`, `start`, `task add`, and `one-off`, plus scoped `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN is an internal independent-review loop, not a public `review` command. Beads is the live tracker after an approved cutover; a pre-cutover `TASKS.md` is legacy provenance only. `BLOCKERS.md` and `DECISIONS.md` are bounded human-readable projections, never competing task stores.
+
+The dashboard is local-only and read-only. Capacity caps remain enforced. Optional Serena, Graphify, LeanCTX, browser, and visual tools have bounded native fallbacks; absence never widens authority. See the [honest benchmark report](docs/benchmarks/vnext-optional-8.0.0.md) and the revision-bound release checks before treating a candidate as published.
 
 ![Agent-Team overview: one orchestrator coordinates bounded implementation, independent review, integration, and release.](assets/guide/agent-team-essence-16x9.webp)
 

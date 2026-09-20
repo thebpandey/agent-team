@@ -21,6 +21,7 @@ jobs:
         with:
           go-version: stable
       - run: go test ./...
+      - run: go test -race ./internal/deploy ./internal/acceptance -count=1
       - run: go vet ./...
 
   cross-build:

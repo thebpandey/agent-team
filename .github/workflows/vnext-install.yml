@@ -1,0 +1,40 @@
+name: vnext-install
+
+on: [push, pull_request]
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: vnext
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go test ./... -count=1
+      - run: go vet ./...
+      - run: go test ./internal/install ./internal/migrate ./internal/cli -run 'Test(Install|Manifest|Inventory|Canary|Management)' -count=1
+  cross-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64]
+    defaults:
+      run:
+        working-directory: vnext
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go build ./cmd/agent-teamctl
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}

@@ -42,6 +42,38 @@ func Run(ctx context.Context, args []string, deps core.Dependencies) int {
 		}
 		return 0
 	}
+	if isManagement(action.Name) || isMutationCleanup(action) {
+		if deps.Management == nil {
+			return writeFailure(stdout, deps.Stderr, args, core.ErrTransition)
+		}
+		limit := deps.OutputLimit
+		if limit <= 0 || limit > core.DefaultOutputLimit {
+			limit = core.DefaultOutputLimit
+		}
+		var boundedOut, boundedErr core.BoundedOutput
+		boundedOut.Limit, boundedErr.Limit = limit, limit
+		code := deps.Management(ctx, append([]string(nil), args...), &boundedOut, &boundedErr)
+		if boundedOut.Overflow || boundedErr.Overflow {
+			_, _ = io.WriteString(stdout, `{"ok":false,"error":"output_limit"}`)
+			return 1
+		}
+		if _, err := stdout.Write(boundedOut.Data); err != nil {
+			return 1
+		}
+		if _, err := deps.Stderr.Write(boundedErr.Data); err != nil {
+			return 1
+		}
+		return code
+	}
+	if action.Name == "deploy" {
+		if deps.Deployment != nil {
+			callbackArgs := append([]string{"deploy"}, action.Args...)
+			if action.JSON {
+				callbackArgs = append(callbackArgs, "--json")
+			}
+			return deps.Deployment(ctx, callbackArgs, stdout, deps.Stderr)
+		}
+	}
 	if action.ScopeRequired {
 		if deps.ExecuteLifecycle == nil {
 			return writeFailure(stdout, deps.Stderr, args, core.ErrTransition)
@@ -69,6 +101,14 @@ func Run(ctx context.Context, args []string, deps core.Dependencies) int {
 		return 1
 	}
 	return outcomeExit(status)
+}
+
+func isManagement(name string) bool {
+	return name == "install" || name == "update" || name == "rollback" || name == "uninstall"
+}
+
+func isMutationCleanup(action Action) bool {
+	return action.Name == "cleanup" && len(action.Args) > 0 && action.Args[0] == "--mutation-lock"
 }
 
 func outcomeExit(status string) int {

@@ -1,0 +1,3 @@
+README.md
+agent-teamctl
+vnext/VERSION

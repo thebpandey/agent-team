@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/thebpandey/agent-team/vnext/internal/cli"
@@ -138,6 +139,7 @@ func TestCanonicalActions(t *testing.T) {
 		{"resume", "--run", "R-1"},
 		{"inspect", "--run", "R-1"},
 		{"cleanup", "--team", "TEAM-1"},
+		{"cleanup", "--mutation-lock", "primary", "--owner-token", "0123456789abcdef0123456789abcdef", "--operation", "install:1:r1", "--confirm-dead"},
 		{"inspect"},
 		{"cleanup"},
 		{"deploy"},
@@ -169,6 +171,7 @@ func TestCanonicalActionsRetainArgumentsAndJSON(t *testing.T) {
 		{[]string{"pause", "--scope", "team:TEAM-1"}, cli.Action{Name: "pause", Args: []string{"--team", "TEAM-1"}}},
 		{[]string{"task", "add", "--queue"}, cli.Action{Name: "task add", Args: []string{"--queue"}}},
 		{[]string{"status", "--run", "RUN-1"}, cli.Action{Name: "status", Args: []string{"--run", "RUN-1"}}},
+		{[]string{"cleanup", "--mutation-lock", "recovery", "--owner-token", "0123456789abcdef0123456789abcdef", "--operation", "recover:install:1:r1", "--confirm-dead"}, cli.Action{Name: "cleanup", Args: []string{"--mutation-lock", "recovery", "--owner-token", "0123456789abcdef0123456789abcdef", "--operation", "recover:install:1:r1", "--confirm-dead"}}},
 	}
 	for _, tc := range cases {
 		got, err := cli.Parse(tc.args)
@@ -227,6 +230,8 @@ func TestCanonicalRejectsMalformedArguments(t *testing.T) {
 		{"start", "--task"},
 		{"inspect", "--team"},
 		{"cleanup", "--team"},
+		{"cleanup", "--mutation-lock", "primary", "--owner-token", "short", "--operation", "op", "--confirm-dead"},
+		{"cleanup", "--mutation-lock", "primary", "--owner-token", "0123456789abcdef0123456789abcdef", "--operation", "op"},
 		{"deploy", "--batch-size", "00"},
 		{"deploy", "--batch-size", "01"},
 		{"deploy", "--batch-size", "-1"},
@@ -234,6 +239,20 @@ func TestCanonicalRejectsMalformedArguments(t *testing.T) {
 		if _, err := cli.Parse(args); !errors.Is(err, core.ErrPhase) {
 			t.Fatalf("args=%v accepted: %v", args, err)
 		}
+	}
+}
+
+func TestMutationLockCleanupUsesManagementBoundary(t *testing.T) {
+	var out bytes.Buffer
+	called := false
+	args := []string{"cleanup", "--mutation-lock", "primary", "--owner-token", "0123456789abcdef0123456789abcdef", "--operation", "install:1:r1", "--confirm-dead", "--json"}
+	code := cli.Run(context.Background(), args, core.Dependencies{Stdout: &out, Stderr: &out, Management: func(_ context.Context, got []string, stdout, _ io.Writer) int {
+		called = equalStrings(got, args)
+		_, _ = io.WriteString(stdout, `{"ok":true,"recovered":true}`)
+		return 0
+	}})
+	if code != 0 || !called || !strings.Contains(out.String(), `"recovered":true`) {
+		t.Fatalf("code=%d called=%v output=%q", code, called, out.String())
 	}
 }
 
