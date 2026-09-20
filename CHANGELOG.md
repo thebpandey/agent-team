@@ -2,13 +2,15 @@
 
 ## 8.0.0 - candidate
 
-- Document the native Codex/Claude install, rollback, tracker, foreground host-switching, local dashboard, and fallback contracts.
-- Label the Node-based v7.3.1 runtime and `TASKS.md` state as legacy provenance during the approved transition.
+- Ship one native Codex/Claude package with checksum verification, transactional install/update/uninstall, revision-specific rollback, and exact manifest ownership on Linux, macOS, and Windows.
+- Coordinate foreground runs through one orchestrator, bounded worktree lanes, independent FIX/CLEAN review, deterministic gates, serial integration, durable handoffs, and scoped pause/resume/recovery.
+- Use Beads as the live tracker after approved cutover; retain `TASKS.md` as legacy provenance, accept bounded `task add` and one-off requests, and keep `BLOCKERS.md`, `DECISIONS.md`, handoffs, and the dashboard as projections rather than competing stores.
+- Bind at most two on-demand development servers and two browser sessions to exact teams, worktrees, revisions, purposes, and evidence; never infer process ownership from a port or PID alone.
+- Keep Codex↔Claude continuation project-bound and foreground-only without transferring a lease or requiring the old session to return.
+- Route optional LeanCTX, read-only Serena, code-only Graphify, Playwright, and visual skills by task with native fallbacks and no authority expansion.
+- Cut over stale or unverifiable v7 projects only through a short-lived, project-bound Ed25519 operator approval pinned outside the project; normal v8 and valid schema-4 receipt paths need no external trust.
 - Bind release claims to executable native checks, benchmark evidence, deterministic artifacts, canaries, rollback, provider verification, and final readiness evidence.
-- Migrate side by side: hash and redact v7 metadata, require explicit per-project approval, and cut over only after independent Codex and Claude observations succeed.
-- Roll back only exact manifest-owned bytes; retain user-changed, unknown, or unverifiable paths and persist rollback evidence.
-- Known limitations: the dashboard is local-only, optional capability measurements depend on real counters, and no package-registry or production-service deployment is introduced.
-- Publish a deterministic ZIP, `RELEASE.json`, native CycloneDX `SBOM.cdx.json`, and `SHA256SUMS`; see [benchmark evidence](docs/benchmarks/vnext-optional-8.0.0.md).
+- Publish a deterministic ZIP, `RELEASE.json`, native CycloneDX `SBOM.cdx.json`, and `SHA256SUMS`; see [benchmark evidence](docs/benchmarks/vnext-optional-8.0.0.md). The dashboard remains local-only, and no package registry or production service is introduced.
 
 ## 7.3.1 - 2026-09-14
 

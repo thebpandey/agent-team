@@ -1,8 +1,10 @@
-# Agent-Team vNext user guide (proposed)
+# Agent-Team vNext user-experience design record
 
-> Status: design documentation only. The self-contained Go binary, commands,
-> integrations, and project files described here are **not yet implemented**.
-> This guide describes the intended UX, not current Agent-Team v7 behavior.
+> Status: historical design record. The native v8 implementation now exists;
+> use the [README](../README.md), [Getting Started](../GETTING_STARTED.md), and
+> [8.0.0 readiness guide](releases/8.0.0-readiness.md) for current commands and
+> release status. Proposed wording below is retained as design rationale and is
+> not an operational contract.
 
 Agent-Team vNext should feel like one small project command: it reads the
 project's plan, gives bounded work to developers, obtains independent review,
