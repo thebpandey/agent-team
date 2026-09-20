@@ -3,17 +3,55 @@ package install
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
+
+func TestVerifiedLegacyAuthorityRejectsCrossProjectTransplant(t *testing.T) {
+	root := t.TempDir()
+	projectA, projectB := filepath.Join(root, "a"), filepath.Join(root, "b")
+	inventories := []LegacyHostInventory{{Host: Codex, Root: filepath.Join(root, "codex")}, {Host: Claude, Root: filepath.Join(root, "claude")}}
+	receiptSHA := signedLegacyAuthorityFixture(t, projectA, inventories)
+	verified, err := verifyLegacyProjectAuthority(context.Background(), projectA, receiptSHA)
+	if err != nil || len(verified) != 2 {
+		t.Fatalf("verified = %#v, %v", verified, err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectB, ".agent-team", "v8"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", projectB, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s: %v", output, err)
+	}
+	receiptRaw, _ := os.ReadFile(filepath.Join(projectA, filepath.FromSlash(legacyAuthorityReceiptPath)))
+	receiptB := filepath.Join(projectB, filepath.FromSlash(legacyAuthorityReceiptPath))
+	if err := os.WriteFile(receiptB, receiptRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyLegacyProjectAuthority(context.Background(), projectB, receiptSHA); err == nil {
+		t.Fatal("cross-project authority receipt accepted")
+	}
+	alias := filepath.Join(root, "a-alias")
+	if err := os.Symlink(projectA, alias); err == nil {
+		if _, err := verifyLegacyProjectAuthority(context.Background(), alias, receiptSHA); err == nil {
+			t.Fatal("symlinked project authority accepted")
+		}
+	}
+	noncanonical := projectA + string(filepath.Separator) + ".." + string(filepath.Separator) + "a"
+	if _, err := verifyLegacyProjectAuthority(context.Background(), noncanonical, receiptSHA); err == nil {
+		t.Fatal("noncanonical project alias accepted")
+	}
+}
 
 func TestLegacyHostCutoverRollbackAndRetry(t *testing.T) {
 	root := t.TempDir()
@@ -123,7 +161,25 @@ func TestLegacyHostCutoverAcceptsOnlyVerifiedSourceInventory(t *testing.T) {
 	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); err == nil {
 		t.Fatal("unsigned source metadata accepted")
 	}
-	request.Inventories = inventories
+	project := filepath.Join(root, "project")
+	receiptSHA := signedLegacyAuthorityFixture(t, project, inventories)
+	request.Project, request.AuthorityReceiptSHA256 = project, receiptSHA
+	transplant := filepath.Join(root, "transplant")
+	if err := os.MkdirAll(filepath.Join(transplant, filepath.Dir(filepath.FromSlash(legacyAuthorityReceiptPath))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", transplant, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s: %v", output, err)
+	}
+	receiptRaw, _ := os.ReadFile(filepath.Join(project, filepath.FromSlash(legacyAuthorityReceiptPath)))
+	if err := os.WriteFile(filepath.Join(transplant, filepath.FromSlash(legacyAuthorityReceiptPath)), receiptRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request.Project = transplant
+	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); err == nil {
+		t.Fatal("transplanted project authority accepted by host cutover")
+	}
+	request.Project = project
 	sourcePath := filepath.Join(layout.SkillRoots[Codex], ".agent-team-source.json")
 	sourceBefore, _ := os.ReadFile(sourcePath)
 	if err := os.WriteFile(sourcePath, []byte(`{"version":"foreign"}`), 0o600); err != nil {
@@ -162,6 +218,45 @@ func TestLegacyHostCutoverAcceptsOnlyVerifiedSourceInventory(t *testing.T) {
 	if err != nil || result.Idempotent {
 		t.Fatalf("signed reapply = %#v, %v", result, err)
 	}
+}
+
+func signedLegacyAuthorityFixture(t *testing.T, project string, inventories []LegacyHostInventory) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(project, filepath.Dir(filepath.FromSlash(legacyAuthorityReceiptPath))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", project, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s: %v", output, err)
+	}
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	keyID := digestBytesInstall(publicKey)
+	trustRaw, _ := json.Marshal(map[string]any{"schema": 1, "keys": []any{map[string]any{"algorithm": "ed25519", "keyId": keyID, "publicKey": base64.StdEncoding.EncodeToString(publicKey)}}})
+	trustPath := filepath.Join(t.TempDir(), "trust.json")
+	if err := os.WriteFile(trustPath, trustRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyAuthorityTrustStorePath = trustPath
+	legacyAuthorityTrustStoreOwner = func(string, os.FileInfo) bool { return true }
+	t.Cleanup(func() {
+		legacyAuthorityTrustStorePath = systemLegacyAuthorityTrustStorePath()
+		legacyAuthorityTrustStoreOwner = systemLegacyAuthorityTrustStoreOwner
+	})
+	approval := map[string]any{"schema": 1, "id": "approved", "project": project, "signerKeyId": keyID, "signature": "", "hostInventories": inventories}
+	payload, _ := json.Marshal(approval)
+	payloadPath, signaturePath := filepath.Join(project, "approval.json"), filepath.Join(project, "approval.sig")
+	if err := os.WriteFile(payloadPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(signaturePath, ed25519.Sign(privateKey, payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receipt := map[string]any{"schema": 1, "project": project, "approvalId": "approved", "approvalSha256": digestBytesInstall(payload), "approvalSignerKeyId": keyID, "approvalSignature": map[string]any{"id": "approved-signature", "path": signaturePath}, "authorization": map[string]any{"source": payloadPath}, "hostInventories": inventories}
+	receiptRaw, _ := json.Marshal(receipt)
+	if err := os.WriteFile(filepath.Join(project, filepath.FromSlash(legacyAuthorityReceiptPath)), receiptRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return digestBytesInstall(receiptRaw)
 }
 
 func TestLegacyHostCutoverRejectsForeignOwnedFileBeforeMutation(t *testing.T) {

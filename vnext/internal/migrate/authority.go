@@ -15,13 +15,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/install"
+	"github.com/thebpandey/agent-team/vnext/internal/operatortrust"
 	"github.com/thebpandey/agent-team/vnext/internal/release"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
@@ -261,28 +261,6 @@ func AuthorityStatus(project string) (AuthorityReceipt, error) {
 		return AuthorityReceipt{}, err
 	}
 	return receipt, nil
-}
-
-// VerifiedHostInventories returns host activation authority only after
-// re-verifying the signed payload against the operator trust store.
-func VerifiedHostInventories(receiptPath, expectedDigest string) ([]install.LegacyHostInventory, error) {
-	if !filepath.IsAbs(receiptPath) || !validDigest(expectedDigest) {
-		return nil, core.ErrPath
-	}
-	raw, err := readAbsoluteBounded(receiptPath)
-	if err != nil || digestBytes(raw) != expectedDigest {
-		return nil, core.ErrRevision
-	}
-	var receipt AuthorityReceipt
-	if json.Unmarshal(raw, &receipt) != nil || validateAuthorityReceipt(receipt) != nil || len(receipt.HostInventories) == 0 || filepath.Clean(receiptPath) != filepath.Join(receipt.Project, filepath.FromSlash(authorityReceiptPath)) {
-		return nil, core.ErrRevision
-	}
-	request := AuthorityRequest{Schema: 1, Action: "cutover", Project: receipt.Project, OperationID: receipt.OperationID, TargetRevision: receipt.TargetRevision, Tracker: receipt.Tracker, Reviews: receipt.Reviews, Tests: receipt.Tests, Readiness: receipt.Readiness, Approval: EvidenceReference{ID: receipt.ApprovalID, Path: receipt.Authorization.Source, SHA256: receipt.ApprovalSHA256}, ApprovalSignature: receipt.ApprovalSignature, ApprovalSignerKeyID: receipt.ApprovalSignerKeyID}
-	trusted, err := loadSignedAuthority(request)
-	if err != nil || !reflect.DeepEqual(trusted.Hosts, receipt.HostInventories) {
-		return nil, core.ErrRevision
-	}
-	return append([]install.LegacyHostInventory(nil), receipt.HostInventories...), nil
 }
 
 func cutoverAuthority(ctx context.Context, request AuthorityRequest, requestDigest string) (AuthorityResult, error) {
@@ -544,21 +522,6 @@ func loadSignedAuthority(request AuthorityRequest) (trustedAuthority, error) {
 			return trustedAuthority{}, fmt.Errorf("%w: detached approval is not canonical", core.ErrRevision)
 		}
 	}
-	trust, err := readOperatorTrustStore()
-	if err != nil {
-		return trustedAuthority{}, err
-	}
-	var trustedKey signedApprovalTrust
-	for _, key := range trust.Keys {
-		if key.KeyID == approval.SignerKeyID {
-			trustedKey = key
-			break
-		}
-	}
-	publicKey, err := base64.StdEncoding.DecodeString(trustedKey.PublicKey)
-	if err != nil || trustedKey.Algorithm != "ed25519" || len(publicKey) != ed25519.PublicKeySize || digestBytes(publicKey) != trustedKey.KeyID {
-		return trustedAuthority{}, fmt.Errorf("%w: approval signer is not operator-trusted", core.ErrRevision)
-	}
 	var signature, payload []byte
 	if request.ApprovalSignature.Path != "" {
 		if approval.Signature != "" || request.ApprovalSignerKeyID != approval.SignerKeyID || request.ApprovalSignature.ID != approval.ID+"-signature" || !filepath.IsAbs(request.ApprovalSignature.Path) || request.ApprovalSignature.SHA256 != "" && !validDigest(request.ApprovalSignature.SHA256) {
@@ -580,7 +543,7 @@ func loadSignedAuthority(request AuthorityRequest) (trustedAuthority, error) {
 		approval.Signature = ""
 		payload, err = json.Marshal(approval)
 	}
-	if err != nil || !ed25519.Verify(publicKey, payload, signature) {
+	if err != nil || operatortrust.Verify(authorityTrustStorePath, authorityTrustStoreOwner, approval.SignerKeyID, payload, signature) != nil {
 		return trustedAuthority{}, fmt.Errorf("%w: signed approval verification failed", core.ErrRevision)
 	}
 	issued, issueErr := time.Parse(time.RFC3339Nano, approval.IssuedAt)
@@ -592,7 +555,7 @@ func loadSignedAuthority(request AuthorityRequest) (trustedAuthority, error) {
 	if validateEvidenceIdentities(approval.Reviews) != nil || validateEvidenceIdentities(approval.Tests) != nil || validateEvidenceIdentities([]EvidenceReference{approval.Readiness}) != nil || !equalEvidence(approval.Reviews, request.Reviews) || !equalEvidence(approval.Tests, request.Tests) || !equalEvidence([]EvidenceReference{approval.Readiness}, []EvidenceReference{request.Readiness}) || approval.Project != request.Project || approval.OperationID != request.OperationID || approval.TargetRevision != request.TargetRevision || approval.TrackerFingerprint != request.Tracker.Fingerprint || approval.ParentID != request.Tracker.ParentID || approval.Cause == "" || approval.RecoveryDisposition == "" || !equalStrings(approval.TaskIDs, request.Tracker.TaskIDs) || approval.Remote.Name == "" || approval.Remote.URL == "" || approval.Remote.BaseRef == "" || approval.Remote.TargetRef == "" || !validRevision(approval.Remote.BaseRevision) || approval.Remote.TargetAbsent == (approval.Remote.TargetRevision != "") || (!approval.Remote.TargetAbsent && !validRevision(approval.Remote.TargetRevision)) {
 		return trustedAuthority{}, fmt.Errorf("%w: signed approval scope differs", core.ErrRevision)
 	}
-	derived := CutoverAuthorization{GrantedBy: trustedKey.KeyID, Source: request.Approval.Path, Cause: approval.Cause, Scope: approval.ParentID, GrantedAt: approval.IssuedAt, Revision: approval.TargetRevision, TaskIDs: append([]string(nil), approval.TaskIDs...), RemoteMainDeploys: approval.RemoteMainDeploys}
+	derived := CutoverAuthorization{GrantedBy: approval.SignerKeyID, Source: request.Approval.Path, Cause: approval.Cause, Scope: approval.ParentID, GrantedAt: approval.IssuedAt, Revision: approval.TargetRevision, TaskIDs: append([]string(nil), approval.TaskIDs...), RemoteMainDeploys: approval.RemoteMainDeploys}
 	return trustedAuthority{ID: approval.ID, Remote: approval.Remote, Approval: derived, Recovery: approval.RecoveryDisposition, EvidenceSHA: request.Approval.SHA256, Hosts: approval.HostInventories}, nil
 }
 

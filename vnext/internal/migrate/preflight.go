@@ -14,7 +14,10 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/install"
 	"github.com/thebpandey/agent-team/vnext/internal/release"
+	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
+
+var preflightCleanupHook func(string)
 
 func prepareAuthority(ctx context.Context, request AuthorityRequest) (AuthorityResult, error) {
 	prep := request.Prepare
@@ -125,14 +128,11 @@ func prepareAuthority(ctx context.Context, request AuthorityRequest) (AuthorityR
 	if err != nil {
 		return AuthorityResult{}, err
 	}
-	if err := writeExclusive(prep.PayloadPath, payload); err != nil {
+	storedRequest := append(requestRaw, '\n')
+	if err := writePreparedArtifacts(prep.PayloadPath, prep.RequestPath, payload, storedRequest); err != nil {
 		return AuthorityResult{}, err
 	}
-	if err := writeExclusive(prep.RequestPath, append(requestRaw, '\n')); err != nil {
-		_ = os.Remove(prep.PayloadPath)
-		return AuthorityResult{}, err
-	}
-	return AuthorityResult{Action: "prepare", ReceiptDigest: payloadSHA, TargetRevision: head, PayloadPath: prep.PayloadPath, PayloadSHA256: payloadSHA, RequestPath: prep.RequestPath, RequestSHA256: digestBytes(append(requestRaw, '\n'))}, nil
+	return AuthorityResult{Action: "prepare", ReceiptDigest: payloadSHA, TargetRevision: head, PayloadPath: prep.PayloadPath, PayloadSHA256: payloadSHA, RequestPath: prep.RequestPath, RequestSHA256: digestBytes(storedRequest)}, nil
 }
 
 func gitHead(ctx context.Context, project string) (string, error) {
@@ -148,14 +148,25 @@ var execCommand = func(ctx context.Context, name string, args ...string) ([]byte
 }
 
 func projectEvidencePath(project, path string) (string, error) {
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(project, filepath.FromSlash(path))
+	if filepath.IsAbs(path) {
+		if filepath.Clean(path) != path {
+			return "", core.ErrPath
+		}
+		return path, nil
 	}
-	path = filepath.Clean(path)
-	if !filepath.IsAbs(path) {
+	if !safeRelative(path) {
 		return "", core.ErrPath
 	}
-	return path, nil
+	full := filepath.Join(project, filepath.FromSlash(path))
+	if _, err := projectRelative(project, full); err != nil {
+		return "", core.ErrPath
+	}
+	directory := filepath.Dir(full)
+	resolved, err := filepath.EvalSymlinks(directory)
+	if err != nil || resolved != directory {
+		return "", core.ErrPath
+	}
+	return full, nil
 }
 
 func prepareEvidence(project string, refs []EvidenceReference) ([]EvidenceReference, error) {
@@ -222,10 +233,15 @@ func prepareLayout(prep *AuthorityPrepare) (install.Layout, error) {
 
 func absoluteOutput(path string) bool { return filepath.IsAbs(path) && filepath.Clean(path) == path }
 
-func writeExclusive(path string, raw []byte) error {
+func writeExclusive(path string, raw []byte) (os.FileInfo, error) {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	identity, statErr := file.Stat()
+	if statErr != nil {
+		_ = file.Close()
+		return nil, statErr
 	}
 	if _, err = file.Write(raw); err == nil {
 		err = file.Sync()
@@ -234,7 +250,28 @@ func writeExclusive(path string, raw []byte) error {
 		err = closeErr
 	}
 	if err != nil {
-		_ = os.Remove(path)
+		cleanupErr := store.New(filepath.Dir(path), core.StorageLimits{CanonicalBytes: authorityLimit}).RemoveIdentity(filepath.Base(path), identity)
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("%v; exclusive output cleanup: %w", err, cleanupErr)
+		}
 	}
-	return err
+	return identity, err
+}
+
+func writePreparedArtifacts(payloadPath, requestPath string, payload, request []byte) error {
+	payloadIdentity, err := writeExclusive(payloadPath, payload)
+	if err != nil {
+		return err
+	}
+	if _, err := writeExclusive(requestPath, request); err != nil {
+		if preflightCleanupHook != nil {
+			preflightCleanupHook(payloadPath)
+		}
+		cleanupErr := store.New(filepath.Dir(payloadPath), core.StorageLimits{CanonicalBytes: authorityLimit}).RemoveExactIdentity(filepath.Base(payloadPath), digestBytes(payload), authorityLimit, payloadIdentity)
+		if cleanupErr != nil {
+			return fmt.Errorf("%v; prepared payload cleanup: %w", err, cleanupErr)
+		}
+		return err
+	}
+	return nil
 }

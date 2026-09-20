@@ -69,16 +69,6 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 			if err := readStrictJSON(args[2], &request); err != nil {
 				return managementError(args, stdout, stderr, err)
 			}
-			if request.AuthorityReceipt != "" {
-				request.LegacyReceiptSHA256 = request.AuthorityReceiptSHA256
-				if request.Action == "host-cutover" {
-					inventories, verifyErr := migrate.VerifiedHostInventories(request.AuthorityReceipt, request.AuthorityReceiptSHA256)
-					if verifyErr != nil {
-						return managementError(args, stdout, stderr, verifyErr)
-					}
-					request.Inventories = inventories
-				}
-			}
 			var release install.Release
 			if request.Action == "host-cutover" {
 				var releaseErr error
@@ -101,6 +91,7 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		if result.Action == "prepare" {
 			output["payload_path"], output["payload_sha256"] = result.PayloadPath, result.PayloadSHA256
 			output["request_path"], output["request_sha256"] = result.RequestPath, result.RequestSHA256
+			output["trust_notice"] = "external operator trust is only the one-time fallback for stale or unverifiable v7 cutover; normal v8 setup and schema-4 receipt migrations do not require it"
 		}
 		return managementResult(args, stdout, output)
 	}

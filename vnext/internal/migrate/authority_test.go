@@ -124,10 +124,57 @@ func TestAuthorityPrepareWritesCanonicalDetachedArtifacts(t *testing.T) {
 	if err != nil || cutover.Action != "cutover" {
 		t.Fatalf("prepared cutover = %#v, %v", cutover, err)
 	}
-	receiptPath := filepath.Join(project, authorityReceiptPath)
-	inventories, err := VerifiedHostInventories(receiptPath, digestFileTest(t, receiptPath))
-	if err != nil || len(inventories) != 2 {
-		t.Fatalf("verified inventories = %#v, %v", inventories, err)
+	receipt, err := AuthorityStatus(project)
+	if err != nil || len(receipt.HostInventories) != 2 {
+		t.Fatalf("authority status = %#v, %v", receipt, err)
+	}
+}
+
+func TestProjectEvidencePathRejectsRelativeEscape(t *testing.T) {
+	project := t.TempDir()
+	for _, candidate := range []string{"../outside.json", filepath.Join("nested", "..", "..", "outside.json")} {
+		if _, err := projectEvidencePath(project, candidate); !errors.Is(err, core.ErrPath) {
+			t.Fatalf("projectEvidencePath(%q) = %v, want ErrPath", candidate, err)
+		}
+	}
+	external := t.TempDir()
+	link := filepath.Join(project, "linked")
+	if err := os.Symlink(external, link); err == nil {
+		if _, err := projectEvidencePath(project, filepath.Join("linked", "evidence.json")); !errors.Is(err, core.ErrPath) {
+			t.Fatalf("symlinked relative evidence = %v, want ErrPath", err)
+		}
+	}
+	absolute := filepath.Join(external, "evidence.json")
+	if got, err := projectEvidencePath(project, absolute); err != nil || got != absolute {
+		t.Fatalf("absolute external evidence = %q, %v", got, err)
+	}
+}
+
+func TestPreparedArtifactCleanupRetainsReplacement(t *testing.T) {
+	root := t.TempDir()
+	payloadPath := filepath.Join(root, "approval.json")
+	requestPath := filepath.Join(root, "request.json")
+	if err := os.WriteFile(requestPath, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preflightCleanupHook = func(path string) {
+		if path != payloadPath {
+			t.Fatalf("cleanup hook path = %q", path)
+		}
+		if err := os.Rename(path, path+".owned"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("owned"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { preflightCleanupHook = nil })
+	if err := writePreparedArtifacts(payloadPath, requestPath, []byte("owned"), []byte("request")); err == nil {
+		t.Fatal("artifact collision unexpectedly succeeded")
+	}
+	raw, err := os.ReadFile(payloadPath)
+	if err != nil || string(raw) != "owned" {
+		t.Fatalf("replacement = %q, %v", raw, err)
 	}
 }
 

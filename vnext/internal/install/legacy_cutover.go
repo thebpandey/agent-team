@@ -27,17 +27,14 @@ const (
 type LegacyHostCutoverRequest struct {
 	Schema                   int    `json:"schema"`
 	Action                   string `json:"action"`
+	Project                  string `json:"project,omitempty"`
 	OperationID              string `json:"operationId"`
 	LegacyReceipt            string `json:"legacyReceipt"`
 	LegacyReceiptSHA256      string `json:"legacyReceiptSha256"`
 	ExpectedManifestRevision uint64 `json:"expectedManifestRevision"`
 	ExpectedReceiptDigest    string `json:"expectedReceiptDigest,omitempty"`
-	AuthorityReceipt         string `json:"authorityReceipt,omitempty"`
 	AuthorityReceiptSHA256   string `json:"authorityReceiptSha256,omitempty"`
 	Hosts                    []Host `json:"hosts"`
-	// Inventories is populated only after the CLI verifies the signed project
-	// authority receipt. It is deliberately not accepted from request JSON.
-	Inventories []LegacyHostInventory `json:"-"`
 }
 
 type LegacyFileIdentity struct {
@@ -139,6 +136,9 @@ func CutoverLegacyHosts(ctx context.Context, layout Layout, release Release, req
 	if ctx == nil || ctx.Err() != nil || ValidateLayout(layout) != nil || request.Schema != 1 || request.OperationID == "" || (request.Action != "host-cutover" && request.Action != "host-rollback" && request.Action != "host-status") {
 		return LegacyHostCutoverResult{}, core.ErrSettings
 	}
+	if request.AuthorityReceiptSHA256 != "" {
+		request.LegacyReceiptSHA256 = request.AuthorityReceiptSHA256
+	}
 	guard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "host-cutover", request.OperationID+":"+request.Action)
 	if err != nil {
 		return LegacyHostCutoverResult{}, err
@@ -185,7 +185,7 @@ func cutoverLegacyHosts(ctx context.Context, layout Layout, release Release, req
 	if err != nil || len(hosts) == 0 || len(layout.ConfigPaths) != 2 {
 		return LegacyHostCutoverResult{}, core.ErrSettings
 	}
-	legacy, signedInventory, err := legacyAuthority(layout, request, hosts)
+	legacy, inventories, signedInventory, err := legacyAuthority(ctx, layout, request, hosts)
 	if err != nil {
 		return LegacyHostCutoverResult{}, err
 	}
@@ -198,7 +198,7 @@ func cutoverLegacyHosts(ctx context.Context, layout Layout, release Release, req
 	journal := lifecycleJournal{Schema: 1, Operation: "update", ExpectedRevision: current.Revision, Owner: owner, Previous: &previous, Intended: intended}
 	receipt := hostCutoverReceipt{Schema: 1, LegacySchema: legacy.SchemaVersion, OperationID: request.OperationID, Version: release.Version, Revision: release.Revision, LegacyReceipt: request.LegacyReceipt, LegacyReceiptSHA256: request.LegacyReceiptSHA256, Previous: previous, WrittenAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	for _, host := range hosts {
-		inventory := inventoryForHost(request.Inventories, host)
+		inventory := inventoryForHost(inventories, host)
 		if signedInventory {
 			sourceIdentity, _, sourceErr := stableLegacyIdentity(inventory.Source.Path, legacyReceiptLimit)
 			if sourceErr != nil || sourceIdentity != inventory.Source {
@@ -356,30 +356,34 @@ func readLegacyInstallReceipt(path, expectedDigest string) (legacyInstallReceipt
 	return receipt, nil
 }
 
-func legacyAuthority(layout Layout, request LegacyHostCutoverRequest, hosts []Host) (legacyInstallReceipt, bool, error) {
-	if len(request.Inventories) == 0 {
+func legacyAuthority(ctx context.Context, layout Layout, request LegacyHostCutoverRequest, hosts []Host) (legacyInstallReceipt, []LegacyHostInventory, bool, error) {
+	if request.AuthorityReceiptSHA256 == "" {
 		legacy, err := readLegacyInstallReceipt(request.LegacyReceipt, request.LegacyReceiptSHA256)
 		if err != nil {
-			return legacyInstallReceipt{}, false, err
+			return legacyInstallReceipt{}, nil, false, err
 		}
 		if err := verifyLegacyOwnership(layout, legacy, hosts); err != nil {
-			return legacyInstallReceipt{}, false, err
+			return legacyInstallReceipt{}, nil, false, err
 		}
-		return legacy, false, nil
+		return legacy, nil, false, nil
+	}
+	inventories, err := verifyLegacyProjectAuthority(ctx, request.Project, request.AuthorityReceiptSHA256)
+	if err != nil {
+		return legacyInstallReceipt{}, nil, true, err
 	}
 	observed, err := InventoryLegacyHosts(layout, hosts)
-	if err != nil || !sameLegacyInventories(observed, request.Inventories) {
-		return legacyInstallReceipt{}, true, fmt.Errorf("%w: signed legacy inventory changed", core.ErrRevision)
+	if err != nil || !sameLegacyInventories(observed, inventories) {
+		return legacyInstallReceipt{}, nil, true, fmt.Errorf("%w: signed legacy inventory changed", core.ErrRevision)
 	}
 	legacy := legacyInstallReceipt{SchemaVersion: 4, Version: "signed-inventory", InstalledFileMaps: map[string]legacyInstalledMap{}}
-	for _, inventory := range request.Inventories {
+	for _, inventory := range inventories {
 		files := map[string]legacyInstalledFile{"SKILL.md": {SHA256: inventory.Skill.SHA256, Mode: inventory.Skill.Mode, Size: inventory.Skill.Size}}
 		legacy.InstalledFileMaps[string(inventory.Host)] = legacyInstalledMap{Target: inventory.Root, Digest: legacyFileMapDigest(files), Files: files}
 		for _, handler := range inventory.Handlers {
 			legacy.Handlers = append(legacy.Handlers, legacyHandler{Runtime: handler.Runtime, Event: handler.Event, HandlerID: handler.HandlerID, Digest: handler.Digest, ConfigPath: handler.ConfigPath, Handler: append(json.RawMessage(nil), handler.Handler...)})
 		}
 	}
-	return legacy, true, nil
+	return legacy, inventories, true, nil
 }
 
 func sameLegacyInventories(a, b []LegacyHostInventory) bool {
