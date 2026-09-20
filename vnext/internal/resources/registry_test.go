@@ -26,11 +26,11 @@ func owner() resources.ResourceOwner {
 }
 
 func server(id string, port int, url string) resources.ServerRecord {
-	return resources.ServerRecord{ID: id, Command: "stop-server", Port: port, URL: url, Target: "dev", Purpose: "ui", Owner: owner(), Ownership: resources.Managed}
+	return resources.ServerRecord{ID: id, Port: port, URL: url, Target: "dev", Purpose: "ui", Owner: owner(), Ownership: resources.Managed}
 }
 
 func browser(id, session, url string) resources.BrowserRecord {
-	return resources.BrowserRecord{ID: id, Command: "stop-browser", Session: session, URL: url, Target: "dev", Purpose: "ui", Owner: owner(), Ownership: resources.Managed}
+	return resources.BrowserRecord{ID: id, Session: session, URL: url, Target: "dev", Purpose: "ui", Owner: owner(), Ownership: resources.Managed}
 }
 
 func TestRegistryCapsCASAndOwnership(t *testing.T) {
@@ -102,7 +102,7 @@ func TestRegistryReusesSameWorktreeRevisionAndPurpose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reused, err := r.ReserveServer(context.Background(), server("S-1", 3100, "http://localhost:3100"), first.Revision)
+	reused, err := r.ReserveServer(context.Background(), server("S-1", 3000, "http://localhost:3000"), first.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +153,13 @@ type recordingRunner struct {
 }
 
 func (r *recordingRunner) Run(context.Context, string, ...string) tracker.CommandResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	return r.result
+}
+
+func (r *recordingRunner) Stop(context.Context, resources.StopRequest) tracker.CommandResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
@@ -227,7 +234,7 @@ func TestRegistryExactRetryConvergesAcrossSeparateStores(t *testing.T) {
 }
 
 func TestRegistryCleansTerminalSlotOnlyAfterLifecycleEvidence(t *testing.T) {
-	r := newRegistry(t, t.TempDir(), nil)
+	r := newRegistry(t, t.TempDir(), &recordingRunner{})
 	reserved, err := r.ReserveServer(context.Background(), server("S-1", 3000, "http://localhost:3000"), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +246,7 @@ func TestRegistryCleansTerminalSlotOnlyAfterLifecycleEvidence(t *testing.T) {
 	if _, err := r.StopManaged(context.Background(), "S-1", servers[0].Revision); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.ReserveServer(context.Background(), server("S-2", 3100, "http://localhost:3100"), 3); err != nil {
+	if _, err := r.ReserveServer(context.Background(), server("S-2", 3100, "http://localhost:3100"), 4); err != nil {
 		t.Fatalf("terminal slot cleanup: %v", err)
 	}
 }
