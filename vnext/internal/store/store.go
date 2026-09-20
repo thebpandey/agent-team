@@ -136,10 +136,13 @@ func (s *Store) ReadFile(relative string, maxBytes int64) ([]byte, fs.FileMode, 
 // handle match expectedSHA256. The existing identity-claim removal primitive
 // retains a pathname replacement that races the verification.
 func (s *Store) RemoveExact(relative, expectedSHA256 string, maxBytes int64) error {
-	if s == nil || len(expectedSHA256) != 64 || maxBytes <= 0 || maxBytes > maxStorageBytes {
+	if s == nil || len(expectedSHA256) != 64 {
 		return core.ErrPath
 	}
-	var err error
+	limit, err := s.limit(maxBytes)
+	if err != nil {
+		return err
+	}
 	relative, err = validateRelative(relative)
 	if err != nil {
 		return err
@@ -153,7 +156,7 @@ func (s *Store) RemoveExact(relative, expectedSHA256 string, maxBytes int64) err
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || before.Size() < 0 || before.Size() > maxBytes {
+	if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || before.Size() < 0 || before.Size() > limit {
 		return core.ErrPath
 	}
 	file, err := root.OpenFile(filepath.FromSlash(relative), os.O_RDONLY|guardReadFlags(), 0)
@@ -169,7 +172,7 @@ func (s *Store) RemoveExact(relative, expectedSHA256 string, maxBytes int64) err
 		return core.ErrPath
 	}
 	hash := sha256.New()
-	n, readErr := io.Copy(hash, io.LimitReader(file, maxBytes+1))
+	n, readErr := io.Copy(hash, io.LimitReader(file, limit+1))
 	closeErr := file.Close()
 	if readErr != nil || closeErr != nil || n != info.Size() || hex.EncodeToString(hash.Sum(nil)) != expectedSHA256 {
 		return core.ErrRevision

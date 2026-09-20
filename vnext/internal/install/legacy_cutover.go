@@ -408,7 +408,14 @@ func retireLegacyHandlers(raw []byte, path, runtime string, receipts []legacyHan
 
 func readHostCutoverReceipt(layout Layout) (hostCutoverReceipt, error) {
 	path := filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))
-	raw, err := os.ReadFile(path)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return hostCutoverReceipt{}, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > installJournalLimit {
+		return hostCutoverReceipt{}, core.ErrPath
+	}
+	raw, err := readStableRegular(layout.DataRoot, path, info.Size(), nil, "")
 	if err != nil {
 		return hostCutoverReceipt{}, err
 	}
