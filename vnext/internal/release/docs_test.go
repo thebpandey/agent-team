@@ -15,10 +15,13 @@ func TestPublicDocs(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := string(body)
-		for _, want := range []string{"agent-teamctl install --host codex|claude|both", "TASKS.md", "Beads", "Codex", "Claude", "BLOCKERS.md", "DECISIONS.md", "Windows", "macOS", "Linux", "legacy", "FIX", "CLEAN", "rollback", "uninstall"} {
+		for _, want := range []string{"TASKS.md", "Beads", "Codex", "Claude", "BLOCKERS.md", "DECISIONS.md", "Windows", "macOS", "Linux", "legacy", "FIX", "CLEAN", "rollback", "uninstall"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("%s missing %q", path, want)
 			}
+		}
+		if (path == "README.md" || path == "GETTING_STARTED.md") && !strings.Contains(text, "agent-teamctl install --host both --json") {
+			t.Fatalf("%s missing concrete install command", path)
 		}
 	}
 }
@@ -34,6 +37,21 @@ func TestHostSkillEntrypointsHaveValidFrontmatter(t *testing.T) {
 		for _, ending := range []string{"\n", "\r\n"} {
 			validateHostFrontmatter(t, host, strings.ReplaceAll(lf, "\n", ending))
 		}
+	}
+}
+
+func TestWindowsDownloadInstructionsUseSeparateExtractionDirectory(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", "..", ".."))
+	gettingStarted, err := os.ReadFile(filepath.Join(root, "GETTING_STARTED.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gettingStarted), "$distribution = \"agent-teamctl-8.0.6-windows-amd64\"") || !strings.Contains(string(gettingStarted), "-DestinationPath $distribution") || !strings.Contains(string(gettingStarted), "Join-Path $distribution \"agent-teamctl.exe\"") || strings.Contains(string(gettingStarted), "-DestinationPath .\n") {
+		t.Fatal("Windows instructions must keep downloaded assets outside the extracted distribution")
+	}
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil || !strings.Contains(string(readme), "extracted folder") {
+		t.Fatal("README must direct Windows users to run from the extracted folder")
 	}
 }
 

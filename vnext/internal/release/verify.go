@@ -23,11 +23,15 @@ func VerifyArtifact(artifact Artifact, manifest Manifest) error {
 		return core.ErrRevision
 	}
 	defer archive.Close()
-	if len(archive.File) != len(manifest.Files) {
+	return verifyArchiveFiles(archive.File, manifest)
+}
+
+func verifyArchiveFiles(files []*zip.File, manifest Manifest) error {
+	if len(files) != len(manifest.Files) {
 		return core.ErrRevision
 	}
 	seen := map[string]bool{}
-	for index, entry := range archive.File {
+	for index, entry := range files {
 		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.ReplaceAll(entry.Name, "\\", "/"))))
 		if clean != entry.Name || clean == "." || strings.HasPrefix(clean, "../") || filepath.IsAbs(entry.Name) || seen[entry.Name] || entry.Name != manifest.Files[index] {
 			return core.ErrRevision

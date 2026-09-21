@@ -28,7 +28,7 @@ func TestAuthorityPrepareWritesCanonicalDetachedArtifacts(t *testing.T) {
 	project := authorityFixture(t)
 	request := readAuthorityRequestTest(t, authorityRequestFixture(t, project))
 	root := t.TempDir()
-	layout, err := install.ResolveLayout("linux", map[string]string{"XDG_DATA_HOME": filepath.Join(root, "data"), "CODEX_HOME": filepath.Join(root, "codex"), "CLAUDE_HOME": filepath.Join(root, "claude")})
+	layout, err := install.ResolveLayout("linux", map[string]string{"HOME": filepath.Join(root, "home"), "XDG_DATA_HOME": filepath.Join(root, "data"), "CODEX_HOME": filepath.Join(root, "codex"), "CLAUDE_HOME": filepath.Join(root, "claude")})
 	if err != nil {
 		t.Fatal(err)
 	}

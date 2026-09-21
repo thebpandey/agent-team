@@ -38,9 +38,10 @@ func TestRollbackRevisionDispatchWithJSONAndUniqueCompatibility(t *testing.T) {
 			t.Setenv("LOCALAPPDATA", dataHome)
 			t.Setenv("APPDATA", filepath.Join(root, "roaming"))
 			t.Setenv("XDG_DATA_HOME", dataHome)
+			t.Setenv("HOME", filepath.Join(root, "home"))
 			t.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
 			t.Setenv("CLAUDE_HOME", filepath.Join(root, "claude"))
-			layout, err := install.ResolveLayout(runtime.GOOS, map[string]string{"LOCALAPPDATA": os.Getenv("LOCALAPPDATA"), "XDG_DATA_HOME": os.Getenv("XDG_DATA_HOME"), "CODEX_HOME": os.Getenv("CODEX_HOME"), "CLAUDE_HOME": os.Getenv("CLAUDE_HOME")})
+			layout, err := install.ResolveLayout(runtime.GOOS, map[string]string{"LOCALAPPDATA": os.Getenv("LOCALAPPDATA"), "XDG_DATA_HOME": os.Getenv("XDG_DATA_HOME"), "HOME": os.Getenv("HOME"), "CODEX_HOME": os.Getenv("CODEX_HOME"), "CLAUDE_HOME": os.Getenv("CLAUDE_HOME")})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -328,6 +329,40 @@ func TestLocalReleaseRequiresPackagedProvenance(t *testing.T) {
 	}
 	if _, err := localReleaseFrom(root, executable, "2.0.0"); err == nil {
 		t.Fatal("wrong requested version accepted")
+	}
+}
+
+func TestLocalReleaseAcceptsExtractedWindowsBundle(t *testing.T) {
+	source, bundles := t.TempDir(), t.TempDir()
+	for path, body := range map[string]string{"agent-teamctl.exe": "windows-binary", "WORKER-CONTRACT": "contract", "codex/SKILL.md": "codex", "claude/SKILL.md": "claude", "VERSION": "1.0.0\n"} {
+		writeTestFile(t, filepath.Join(source, filepath.FromSlash(path)), body)
+	}
+	if err := releasepkg.BuildWindowsBundleFrom(source, bundles, "1.0.0", testRevision); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.OpenReader(filepath.Join(bundles, "agent-teamctl-1.0.0-windows-amd64.zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	distribution := t.TempDir()
+	for _, member := range archive.File {
+		reader, openErr := member.Open()
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		body, readErr := io.ReadAll(reader)
+		_ = reader.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		writeTestFile(t, filepath.Join(distribution, filepath.FromSlash(member.Name)), string(body))
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := localReleaseFrom(distribution, filepath.Join(distribution, "agent-teamctl.exe"), "1.0.0")
+	if err != nil || rel.Binary.Path != filepath.Join(distribution, "agent-teamctl.exe") {
+		t.Fatal(rel, err)
 	}
 }
 
