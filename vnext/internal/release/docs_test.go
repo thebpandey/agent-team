@@ -40,13 +40,56 @@ func TestHostSkillEntrypointsHaveValidFrontmatter(t *testing.T) {
 	}
 }
 
+func TestRootSkillRoutesLatestRepositoryToNativeRelease(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", "..", ".."))
+	versionRaw, err := os.ReadFile(filepath.Join(root, "vnext", "VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := strings.TrimSpace(string(versionRaw))
+	for _, path := range []string{"SKILL.md", "vnext/codex/SKILL.md", "vnext/claude/SKILL.md"} {
+		body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), "metadata:\n  version: \""+version+"\"") {
+			t.Fatalf("%s metadata version does not match vnext/VERSION %q", path, version)
+		}
+	}
+	rootSkill, err := os.ReadFile(filepath.Join(root, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rootSkill)
+	for _, want := range []string{
+		"Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract.",
+		"agent-teamctl install --host both --json",
+		"Report the installed native binary version when available.",
+		"require a checksum-verified native update",
+		"report the repository version as available and installation-needed",
+		"Historical Node materials do not supply an alternate current-action route.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("root SKILL.md does not route latest-repository use to native v%s: missing %q", version, want)
+		}
+	}
+	if strings.Contains(text, "Node-based v7.3.1 runtime described by legacy references is not vNext authority") {
+		t.Fatal("root SKILL.md retains misleading v7 runtime routing")
+	}
+}
+
 func TestWindowsDownloadInstructionsUseSeparateExtractionDirectory(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", "..", ".."))
+	versionRaw, err := os.ReadFile(filepath.Join(root, "vnext", "VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := strings.TrimSpace(string(versionRaw))
 	gettingStarted, err := os.ReadFile(filepath.Join(root, "GETTING_STARTED.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(gettingStarted), "$distribution = \"agent-teamctl-8.0.6-windows-amd64\"") || !strings.Contains(string(gettingStarted), "-DestinationPath $distribution") || !strings.Contains(string(gettingStarted), "Join-Path $distribution \"agent-teamctl.exe\"") || strings.Contains(string(gettingStarted), "-DestinationPath .\n") {
+	if !strings.Contains(string(gettingStarted), "$distribution = \"agent-teamctl-"+version+"-windows-amd64\"") || !strings.Contains(string(gettingStarted), "-DestinationPath $distribution") || !strings.Contains(string(gettingStarted), "Join-Path $distribution \"agent-teamctl.exe\"") || strings.Contains(string(gettingStarted), "-DestinationPath .\n") {
 		t.Fatal("Windows instructions must keep downloaded assets outside the extracted distribution")
 	}
 	readme, err := os.ReadFile(filepath.Join(root, "README.md"))

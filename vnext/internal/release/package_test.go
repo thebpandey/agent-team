@@ -212,7 +212,13 @@ func TestReleaseMetadata(t *testing.T) {
 	readinessDownload := "with: { name: vnext-release-readiness, path: vnext }"
 	tagCommand := `git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -a "v${{ inputs.version }}" -m "Agent-Team v${{ inputs.version }}"`
 	windowsBundleCanary := "windows-bundle-canary:\n    needs: package\n    permissions: { contents: read }\n    runs-on: windows-latest"
+	rootSkillCanary := []string{"root-skill-home", ".codex/skills/agent-team", "Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE \"SKILL.md\")", "Windows source-root conflict was not rejected", "Conflict created a native manifest", "Move-Item -LiteralPath $staleRoot", "agent-team-vnext/SKILL.md"}
 	if !strings.Contains(workflowText, "${{ inputs.version }}") || !strings.Contains(workflowText, "permissions:\n  contents: read") || !strings.Contains(workflowText, "permissions: { contents: write }") || !strings.Contains(workflowText, "${{ github.workspace }}/vnext/release-artifacts") || strings.Count(workflowText, checksumStep) != 2 || strings.Count(workflowText, canonicalTempStep) != 2 || !strings.Contains(workflowText, readinessUpload) || !strings.Contains(workflowText, readinessDownload) || !strings.Contains(workflowText, "verify-gates --evidence release-readiness.json") || !strings.Contains(workflowText, tagCommand) || !strings.Contains(workflowText, windowsBundleCanary) || !strings.Contains(workflowText, "agent-teamctl-${{ inputs.version }}-windows-amd64.zip") || !strings.Contains(workflowText, "install --host both --json") {
 		t.Fatal("workflow release contract is incomplete")
+	}
+	for _, want := range rootSkillCanary {
+		if !strings.Contains(workflowText, want) {
+			t.Fatalf("workflow omits Windows source-root canary contract %q", want)
+		}
 	}
 }

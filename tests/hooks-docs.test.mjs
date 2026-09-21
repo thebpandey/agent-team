@@ -112,8 +112,10 @@ test("release version and public guidance stay consistent", async () => {
   const manifest = JSON.parse(raw);
   assert.equal(manifest.version, "7.3.1");
   assert.equal(manifest.repository, "https://github.com/thebpandey/agent-team");
-  assert.ok(skill.includes('version: "' + manifest.version + '"'));
   const nativeVersion = (await read("vnext/VERSION")).trim();
+  assert.ok(skill.includes('version: "' + nativeVersion + '"'));
+  assert.match(skill, /Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract\./);
+  assert.match(skill, /Historical Node package v7\.3\.1 materials are historical context only and are not native authority\./);
   assert.ok(readme.includes(`**[v${nativeVersion}]`));
   assert.ok(changelog.includes(`## ${nativeVersion} - `));
   assert.ok(changelog.includes("## " + manifest.version + " - "));
