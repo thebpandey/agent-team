@@ -258,7 +258,7 @@ async function runEvent(event, budget, runBeads, evidencePackageRoot, trustedCon
     && event.operation.kind === 'file_change'
     && event.operation.files.some((file) => [project.paths?.tasks, project.paths?.state, project.paths?.teams]
       .includes(path.resolve(event.cwd, file.path)));
-  if (project.active && project.setup.dashboard?.snapshot === true
+  if (project.active && (project.setup.authority === 'v8' || project.setup.dashboard?.snapshot === true)
     && (changedCanonicalRecord || decision.mutations.some((entry) => entry.kind === 'checkpoint' && entry.created))) {
     try {
       const { refreshConfiguredDashboard } = await budget.run(() => import('./lib/workflow-cli.mjs'));

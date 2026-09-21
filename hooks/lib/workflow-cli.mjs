@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { loadCanonicalState } from "./canonical-state.mjs";
 import { writeCheckpoint } from "./checkpoint.mjs";
 import { cleanupDevelopmentWorktree } from "./cleanup.mjs";
-import { createBeadsGraphCommandAdapter, createLoopbackDashboard, createSnapshotPublisher } from "./dashboard.mjs";
+import { atomicWrite, createBeadsGraphCommandAdapter, createLoopbackDashboard, createSnapshotPublisher } from "./dashboard.mjs";
 import { resolveProject } from "./project.mjs";
 import { inspectRecovery } from "./recovery.mjs";
 import { readStatus } from "./status.mjs";
@@ -251,11 +251,19 @@ export async function deriveDashboard(project, options = {}) {
 async function publishDashboard(project, { budget: callerBudget } = {}) {
   const budget = callerBudget ?? createEventBudget(1500);
   try {
-    return await createSnapshotPublisher({
+    let model;
+    const result = await createSnapshotPublisher({
       destination: snapshotDestination(project),
       budget,
-      derive: () => deriveDashboard(project, { budget }),
+      derive: async () => (model = await deriveDashboard(project, { budget })),
     }).refresh();
+    if (project.setup?.authority === "v8" && ["published", "unchanged"].includes(result.status)) {
+      const total = model.tasks?.length ?? 0;
+      const completed = model.progress?.completed ?? "unknown";
+      const teams = `# Agent-Team teams\n\nProject: ${project.projectId}\nAuthority: v8\nRevision: ${model.revision ?? "unknown"}\nTracker: Beads (canonical)\nProgress: ${completed} / ${total} tasks closed\nIntegration: ${model.state?.integration?.status ?? "unknown"}\nRelease: ${model.state?.release?.status ?? "unknown"}\n`;
+      await atomicWrite(project.paths.teams, teams, budget);
+    }
+    return result;
   } finally {
     if (!callerBudget) budget.close();
   }
@@ -263,7 +271,7 @@ async function publishDashboard(project, { budget: callerBudget } = {}) {
 
 /** Refresh only when the shared setup explicitly opts into automatic snapshots. */
 export async function refreshConfiguredDashboard(project, options = {}) {
-  if (project?.setup?.dashboard?.snapshot !== true) return { status: "skipped", reason: "not_configured" };
+  if (project?.setup?.authority !== "v8" && project?.setup?.dashboard?.snapshot !== true) return { status: "skipped", reason: "not_configured" };
   const budget = options.budget ?? createEventBudget(1500);
   try { return await publishDashboard(project, { budget }); }
   catch (error) { return { status: 'unavailable', reason: String(error.message || error) }; }

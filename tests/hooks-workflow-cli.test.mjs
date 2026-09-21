@@ -693,6 +693,34 @@ test("dashboard snapshot uses the fixed path and configured refresh remains opt-
   assert.equal(configured.status, "published");
 });
 
+test("v8 authority refresh publishes current TEAMS and dashboard snapshots", async () => {
+  const value = await fixture();
+  const setupPath = path.join(value.root, ".agent-team", "setup.json");
+  await writeFile(setupPath, JSON.stringify({
+    schema: 1,
+    authority: "v8",
+    project: value.root,
+    receiptDigest: "a".repeat(64),
+    receiptPath: ".agent-team/v8/authority.json",
+    revision: value.revision,
+    tracker: { kind: "beads", executable: boundedBeads, parentId: "AT-ROOT", taskIds: ["AT-001", "AT-ROOT"], fingerprint: "b".repeat(64) },
+  }));
+  await writeFile(path.join(value.root, ".agent-team", "state.json"), JSON.stringify({
+    schema: 1,
+    revision: value.revision,
+    integration: { authorized: true, hold: false, receiptDigest: "a".repeat(64) },
+    release: { authorized: true, hold: false, receiptDigest: "a".repeat(64) },
+  }));
+
+  const project = await resolveProject(value.feature);
+  assert.equal(project.active, true);
+  assert.equal(project.projectId, "AT-ROOT");
+  const result = await (await import("../hooks/lib/workflow-cli.mjs")).refreshConfiguredDashboard(project);
+  assert.equal(result.status, "published");
+  assert.match(await readFile(project.paths.teams, "utf8"), new RegExp(`Revision: ${value.revision}`));
+  assert.match(await readFile(path.join(value.root, ".agent-team", "dashboard", "index.html"), "utf8"), /LOCAL STATUS SNAPSHOT/);
+});
+
 test("actual dashboard snapshot CLI derives the explicitly configured Beads graph with attribution", async () => {
   const value = await fixture();
   const log = path.join(value.root, "bounded-bv.log");

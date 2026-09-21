@@ -17,6 +17,7 @@ import { effectiveRunFingerprint } from '../hooks/lib/run-state.mjs';
 
 const hook = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-hook.mjs");
 const cli = path.resolve(import.meta.dirname, "..", "hooks", "agent-team-cli.mjs");
+const boundedBeads = path.resolve(import.meta.dirname, "fixtures", "bounded-beads-cli.mjs");
 const temporary = [];
 
 test.afterEach(async () => Promise.all(temporary.splice(0).map((item) => rm(item, { force: true, recursive: true }))));
@@ -303,6 +304,29 @@ test('a factual checkpoint refreshes an explicitly enabled snapshot without chan
   assert.equal(invoke('codex', 'PreCompact', { cwd: value.feature, session_id: 'developer-session' }, value.home).status, 0);
   assert.match(await readFile(path.join(value.root, '.agent-team/dashboard/index.html'), 'utf8'), /LOCAL STATUS SNAPSHOT/);
   assert.equal(await readFile(trackerPath, 'utf8'), before);
+});
+
+test('a canonical change refreshes v8 snapshots without the legacy dashboard flag', async () => {
+  const value = await fixture();
+  await writeFile(path.join(value.root, '.agent-team/setup.json'), JSON.stringify({
+    schema: 1, authority: 'v8', project: value.root, receiptDigest: 'a'.repeat(64),
+    receiptPath: '.agent-team/v8/authority.json', revision: value.revision,
+    tracker: { kind: 'beads', executable: boundedBeads, parentId: 'AT-ROOT', taskIds: ['AT-001', 'AT-ROOT'], fingerprint: 'b'.repeat(64) },
+  }));
+  await writeFile(path.join(value.root, '.agent-team/state.json'), JSON.stringify({
+    schema: 1, revision: value.revision,
+    integration: { authorized: true, hold: false, receiptDigest: 'a'.repeat(64) },
+    release: { authorized: true, hold: false, receiptDigest: 'a'.repeat(64) },
+  }));
+  const result = invoke('codex', 'PostToolUse', {
+    cwd: value.root,
+    session_id: 'developer-session',
+    tool_name: 'apply_patch',
+    tool_input: { command: '*** Begin Patch\n*** Update File: .agent-team/state.json\n+ observed change\n*** End Patch' },
+  }, value.home);
+  assert.equal(result.status, 0);
+  assert.match(await readFile(path.join(value.root, '.agent-team/dashboard/index.html'), 'utf8'), /LOCAL STATUS SNAPSHOT/);
+  assert.match(await readFile(path.join(value.root, '.agent-team/TEAMS.md'), 'utf8'), new RegExp(`Revision: ${value.revision}`));
 });
 
 for (const blockedAt of ['discovery', 'recording']) {

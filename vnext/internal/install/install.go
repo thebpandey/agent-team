@@ -503,7 +503,7 @@ func manifestMismatches(manifest InstallManifest) []string {
 	return paths
 }
 
-func updateJournalPlan(layout Layout, release Release, current InstallManifest, desired []desiredFile, backups map[string]bool, owner store.MutationOwner, expected uint64) lifecycleJournal {
+func updateJournalPlan(layout Layout, release Release, current InstallManifest, desired []desiredFile, backups map[string]bool, owner store.MutationOwner, expected uint64, reconcilePaths bool) lifecycleJournal {
 	previous, intended := cloneManifest(current), cloneManifest(current)
 	intended.Revision, intended.Version, intended.ReleaseRevision = expected+1, release.Version, release.Revision
 	plan := lifecycleJournal{Schema: 1, Operation: "update", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended}
@@ -520,8 +520,15 @@ func updateJournalPlan(layout Layout, release Release, current InstallManifest, 
 		if !backups[backupPath(layout, old)] {
 			plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: backupPath(layout, old), PostMode: 0o600, PostSHA256: old.SHA256, PostBytes: old.Bytes, Exclusive: true})
 		}
-		plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: old.Path, Existed: true, PreSHA256: strings.Repeat("0", 64), PreMode: plannedMode(old.Path), PostMode: mode, PostSHA256: target.source.SHA256, PostBytes: target.source.Bytes})
-		plan.Retained = append(plan.Retained, old.Path, backupPath(layout, old))
+		mutationPath := old.Path
+		if reconcilePaths {
+			mutationPath = target.owned.Path
+		}
+		plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: mutationPath, Existed: old.Path == mutationPath, PreSHA256: strings.Repeat("0", 64), PreMode: plannedMode(mutationPath), PostMode: mode, PostSHA256: target.source.SHA256, PostBytes: target.source.Bytes})
+		if reconcilePaths && old.Path != target.owned.Path {
+			plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: old.Path, Existed: true, PreSHA256: strings.Repeat("0", 64), PreMode: plannedMode(old.Path), PostAbsent: true})
+		}
+		plan.Retained = append(plan.Retained, old.Path, target.owned.Path, backupPath(layout, old))
 		plan.Intended.Files[index] = target.owned
 	}
 	return plan
@@ -660,6 +667,17 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 		return stale, err
 	}
 	desired := releaseFiles(layout, release, current.Hosts)
+	hostReceipt, err := lifecycleHostCutoverReceipt(layout, current)
+	if err != nil {
+		return CASOutcome{}, err
+	}
+	if hostReceipt != nil {
+		for index := range desired {
+			if desired[index].owned.Role == EntrypointRole {
+				desired[index].owned.Path = filepath.Join(layout.SkillRoots[desired[index].owned.Host], "SKILL.md")
+			}
+		}
+	}
 	if installedReleaseMatches(current, desired) {
 		if err := VerifyRelease(release); err != nil {
 			return CASOutcome{}, core.ErrRevision
@@ -672,7 +690,17 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 		return CASOutcome{}, err
 	}
 	budget := newJournalBudget()
-	if err := budget.accountMetadata(updateJournalPlan(layout, release, current, desired, backups, owner, expected)); err != nil {
+	plan := updateJournalPlan(layout, release, current, desired, backups, owner, expected, hostReceipt != nil)
+	var receiptRaw []byte
+	if hostReceipt != nil {
+		receiptRaw, err = updatedHostCutoverReceipt(*hostReceipt, release.Version, release.Revision, desired)
+		if err != nil {
+			return CASOutcome{}, err
+		}
+		receiptPath := filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))
+		plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: receiptPath, Existed: true, PreSHA256: hostReceipt.ReceiptDigest, PreMode: plannedMode(receiptPath), PostMode: 0o600, PostSHA256: digestContent(receiptRaw), PostBytes: int64(len(receiptRaw))})
+	}
+	if err := budget.accountMetadata(plan); err != nil {
 		return CASOutcome{}, err
 	}
 	for _, target := range desired {
@@ -681,11 +709,33 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			if err := budget.reserve(current.Files[index].Bytes, "preimage"); err != nil {
 				return CASOutcome{}, err
 			}
+			if hostReceipt != nil && current.Files[index].Path != target.owned.Path {
+				info, statErr := os.Lstat(target.owned.Path)
+				if statErr != nil || !info.Mode().IsRegular() {
+					return CASOutcome{}, core.ErrRevision
+				}
+				if err := budget.reserve(info.Size(), "preimage"); err != nil {
+					return CASOutcome{}, err
+				}
+			}
 			if !backups[backupPath(layout, current.Files[index])] {
 				if err := budget.reserve(current.Files[index].Bytes, "replacement"); err != nil {
 					return CASOutcome{}, err
 				}
 			}
+		}
+	}
+	if hostReceipt != nil {
+		receiptPath := filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))
+		info, statErr := os.Lstat(receiptPath)
+		if statErr != nil || !info.Mode().IsRegular() {
+			return CASOutcome{}, core.ErrRevision
+		}
+		if err := budget.reserve(info.Size(), "preimage"); err != nil {
+			return CASOutcome{}, err
+		}
+		if err := budget.reserve(int64(len(receiptRaw)), "replacement"); err != nil {
+			return CASOutcome{}, err
 		}
 	}
 	if updateBackupSnapshotHook != nil {
@@ -738,8 +788,23 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			mutations = append(mutations, backupMutation)
 		}
 		mutations = append(mutations, targetMutation)
+		if hostReceipt != nil && next.Files[index].Path != target.owned.Path {
+			removeMutation, err := prepareMutation(layout, next.Files[index].Path, nil, 0, true, false, nil)
+			if err != nil {
+				return CASOutcome{Retained: append(retained, next.Files[index].Path)}, err
+			}
+			mutations = append(mutations, removeMutation)
+		}
 		next.Backups = appendBackup(next.Backups, backup)
 		next.Files[index] = target.owned
+	}
+	if hostReceipt != nil {
+		receiptPath := filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))
+		receiptMutation, err := prepareMutation(layout, receiptPath, receiptRaw, 0o600, false, false, nil)
+		if err != nil {
+			return CASOutcome{Retained: append(retained, receiptPath)}, err
+		}
+		mutations = append(mutations, receiptMutation)
 	}
 	previous := cloneManifest(current)
 	intended := cloneManifest(next)
@@ -814,7 +879,27 @@ func rollbackLocked(ctx context.Context, layout Layout, version, revision string
 	if err != nil {
 		return CASOutcome{}, err
 	}
-	if err := budget.accountMetadata(rollbackJournalPlan(layout, current, version, targetRevision, selected, owner, expected)); err != nil {
+	hostReceipt, err := lifecycleHostCutoverReceipt(layout, current)
+	if err != nil {
+		return CASOutcome{}, err
+	}
+	plan := rollbackJournalPlan(layout, current, version, targetRevision, selected, owner, expected)
+	var receiptRaw []byte
+	if hostReceipt != nil {
+		receiptDesired := make([]desiredFile, 0, len(selected))
+		for _, backup := range selected {
+			if backup.Role == EntrypointRole {
+				receiptDesired = append(receiptDesired, desiredFile{owned: OwnedFile{Role: backup.Role, Host: backup.Host, Path: filepath.Join(layout.SkillRoots[backup.Host], "SKILL.md"), SHA256: backup.SHA256, Version: backup.Version, Revision: backup.Revision, Bytes: backup.Bytes}})
+			}
+		}
+		receiptRaw, err = updatedHostCutoverReceipt(*hostReceipt, version, targetRevision, receiptDesired)
+		if err != nil {
+			return CASOutcome{}, err
+		}
+		receiptPath := filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))
+		plan.Mutations = append(plan.Mutations, lifecycleMutation{Path: receiptPath, Existed: true, PreSHA256: strings.Repeat("0", 64), PreMode: plannedMode(receiptPath), PostMode: 0o600, PostSHA256: digestContent(receiptRaw), PostBytes: int64(len(receiptRaw))})
+	}
+	if err := budget.accountMetadata(plan); err != nil {
 		return CASOutcome{}, err
 	}
 	for _, backup := range selected {
@@ -826,6 +911,19 @@ func rollbackLocked(ctx context.Context, layout Layout, version, revision string
 			if err := budget.reserve(current.Files[index].Bytes, "preimage"); err != nil {
 				return CASOutcome{}, err
 			}
+		}
+	}
+	if hostReceipt != nil {
+		receiptPath := filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))
+		info, statErr := os.Lstat(receiptPath)
+		if statErr != nil || !info.Mode().IsRegular() {
+			return CASOutcome{}, core.ErrRevision
+		}
+		if err := budget.reserve(info.Size(), "preimage"); err != nil {
+			return CASOutcome{}, err
+		}
+		if err := budget.reserve(int64(len(receiptRaw)), "replacement"); err != nil {
+			return CASOutcome{}, err
 		}
 	}
 	next := cloneManifest(current)
@@ -862,6 +960,14 @@ func rollbackLocked(ctx context.Context, layout Layout, version, revision string
 	}
 	if restored == 0 {
 		return CASOutcome{Retained: retained}, core.ErrRevision
+	}
+	if hostReceipt != nil {
+		receiptPath := filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))
+		receiptMutation, err := prepareMutation(layout, receiptPath, receiptRaw, 0o600, false, false, nil)
+		if err != nil {
+			return CASOutcome{Retained: append(retained, receiptPath)}, err
+		}
+		mutations = append(mutations, receiptMutation)
 	}
 	next.Version, next.ReleaseRevision = version, targetRevision
 	previous := cloneManifest(current)
