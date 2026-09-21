@@ -144,7 +144,12 @@ jobs:
       - run: go run ./cmd/vnext-release write-readiness --revision "${GITHUB_SHA}" --gates release-evidence/release-gates.json --benchmark release-evidence/benchmark.json --artifact release-artifacts/RELEASE.json --sbom release-artifacts/SBOM.cdx.json --canary release-evidence/canary.json --rollback release-evidence/rollback.json --provider release-evidence/provider.json --installed release-evidence/installed-skill.json
         working-directory: vnext
       - uses: actions/upload-artifact@v4
-        with: { name: vnext-release-readiness, path: vnext/release-readiness.json }
+        with:
+          name: vnext-release-readiness
+          path: |
+            vnext/release-readiness.json
+            vnext/release-evidence/*
+            vnext/release-artifacts/*
 
   publish:
     needs: [verify-linux, verify-macos, verify-windows, package, canary]
@@ -156,12 +161,10 @@ jobs:
       - uses: actions/setup-go@v5
         with: { go-version: stable }
       - uses: actions/download-artifact@v4
-        with: { name: vnext-release-artifacts, path: vnext/release-artifacts }
-      - uses: actions/download-artifact@v4
-        with: { name: vnext-release-readiness, path: vnext/release-evidence }
+        with: { name: vnext-release-readiness, path: vnext }
       - run: sha256sum -c SHA256SUMS
         working-directory: vnext/release-artifacts
-      - run: go run ./cmd/vnext-release verify-gates --evidence release-evidence/release-readiness.json --revision "${GITHUB_SHA}"
+      - run: go run ./cmd/vnext-release verify-gates --evidence release-readiness.json --revision "${GITHUB_SHA}"
         working-directory: vnext
       - run: |
           test "$(jq -r .version vnext/release-artifacts/RELEASE.json)" = "${{ inputs.version }}"
