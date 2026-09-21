@@ -22,7 +22,11 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	previousHome, hadHome := os.LookupEnv("HOME")
+	previousUserProfile, hadUserProfile := os.LookupEnv("USERPROFILE")
 	if err := os.Setenv("HOME", home); err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("USERPROFILE", home); err != nil {
 		panic(err)
 	}
 	code := m.Run()
@@ -31,8 +35,24 @@ func TestMain(m *testing.M) {
 	} else {
 		_ = os.Unsetenv("HOME")
 	}
+	if hadUserProfile {
+		_ = os.Setenv("USERPROFILE", previousUserProfile)
+	} else {
+		_ = os.Unsetenv("USERPROFILE")
+	}
 	_ = os.RemoveAll(home)
 	os.Exit(code)
+}
+
+func requireLayoutHomesWithin(t *testing.T, root string, layout install.Layout) {
+	t.Helper()
+	for host, skillRoot := range layout.SkillRoots {
+		home := filepath.Dir(filepath.Dir(skillRoot))
+		relative, err := filepath.Rel(root, home)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			t.Fatalf("%s host home escapes test root: %q", host, home)
+		}
+	}
 }
 
 func TestInstallRejectsUnownedCodexDiscoverySkills(t *testing.T) {
@@ -61,6 +81,7 @@ func TestInstallRejectsUnownedCodexDiscoverySkills(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			requireLayoutHomesWithin(t, root, layout)
 			stale := scenario.path(root, layout)
 			if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
 				t.Fatal(err)
@@ -167,6 +188,7 @@ func TestInstallRejectsFallbackAndNestedCodexDiscoverySkills(t *testing.T) {
 			root := t.TempDir()
 			if scenario.fallback {
 				t.Setenv("HOME", root)
+				t.Setenv("USERPROFILE", root)
 			}
 			env := map[string]string{"XDG_DATA_HOME": filepath.Join(root, "data")}
 			if !scenario.fallback {
@@ -179,6 +201,7 @@ func TestInstallRejectsFallbackAndNestedCodexDiscoverySkills(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			requireLayoutHomesWithin(t, root, layout)
 			stale := scenario.path(root, layout)
 			if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
 				t.Fatal(err)

@@ -127,3 +127,23 @@ Cause: Disposable generated files were treated as sufficient reason to bypass no
 Correction: Pre-removal status showed only the two generated binaries, with no tracked changes; both release-output sets remained outside the checkout and were preserved in canonical task evidence. The tracked source remains at the reviewed commit.
 
 Prevention: Inspect tracked, untracked, and ignored files; preserve required output outside the checkout, remove only confirmed disposable files, then use normal worktree removal without `--force`.
+
+## M-009: Isolate the actual host's home lookup in platform tests
+
+Status: Active
+Scope: Cross-platform installer test fixtures
+Source: Beads atv-5sh.44.2, Windows CI runs35661872390 and35661872297, 2026-09-21.
+Mistake: A fallback-home fixture set HOME only and wrote fake skill bytes into the disposable Windows runner's default home.
+Cause: `os.UserHomeDir` uses USERPROFILE on Windows, independent of a simulated layout's requested platform.
+Correction: Isolate both HOME and USERPROFILE to the owned fixture before calling the real host fallback; confirm native Windows CI.
+Prevention: Before a test can install files, assert that every resolved home and destination is inside its owned fixture on the actual running OS.
+
+## M-010: Close binary-inspection handles before fixture cleanup
+
+Status: Active
+Scope: Windows PE inspection tests
+Source: Beads atv-5sh.44.1, Windows CI runs35661872390 and35661872297, 2026-09-21.
+Mistake: Two PE tests opened executable files without closing the returned handles, so Windows could not remove their temporary directories.
+Cause: Linux permits unlinking open files and concealed the leaked handle during local checks.
+Correction: Close every successful `debug/pe.Open` handle, including assertion-failure paths; confirm native Windows cleanup.
+Prevention: Register cleanup immediately after every successful file or archive open, and run affected filesystem tests on each supported OS.
