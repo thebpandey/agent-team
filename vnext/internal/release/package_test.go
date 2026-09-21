@@ -205,7 +205,7 @@ func TestReleaseMetadata(t *testing.T) {
 		}
 	}
 	workflow, _ := os.ReadFile(filepath.Join(repository, ".github", "workflows", "vnext-release.yml"))
-	workflowText := string(workflow)
+	workflowText := strings.ReplaceAll(string(workflow), "\r\n", "\n")
 	checksumStep := "- run: sha256sum -c SHA256SUMS\n        working-directory: vnext/release-artifacts"
 	canonicalTempStep := "- name: Use canonical test temp\n        shell: bash\n        run: |\n          printf 'TMPDIR=%s\\nTMP=%s\\nTEMP=%s\\n' \"$RUNNER_TEMP\" \"$RUNNER_TEMP\" \"$RUNNER_TEMP\" >> \"$GITHUB_ENV\""
 	readinessUpload := "with:\n          name: vnext-release-readiness\n          path: |\n            vnext/release-readiness.json\n            vnext/release-evidence/*\n            vnext/release-artifacts/*"

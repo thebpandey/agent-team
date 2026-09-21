@@ -42,6 +42,24 @@ func TestHostSkillEntrypointsHaveValidFrontmatter(t *testing.T) {
 	}
 }
 
+func TestSkillMetadataVersionMatchesExactVersionWithLFAndCRLF(t *testing.T) {
+	for _, test := range []struct {
+		name, body, version string
+		want                bool
+	}{
+		{name: "LF current", body: "---\nmetadata:\n  version: \"8.0.7\"\n---\n", version: "8.0.7", want: true},
+		{name: "CRLF current", body: "---\r\nmetadata:\r\n  version: \"8.0.7\"\r\n---\r\n", version: "8.0.7", want: true},
+		{name: "LF wrong version", body: "---\nmetadata:\n  version: \"8.0.7\"\n---\n", version: "8.0.6", want: false},
+		{name: "CRLF wrong version", body: "---\r\nmetadata:\r\n  version: \"8.0.7\"\r\n---\r\n", version: "8.0.6", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := hasSkillMetadataVersion(test.body, test.version); got != test.want {
+				t.Fatalf("hasSkillMetadataVersion(%q, %q) = %t, want %t", test.body, test.version, got, test.want)
+			}
+		})
+	}
+}
+
 func TestRootSkillRoutesLatestRepositoryToNativeRelease(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", "..", ".."))
 	versionRaw, err := os.ReadFile(filepath.Join(root, "vnext", "VERSION"))
@@ -54,7 +72,7 @@ func TestRootSkillRoutesLatestRepositoryToNativeRelease(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(body), "metadata:\n  version: \""+version+"\"") {
+		if !hasSkillMetadataVersion(string(body), version) {
 			t.Fatalf("%s metadata version does not match vnext/VERSION %q", path, version)
 		}
 	}
@@ -111,7 +129,7 @@ func TestDisplayedCurrentVersionsFollowNativeReleaseAuthority(t *testing.T) {
 		t.Fatalf("WORKER-CONTRACT must retain schema-1 actions and match vnext/VERSION %q", version)
 	}
 	for _, path := range []string{"SKILL.md", "vnext/codex/SKILL.md", "vnext/claude/SKILL.md"} {
-		if !strings.Contains(read(path), "metadata:\n  version: \""+version+"\"") {
+		if !hasSkillMetadataVersion(read(path), version) {
 			t.Fatalf("%s metadata version does not match vnext/VERSION %q", path, version)
 		}
 	}
@@ -163,6 +181,10 @@ func TestHistoricalVersionsAreExplicitlyLabeled(t *testing.T) {
 	}
 }
 
+func hasSkillMetadataVersion(body, version string) bool {
+	return strings.Contains(strings.ReplaceAll(body, "\r\n", "\n"), "metadata:\n  version: \""+version+"\"")
+}
+
 func TestWindowsDownloadInstructionsUseSeparateExtractionDirectory(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", "..", ".."))
 	versionRaw, err := os.ReadFile(filepath.Join(root, "vnext", "VERSION"))
@@ -174,7 +196,8 @@ func TestWindowsDownloadInstructionsUseSeparateExtractionDirectory(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(gettingStarted), "$distribution = \"agent-teamctl-"+version+"-windows-amd64\"") || !strings.Contains(string(gettingStarted), "-DestinationPath $distribution") || !strings.Contains(string(gettingStarted), "Join-Path $distribution \"agent-teamctl.exe\"") || strings.Contains(string(gettingStarted), "-DestinationPath .\n") {
+	gettingText := strings.ReplaceAll(string(gettingStarted), "\r\n", "\n")
+	if !strings.Contains(gettingText, "$distribution = \"agent-teamctl-"+version+"-windows-amd64\"") || !strings.Contains(gettingText, "-DestinationPath $distribution") || !strings.Contains(gettingText, "Join-Path $distribution \"agent-teamctl.exe\"") || strings.Contains(gettingText, "-DestinationPath .\n") {
 		t.Fatal("Windows instructions must keep downloaded assets outside the extracted distribution")
 	}
 	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
