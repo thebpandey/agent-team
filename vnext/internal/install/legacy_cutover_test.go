@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -215,6 +216,176 @@ func TestUpdateAfterLegacyHostCutoverRejectsForeignNestedEntrypoint(t *testing.T
 	if err != nil || !reflect.DeepEqual(unchanged, manifest) {
 		t.Fatalf("manifest changed on refusal: %#v, %v", unchanged, err)
 	}
+}
+
+func TestUpdateRelinquishesDriftedHostSettingsWithoutMutatingThem(t *testing.T) {
+	layout, _, request, _ := legacyRollbackFixture(t)
+	settingsPath := layout.ConfigPaths[Claude]
+	settings := []byte("{\n  \"userSetting\": \"preserve exactly\"\n}\n")
+	if err := os.WriteFile(settingsPath, settings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := NewManifestStore(layout).Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := legacyReleaseFixtureVersion(t, t.TempDir(), "8.0.3", "2123456789abcdef0123456789abcdef01234567", "updated")
+	outcome, err := Update(context.Background(), layout, updated, manifest.Revision)
+	if err != nil {
+		t.Fatalf("update with user settings drift: %v", err)
+	}
+	if after, err := os.ReadFile(settingsPath); err != nil || !bytes.Equal(after, settings) {
+		t.Fatalf("settings changed during update: %q, %v", after, err)
+	}
+	retry, err := Update(context.Background(), layout, updated, outcome.Manifest.Revision)
+	if err != nil || !retry.Idempotent || retry.Manifest.Revision != outcome.Manifest.Revision {
+		t.Fatalf("exact update retry = %#v, %v", retry, err)
+	}
+	receipt, err := readHostCutoverReceipt(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(receipt)
+	if err != nil || !bytes.Contains(raw, []byte(`"relinquished"`)) || !bytes.Contains(raw, []byte(digestBytesInstall(settings))) {
+		t.Fatalf("relinquishment audit missing: %s, %v", raw, err)
+	}
+	request.Action, request.ExpectedManifestRevision, request.ExpectedReceiptDigest = "host-status", outcome.Manifest.Revision, receipt.ReceiptDigest
+	if _, err := CutoverLegacyHosts(context.Background(), layout, updated, request); err != nil {
+		t.Fatalf("host status after relinquishment: %v", err)
+	}
+	request.Action = "host-rollback"
+	if _, err := CutoverLegacyHosts(context.Background(), layout, updated, request); err != nil {
+		t.Fatalf("host rollback after relinquishment: %v", err)
+	}
+	if after, err := os.ReadFile(settingsPath); err != nil || !bytes.Equal(after, settings) {
+		t.Fatalf("settings changed during rollback: %q, %v", after, err)
+	}
+	for _, host := range request.Hosts {
+		assertFileDigest(t, filepath.Join(layout.SkillRoots[host], "SKILL.md"), digestText("legacy-"+string(host)+"\n"))
+		assertFileDigest(t, filepath.Join(layout.SkillRoots[host], "agent-team-vnext", "SKILL.md"), updated.Entrypoints[host].SHA256)
+	}
+}
+
+func TestUpdateRefusesSymlinkedHostSettingsBeforeMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on Windows")
+	}
+	layout, _, _, _ := legacyRollbackFixture(t)
+	settingsPath := layout.ConfigPaths[Claude]
+	outside := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(outside, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(settingsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, settingsPath); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := NewManifestStore(layout).Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))
+	receiptBefore, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := legacyReleaseFixtureVersion(t, t.TempDir(), "8.0.3", "3123456789abcdef0123456789abcdef01234567", "updated")
+	if _, err := Update(context.Background(), layout, updated, manifest.Revision); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("symlinked settings update = %v", err)
+	}
+	unchanged, err := NewManifestStore(layout).Read(context.Background())
+	receiptAfter, readErr := os.ReadFile(receiptPath)
+	outsideAfter, outsideErr := os.ReadFile(outside)
+	if err != nil || readErr != nil || outsideErr != nil || !reflect.DeepEqual(unchanged, manifest) || !bytes.Equal(receiptAfter, receiptBefore) || string(outsideAfter) != "outside\n" {
+		t.Fatalf("refusal mutated state: manifest=%v receipt=%v outside=%q errors=%v/%v/%v", reflect.DeepEqual(unchanged, manifest), bytes.Equal(receiptAfter, receiptBefore), outsideAfter, err, readErr, outsideErr)
+	}
+	assertNoJournal(t, layout)
+}
+
+func TestUpdateRefusesHostSettingsPathSwapBeforeMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on Windows")
+	}
+	layout, _, _, _ := legacyRollbackFixture(t)
+	settingsPath := layout.ConfigPaths[Claude]
+	manifest, err := NewManifestStore(layout).Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(layout.DataRoot, filepath.FromSlash(hostCutoverReceiptRel))
+	receiptBefore, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := settingsPath + ".original"
+	outside := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(outside, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stableReadHook = func(path string) {
+		if path != settingsPath {
+			return
+		}
+		stableReadHook = nil
+		if err := os.Rename(settingsPath, original); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, settingsPath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { stableReadHook = nil })
+	updated := legacyReleaseFixtureVersion(t, t.TempDir(), "8.0.3", "4123456789abcdef0123456789abcdef01234567", "updated")
+	if _, err := Update(context.Background(), layout, updated, manifest.Revision); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("swapped settings update = %v", err)
+	}
+	stableReadHook = nil
+	unchanged, err := NewManifestStore(layout).Read(context.Background())
+	receiptAfter, readErr := os.ReadFile(receiptPath)
+	outsideAfter, outsideErr := os.ReadFile(outside)
+	if err != nil || readErr != nil || outsideErr != nil || !reflect.DeepEqual(unchanged, manifest) || !bytes.Equal(receiptAfter, receiptBefore) || string(outsideAfter) != "outside\n" {
+		t.Fatalf("swap refusal mutated authoritative state: manifest=%v receipt=%v outside=%q errors=%v/%v/%v", reflect.DeepEqual(unchanged, manifest), bytes.Equal(receiptAfter, receiptBefore), outsideAfter, err, readErr, outsideErr)
+	}
+	assertNoJournal(t, layout)
+}
+
+func TestUpdateRecoversRelinquishedHostSettingsJournal(t *testing.T) {
+	layout, _, _, _ := legacyRollbackFixture(t)
+	settingsPath := layout.ConfigPaths[Claude]
+	settings := []byte("{\n  \"userSetting\": \"survives recovery\"\n}\n")
+	if err := os.WriteFile(settingsPath, settings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := NewManifestStore(layout).Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := legacyReleaseFixtureVersion(t, t.TempDir(), "8.0.3", "5123456789abcdef0123456789abcdef01234567", "updated")
+	lifecycleInterruptHook = func(operation string, index int) bool { return operation == "update" && index == 1 }
+	if _, err := Update(context.Background(), layout, updated, manifest.Revision); !errors.Is(err, core.ErrTransition) {
+		t.Fatalf("interrupted update = %v", err)
+	}
+	lifecycleInterruptHook = nil
+	t.Cleanup(func() { lifecycleInterruptHook = nil })
+	_, _ = Update(context.Background(), layout, updated, manifest.Revision)
+	recovered, err := NewManifestStore(layout).Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := Update(context.Background(), layout, updated, recovered.Revision)
+	if err != nil || !retry.Idempotent {
+		t.Fatalf("recovered update retry = %#v, %v", retry, err)
+	}
+	if after, err := os.ReadFile(settingsPath); err != nil || !bytes.Equal(after, settings) {
+		t.Fatalf("settings changed during recovery: %q, %v", after, err)
+	}
+	receipt, err := readHostCutoverReceipt(layout)
+	if err != nil || len(receipt.Relinquished) != 1 || receipt.Relinquished[0].ObservedSHA256 != digestBytesInstall(settings) {
+		t.Fatalf("recovered receipt = %#v, %v", receipt.Relinquished, err)
+	}
+	assertNoJournal(t, layout)
 }
 
 func TestLegacyHostRollbackCompletesMixedExactState(t *testing.T) {
