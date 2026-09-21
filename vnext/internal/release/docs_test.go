@@ -42,10 +42,21 @@ func TestHostSkillEntrypointsHaveValidFrontmatter(t *testing.T) {
 	}
 }
 
-func TestSkillMetadataVersionAcceptsCRLF(t *testing.T) {
-	body := "---\r\nmetadata:\r\n  version: \"8.0.7\"\r\n---\r\n"
-	if !hasSkillMetadataVersion(body, "8.0.7") {
-		t.Fatal("metadata version was not read from CRLF content")
+func TestSkillMetadataVersionMatchesExactVersionWithLFAndCRLF(t *testing.T) {
+	for _, test := range []struct {
+		name, body, version string
+		want                bool
+	}{
+		{name: "LF current", body: "---\nmetadata:\n  version: \"8.0.7\"\n---\n", version: "8.0.7", want: true},
+		{name: "CRLF current", body: "---\r\nmetadata:\r\n  version: \"8.0.7\"\r\n---\r\n", version: "8.0.7", want: true},
+		{name: "LF wrong version", body: "---\nmetadata:\n  version: \"8.0.7\"\n---\n", version: "8.0.6", want: false},
+		{name: "CRLF wrong version", body: "---\r\nmetadata:\r\n  version: \"8.0.7\"\r\n---\r\n", version: "8.0.6", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := hasSkillMetadataVersion(test.body, test.version); got != test.want {
+				t.Fatalf("hasSkillMetadataVersion(%q, %q) = %t, want %t", test.body, test.version, got, test.want)
+			}
+		})
 	}
 }
 
