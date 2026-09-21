@@ -85,6 +85,7 @@ type Layout struct {
 	DataRoot, BinaryPath, ContractPath, ManifestPath string
 	SkillRoots                                       map[Host]string
 	ConfigPaths                                      map[Host]string
+	CodexDiscoverySkillPaths                         []string
 }
 
 type ManifestStore struct {

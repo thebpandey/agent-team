@@ -1,6 +1,10 @@
 package release_test
 
 import (
+	"archive/zip"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -78,6 +82,101 @@ func TestReleasePackageOutputs(t *testing.T) {
 	}
 }
 
+func TestWindowsBundleOutputs(t *testing.T) {
+	source, output := t.TempDir(), t.TempDir()
+	for path, body := range map[string]string{"agent-teamctl.exe": "windows-binary", "WORKER-CONTRACT": "contract", "codex/SKILL.md": "codex", "claude/SKILL.md": "claude", "VERSION": "8.0.0\n"} {
+		full := filepath.Join(source, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := strings.Repeat("a", 40)
+	if err := release.BuildWindowsBundleFrom(source, output, "8.0.0", commit); err != nil {
+		t.Fatal(err)
+	}
+	bundle := filepath.Join(output, "agent-teamctl-8.0.0-windows-amd64.zip")
+	if err := release.VerifyWindowsBundle(bundle, filepath.Join(output, "agent-teamctl-8.0.0-windows-amd64.zip.sha256"), "8.0.0", commit); err != nil {
+		t.Fatal(err)
+	}
+	secondOutput := t.TempDir()
+	if err := release.BuildWindowsBundleFrom(source, secondOutput, "8.0.0", commit); err != nil {
+		t.Fatal(err)
+	}
+	firstRaw, err := os.ReadFile(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRaw, err := os.ReadFile(filepath.Join(secondOutput, "agent-teamctl-8.0.0-windows-amd64.zip"))
+	if err != nil || !bytes.Equal(firstRaw, secondRaw) {
+		t.Fatalf("Windows bundle is not deterministic: %v", err)
+	}
+	archive, err := zip.OpenReader(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	want := []string{"RELEASE.json", "SBOM.cdx.json", "SHA256SUMS", "VERSION", "WORKER-CONTRACT", "agent-teamctl-8.0.0.zip", "agent-teamctl.exe", "claude/SKILL.md", "codex/SKILL.md"}
+	if len(archive.File) != len(want) {
+		t.Fatalf("unexpected Windows bundle entries: %#v", archive.File)
+	}
+	for index, entry := range archive.File {
+		if entry.Name != want[index] {
+			t.Fatalf("Windows bundle entry %d = %q, want %q", index, entry.Name, want[index])
+		}
+	}
+	raw, err := os.ReadFile(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := bytes.LastIndex(raw, []byte("windows-binary"))
+	if index < 0 {
+		t.Fatal("outer Windows executable bytes missing")
+	}
+	copy(raw[index:index+len("windows-binary")], []byte("altered-binary"))
+	if err := os.WriteFile(bundle, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(raw)
+	if err := os.WriteFile(bundle+".sha256", []byte(hex.EncodeToString(sum[:])+"  agent-teamctl-8.0.0-windows-amd64.zip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := release.VerifyWindowsBundle(bundle, bundle+".sha256", "8.0.0", commit); err == nil {
+		t.Fatal("tampered outer executable accepted")
+	}
+}
+
+func TestPackageOutputsIncludeWindowsBundle(t *testing.T) {
+	source, output := t.TempDir(), t.TempDir()
+	for path, body := range map[string]string{"agent-teamctl": "linux-binary", "agent-teamctl.exe": "windows-binary", "WORKER-CONTRACT": "contract", "codex/SKILL.md": "codex", "claude/SKILL.md": "claude", "VERSION": "8.0.0\n"} {
+		full := filepath.Join(source, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := strings.Repeat("a", 40)
+	if err := release.BuildReleasePackageFrom(source, output, "8.0.0", commit); err != nil {
+		t.Fatal(err)
+	}
+	if err := release.BuildWindowsBundleFrom(source, output, "8.0.0", commit); err != nil {
+		t.Fatal(err)
+	}
+	if err := release.VerifyPackageOutputs(output, "8.0.0", commit); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(output, "agent-teamctl-8.0.0.zip"), []byte("tampered Linux archive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := release.VerifyPackageOutputs(output, "8.0.0", commit); err == nil {
+		t.Fatal("tampered Linux archive accepted")
+	}
+}
+
 func TestReleaseMetadata(t *testing.T) {
 	vnext := filepath.Clean(filepath.Join("..", ".."))
 	versionRaw, err := os.ReadFile(filepath.Join(vnext, "VERSION"))
@@ -112,7 +211,8 @@ func TestReleaseMetadata(t *testing.T) {
 	readinessUpload := "with:\n          name: vnext-release-readiness\n          path: |\n            vnext/release-readiness.json\n            vnext/release-evidence/*\n            vnext/release-artifacts/*"
 	readinessDownload := "with: { name: vnext-release-readiness, path: vnext }"
 	tagCommand := `git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -a "v${{ inputs.version }}" -m "Agent-Team v${{ inputs.version }}"`
-	if !strings.Contains(workflowText, "${{ inputs.version }}") || !strings.Contains(workflowText, "permissions:\n  contents: read") || !strings.Contains(workflowText, "permissions: { contents: write }") || !strings.Contains(workflowText, "${{ github.workspace }}/vnext/release-artifacts") || strings.Count(workflowText, checksumStep) != 2 || strings.Count(workflowText, canonicalTempStep) != 2 || !strings.Contains(workflowText, readinessUpload) || !strings.Contains(workflowText, readinessDownload) || !strings.Contains(workflowText, "verify-gates --evidence release-readiness.json") || !strings.Contains(workflowText, tagCommand) {
+	windowsBundleCanary := "windows-bundle-canary:\n    needs: package\n    permissions: { contents: read }\n    runs-on: windows-latest"
+	if !strings.Contains(workflowText, "${{ inputs.version }}") || !strings.Contains(workflowText, "permissions:\n  contents: read") || !strings.Contains(workflowText, "permissions: { contents: write }") || !strings.Contains(workflowText, "${{ github.workspace }}/vnext/release-artifacts") || strings.Count(workflowText, checksumStep) != 2 || strings.Count(workflowText, canonicalTempStep) != 2 || !strings.Contains(workflowText, readinessUpload) || !strings.Contains(workflowText, readinessDownload) || !strings.Contains(workflowText, "verify-gates --evidence release-readiness.json") || !strings.Contains(workflowText, tagCommand) || !strings.Contains(workflowText, windowsBundleCanary) || !strings.Contains(workflowText, "agent-teamctl-${{ inputs.version }}-windows-amd64.zip") || !strings.Contains(workflowText, "install --host both --json") {
 		t.Fatal("workflow release contract is incomplete")
 	}
 }

@@ -43,15 +43,23 @@ func ResolveLayout(goos string, env map[string]string) (Layout, error) {
 	if goos == "windows" {
 		binary += ".exe"
 	}
+	discoveryPaths := append(codexSkillPaths(filepath.Join(home, ".codex", "skills", "agent-team")),
+		codexSkillPaths(filepath.Join(home, ".agents", "skills", "agent-team"))...)
+	discoveryPaths = append(discoveryPaths, codexSkillPaths(filepath.Join(codexHome, "skills", "agent-team"))...)
 	layout := Layout{
 		DataRoot: dataRoot, BinaryPath: filepath.Join(dataRoot, "bin", binary), ContractPath: filepath.Join(dataRoot, "WORKER-CONTRACT"), ManifestPath: filepath.Join(dataRoot, "install-manifest.json"),
-		SkillRoots:  map[Host]string{Codex: filepath.Join(codexHome, "skills", "agent-team"), Claude: filepath.Join(claudeHome, "skills", "agent-team")},
-		ConfigPaths: map[Host]string{Codex: filepath.Join(codexHome, "hooks.json"), Claude: filepath.Join(claudeHome, "settings.json")},
+		SkillRoots:               map[Host]string{Codex: filepath.Join(codexHome, "skills", "agent-team"), Claude: filepath.Join(claudeHome, "skills", "agent-team")},
+		ConfigPaths:              map[Host]string{Codex: filepath.Join(codexHome, "hooks.json"), Claude: filepath.Join(claudeHome, "settings.json")},
+		CodexDiscoverySkillPaths: discoveryPaths,
 	}
 	if err := ValidateLayout(layout); err != nil {
 		return Layout{}, err
 	}
 	return layout, nil
+}
+
+func codexSkillPaths(root string) []string {
+	return []string{filepath.Join(root, "SKILL.md"), filepath.Join(root, "agent-team-vnext", "SKILL.md")}
 }
 
 // ResolveInstalledLayout binds lifecycle operations to the host homes chosen
