@@ -141,7 +141,8 @@ func installLocked(ctx context.Context, layout Layout, release Release, hosts []
 			return CASOutcome{Retained: []string{file.owned.Path}}, core.ErrRevision
 		}
 	}
-	manifest := InstallManifest{Schema: 1, Revision: 1, Version: release.Version, ReleaseRevision: release.Revision, Hosts: hosts}
+	hostHomes, _ := layoutHostHomes(layout)
+	manifest := InstallManifest{Schema: 1, Revision: 1, Version: release.Version, ReleaseRevision: release.Revision, Hosts: hosts, HostHomes: hostHomes}
 	journal := lifecycleJournal{Schema: 1, Operation: "install", ExpectedRevision: expected, Owner: owner, Intended: manifest}
 	for _, file := range desired {
 		mode := uint32(0o600)
@@ -506,6 +507,7 @@ func manifestMismatches(manifest InstallManifest) []string {
 func updateJournalPlan(layout Layout, release Release, current InstallManifest, desired []desiredFile, backups map[string]bool, owner store.MutationOwner, expected uint64, reconcilePaths bool) lifecycleJournal {
 	previous, intended := cloneManifest(current), cloneManifest(current)
 	intended.Revision, intended.Version, intended.ReleaseRevision = expected+1, release.Version, release.Revision
+	intended.HostHomes, _ = layoutHostHomes(layout)
 	plan := lifecycleJournal{Schema: 1, Operation: "update", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended}
 	for _, target := range desired {
 		index := ownedIndex(plan.Intended.Files, target.owned.Role, target.owned.Host)
@@ -537,6 +539,7 @@ func updateJournalPlan(layout Layout, release Release, current InstallManifest, 
 func rollbackJournalPlan(layout Layout, current InstallManifest, version, revision string, backups []Backup, owner store.MutationOwner, expected uint64) lifecycleJournal {
 	previous, intended := cloneManifest(current), cloneManifest(current)
 	intended.Revision, intended.Version, intended.ReleaseRevision = expected+1, version, revision
+	intended.HostHomes, _ = layoutHostHomes(layout)
 	plan := lifecycleJournal{Schema: 1, Operation: "rollback", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended}
 	for _, backup := range backups {
 		index := ownedIndex(plan.Intended.Files, backup.Role, backup.Host)
@@ -665,6 +668,9 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 	current, stale, err := currentManifest(ctx, manifestStore, expected)
 	if err != nil {
 		return stale, err
+	}
+	if err := validateInstalledLayout(layout, current); err != nil {
+		return CASOutcome{}, err
 	}
 	desired := releaseFiles(layout, release, current.Hosts)
 	hostReceipt, err := lifecycleHostCutoverReceipt(layout, current)
@@ -809,6 +815,7 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 	previous := cloneManifest(current)
 	intended := cloneManifest(next)
 	intended.Revision = expected + 1
+	intended.HostHomes, _ = layoutHostHomes(layout)
 	journal := lifecycleJournal{Schema: 1, Operation: "update", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended, Mutations: mutations, Retained: retained}
 	outcome, err := executeLifecycleJournal(ctx, layout, manifestStore, &journal)
 	outcome.Retained = append([]string(nil), retained...)
@@ -874,6 +881,9 @@ func rollbackLocked(ctx context.Context, layout Layout, version, revision string
 	current, stale, err := currentManifest(ctx, manifestStore, expected)
 	if err != nil {
 		return stale, err
+	}
+	if err := validateInstalledLayout(layout, current); err != nil {
+		return CASOutcome{}, err
 	}
 	selected, targetRevision, err := selectRollbackBackups(current, version, revision)
 	if err != nil {
@@ -973,6 +983,7 @@ func rollbackLocked(ctx context.Context, layout Layout, version, revision string
 	previous := cloneManifest(current)
 	intended := cloneManifest(next)
 	intended.Revision = expected + 1
+	intended.HostHomes, _ = layoutHostHomes(layout)
 	journal := lifecycleJournal{Schema: 1, Operation: "rollback", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended, Mutations: mutations, Retained: retained}
 	outcome, err := executeLifecycleJournal(ctx, layout, manifestStore, &journal)
 	outcome.Retained = retained
@@ -1001,6 +1012,9 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64, owner 
 	current, stale, err := currentManifest(ctx, manifestStore, expected)
 	if err != nil {
 		return stale.Retained, stale, err
+	}
+	if err := validateInstalledLayout(layout, current); err != nil {
+		return nil, CASOutcome{}, err
 	}
 	if err := budget.accountMetadata(uninstallJournalPlan(current, owner, expected)); err != nil {
 		return nil, CASOutcome{}, err
@@ -1057,6 +1071,7 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64, owner 
 	previous := cloneManifest(current)
 	intended := cloneManifest(next)
 	intended.Revision = expected + 1
+	intended.HostHomes, _ = layoutHostHomes(layout)
 	journal := lifecycleJournal{Schema: 1, Operation: "uninstall", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended, Mutations: mutations, Retained: retained}
 	outcome, err := executeLifecycleJournal(ctx, layout, manifestStore, &journal)
 	outcome.Retained = append([]string(nil), retained...)

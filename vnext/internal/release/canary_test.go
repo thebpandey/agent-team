@@ -34,10 +34,11 @@ func canaryFixture(t *testing.T) (install.Layout, install.Release, install.Insta
 	t.Helper()
 	root := t.TempDir()
 	installed, source := filepath.Join(root, "installed"), filepath.Join(root, "release")
-	oldBinary := writeCanaryFile(t, filepath.Join(installed, "agent-teamctl"), []byte("binary-7.9.0"))
+	codexHome, claudeHome := filepath.Join(root, ".agents"), filepath.Join(root, ".claude")
+	oldBinary := writeCanaryFile(t, filepath.Join(installed, "bin", "agent-teamctl"), []byte("binary-7.9.0"))
 	oldContract := writeCanaryFile(t, filepath.Join(installed, "WORKER-CONTRACT"), []byte(`{"schema":1,"version":"7.9.0"}`))
-	oldCodex := writeCanaryFile(t, filepath.Join(installed, "codex", "SKILL.md"), []byte("old codex skill"))
-	oldClaude := writeCanaryFile(t, filepath.Join(installed, "claude", "SKILL.md"), []byte("old claude skill"))
+	oldCodex := writeCanaryFile(t, filepath.Join(codexHome, "skills", "agent-team", "agent-team-vnext", "SKILL.md"), []byte("old codex skill"))
+	oldClaude := writeCanaryFile(t, filepath.Join(claudeHome, "skills", "agent-team", "agent-team-vnext", "SKILL.md"), []byte("old claude skill"))
 	binary := writeCanaryFile(t, filepath.Join(source, "agent-teamctl"), []byte("binary-8.0.0"))
 	contract := writeCanaryFile(t, filepath.Join(source, "WORKER-CONTRACT"), []byte(`{"schema":1,"version":"8.0.0"}`))
 	codex := writeCanaryFile(t, filepath.Join(source, "codex", "SKILL.md"), []byte("setup status start"))
@@ -45,9 +46,13 @@ func canaryFixture(t *testing.T) (install.Layout, install.Release, install.Insta
 	if err := os.WriteFile(filepath.Join(installed, "unrelated-host-setting.json"), []byte("preserve-me"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	layout := install.Layout{DataRoot: installed, BinaryPath: oldBinary.Path, ContractPath: oldContract.Path, ManifestPath: filepath.Join(installed, "manifest.json"), SkillRoots: map[install.Host]string{install.Codex: filepath.Dir(oldCodex.Path), install.Claude: filepath.Dir(oldClaude.Path)}}
+	layout := install.Layout{
+		DataRoot: installed, BinaryPath: oldBinary.Path, ContractPath: oldContract.Path, ManifestPath: filepath.Join(installed, "manifest.json"),
+		SkillRoots:  map[install.Host]string{install.Codex: filepath.Join(codexHome, "skills", "agent-team"), install.Claude: filepath.Join(claudeHome, "skills", "agent-team")},
+		ConfigPaths: map[install.Host]string{install.Codex: filepath.Join(codexHome, "hooks.json"), install.Claude: filepath.Join(claudeHome, "settings.json")},
+	}
 	rel := install.Release{Version: "8.0.0", Revision: "0123456789abcdef0123456789abcdef01234567", Binary: binary, Contract: contract, Entrypoints: map[install.Host]install.ReleaseFile{install.Codex: codex, install.Claude: claude}}
-	manifest := install.InstallManifest{Schema: 1, Version: "7.9.0", ReleaseRevision: "abcdef0123456789abcdef0123456789abcdef01", Hosts: []install.Host{install.Codex, install.Claude}, Files: []install.OwnedFile{
+	manifest := install.InstallManifest{Schema: 1, Version: "7.9.0", ReleaseRevision: "abcdef0123456789abcdef0123456789abcdef01", Hosts: []install.Host{install.Codex, install.Claude}, HostHomes: map[install.Host]string{install.Codex: codexHome, install.Claude: claudeHome}, Files: []install.OwnedFile{
 		{Role: install.BinaryRole, Path: oldBinary.Path, SHA256: oldBinary.SHA256, Version: "7.9.0", Revision: "abcdef0123456789abcdef0123456789abcdef01", Bytes: oldBinary.Bytes},
 		{Role: install.ContractRole, Path: oldContract.Path, SHA256: oldContract.SHA256, Version: "7.9.0", Revision: "abcdef0123456789abcdef0123456789abcdef01", Bytes: oldContract.Bytes},
 		{Role: install.EntrypointRole, Host: install.Codex, Path: oldCodex.Path, SHA256: oldCodex.SHA256, Version: "7.9.0", Revision: "abcdef0123456789abcdef0123456789abcdef01", Bytes: oldCodex.Bytes},
