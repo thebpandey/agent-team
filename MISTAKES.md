@@ -177,3 +177,13 @@ Mistake: New version-parity assertions rejected correct8.0.7 metadata on Windows
 Cause: Local Linux checks did not exercise CRLF checkout text, and duplicate assertions embedded the line-ending assumption.
 Correction: Use one line-ending-normalized metadata predicate and regress both LF and CRLF plus wrong-version rejection; require fresh Windows CI.
 Prevention: For cross-platform source-text checks, separate semantic equality from newline representation and test both checkout forms before publication.
+
+## M-014: Test assertions in their actual shell and data format
+
+Status: Active
+Scope: Windows PowerShell release verification
+Source: Beads atv-5sh.45.2, failed release run35668956588, 2026-09-21.
+Mistake: The Windows canary put literal Markdown backticks in a PowerShell double-quoted comparison string, so the shell changed the expected text and rejected valid native routing.
+Cause: Static source assertions and review did not execute the comparison in its target shell before the release run.
+Correction: Use literal quoting, decode structured command output before semantic checks, and verify the complete canary boundary before retrying publication.
+Prevention: Exercise shell-sensitive literals and serialized native output in the target shell, including expected failures and Windows paths; a source-string presence check alone is not behavioral proof.
