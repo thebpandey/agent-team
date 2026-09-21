@@ -185,7 +185,8 @@ func TestWindowsDownloadInstructionsUseSeparateExtractionDirectory(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(gettingStarted), "$distribution = \"agent-teamctl-"+version+"-windows-amd64\"") || !strings.Contains(string(gettingStarted), "-DestinationPath $distribution") || !strings.Contains(string(gettingStarted), "Join-Path $distribution \"agent-teamctl.exe\"") || strings.Contains(string(gettingStarted), "-DestinationPath .\n") {
+	gettingText := strings.ReplaceAll(string(gettingStarted), "\r\n", "\n")
+	if !strings.Contains(gettingText, "$distribution = \"agent-teamctl-"+version+"-windows-amd64\"") || !strings.Contains(gettingText, "-DestinationPath $distribution") || !strings.Contains(gettingText, "Join-Path $distribution \"agent-teamctl.exe\"") || strings.Contains(gettingText, "-DestinationPath .\n") {
 		t.Fatal("Windows instructions must keep downloaded assets outside the extracted distribution")
 	}
 	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
