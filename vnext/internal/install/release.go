@@ -177,6 +177,7 @@ func validSHA256(value string) bool {
 
 func manifestIdentity(manifest InstallManifest) InstallManifest {
 	manifest.Revision = 0
+	manifest.HostHomes = cloneHostHomes(manifest.HostHomes)
 	manifest.Hosts = append([]Host(nil), manifest.Hosts...)
 	manifest.Files = append([]OwnedFile(nil), manifest.Files...)
 	manifest.Backups = append([]Backup(nil), manifest.Backups...)
@@ -187,10 +188,22 @@ func manifestIdentity(manifest InstallManifest) InstallManifest {
 }
 
 func cloneManifest(manifest InstallManifest) InstallManifest {
+	manifest.HostHomes = cloneHostHomes(manifest.HostHomes)
 	manifest.Hosts = append([]Host(nil), manifest.Hosts...)
 	manifest.Files = append([]OwnedFile(nil), manifest.Files...)
 	manifest.Backups = append([]Backup(nil), manifest.Backups...)
 	return manifest
+}
+
+func cloneHostHomes(homes map[Host]string) map[Host]string {
+	if homes == nil {
+		return nil
+	}
+	cloned := make(map[Host]string, len(homes))
+	for host, home := range homes {
+		cloned[host] = home
+	}
+	return cloned
 }
 
 func ownedPaths(manifest InstallManifest) []string {

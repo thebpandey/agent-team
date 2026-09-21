@@ -54,13 +54,14 @@ type Backup struct {
 }
 
 type InstallManifest struct {
-	Schema          int         `json:"schema"`
-	Revision        uint64      `json:"revision"`
-	Version         string      `json:"version"`
-	ReleaseRevision string      `json:"release_revision"`
-	Hosts           []Host      `json:"hosts"`
-	Files           []OwnedFile `json:"files"`
-	Backups         []Backup    `json:"backups"`
+	Schema          int             `json:"schema"`
+	Revision        uint64          `json:"revision"`
+	Version         string          `json:"version"`
+	ReleaseRevision string          `json:"release_revision"`
+	Hosts           []Host          `json:"hosts"`
+	HostHomes       map[Host]string `json:"host_homes,omitempty"`
+	Files           []OwnedFile     `json:"files"`
+	Backups         []Backup        `json:"backups"`
 }
 
 type CASKind string

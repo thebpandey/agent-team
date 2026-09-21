@@ -61,9 +61,16 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return managementError(args, stdout, stderr, actionErr)
 		}
 		if strings.HasPrefix(requestAction, "host-") {
-			layout, layoutErr := install.ResolveLayout(runtime.GOOS, map[string]string{"LOCALAPPDATA": os.Getenv("LOCALAPPDATA"), "XDG_DATA_HOME": os.Getenv("XDG_DATA_HOME"), "CODEX_HOME": os.Getenv("CODEX_HOME"), "CLAUDE_HOME": os.Getenv("CLAUDE_HOME")})
+			env := installEnvironment()
+			layout, layoutErr := install.ResolveLayout(runtime.GOOS, env)
 			if layoutErr != nil {
 				return managementError(args, stdout, stderr, layoutErr)
+			}
+			if manifest, readErr := install.NewManifestStore(layout).Read(ctx); readErr == nil {
+				layout, layoutErr = install.ResolveInstalledLayout(runtime.GOOS, env, manifest)
+				if layoutErr != nil {
+					return managementError(args, stdout, stderr, layoutErr)
+				}
 			}
 			var request install.LegacyHostCutoverRequest
 			if err := readStrictJSON(args[2], &request); err != nil {
@@ -95,17 +102,19 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}
 		return managementResult(args, stdout, output)
 	}
-	layout, err := install.ResolveLayout(runtime.GOOS, map[string]string{
-		"LOCALAPPDATA":  os.Getenv("LOCALAPPDATA"),
-		"XDG_DATA_HOME": os.Getenv("XDG_DATA_HOME"),
-		"CODEX_HOME":    os.Getenv("CODEX_HOME"),
-		"CLAUDE_HOME":   os.Getenv("CLAUDE_HOME"),
-	})
+	env := installEnvironment()
+	layout, err := install.ResolveLayout(runtime.GOOS, env)
 	if err != nil {
 		return managementError(args, stdout, stderr, err)
 	}
 	action := args[0]
 	manifest, readErr := install.NewManifestStore(layout).Read(ctx)
+	if action != "install" && readErr == nil {
+		layout, err = install.ResolveInstalledLayout(runtime.GOOS, env, manifest)
+		if err != nil {
+			return managementError(args, stdout, stderr, err)
+		}
+	}
 	expected := manifest.Revision
 	var outcome install.CASOutcome
 	switch action {
@@ -157,6 +166,17 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return managementError(args, stdout, stderr, err)
 	}
 	return managementResult(args, stdout, map[string]any{"ok": true, "action": action, "revision": outcome.Manifest.Revision, "retained": outcome.Retained})
+}
+
+func installEnvironment() map[string]string {
+	return map[string]string{
+		"LOCALAPPDATA":  os.Getenv("LOCALAPPDATA"),
+		"XDG_DATA_HOME": os.Getenv("XDG_DATA_HOME"),
+		"HOME":          os.Getenv("HOME"),
+		"USERPROFILE":   os.Getenv("USERPROFILE"),
+		"CODEX_HOME":    os.Getenv("CODEX_HOME"),
+		"CLAUDE_HOME":   os.Getenv("CLAUDE_HOME"),
+	}
 }
 
 func cutoverRequestAction(path string) (string, error) {

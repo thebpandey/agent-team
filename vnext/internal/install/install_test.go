@@ -15,6 +15,30 @@ import (
 	install "github.com/thebpandey/agent-team/vnext/internal/install"
 )
 
+func TestFreshInstallUsesPerUserHostDefaults(t *testing.T) {
+	root := t.TempDir()
+	layout, err := install.ResolveLayout("linux", map[string]string{"HOME": root, "XDG_DATA_HOME": filepath.Join(root, "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseRoot := filepath.Join(root, "release")
+	if err := os.MkdirAll(releaseRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := install.Install(context.Background(), layout, writeReleaseFixture(t, releaseRoot), []install.Host{install.Codex, install.Claude}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Manifest.HostHomes[install.Codex] != filepath.Join(root, ".agents") || outcome.Manifest.HostHomes[install.Claude] != filepath.Join(root, ".claude") {
+		t.Fatalf("manifest host homes = %#v", outcome.Manifest.HostHomes)
+	}
+	for host, home := range outcome.Manifest.HostHomes {
+		if _, err := os.Lstat(filepath.Join(home, "skills", "agent-team", "agent-team-vnext", "SKILL.md")); err != nil {
+			t.Fatalf("%s default entrypoint: %v", host, err)
+		}
+	}
+}
+
 func TestInstallUpdateRollbackUninstallPreserveChangedFiles(t *testing.T) {
 	root := t.TempDir()
 	release := writeReleaseFixture(t, root)
@@ -97,6 +121,118 @@ func TestInstallUpdateRollbackUninstallPreserveChangedFiles(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(unrelated); string(got) != "keep" {
 		t.Fatalf("unrelated=%q", got)
+	}
+}
+
+func TestLegacyManifestCustomHomesMigrateOnEnvFreeLifecycle(t *testing.T) {
+	root := t.TempDir()
+	dataHome := filepath.Join(root, "data")
+	customCodex, customClaude := filepath.Join(root, "custom-codex"), filepath.Join(root, "custom-claude")
+	installLayout, err := install.ResolveLayout("linux", map[string]string{
+		"HOME": root, "XDG_DATA_HOME": dataHome, "CODEX_HOME": customCodex, "CLAUDE_HOME": customClaude,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstReleaseRoot := filepath.Join(root, "release-1")
+	if err := os.MkdirAll(firstReleaseRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	firstRelease := writeReleaseFixture(t, firstReleaseRoot)
+	first, err := install.Install(context.Background(), installLayout, firstRelease, []install.Host{install.Codex, install.Claude}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := first.Manifest
+	legacy.HostHomes = nil
+	legacyWrite, err := install.NewManifestStore(installLayout).CompareAndSwap(context.Background(), first.Manifest.Revision, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envFree := map[string]string{"HOME": filepath.Join(root, "default-home"), "XDG_DATA_HOME": dataHome}
+	lifecycleLayout, err := install.ResolveInstalledLayout("linux", envFree, legacyWrite.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleLayout.SkillRoots[install.Codex] != filepath.Join(customCodex, "skills", "agent-team") || lifecycleLayout.SkillRoots[install.Claude] != filepath.Join(customClaude, "skills", "agent-team") {
+		t.Fatalf("inferred custom roots = %#v", lifecycleLayout.SkillRoots)
+	}
+
+	nextReleaseRoot := filepath.Join(root, "release-2")
+	if err := os.MkdirAll(nextReleaseRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	nextRelease := writeReleaseFixture(t, nextReleaseRoot)
+	nextRelease.Version = "1.1.0"
+	nextRelease.Revision = "abcdef0123456789abcdef0123456789abcdef01"
+	rewriteReleaseFile(t, &nextRelease.Binary, "binary 1.1.0")
+	updated, err := install.Update(context.Background(), lifecycleLayout, nextRelease, legacyWrite.Manifest.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Manifest.HostHomes[install.Codex] != customCodex || updated.Manifest.HostHomes[install.Claude] != customClaude {
+		t.Fatalf("migrated host homes = %#v", updated.Manifest.HostHomes)
+	}
+	lifecycleLayout, err = install.ResolveInstalledLayout("linux", envFree, updated.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rolledBack, err := install.RollbackRelease(context.Background(), lifecycleLayout, firstRelease.Version, firstRelease.Revision, updated.Manifest.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycleLayout, err = install.ResolveInstalledLayout("linux", envFree, rolledBack.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retained, _, err := install.Uninstall(context.Background(), lifecycleLayout, rolledBack.Manifest.Revision); err != nil || len(retained) != 0 {
+		t.Fatalf("env-free uninstall retained=%v err=%v", retained, err)
+	}
+	for _, path := range []string{filepath.Join(customCodex, "skills", "agent-team", "agent-team-vnext", "SKILL.md"), filepath.Join(customClaude, "skills", "agent-team", "agent-team-vnext", "SKILL.md")} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("managed custom entrypoint remains %s: %v", path, err)
+		}
+	}
+}
+
+func TestUpdateRejectsLayoutThatConflictsWithPersistedHostHomes(t *testing.T) {
+	root := t.TempDir()
+	dataHome := filepath.Join(root, "data")
+	customCodex, customClaude := filepath.Join(root, "custom-codex"), filepath.Join(root, "custom-claude")
+	custom, err := install.ResolveLayout("linux", map[string]string{"HOME": root, "XDG_DATA_HOME": dataHome, "CODEX_HOME": customCodex, "CLAUDE_HOME": customClaude})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoot, nextRoot := filepath.Join(root, "old"), filepath.Join(root, "next")
+	if err := os.MkdirAll(oldRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(nextRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := writeReleaseFixture(t, oldRoot)
+	installed, err := install.Install(context.Background(), custom, old, []install.Host{install.Codex, install.Claude}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := writeReleaseFixture(t, nextRoot)
+	next.Version = "1.1.0"
+	next.Revision = "abcdef0123456789abcdef0123456789abcdef01"
+	wrong, err := install.ResolveLayout("linux", map[string]string{"HOME": filepath.Join(root, "default"), "XDG_DATA_HOME": dataHome})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := install.Update(context.Background(), wrong, next, installed.Manifest.Revision); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("conflicting lifecycle layout = %v", err)
+	}
+	unchanged, err := install.NewManifestStore(custom).Read(context.Background())
+	if err != nil || unchanged.Revision != installed.Manifest.Revision || unchanged.Version != old.Version {
+		t.Fatalf("manifest changed = %+v, %v", unchanged, err)
+	}
+	for _, path := range wrong.SkillRoots {
+		if _, err := os.Lstat(filepath.Join(path, "agent-team-vnext", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("relocated entrypoint exists under %s: %v", path, err)
+		}
 	}
 }
 

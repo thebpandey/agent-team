@@ -1,5 +1,10 @@
 # Changelog
 
+## 8.0.4 - candidate
+
+- Resolve zero-config Codex and Claude installs under the user's `.agents` and `.claude` homes on every supported platform, independently honoring explicit first-install overrides.
+- Persist host homes in the install manifest and safely infer exact legacy entrypoint layouts so later update, rollback, and uninstall commands no longer depend on ambient host-home variables.
+
 ## 8.0.3 - candidate
 
 - Preserve user-edited Codex and Claude settings during an update from host-cutover state while recording the relinquished path and digest in the transactional cutover receipt.

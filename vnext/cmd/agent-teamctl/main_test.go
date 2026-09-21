@@ -82,6 +82,50 @@ func TestRollbackRevisionDispatchWithJSONAndUniqueCompatibility(t *testing.T) {
 	}
 }
 
+func TestLifecycleCLIReusesInstalledCustomHostHomesWithoutEnvironment(t *testing.T) {
+	root := t.TempDir()
+	dataHome := filepath.Join(root, "data")
+	customCodex, customClaude := filepath.Join(root, "custom-codex"), filepath.Join(root, "custom-claude")
+	t.Setenv("LOCALAPPDATA", dataHome)
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("HOME", filepath.Join(root, "default-home"))
+	t.Setenv("CODEX_HOME", customCodex)
+	t.Setenv("CLAUDE_HOME", customClaude)
+	layout, err := install.ResolveLayout(runtime.GOOS, map[string]string{
+		"LOCALAPPDATA": dataHome, "XDG_DATA_HOME": dataHome, "HOME": os.Getenv("HOME"), "USERPROFILE": os.Getenv("USERPROFILE"), "CODEX_HOME": customCodex, "CLAUDE_HOME": customClaude,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := cliReleaseFixture(t, filepath.Join(root, "old"), "8.0.3", testRevision, "old")
+	next := cliReleaseFixture(t, filepath.Join(root, "next"), "8.0.4", "abcdef0123456789abcdef0123456789abcdef01", "next")
+	installed, err := install.Install(context.Background(), layout, old, []install.Host{install.Codex, install.Claude}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := install.Update(context.Background(), layout, next, installed.Manifest.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("CLAUDE_HOME", "")
+	var output bytes.Buffer
+	if code := cli.Run(context.Background(), []string{"rollback", "--version", old.Version, "--revision", old.Revision, "--json"}, core.Dependencies{Stdout: &output, Stderr: &output, Management: runManagement}); code != 0 {
+		t.Fatalf("env-free rollback code=%d output=%q", code, output.String())
+	}
+	manifest, err := install.NewManifestStore(layout).Read(context.Background())
+	if err != nil || manifest.Revision != updated.Manifest.Revision+1 || manifest.HostHomes[install.Codex] != customCodex || manifest.HostHomes[install.Claude] != customClaude {
+		t.Fatalf("rolled manifest=%+v err=%v", manifest, err)
+	}
+	for host, file := range old.Entrypoints {
+		got, err := os.ReadFile(filepath.Join(layout.SkillRoots[host], "agent-team-vnext", "SKILL.md"))
+		want, _ := os.ReadFile(file.Path)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("%s entrypoint=%q err=%v", host, got, err)
+		}
+	}
+}
+
 func cliReleaseFixture(t *testing.T, root, version, revision, marker string) install.Release {
 	t.Helper()
 	file := func(name string) install.ReleaseFile {
