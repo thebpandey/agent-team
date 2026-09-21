@@ -1,6 +1,8 @@
 ---
 name: agent-team
-version: 8.0.0
+description: Use when a Codex request involves Agent-Team setup, status, or starting coordinated development work.
+metadata:
+  version: "8.0.0"
 ---
 
 # Agent-Team for Codex
