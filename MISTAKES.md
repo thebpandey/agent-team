@@ -167,3 +167,13 @@ Mistake: The v8.0.6 correction deliberately retained repository-root SKILL.md me
 Cause: The release check treated the root skill as historical content even though users can install that current public entrypoint.
 Correction: Bind repository-root metadata and active instructions to the current native release; keep old version references only as explicit historical migration context.
 Prevention: Before publication, test every current discoverable entrypoint against the canonical release version and native routing, including a latest-repository install on each supported published platform. Do not exclude a public root entrypoint merely because its body contains legacy material.
+
+## M-013: Compare metadata independently of checkout line endings
+
+Status: Active
+Scope: Cross-platform release and documentation assertions
+Source: Beads atv-5sh.45.1, Windows CI35668129772/35668129822, 2026-09-21.
+Mistake: New version-parity assertions rejected correct8.0.7 metadata on Windows because they matched literal LF line endings.
+Cause: Local Linux checks did not exercise CRLF checkout text, and duplicate assertions embedded the line-ending assumption.
+Correction: Use one line-ending-normalized metadata predicate and regress both LF and CRLF plus wrong-version rejection; require fresh Windows CI.
+Prevention: For cross-platform source-text checks, separate semantic equality from newline representation and test both checkout forms before publication.
