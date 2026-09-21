@@ -1,5 +1,11 @@
 # Changelog
 
+## 8.0.7 - 2026-09-21
+
+- Make the latest-repository root `SKILL.md` a native v8.0.7 entrypoint, aligned with both installed native host skills.
+- Keep the retained Node package explicitly historical at v7.3.1; its archive metadata remains v7.3.1 and does not define the active root-skill version.
+- Verify on a Windows runner that a copied repository-root skill is rejected as a discoverable conflict before native installation, then retire the CI-owned copy and install the Windows bundle successfully.
+
 ## 8.0.6 - 2026-09-21
 
 - Publish a deterministic Windows amd64 bundle with `agent-teamctl.exe`, the canonical release metadata, inner archive, and an outer checksum sidecar.

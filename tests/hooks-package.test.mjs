@@ -109,7 +109,7 @@ test("package validator detects missing files, version drift, broken links, miss
   // Each mutation names a realistic packaging defect that CI must reject.
   const cases = [
     ["missing file", async (root) => rm(path.join(root, "hooks", "agent-team-hook.mjs"))],
-    ["version drift", async (root) => writeFile(path.join(root, "SKILL.md"), (await readFile(path.join(root, "SKILL.md"), "utf8")).replace(/version: "[^"]+"/, 'version: "9.9.9"'))],
+    ["legacy package version drift", async (root) => writeFile(path.join(root, "README.md"), (await readFile(path.join(root, "README.md"), "utf8")).replace(/historical Node package \*\*v[\d.]+\*\*/, "historical Node package **v9.9.9**"))],
     ["changelog version drift", async (root) => writeFile(path.join(root, "CHANGELOG.md"), (await readFile(path.join(root, "CHANGELOG.md"), "utf8")).replace(/^## \d+\.\d+\.\d+/m, "## 9.9.9"))],
     ["repository source drift", async (root) => {
       const file = path.join(root, "hooks", "manifest.json");
