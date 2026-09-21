@@ -78,7 +78,7 @@ Cause: The package command built the release-runner host binary only. Release ga
 
 Correction: Task atv-5sh.44 adds a native Windows amd64 bundle and platform-specific package checks while preserving the Linux release contract. Its Beads record holds the exact revision and verification results.
 
-Prevention: Before publication, validate one documented downloadable artifact for each supported platform: executable format and architecture, exact contents, manifest, checksums, SBOM, and installation from that artifact on its matching CI runner. Source tests or cross-compilation alone do not prove artifact delivery or native execution.
+Prevention: Before publication, validate one documented downloadable artifact for each supported platform: executable format and architecture, exact contents, manifest, checksums, SBOM, and installation from that artifact on its matching CI runner using the documented extraction layout. Source tests or cross-compilation alone do not prove artifact delivery or native execution.
 
 ## M-006: Check all supported skill discovery roots before native installation
 
@@ -94,4 +94,4 @@ Cause: The installer validated only its selected destination and manifest-owned 
 
 Correction: Native install/update detect conflicting discoverable entrypoints before target mutation and preserve unowned files. An operator can move a superseded legacy root to a recoverable location outside skill discovery, then retry. Native banner instructions use the installed native entrypoint version; the repository's separate legacy package version is not that authority.
 
-Prevention: Test installation and update with stale same-name skills in each default discovery root and a custom host home. Require one authoritative current entrypoint, an exact-path conflict for unowned files, and no target mutation on conflict.
+Prevention: Test installation and update with stale top-level and nested native skills in each default discovery root, an OS-resolved fallback home, and a custom host home. Require one authoritative current entrypoint, an exact-path conflict for unowned files, and no target mutation on conflict.

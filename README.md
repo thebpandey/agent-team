@@ -20,7 +20,7 @@ The dashboard is local-only and read-only. Capacity caps remain enforced. Option
 
 Linux amd64: download `agent-teamctl-8.0.6.zip`, `RELEASE.json`, `SBOM.cdx.json`, and `SHA256SUMS` from the release into one empty folder. Run `sha256sum -c SHA256SUMS`, extract `agent-teamctl-8.0.6.zip` into that folder, then run `./agent-teamctl install --host both --json`. Use `codex` or `claude` instead of `both` to install one host.
 
-Windows amd64: download only `agent-teamctl-8.0.6-windows-amd64.zip` and its `.sha256` sidecar. In PowerShell, verify the sidecar with `Get-FileHash -Algorithm SHA256`, extract the ZIP once, then run `.\agent-teamctl.exe install --host both --json`. Use `codex` or `claude` instead of `both` to install one host. The extracted folder contains the executable, the strict canonical release files, and the inner archive.
+Windows amd64: download only `agent-teamctl-8.0.6-windows-amd64.zip` and its `.sha256` sidecar. In PowerShell, verify the sidecar with `Get-FileHash -Algorithm SHA256`, extract the ZIP once into a new subfolder, then run `.\agent-teamctl.exe install --host both --json` from that extracted folder. Use `codex` or `claude` instead of `both` to install one host. The extracted folder contains the executable, the strict canonical release files, and the inner archive.
 
 If install or update reports a conflicting Codex Agent-Team skill, it has not changed the target installation. Move the reported whole root to a recoverable backup outside `~/.codex/skills` and `~/.agents/skills`, then retry. Do not merge files from an unknown root into the native installation.
 

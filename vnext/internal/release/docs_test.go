@@ -40,6 +40,21 @@ func TestHostSkillEntrypointsHaveValidFrontmatter(t *testing.T) {
 	}
 }
 
+func TestWindowsDownloadInstructionsUseSeparateExtractionDirectory(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", "..", ".."))
+	gettingStarted, err := os.ReadFile(filepath.Join(root, "GETTING_STARTED.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gettingStarted), "$distribution = \"agent-teamctl-8.0.6-windows-amd64\"") || !strings.Contains(string(gettingStarted), "-DestinationPath $distribution") || !strings.Contains(string(gettingStarted), "Join-Path $distribution \"agent-teamctl.exe\"") || strings.Contains(string(gettingStarted), "-DestinationPath .\n") {
+		t.Fatal("Windows instructions must keep downloaded assets outside the extracted distribution")
+	}
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil || !strings.Contains(string(readme), "extracted folder") {
+		t.Fatal("README must direct Windows users to run from the extracted folder")
+	}
+}
+
 func validateHostFrontmatter(t *testing.T, host, body string) {
 	t.Helper()
 	allowed := map[string]bool{

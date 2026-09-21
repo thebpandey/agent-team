@@ -17,8 +17,9 @@ $bundle = "agent-teamctl-8.0.6-windows-amd64.zip"
 $expected = (Get-Content -Raw "$bundle.sha256").Trim()
 $actual = "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $bundle).Hash.ToLowerInvariant(), $bundle
 if ($actual -cne $expected) { throw "Windows bundle checksum mismatch" }
-Expand-Archive -LiteralPath $bundle -DestinationPath .
-.\agent-teamctl.exe install --host both --json
+$distribution = "agent-teamctl-8.0.6-windows-amd64"
+Expand-Archive -LiteralPath $bundle -DestinationPath $distribution
+& (Join-Path $distribution "agent-teamctl.exe") install --host both --json
 ```
 
 If native install or update reports a conflicting Codex Agent-Team skill, it has not changed the target installation. Move the reported whole root to a recoverable backup outside `~/.codex/skills` and `~/.agents/skills`, then retry. Do not merge files from an unknown root into the native installation.

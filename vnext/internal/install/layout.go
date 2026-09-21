@@ -29,7 +29,6 @@ func ResolveLayout(goos string, env map[string]string) (Layout, error) {
 	default:
 		return Layout{}, fmt.Errorf("unsupported platform %q", goos)
 	}
-	discoveryHome := home
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
@@ -44,12 +43,9 @@ func ResolveLayout(goos string, env map[string]string) (Layout, error) {
 	if goos == "windows" {
 		binary += ".exe"
 	}
-	discoveryPaths := []string{filepath.Join(codexHome, "skills", "agent-team", "SKILL.md")}
-	if discoveryHome != "" {
-		discoveryPaths = append(discoveryPaths,
-			filepath.Join(discoveryHome, ".codex", "skills", "agent-team", "SKILL.md"),
-			filepath.Join(discoveryHome, ".agents", "skills", "agent-team", "SKILL.md"))
-	}
+	discoveryPaths := append(codexSkillPaths(filepath.Join(home, ".codex", "skills", "agent-team")),
+		codexSkillPaths(filepath.Join(home, ".agents", "skills", "agent-team"))...)
+	discoveryPaths = append(discoveryPaths, codexSkillPaths(filepath.Join(codexHome, "skills", "agent-team"))...)
 	layout := Layout{
 		DataRoot: dataRoot, BinaryPath: filepath.Join(dataRoot, "bin", binary), ContractPath: filepath.Join(dataRoot, "WORKER-CONTRACT"), ManifestPath: filepath.Join(dataRoot, "install-manifest.json"),
 		SkillRoots:               map[Host]string{Codex: filepath.Join(codexHome, "skills", "agent-team"), Claude: filepath.Join(claudeHome, "skills", "agent-team")},
@@ -60,6 +56,10 @@ func ResolveLayout(goos string, env map[string]string) (Layout, error) {
 		return Layout{}, err
 	}
 	return layout, nil
+}
+
+func codexSkillPaths(root string) []string {
+	return []string{filepath.Join(root, "SKILL.md"), filepath.Join(root, "agent-team-vnext", "SKILL.md")}
 }
 
 // ResolveInstalledLayout binds lifecycle operations to the host homes chosen
