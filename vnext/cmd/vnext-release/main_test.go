@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"debug/pe"
 	"encoding/hex"
@@ -93,6 +94,78 @@ func TestPackageCommandBuildsWindowsBundle(t *testing.T) {
 		return
 	}
 	t.Fatal("Windows executable missing from package command bundle")
+}
+
+func TestPackageCommandIsReproducibleWithGeneratedFiles(t *testing.T) {
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := filepath.Clean(filepath.Join(workingDirectory, "..", "..", ".."))
+	checkout := filepath.Join(t.TempDir(), "checkout")
+	first, second := "release-artifacts-reproducibility-first", "release-artifacts-reproducibility-second"
+	if output, err := exec.Command("git", "-C", repository, "worktree", "add", "--detach", checkout, "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("create clean worktree: %v: %s", err, output)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(workingDirectory)
+		for _, name := range []string{"agent-teamctl", "agent-teamctl.exe"} {
+			if err := os.Remove(filepath.Join(checkout, "vnext", name)); err != nil && !os.IsNotExist(err) {
+				t.Error(err)
+			}
+		}
+		for _, output := range []string{first, second} {
+			if err := os.RemoveAll(filepath.Join(checkout, "vnext", output)); err != nil {
+				t.Error(err)
+			}
+		}
+		if output, err := exec.Command("git", "-C", checkout, "status", "--porcelain").CombinedOutput(); err != nil {
+			t.Errorf("inspect clean worktree: %v: %s", err, output)
+			return
+		} else if strings.TrimSpace(string(output)) != "" {
+			t.Errorf("unexpected clean-worktree changes: %s", output)
+			return
+		}
+		if output, err := exec.Command("git", "-C", repository, "worktree", "remove", checkout).CombinedOutput(); err != nil {
+			t.Errorf("remove clean worktree: %v: %s", err, output)
+		}
+	})
+	source := filepath.Join(checkout, "vnext")
+	if err := os.Chdir(source); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"agent-teamctl", "agent-teamctl.exe"} {
+		if _, err := os.Lstat(name); err == nil {
+			t.Skipf("%s already exists", name)
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	versionRaw, err := os.ReadFile("VERSION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := strings.TrimSpace(string(versionRaw))
+	commit := "0123456789abcdef0123456789abcdef01234567"
+	if code := run([]string{"package", "--version", version, "--commit", commit, "--output", first}); code != 0 {
+		t.Fatalf("first package command exit code = %d", code)
+	}
+	if code := run([]string{"package", "--version", version, "--commit", commit, "--output", second}); code != 0 {
+		t.Fatalf("second package command exit code = %d", code)
+	}
+	for _, name := range release.PackageOutputs(version) {
+		firstBytes, err := os.ReadFile(filepath.Join(first, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondBytes, err := os.ReadFile(filepath.Join(second, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(firstBytes, secondBytes) {
+			t.Fatalf("package output %s changed when generated files existed", name)
+		}
+	}
 }
 
 func TestBuildAgentTeamctlEmbedsReleaseIdentity(t *testing.T) {

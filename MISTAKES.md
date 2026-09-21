@@ -95,3 +95,35 @@ Cause: The installer validated only its selected destination and manifest-owned 
 Correction: Native install/update detect conflicting discoverable entrypoints before target mutation and preserve unowned files. An operator can move a superseded legacy root to a recoverable location outside skill discovery, then retry. Native banner instructions use the installed native entrypoint version; the repository's separate legacy package version is not that authority.
 
 Prevention: Test installation and update with stale top-level and nested native skills in each default discovery root, an OS-resolved fallback home, and a custom host home. Require one authoritative current entrypoint, an exact-path conflict for unowned files, and no target mutation on conflict.
+
+## M-007: Test reproducibility through the public package command
+
+Status: Active
+
+Scope: Native release build identity and reproducible output; v8.0.5 and later
+
+Source: Beads atv-5sh.44 R3, independent repeated-command reproductions, 2026-09-21.
+
+Mistake: Archive-helper determinism was treated as package reproducibility. Repeating the real package command changed the Linux binary and archive at the same source revision.
+
+Cause: Go's automatic VCS stamp changed from clean to dirty when the command created its own untracked output files.
+
+Correction: Release builds disable the incidental VCS stamp and retain the explicit linker-bound release version and commit.
+
+Prevention: Run the public package command twice from the same clean committed source, retain its generated files between runs, and compare every published asset byte for byte.
+
+## M-008: Preserve generated output before normal worktree removal
+
+Status: Active
+
+Scope: Temporary review and release-test checkout cleanup
+
+Source: Beads atv-5sh.44, independent reviewer cleanup report, 2026-09-21.
+
+Mistake: A temporary detached review checkout was removed with `git worktree remove --force` because it contained two generated executables.
+
+Cause: Disposable generated files were treated as sufficient reason to bypass normal worktree removal.
+
+Correction: Pre-removal status showed only the two generated binaries, with no tracked changes; both release-output sets remained outside the checkout and were preserved in canonical task evidence. The tracked source remains at the reviewed commit.
+
+Prevention: Inspect tracked, untracked, and ignored files; preserve required output outside the checkout, remove only confirmed disposable files, then use normal worktree removal without `--force`.

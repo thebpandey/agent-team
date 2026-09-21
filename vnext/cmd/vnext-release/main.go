@@ -80,7 +80,7 @@ func buildAgentTeamctl(source, output, version, revision string) error {
 
 func buildAgentTeamctlFor(source, output, version, revision, goos, goarch string) error {
 	ldflags := fmt.Sprintf("-X github.com/thebpandey/agent-team/vnext/internal/cli.version=%s -X github.com/thebpandey/agent-team/vnext/internal/cli.revision=%s", version, revision)
-	command := exec.Command("go", "build", "-trimpath", "-ldflags", ldflags, "-o", output, "./cmd/agent-teamctl")
+	command := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-ldflags", ldflags, "-o", output, "./cmd/agent-teamctl")
 	if goos != "" || goarch != "" {
 		command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
 	}
