@@ -52,7 +52,7 @@ flowchart LR
 Ask the active host to install the complete package from the official repository. Choose the actual host and scope explicitly; installing for both hosts is never inferred.
 
 ```text
-Install Agent-Team 7.3.1 from https://github.com/thebpandey/agent-team.
+Install the historical Node package Agent-Team 7.3.1 from https://github.com/thebpandey/agent-team.
 Use the managed installer for this host and user scope unless I explicitly choose project scope.
 Inspect the source, license, existing installation, and affected hook configuration first.
 Preserve custom files, role definitions, hooks, MCP servers, and unrelated settings.
@@ -160,7 +160,7 @@ Accepted integration evidence queues completed top-level, nondeployed deliveries
 
 Integration, publication, and deployment are separate facts. A release requires the exact authorized target, revision, task set, checks, review, preview disposition when applicable, recovery evidence, and clean delta. Recorded session provenance does not make release authority session-exclusive. Forced, chained, stale, held, mismatched, or multi-ref pushes remain denied.
 
-Agent-Team 7.3.1 permits an explicitly authorized manual release record to cover its named deployment-triggering non-force `origin` push to `refs/heads/main` only when every ordinary integration and release gate matches.
+The historical Node package Agent-Team 7.3.1 permits an explicitly authorized manual release record to cover its named deployment-triggering non-force `origin` push to `refs/heads/main` only when every ordinary integration and release gate matches.
 
 ## Legacy v7 archive installation
 
@@ -183,7 +183,7 @@ The sealed `.agent-team-source.json` and schema-4 receipt bind archive identity,
 
 ## Source and verification
 
-The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). Release identity is [v7.3.1](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1). Licensed packages should remain outside application commits.
+The official source is [thebpandey/agent-team](https://github.com/thebpandey/agent-team). This historical Node package release identity is [v7.3.1](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1). Licensed packages should remain outside application commits.
 
 From a source checkout:
 

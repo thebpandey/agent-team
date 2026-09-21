@@ -92,7 +92,7 @@ Use this actual host only: codex or claude-code. Use user scope unless I request
 
 Project hook configuration is `.codex/hooks.json` or `.claude/settings.local.json`. Node.js 24 must be ready before running package helpers and hooks.
 
-Download `agent-team-7.3.1.zip` and its matching one-entry `SHA256SUMS` from [v7.3.1](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1), with update discovery at [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify and install the sealed bytes:
+For the historical Node package only, download `agent-team-7.3.1.zip` and its matching one-entry `SHA256SUMS` from [v7.3.1](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1), with update discovery at [releases/latest](https://github.com/thebpandey/agent-team/releases/latest). Verify and install the sealed bytes:
 
 ```sh
 (cd /absolute/download && sha256sum -c SHA256SUMS)

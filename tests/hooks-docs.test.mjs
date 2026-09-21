@@ -56,7 +56,7 @@ test("7.1 field guide retains complete onboarding and documents its new operatin
   ]);
   const manifest = JSON.parse(rawManifest);
   for (const required of [
-    "Version 7.1.0", "GPT-5.6-Sol", "medium effort", "Opus 5 fallback",
+    "Historical v7.1.0 guide", "historical guide; it is not the current native release", "GPT-5.6-Sol", "medium effort", "Opus 5 fallback",
     "pure orchestrator", "parallel set", "continuous supervision", "Graphify",
     "Serena", 'shell_security = "warn"', "LeanCTX",
   ]) assert.match(guide, new RegExp(required, "i"), required);
@@ -77,7 +77,8 @@ test("7.0.2 guide remains a reachable historical edition", async () => {
     "agent-team-guide-v7.0.2.html", "agent-team-guide-v7.1.0.html", "hooks/manifest.json",
   ]);
   const manifest = JSON.parse(rawManifest);
-  assert.match(historical, /Version 7\.0\.2/);
+  assert.match(historical, /Historical v7\.0\.2 guide/);
+  assert.match(historical, /historical guide; it is not the current native release/i);
   assert.match(current, /agent-team-guide-v7\.0\.2\.html/);
   assert.ok(manifest.rootFiles.includes("agent-team-guide-v7.0.2.html"));
   assert.ok(manifest.files.includes("agent-team-guide-v7.0.2.html"));
@@ -134,6 +135,38 @@ test("release version and public guidance stay consistent", async () => {
   assert.match(release, /manual.*origin:refs\/heads\/main.*git-push.*exact revision.*task/i);
   for (const source of [skill, readme]) assert.match(source, /\(references\/HOOKS\.md\)/);
   assert.match(guide, /Requirements 1.?15/i);
+});
+
+test("displayed native versions use the release authority and historical versions are labeled", async () => {
+  const nativeVersion = (await read("vnext/VERSION")).trim();
+  const [release, rootSkill, codexSkill, claudeSkill, readme, gettingStarted, changelog, readiness, index, wordmark, workerContract, guide70, guide71] = await readMany([
+    "vnext/RELEASE.json", "SKILL.md", "vnext/codex/SKILL.md", "vnext/claude/SKILL.md", "README.md", "GETTING_STARTED.md", "CHANGELOG.md", `docs/releases/${nativeVersion}-readiness.md`, "index.html", "references/WORDMARK.md", "vnext/WORKER-CONTRACT", "agent-team-guide-v7.0.2.html", "agent-team-guide-v7.1.0.html",
+  ]);
+
+  assert.equal(JSON.parse(release).version, nativeVersion);
+  assert.equal(JSON.parse(workerContract).version, nativeVersion);
+  for (const entrypoint of [rootSkill, codexSkill, claudeSkill]) {
+    assert.match(entrypoint, new RegExp(`metadata:\\n  version: "${nativeVersion}"`));
+  }
+  assert.match(readme, new RegExp(`native version is \\*\\*\\[v${nativeVersion}\\]`));
+  assert.match(gettingStarted, new RegExp(`agent-teamctl-${nativeVersion}-windows-amd64\\.zip`));
+  assert.match(changelog, new RegExp(`^## ${nativeVersion} - `, "m"));
+  assert.match(readiness, new RegExp(`^# Agent-Team ${nativeVersion} release readiness`, "m"));
+  for (const displayedVersion of index.matchAll(/\\b8\\.\\d+\\.\\d+\\b/g)) {
+    assert.equal(displayedVersion[0], nativeVersion, "Pages must not display a stale native version");
+  }
+  assert.match(index, new RegExp(`Agent<span>-Team</span> / ${nativeVersion}`));
+  assert.match(index, new RegExp(`AGENT-TEAM / ${nativeVersion}`));
+  assert.match(index, new RegExp(`Agent-Team ${nativeVersion} · Created by`));
+  assert.match(wordmark, /from metadata\.version in the installed SKILL\.md/);
+  assert.match(wordmark, /Use the installed version, not a guessed latest version\./);
+
+  assert.match(readme, /historical Node package \*\*v7\.3\.1\*\*/i);
+  assert.match(gettingStarted, /Node-based Agent-Team 7\.3\.1 instructions below are legacy/i);
+  for (const guide of [guide70, guide71]) {
+    assert.match(guide, /Historical Agent-Team v7\.\d+\.\d+ Field Guide/);
+    assert.match(guide, /historical guide; it is not the current native release/i);
+  }
 });
 
 test("Graphify guidance accepts AST-origin inferred structural leads only", async () => {
