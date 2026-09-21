@@ -23,9 +23,25 @@ func TestBuildAgentTeamctlWindowsAMD64(t *testing.T) {
 	if err := buildAgentTeamctlFor(filepath.Clean(filepath.Join("..", "..")), output, "1.0.0", "0123456789abcdef0123456789abcdef01234567", "windows", "amd64"); err != nil {
 		t.Fatal(err)
 	}
-	image, err := pe.Open(output)
-	if err != nil || image.FileHeader.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
-		t.Fatalf("Windows amd64 binary = %#v, %v", image, err)
+	requireWindowsAMD64PE(t, output)
+}
+
+func requireWindowsAMD64PE(t *testing.T, path string) {
+	t.Helper()
+	image, err := pe.Open(path)
+	if err != nil {
+		if image != nil {
+			_ = image.Close()
+		}
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := image.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if image.FileHeader.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
+		t.Fatalf("Windows amd64 binary = %#v", image.FileHeader)
 	}
 }
 
@@ -87,10 +103,7 @@ func TestPackageCommandBuildsWindowsBundle(t *testing.T) {
 		if err := os.WriteFile(path, body, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		image, err := pe.Open(path)
-		if err != nil || image.FileHeader.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
-			t.Fatalf("packaged Windows executable = %#v, %v", image, err)
-		}
+		requireWindowsAMD64PE(t, path)
 		return
 	}
 	t.Fatal("Windows executable missing from package command bundle")
