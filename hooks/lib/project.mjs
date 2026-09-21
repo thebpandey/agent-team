@@ -58,7 +58,14 @@ export async function resolveProject(cwd, { budget } = {}) {
     };
   }
 
-  const active = setup.skill === "agent-team" && typeof setup.projectId === "string" && setup.projectId.length > 0;
+  const legacy = setup.skill === "agent-team" && typeof setup.projectId === "string" && setup.projectId.length > 0;
+  const taskIds = setup.tracker?.taskIds;
+  const v8 = setup.schema === 1 && setup.authority === "v8" && setup.project === root
+    && setup.receiptPath === ".agent-team/v8/authority.json" && /^[0-9a-f]{64}$/.test(setup.receiptDigest ?? "")
+    && /^[0-9a-f]{40}$/.test(setup.revision ?? "") && setup.tracker?.kind === "beads"
+    && typeof setup.tracker.parentId === "string" && setup.tracker.parentId.length > 0
+    && Array.isArray(taskIds) && taskIds.length > 0 && taskIds.every((id, index) => typeof id === "string" && id.length > 0 && (index === 0 || taskIds[index - 1] < id));
+  const active = legacy || v8;
   const tracker = resolveTracker(root, setup.tracker);
   const ownerHistoryPath = path.join(stateRoot, "owner-history.json");
   let ownerHistoryFingerprint = null;
@@ -72,7 +79,7 @@ export async function resolveProject(cwd, { budget } = {}) {
     worktreeRoot,
     commonDirectory,
     cwd: resolvedCwd,
-    projectId: setup.projectId,
+    projectId: legacy ? setup.projectId : setup.tracker?.parentId,
     setup,
     tracker,
     ownerHistoryFingerprint,

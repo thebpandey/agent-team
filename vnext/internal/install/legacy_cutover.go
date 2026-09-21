@@ -662,6 +662,86 @@ func verifyHostCutoverState(receipt hostCutoverReceipt) error {
 	return nil
 }
 
+// lifecycleHostCutoverReceipt recognizes the one recoverable drift created by
+// older updates: the manifest-owned staged entrypoint was recreated after a
+// successful host cutover. Everything else must still match the signed
+// cutover receipt before an update may reconcile it.
+func lifecycleHostCutoverReceipt(layout Layout, manifest InstallManifest) (*hostCutoverReceipt, error) {
+	receipt, err := readHostCutoverReceipt(layout)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]OwnedFile, len(manifest.Hosts))
+	for _, host := range manifest.Hosts {
+		index := ownedIndex(manifest.Files, EntrypointRole, host)
+		if index < 0 {
+			return nil, core.ErrRevision
+		}
+		allowed[manifest.Files[index].Path] = manifest.Files[index]
+	}
+	seenTop, seenNested := map[Host]bool{}, map[Host]bool{}
+	for _, image := range append(append([]hostCutoverPostimage(nil), receipt.Postimages...), receipt.Retained...) {
+		for _, host := range manifest.Hosts {
+			top := filepath.Join(layout.SkillRoots[host], "SKILL.md")
+			nested := filepath.Join(layout.SkillRoots[host], "agent-team-vnext", "SKILL.md")
+			if image.Path == top && !image.Absent {
+				seenTop[host] = true
+			}
+			if image.Path == nested && image.Absent {
+				seenNested[host] = true
+			}
+		}
+		if image.Absent {
+			if _, statErr := os.Lstat(image.Path); errors.Is(statErr, fs.ErrNotExist) {
+				continue
+			}
+			owned, ok := allowed[image.Path]
+			if !ok || !diskMatches(owned.Path, owned.SHA256, owned.Bytes) {
+				return nil, core.ErrRevision
+			}
+			continue
+		}
+		if digestPathBounded(image.Path, installJournalLimit) != image.SHA256 {
+			return nil, core.ErrRevision
+		}
+	}
+	for _, host := range manifest.Hosts {
+		if !seenTop[host] || !seenNested[host] {
+			return nil, core.ErrRevision
+		}
+	}
+	return &receipt, nil
+}
+
+func updatedHostCutoverReceipt(receipt hostCutoverReceipt, version, revision string, desired []desiredFile) ([]byte, error) {
+	receipt.Version, receipt.Revision = version, revision
+	for _, target := range desired {
+		if target.owned.Role != EntrypointRole {
+			continue
+		}
+		found := false
+		for index := range receipt.Postimages {
+			if receipt.Postimages[index].Path == target.owned.Path && !receipt.Postimages[index].Absent {
+				receipt.Postimages[index].SHA256 = target.owned.SHA256
+				found = true
+			}
+		}
+		if !found {
+			return nil, core.ErrRevision
+		}
+	}
+	receipt.WrittenAt = time.Now().UTC().Format(time.RFC3339Nano)
+	receipt.ReceiptDigest = digestHostReceipt(receipt)
+	raw, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(raw, '\n'), nil
+}
+
 func digestHostReceipt(receipt hostCutoverReceipt) string {
 	receipt.ReceiptDigest = ""
 	raw, _ := json.Marshal(receipt)

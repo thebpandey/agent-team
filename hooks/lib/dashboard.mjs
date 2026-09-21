@@ -75,7 +75,7 @@ ${model.lanes?.length ? `<section id="lanes" aria-labelledby="lanes-title"><h2 i
 <script id="dashboard-data" type="application/json">${jsonForScript(model)}</script><script>${snapshotScript}</script></main></body></html>`;
 }
 
-async function atomicWrite(destination, content, budget) {
+export async function atomicWrite(destination, content, budget) {
   budget?.check();
   await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
   const temporary = `${destination}.${randomUUID()}.tmp`;

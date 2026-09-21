@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -118,6 +119,101 @@ func TestLegacyHostCutoverRollbackAndRetry(t *testing.T) {
 	}
 	for _, host := range request.Hosts {
 		assertFileDigest(t, filepath.Join(layout.SkillRoots[host], "SKILL.md"), release.Entrypoints[host].SHA256)
+	}
+}
+
+func TestUpdateAfterLegacyHostCutoverKeepsActiveEntrypointsCoherent(t *testing.T) {
+	root := t.TempDir()
+	layout, err := ResolveLayout("linux", map[string]string{"XDG_DATA_HOME": filepath.Join(root, "data"), "CODEX_HOME": filepath.Join(root, "codex"), "CLAUDE_HOME": filepath.Join(root, "claude")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := legacyReleaseFixture(t, root)
+	if _, err := Install(context.Background(), layout, release, []Host{Codex, Claude}, 0); err != nil {
+		t.Fatal(err)
+	}
+	legacyReceipt := legacyHostFixture(t, layout)
+	receiptDigest, _, err := sha256File(legacyReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := LegacyHostCutoverRequest{Schema: 1, Action: "host-cutover", OperationID: "update-active", LegacyReceipt: legacyReceipt, LegacyReceiptSHA256: receiptDigest, ExpectedManifestRevision: 1, Hosts: []Host{Codex, Claude}}
+	cutover, err := CutoverLegacyHosts(context.Background(), layout, release, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated := legacyReleaseFixtureVersion(t, root, "8.0.2", "1123456789abcdef0123456789abcdef01234567", "updated")
+	outcome, err := Update(context.Background(), layout, updated, cutover.ManifestRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := readHostCutoverReceipt(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Version != updated.Version || receipt.Revision != updated.Revision {
+		t.Fatalf("receipt release = %s@%s", receipt.Version, receipt.Revision)
+	}
+	for _, host := range request.Hosts {
+		top := filepath.Join(layout.SkillRoots[host], "SKILL.md")
+		nested := filepath.Join(layout.SkillRoots[host], "agent-team-vnext", "SKILL.md")
+		assertFileDigest(t, top, updated.Entrypoints[host].SHA256)
+		if _, err := os.Lstat(nested); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("nested entrypoint recreated for %s: %v", host, err)
+		}
+		index := ownedIndex(outcome.Manifest.Files, EntrypointRole, host)
+		if index < 0 || outcome.Manifest.Files[index].Path != top {
+			t.Fatalf("manifest entrypoint for %s = %#v", host, outcome.Manifest.Files)
+		}
+	}
+	request.Action, request.ExpectedManifestRevision, request.ExpectedReceiptDigest = "host-status", outcome.Manifest.Revision, receipt.ReceiptDigest
+	if _, err := CutoverLegacyHosts(context.Background(), layout, updated, request); err != nil {
+		t.Fatalf("updated host status: %v", err)
+	}
+	retry, err := Update(context.Background(), layout, updated, outcome.Manifest.Revision)
+	if err != nil || !retry.Idempotent || retry.Manifest.Revision != outcome.Manifest.Revision {
+		t.Fatalf("idempotent update = %#v, %v", retry, err)
+	}
+	rolledBack, err := RollbackRelease(context.Background(), layout, release.Version, release.Revision, outcome.Manifest.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rolledReceipt, err := readHostCutoverReceipt(layout)
+	if err != nil || rolledReceipt.Version != release.Version || rolledReceipt.Revision != release.Revision {
+		t.Fatalf("rollback receipt = %#v, %v", rolledReceipt, err)
+	}
+	request.ExpectedManifestRevision, request.ExpectedReceiptDigest = rolledBack.Manifest.Revision, rolledReceipt.ReceiptDigest
+	if _, err := CutoverLegacyHosts(context.Background(), layout, release, request); err != nil {
+		t.Fatalf("rolled-back host status: %v", err)
+	}
+}
+
+func TestUpdateAfterLegacyHostCutoverRejectsForeignNestedEntrypoint(t *testing.T) {
+	layout, _, _, _ := legacyRollbackFixture(t)
+	manifest, err := NewManifestStore(layout).Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(layout.SkillRoots[Codex], "agent-team-vnext", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	foreign := []byte("foreign\n")
+	if err := os.WriteFile(nested, foreign, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	updated := legacyReleaseFixtureVersion(t, t.TempDir(), "8.0.2", "1123456789abcdef0123456789abcdef01234567", "updated")
+	if _, err := Update(context.Background(), layout, updated, manifest.Revision); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("foreign nested update error = %v", err)
+	}
+	after, err := os.ReadFile(nested)
+	if err != nil || !bytes.Equal(after, foreign) {
+		t.Fatalf("foreign nested entrypoint changed: %q, %v", after, err)
+	}
+	unchanged, err := NewManifestStore(layout).Read(context.Background())
+	if err != nil || !reflect.DeepEqual(unchanged, manifest) {
+		t.Fatalf("manifest changed on refusal: %#v, %v", unchanged, err)
 	}
 }
 
@@ -807,15 +903,19 @@ func legacyHostFixture(t *testing.T, layout Layout) string {
 }
 
 func legacyReleaseFixture(t *testing.T, root string) Release {
+	return legacyReleaseFixtureVersion(t, root, "8.0.0", "0123456789abcdef0123456789abcdef01234567", "")
+}
+
+func legacyReleaseFixtureVersion(t *testing.T, root, version, revision, suffix string) Release {
 	t.Helper()
 	write := func(name, body string) ReleaseFile {
-		path := filepath.Join(root, name)
+		path := filepath.Join(root, version+"-"+name)
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return ReleaseFile{Path: path, SHA256: digestText(body), Bytes: int64(len(body))}
 	}
-	return Release{Version: "8.0.0", Revision: "0123456789abcdef0123456789abcdef01234567", Binary: write("agent-teamctl", "binary\n"), Contract: write("WORKER-CONTRACT", "contract\n"), Entrypoints: map[Host]ReleaseFile{Codex: write("codex-SKILL.md", "codex-v8\n"), Claude: write("claude-SKILL.md", "claude-v8\n")}}
+	return Release{Version: version, Revision: revision, Binary: write("agent-teamctl", "binary"+suffix+"\n"), Contract: write("WORKER-CONTRACT", "contract"+suffix+"\n"), Entrypoints: map[Host]ReleaseFile{Codex: write("codex-SKILL.md", "codex-v8"+suffix+"\n"), Claude: write("claude-SKILL.md", "claude-v8"+suffix+"\n")}}
 }
 
 func legacyRollbackFixture(t *testing.T) (Layout, Release, LegacyHostCutoverRequest, hostCutoverReceipt) {

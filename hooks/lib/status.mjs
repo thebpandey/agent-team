@@ -264,8 +264,8 @@ export function createStatusModel(project, canonical = {}, options = {}) {
         : state.run ? { status: "full_project", taskIds: [] } : { status: "unknown", taskIds: [] },
     },
     state: {
-      integration: state.integration?.status ? { status: state.integration.status } : { status: "unknown" },
-      release: state.release?.status ? { status: state.release.status } : { status: "unknown" },
+      integration: { status: state.integration?.status ?? (state.integration?.hold === true ? "held" : state.integration?.authorized === true ? "authorized" : "unknown") },
+      release: { status: state.release?.status ?? (state.release?.hold === true ? "held" : state.release?.authorized === true ? "authorized" : "unknown") },
     },
     targets: targetsFor(project, canonical, runDecision, now),
     workers: operational.workers,

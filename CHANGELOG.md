@@ -1,5 +1,10 @@
 # Changelog
 
+## 8.0.2 - candidate
+
+- Keep host-cutover entrypoints at the active top-level Codex and Claude locations during update and revision rollback, transactionally reconciling older manifest-owned nested duplicates without touching foreign files.
+- Recognize the current v8 project authority when refreshing the ignored local `TEAMS.md` and dashboard snapshots after integration.
+
 ## 8.0.1 - candidate
 
 - Preserve mutation-guard durability on Windows while accepting only the documented unsupported directory-flush result after the owner record itself is synced.
