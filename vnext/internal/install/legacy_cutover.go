@@ -105,19 +105,20 @@ type legacyInstallReceipt struct {
 }
 
 type hostCutoverReceipt struct {
-	Schema              int                    `json:"schema"`
-	LegacySchema        int                    `json:"legacySchema"`
-	OperationID         string                 `json:"operationId"`
-	Version             string                 `json:"version"`
-	Revision            string                 `json:"revision"`
-	LegacyReceipt       string                 `json:"legacyReceipt"`
-	LegacyReceiptSHA256 string                 `json:"legacyReceiptSha256"`
-	Previous            InstallManifest        `json:"previous"`
-	Preimages           []hostCutoverPreimage  `json:"preimages"`
-	Postimages          []hostCutoverPostimage `json:"postimages"`
-	Retained            []hostCutoverPostimage `json:"retained"`
-	WrittenAt           string                 `json:"writtenAt"`
-	ReceiptDigest       string                 `json:"receiptDigest"`
+	Schema              int                       `json:"schema"`
+	LegacySchema        int                       `json:"legacySchema"`
+	OperationID         string                    `json:"operationId"`
+	Version             string                    `json:"version"`
+	Revision            string                    `json:"revision"`
+	LegacyReceipt       string                    `json:"legacyReceipt"`
+	LegacyReceiptSHA256 string                    `json:"legacyReceiptSha256"`
+	Previous            InstallManifest           `json:"previous"`
+	Preimages           []hostCutoverPreimage     `json:"preimages"`
+	Postimages          []hostCutoverPostimage    `json:"postimages"`
+	Retained            []hostCutoverPostimage    `json:"retained"`
+	Relinquished        []hostCutoverRelinquished `json:"relinquished,omitempty"`
+	WrittenAt           string                    `json:"writtenAt"`
+	ReceiptDigest       string                    `json:"receiptDigest"`
 }
 
 type hostCutoverPreimage struct {
@@ -131,6 +132,15 @@ type hostCutoverPostimage struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256,omitempty"`
 	Absent bool   `json:"absent,omitempty"`
+}
+
+type hostCutoverRelinquished struct {
+	Path           string `json:"path"`
+	PreSHA256      string `json:"preSha256"`
+	PostSHA256     string `json:"postSha256"`
+	ObservedSHA256 string `json:"observedSha256"`
+	Mode           uint32 `json:"mode"`
+	Bytes          int64  `json:"bytes"`
 }
 
 func CutoverLegacyHosts(ctx context.Context, layout Layout, release Release, request LegacyHostCutoverRequest) (LegacyHostCutoverResult, error) {
@@ -298,6 +308,17 @@ func rollbackLegacyHosts(ctx context.Context, layout Layout, request LegacyHostC
 	}
 	previous := cloneManifest(current)
 	intended := cloneManifest(receipt.Previous)
+	if len(receipt.Relinquished) > 0 {
+		intended = cloneManifest(current)
+		for _, host := range current.Hosts {
+			currentIndex := ownedIndex(intended.Files, EntrypointRole, host)
+			previousIndex := ownedIndex(receipt.Previous.Files, EntrypointRole, host)
+			if currentIndex < 0 || previousIndex < 0 {
+				return LegacyHostCutoverResult{}, core.ErrRevision
+			}
+			intended.Files[currentIndex].Path = receipt.Previous.Files[previousIndex].Path
+		}
+	}
 	intended.Revision = current.Revision + 1
 	journal := lifecycleJournal{Schema: 1, Operation: "rollback", ExpectedRevision: current.Revision, Owner: owner, Previous: &previous, Intended: intended}
 	preimages := make(map[string]*hostCutoverPreimage, len(receipt.Preimages))
@@ -316,23 +337,36 @@ func rollbackLegacyHosts(ctx context.Context, layout Layout, request LegacyHostC
 		}
 		seen[postimage.Path] = true
 		preimage := preimages[postimage.Path]
-		current, readErr := readHostRollbackImage(layout, postimage.Path)
+		currentImage, readErr := readHostRollbackImage(layout, postimage.Path)
 		if readErr != nil {
 			return LegacyHostCutoverResult{}, core.ErrRevision
 		}
-		if matchesHostRollbackPreimage(current, preimage) {
+		if matchesHostRollbackPreimage(currentImage, preimage) {
 			already = append(already, postimage.Path)
 			continue
 		}
 		postMode, modeKnown := hostRollbackPostMode(layout, postimage)
-		if !matchesHostRollbackPostimage(current, postimage, postMode, modeKnown) {
+		if !matchesHostRollbackPostimage(currentImage, postimage, postMode, modeKnown) {
 			return LegacyHostCutoverResult{}, core.ErrRevision
 		}
 		var mutation lifecycleMutation
 		if preimage == nil {
 			mutation, err = prepareMutation(layout, postimage.Path, nil, 0, true, false, nil)
 		} else {
-			mutation, err = prepareMutation(layout, preimage.Path, preimage.Bytes, fs.FileMode(preimage.Mode), false, false, nil)
+			replacement := preimage.Bytes
+			if len(receipt.Relinquished) > 0 {
+				for _, host := range current.Hosts {
+					previousIndex := ownedIndex(receipt.Previous.Files, EntrypointRole, host)
+					currentIndex := ownedIndex(current.Files, EntrypointRole, host)
+					if previousIndex >= 0 && currentIndex >= 0 && sameHostPath(preimage.Path, receipt.Previous.Files[previousIndex].Path) {
+						replacement, err = readStableRegular(ownedRoot(layout, current.Files[currentIndex].Path), current.Files[currentIndex].Path, current.Files[currentIndex].Bytes, nil, "")
+						if err != nil || digestContent(replacement) != current.Files[currentIndex].SHA256 {
+							return LegacyHostCutoverResult{}, core.ErrRevision
+						}
+					}
+				}
+			}
+			mutation, err = prepareMutation(layout, preimage.Path, replacement, fs.FileMode(preimage.Mode), false, false, nil)
 		}
 		if err != nil || mutation.Existed == postimage.Absent || !postimage.Absent && (mutation.PreSHA256 != postimage.SHA256 || mutation.PreMode != postMode) {
 			return LegacyHostCutoverResult{}, core.ErrRevision
@@ -662,10 +696,10 @@ func verifyHostCutoverState(receipt hostCutoverReceipt) error {
 	return nil
 }
 
-// lifecycleHostCutoverReceipt recognizes the one recoverable drift created by
-// older updates: the manifest-owned staged entrypoint was recreated after a
-// successful host cutover. Everything else must still match the signed
-// cutover receipt before an update may reconcile it.
+// lifecycleHostCutoverReceipt recognizes only the two states an update can
+// reconcile after host cutover: a manifest-owned staged entrypoint, or a
+// user-edited host config that update relinquishes without changing it.
+// Everything else must still match the signed cutover receipt.
 func lifecycleHostCutoverReceipt(layout Layout, manifest InstallManifest) (*hostCutoverReceipt, error) {
 	receipt, err := readHostCutoverReceipt(layout)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -683,7 +717,13 @@ func lifecycleHostCutoverReceipt(layout Layout, manifest InstallManifest) (*host
 		allowed[manifest.Files[index].Path] = manifest.Files[index]
 	}
 	seenTop, seenNested := map[Host]bool{}, map[Host]bool{}
-	for _, image := range append(append([]hostCutoverPostimage(nil), receipt.Postimages...), receipt.Retained...) {
+	preimages := make(map[string]hostCutoverPreimage, len(receipt.Preimages))
+	for _, image := range receipt.Preimages {
+		preimages[image.Path] = image
+	}
+	relinquished := map[string]bool{}
+	postimages := make([]hostCutoverPostimage, 0, len(receipt.Postimages))
+	for _, image := range receipt.Postimages {
 		for _, host := range manifest.Hosts {
 			top := filepath.Join(layout.SkillRoots[host], "SKILL.md")
 			nested := filepath.Join(layout.SkillRoots[host], "agent-team-vnext", "SKILL.md")
@@ -696,15 +736,34 @@ func lifecycleHostCutoverReceipt(layout Layout, manifest InstallManifest) (*host
 		}
 		if image.Absent {
 			if _, statErr := os.Lstat(image.Path); errors.Is(statErr, fs.ErrNotExist) {
+				postimages = append(postimages, image)
 				continue
 			}
 			owned, ok := allowed[image.Path]
 			if !ok || !diskMatches(owned.Path, owned.SHA256, owned.Bytes) {
 				return nil, core.ErrRevision
 			}
+			postimages = append(postimages, image)
 			continue
 		}
-		if digestPathBounded(image.Path, installJournalLimit) != image.SHA256 {
+		if digestPathBounded(image.Path, installJournalLimit) == image.SHA256 {
+			postimages = append(postimages, image)
+			continue
+		}
+		config := false
+		for _, host := range manifest.Hosts {
+			config = config || sameHostPath(image.Path, layout.ConfigPaths[host])
+		}
+		preimage, ok := preimages[image.Path]
+		current, readErr := readHostRollbackImage(layout, image.Path)
+		if !config || !ok || readErr != nil || current.absent || relinquished[image.Path] {
+			return nil, core.ErrRevision
+		}
+		receipt.Relinquished = append(receipt.Relinquished, hostCutoverRelinquished{Path: image.Path, PreSHA256: preimage.SHA256, PostSHA256: image.SHA256, ObservedSHA256: digestContent(current.raw), Mode: current.mode, Bytes: int64(len(current.raw))})
+		relinquished[image.Path] = true
+	}
+	for _, image := range receipt.Retained {
+		if image.Absent || digestPathBounded(image.Path, installJournalLimit) != image.SHA256 {
 			return nil, core.ErrRevision
 		}
 	}
@@ -712,6 +771,16 @@ func lifecycleHostCutoverReceipt(layout Layout, manifest InstallManifest) (*host
 		if !seenTop[host] || !seenNested[host] {
 			return nil, core.ErrRevision
 		}
+	}
+	if len(relinquished) > 0 {
+		kept := receipt.Preimages[:0]
+		for _, image := range receipt.Preimages {
+			if !relinquished[image.Path] {
+				kept = append(kept, image)
+			}
+		}
+		receipt.Preimages = kept
+		receipt.Postimages = postimages
 	}
 	return &receipt, nil
 }
