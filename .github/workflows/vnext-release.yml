@@ -138,22 +138,24 @@ jobs:
           $rootSkill = Get-Content -Raw $staleSkill
           if ($rootSkill -notmatch "version: `"${{ inputs.version }}`"") { throw "Source-root skill version does not match release input" }
           $route = 'Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract.'
-          if ($rootSkill -notmatch [regex]::Escape($route)) { throw "Source-root skill does not route to native contract" }
+          if (-not $rootSkill.Contains($route)) { throw "Source-root skill does not route to native contract" }
           $conflict = & (Join-Path $distribution "agent-teamctl.exe") install --host both --json 2>&1
           $conflictExit = $LASTEXITCODE
           $conflictJSON = $conflict | ConvertFrom-Json
-          if ($conflictExit -eq 0 -or $conflictJSON.ok -or $conflictJSON.error -notmatch [regex]::Escape($staleSkill)) { throw "Windows source-root conflict was not rejected: $conflict" }
+          if ($conflictExit -eq 0 -or $conflictJSON.ok -ne $false -or -not $conflictJSON.error.Contains($staleSkill) -or -not $conflictJSON.error.Contains("recoverable backup outside discovery paths and retry")) { throw "Windows source-root conflict was not rejected: $conflict" }
           $manifestRoot = Join-Path $env:LOCALAPPDATA "AgentTeam"
-          $manifest = Join-Path $manifestRoot "install-manifest.json"
-          if (Test-Path -LiteralPath $manifest) { throw "Conflict created a native manifest" }
+          if (Test-Path -LiteralPath $manifestRoot) { throw "Conflict created native files" }
           Move-Item -LiteralPath $staleRoot -Destination (Join-Path $env:RUNNER_TEMP "retired-root-skill")
           $result = & (Join-Path $distribution "agent-teamctl.exe") install --host both --json
           if ($LASTEXITCODE -ne 0) { throw "Windows bundle installer failed: $result" }
           $json = $result | ConvertFrom-Json
           if (-not $json.ok -or $json.action -ne "install") { throw "Windows bundle installer returned unexpected JSON: $result" }
           $installedController = Join-Path $manifestRoot "bin/agent-teamctl.exe"
-          $native = & $installedController version --json | ConvertFrom-Json
-          if ($native.version -ne "${{ inputs.version }}") { throw "Installed Windows native version does not match release input" }
+          $nativeRaw = & $installedController version --json
+          $nativeExit = $LASTEXITCODE
+          if ($nativeExit -ne 0) { throw "Installed Windows controller version failed: $nativeRaw" }
+          $native = $nativeRaw | ConvertFrom-Json
+          if ($native.schema -ne 1 -or $native.version -ne "${{ inputs.version }}" -or $native.revision -ne "${{ github.sha }}") { throw "Installed Windows native identity does not match release input" }
           $installedSkill = Get-Content -Raw (Join-Path $env:CODEX_HOME "skills/agent-team/agent-team-vnext/SKILL.md")
           if ($installedSkill -notmatch "version: `"${{ inputs.version }}`"") { throw "Installed Codex entrypoint version does not match release input" }
 

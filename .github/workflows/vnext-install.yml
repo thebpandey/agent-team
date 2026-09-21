@@ -21,6 +21,19 @@ jobs:
         shell: bash
         run: |
           printf 'TMPDIR=%s\nTMP=%s\nTEMP=%s\n' "$RUNNER_TEMP" "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Verify Windows PowerShell root-skill canary semantics
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        working-directory: .
+        run: |
+          $route = 'Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract.'
+          $rootSkill = Get-Content -Raw SKILL.md
+          if (-not $rootSkill.Contains($route)) { throw "Root skill route literal was not preserved" }
+          $staleSkill = 'C:\fixture\agent-team\SKILL.md'
+          $conflictExit = 1
+          $conflictRaw = '{"ok":false,"error":"revision: conflicting Codex Agent-Team skill at C:\\fixture\\agent-team\\SKILL.md; move it to a recoverable backup outside discovery paths and retry"}'
+          $conflict = $conflictRaw | ConvertFrom-Json
+          if ($conflictExit -eq 0 -or $conflict.ok -ne $false -or -not $conflict.error.Contains($staleSkill) -or -not $conflict.error.Contains("recoverable backup outside discovery paths and retry")) { throw "Windows conflict JSON was not decoded safely" }
       - run: go test ./... -count=1
       - run: go vet ./...
       - run: go test ./internal/install ./internal/migrate ./internal/cli -run 'Test(Install|Manifest|Inventory|Canary|Management)' -count=1

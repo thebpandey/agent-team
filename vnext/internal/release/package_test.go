@@ -212,13 +212,22 @@ func TestReleaseMetadata(t *testing.T) {
 	readinessDownload := "with: { name: vnext-release-readiness, path: vnext }"
 	tagCommand := `git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -a "v${{ inputs.version }}" -m "Agent-Team v${{ inputs.version }}"`
 	windowsBundleCanary := "windows-bundle-canary:\n    needs: package\n    permissions: { contents: read }\n    runs-on: windows-latest"
-	rootSkillCanary := []string{"root-skill-home", ".codex/skills/agent-team", "Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE \"SKILL.md\")", "$route = 'Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract.'", "$conflictExit = $LASTEXITCODE", "$conflictJSON = $conflict | ConvertFrom-Json", "$conflictJSON.ok", "$conflictJSON.error -notmatch [regex]::Escape($staleSkill)", "Windows source-root conflict was not rejected", "Conflict created a native manifest", "$manifestRoot = Join-Path $env:LOCALAPPDATA \"AgentTeam\"", "$installedController = Join-Path $manifestRoot \"bin/agent-teamctl.exe\"", "Move-Item -LiteralPath $staleRoot", "agent-team-vnext/SKILL.md"}
+	rootSkillCanary := []string{"root-skill-home", ".codex/skills/agent-team", "Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE \"SKILL.md\")", "$route = 'Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract.'", "$rootSkill.Contains($route)", "$conflictExit = $LASTEXITCODE", "$conflictJSON = $conflict | ConvertFrom-Json", "$conflictJSON.ok -ne $false", "$conflictJSON.error.Contains($staleSkill)", "$conflictJSON.error.Contains(\"recoverable backup outside discovery paths and retry\")", "Windows source-root conflict was not rejected", "if (Test-Path -LiteralPath $manifestRoot)", "$manifestRoot = Join-Path $env:LOCALAPPDATA \"AgentTeam\"", "$installedController = Join-Path $manifestRoot \"bin/agent-teamctl.exe\"", "$nativeRaw = & $installedController version --json", "$nativeExit = $LASTEXITCODE", "$nativeExit -ne 0", "$native.schema -ne 1", "$native.revision -ne \"${{ github.sha }}\"", "Move-Item -LiteralPath $staleRoot", "agent-team-vnext/SKILL.md"}
 	if !strings.Contains(workflowText, "${{ inputs.version }}") || !strings.Contains(workflowText, "permissions:\n  contents: read") || !strings.Contains(workflowText, "permissions: { contents: write }") || !strings.Contains(workflowText, "${{ github.workspace }}/vnext/release-artifacts") || strings.Count(workflowText, checksumStep) != 2 || strings.Count(workflowText, canonicalTempStep) != 2 || !strings.Contains(workflowText, readinessUpload) || !strings.Contains(workflowText, readinessDownload) || !strings.Contains(workflowText, "verify-gates --evidence release-readiness.json") || !strings.Contains(workflowText, tagCommand) || !strings.Contains(workflowText, windowsBundleCanary) || !strings.Contains(workflowText, "agent-teamctl-${{ inputs.version }}-windows-amd64.zip") || !strings.Contains(workflowText, "install --host both --json") {
 		t.Fatal("workflow release contract is incomplete")
 	}
 	for _, want := range rootSkillCanary {
 		if !strings.Contains(workflowText, want) {
 			t.Fatalf("workflow omits Windows source-root canary contract %q", want)
+		}
+	}
+	installWorkflow, err := os.ReadFile(filepath.Join(repository, ".github", "workflows", "vnext-install.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"if: matrix.os == 'windows-latest'", "shell: pwsh", "working-directory: .", "$rootSkill.Contains($route)", `'{"ok":false,"error":"revision: conflicting Codex Agent-Team skill at C:\\fixture\\agent-team\\SKILL.md; move it to a recoverable backup outside discovery paths and retry"}'`, "$conflictExit -eq 0", "$conflict.ok -ne $false", "$conflict.error.Contains($staleSkill)", "$conflict.error.Contains(\"recoverable backup outside discovery paths and retry\")"} {
+		if !strings.Contains(string(installWorkflow), want) {
+			t.Fatalf("install workflow omits Windows PowerShell canary contract %q", want)
 		}
 	}
 }
