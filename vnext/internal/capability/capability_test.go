@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
@@ -415,23 +416,26 @@ func TestInstallEnforcesDeadlineForEveryRunnerCall(t *testing.T) {
 	defer func() { installTimeout = old }()
 	for _, blockOn := range []int{1, 2} {
 		t.Run(fmt.Sprintf("call-%d", blockOn), func(t *testing.T) {
-			plan, spec, _, _ := stagedPlan(t)
-			runner := &timeoutRunner{blockOn: blockOn, started: make(chan struct{}), install: func(argv []string) {
-				if err := os.WriteFile(argv[len(argv)-1], []byte("built artifact"), 0o700); err != nil {
-					t.Fatal(err)
+			// Advance deadlines only when the runner blocks, independent of disk speed.
+			synctest.Test(t, func(t *testing.T) {
+				plan, spec, _, _ := stagedPlan(t)
+				runner := &timeoutRunner{blockOn: blockOn, started: make(chan struct{}), install: func(argv []string) {
+					if err := os.WriteFile(argv[len(argv)-1], []byte("built artifact"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}}
+				if _, err := Install(context.Background(), runner, plan); err == nil || !strings.Contains(err.Error(), "timed out") {
+					t.Fatalf("deadline error = %v", err)
 				}
-			}}
-			if _, err := Install(context.Background(), runner, plan); err == nil || !strings.Contains(err.Error(), "timed out") {
-				t.Fatalf("deadline error = %v", err)
-			}
-			select {
-			case <-runner.started:
-			default:
-				t.Fatal("runner never received bounded context")
-			}
-			if _, err := os.Stat(filepath.Join(spec.project, spec.destination)); !os.IsNotExist(err) {
-				t.Fatalf("published timed-out install: %v", err)
-			}
+				select {
+				case <-runner.started:
+				default:
+					t.Fatal("runner never received bounded context")
+				}
+				if _, err := os.Stat(filepath.Join(spec.project, spec.destination)); !os.IsNotExist(err) {
+					t.Fatalf("published timed-out install: %v", err)
+				}
+			})
 		})
 	}
 }

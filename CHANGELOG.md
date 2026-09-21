@@ -1,5 +1,11 @@
 # Changelog
 
+## 8.0.5 - 2026-09-21
+
+- Restore Codex and Claude skill discovery with required descriptions and supported version metadata in both native entrypoints.
+- Validate entrypoint frontmatter with both Unix and Windows line endings.
+- Make installer deadline tests deterministic with a virtual clock, eliminating filesystem-speed-dependent failures on CI.
+
 ## 8.0.4 - candidate
 
 - Resolve zero-config Codex and Claude installs under the user's `.agents` and `.claude` homes on every supported platform, independently honoring explicit first-install overrides.

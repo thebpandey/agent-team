@@ -2,7 +2,7 @@
 name: agent-team
 description: Use when a Codex request involves Agent-Team setup, status, or starting coordinated development work.
 metadata:
-  version: "8.0.0"
+  version: "8.0.5"
 ---
 
 # Agent-Team for Codex
