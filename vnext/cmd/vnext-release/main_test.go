@@ -1,9 +1,12 @@
 package main
 
 import (
+	"archive/zip"
 	"crypto/sha256"
+	"debug/pe"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +16,84 @@ import (
 
 	"github.com/thebpandey/agent-team/vnext/internal/release"
 )
+
+func TestBuildAgentTeamctlWindowsAMD64(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "agent-teamctl.exe")
+	if err := buildAgentTeamctlFor(filepath.Clean(filepath.Join("..", "..")), output, "1.0.0", "0123456789abcdef0123456789abcdef01234567", "windows", "amd64"); err != nil {
+		t.Fatal(err)
+	}
+	image, err := pe.Open(output)
+	if err != nil || image.FileHeader.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
+		t.Fatalf("Windows amd64 binary = %#v, %v", image, err)
+	}
+}
+
+func TestPackageCommandBuildsWindowsBundle(t *testing.T) {
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(filepath.Clean(filepath.Join("..", ".."))); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(workingDirectory) })
+	for _, name := range []string{"agent-teamctl", "agent-teamctl.exe"} {
+		if _, err := os.Lstat(name); err == nil {
+			t.Skipf("%s already exists", name)
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, name := range []string{"agent-teamctl", "agent-teamctl.exe"} {
+			if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
+				t.Error(err)
+			}
+		}
+	})
+	versionRaw, err := os.ReadFile("VERSION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := strings.TrimSpace(string(versionRaw))
+	output := t.TempDir()
+	commit := "0123456789abcdef0123456789abcdef01234567"
+	if code := run([]string{"package", "--version", version, "--commit", commit, "--output", output}); code != 0 {
+		t.Fatalf("package command exit code = %d", code)
+	}
+	if err := release.VerifyPackageOutputs(output, version, commit); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := zip.OpenReader(filepath.Join(output, "agent-teamctl-"+version+"-windows-amd64.zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	for _, member := range bundle.File {
+		if member.Name != "agent-teamctl.exe" {
+			continue
+		}
+		reader, openErr := member.Open()
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		body, readErr := io.ReadAll(reader)
+		_ = reader.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		path := filepath.Join(t.TempDir(), "agent-teamctl.exe")
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		image, err := pe.Open(path)
+		if err != nil || image.FileHeader.Machine != pe.IMAGE_FILE_MACHINE_AMD64 {
+			t.Fatalf("packaged Windows executable = %#v, %v", image, err)
+		}
+		return
+	}
+	t.Fatal("Windows executable missing from package command bundle")
+}
 
 func TestBuildAgentTeamctlEmbedsReleaseIdentity(t *testing.T) {
 	name := "agent-teamctl"

@@ -63,3 +63,35 @@ Cause: Task-local implementations were added without a final repository-wide dup
 Correction: Shared invariants now have one owner, standard-library operations replace handwritten loops, unused state and dead code are removed, and external APIs remain unchanged.
 
 Prevention: Before handoff, search the affected repository for equivalent invariants and helpers; reuse the narrowest existing or standard-library primitive, remove unused state, and prove behavior with focused plus full tests.
+
+## M-005: Validate the published artifact for every supported platform
+
+Status: Active
+
+Scope: Native release packaging and publication; v8.0.5 and later
+
+Source: Beads atv-5sh.44, Windows host report and release inspection, 2026-09-21. The v8.0.5 release contains only the canonical Linux archive and its metadata.
+
+Mistake: The release passed Windows source tests but shipped only a Linux ELF executable. A Windows user could not run the installer without WSL.
+
+Cause: The package command built the release-runner host binary only. Release gates did not validate the supported-platform artifact matrix.
+
+Correction: Task atv-5sh.44 adds a native Windows amd64 bundle and platform-specific package checks while preserving the Linux release contract. Its Beads record holds the exact revision and verification results.
+
+Prevention: Before publication, validate one documented downloadable artifact for each supported platform: executable format and architecture, exact contents, manifest, checksums, SBOM, and installation from that artifact on its matching CI runner. Source tests or cross-compilation alone do not prove artifact delivery or native execution.
+
+## M-006: Check all supported skill discovery roots before native installation
+
+Status: Active
+
+Scope: Native Codex install/update and status version; v8.0.5 and later
+
+Source: Beads atv-5sh.44 R8, user status report and installed-manifest inspection, 2026-09-21.
+
+Mistake: A native v8.0.5 entrypoint was installed under `.agents/skills` while a v6.1.0 same-name skill remained active under `.codex/skills`. Codex could load the old skill and show its old banner version.
+
+Cause: The installer validated only its selected destination and manifest-owned files. It did not inspect the other supported Codex discovery roots.
+
+Correction: Native install/update detect conflicting discoverable entrypoints before target mutation and preserve unowned files. An operator can move a superseded legacy root to a recoverable location outside skill discovery, then retry. Native banner instructions use the installed native entrypoint version; the repository's separate legacy package version is not that authority.
+
+Prevention: Test installation and update with stale same-name skills in each default discovery root and a custom host home. Require one authoritative current entrypoint, an exact-path conflict for unowned files, and no target mutation on conflict.

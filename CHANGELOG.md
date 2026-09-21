@@ -1,5 +1,12 @@
 # Changelog
 
+## 8.0.6 - 2026-09-21
+
+- Publish a deterministic Windows amd64 bundle with `agent-teamctl.exe`, the canonical release metadata, inner archive, and an outer checksum sidecar.
+- Keep the Linux amd64 four-file release layout and strict three-entry `SHA256SUMS` contract unchanged.
+- Verify the final Windows bundle on a Windows runner by extracting it once and running `agent-teamctl.exe install --host both --json`.
+- Detect conflicting Codex discovery roots before native install or update. Preserve the reported stale or unknown root and require an operator backup-and-retry instead of guessing ownership.
+
 ## 8.0.5 - 2026-09-21
 
 - Restore Codex and Claude skill discovery with required descriptions and supported version metadata in both native entrypoints.

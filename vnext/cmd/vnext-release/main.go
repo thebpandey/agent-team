@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/thebpandey/agent-team/vnext/internal/release"
 )
@@ -19,11 +20,15 @@ func run(args []string) int {
 	case "package":
 		set := flag.NewFlagSet("package", flag.ContinueOnError)
 		set.SetOutput(os.Stderr)
-		version, commit := set.String("version", "", ""), set.String("commit", "", "")
-		if set.Parse(args[1:]) != nil || set.NArg() != 0 || release.ValidatePackageArgs(*version, *commit) != nil {
+		version, commit, output := set.String("version", "", ""), set.String("commit", "", ""), set.String("output", "release-artifacts", "")
+		if set.Parse(args[1:]) != nil || set.NArg() != 0 || *output == "" || filepath.Clean(*output) != *output || release.ValidatePackageArgs(*version, *commit) != nil {
 			return 2
 		}
-		if buildAgentTeamctl(".", "agent-teamctl", *version, *commit) != nil || release.BuildReleasePackage("release-artifacts", *version, *commit) != nil {
+		if buildAgentTeamctl(".", "agent-teamctl", *version, *commit) != nil ||
+			buildAgentTeamctlFor(".", "agent-teamctl.exe", *version, *commit, "windows", "amd64") != nil ||
+			release.BuildReleasePackage(*output, *version, *commit) != nil ||
+			release.BuildWindowsBundleFrom(".", *output, *version, *commit) != nil ||
+			release.VerifyPackageOutputs(*output, *version, *commit) != nil {
 			return 1
 		}
 		return 0
@@ -70,8 +75,15 @@ func run(args []string) int {
 }
 
 func buildAgentTeamctl(source, output, version, revision string) error {
+	return buildAgentTeamctlFor(source, output, version, revision, "", "")
+}
+
+func buildAgentTeamctlFor(source, output, version, revision, goos, goarch string) error {
 	ldflags := fmt.Sprintf("-X github.com/thebpandey/agent-team/vnext/internal/cli.version=%s -X github.com/thebpandey/agent-team/vnext/internal/cli.revision=%s", version, revision)
 	command := exec.Command("go", "build", "-trimpath", "-ldflags", ldflags, "-o", output, "./cmd/agent-teamctl")
+	if goos != "" || goarch != "" {
+		command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
+	}
 	command.Dir, command.Stdout, command.Stderr = source, os.Stdout, os.Stderr
 	return command.Run()
 }

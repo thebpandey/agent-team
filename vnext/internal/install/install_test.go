@@ -9,11 +9,123 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	install "github.com/thebpandey/agent-team/vnext/internal/install"
 )
+
+func TestInstallRejectsUnownedCodexDiscoverySkills(t *testing.T) {
+	for _, scenario := range []struct {
+		name       string
+		customHome bool
+		path       func(root string, layout install.Layout) string
+	}{
+		{name: "legacy codex root", path: func(root string, _ install.Layout) string {
+			return filepath.Join(root, ".codex", "skills", "agent-team", "SKILL.md")
+		}},
+		{name: "selected agents root", path: func(_ string, layout install.Layout) string {
+			return filepath.Join(layout.SkillRoots[install.Codex], "SKILL.md")
+		}},
+		{name: "default root despite custom home", customHome: true, path: func(root string, _ install.Layout) string {
+			return filepath.Join(root, ".agents", "skills", "agent-team", "SKILL.md")
+		}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			root := t.TempDir()
+			env := map[string]string{"HOME": root, "XDG_DATA_HOME": filepath.Join(root, "data")}
+			if scenario.customHome {
+				env["CODEX_HOME"] = filepath.Join(root, "custom-agents")
+			}
+			layout, err := install.ResolveLayout("linux", env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale := scenario.path(root, layout)
+			if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(stale, []byte("stale agent-team"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			releaseRoot := filepath.Join(root, "release")
+			if err := os.MkdirAll(releaseRoot, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := install.Install(context.Background(), layout, writeReleaseFixture(t, releaseRoot), []install.Host{install.Codex}, 0)
+			if !errors.Is(err, core.ErrRevision) || len(outcome.Retained) != 1 || outcome.Retained[0] != stale || !strings.Contains(err.Error(), "recoverable backup") {
+				t.Fatalf("outcome=%+v err=%v", outcome, err)
+			}
+			if _, statErr := os.Lstat(layout.BinaryPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("install mutated target: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestUpdateRejectsStaleCodexDiscoverySkillWithoutMutation(t *testing.T) {
+	root := t.TempDir()
+	layout, err := install.ResolveLayout("linux", map[string]string{"HOME": root, "XDG_DATA_HOME": filepath.Join(root, "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseRoot := filepath.Join(root, "release")
+	if err := os.MkdirAll(releaseRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first, err := install.Install(context.Background(), layout, writeReleaseFixture(t, releaseRoot), []install.Host{install.Codex}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(layout.BinaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(root, ".codex", "skills", "agent-team", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	next := writeReleaseFixture(t, releaseRoot)
+	next.Version, next.Revision = "1.0.1", "abcdef0123456789abcdef0123456789abcdef01"
+	outcome, err := install.Update(context.Background(), layout, next, first.Manifest.Revision)
+	if !errors.Is(err, core.ErrRevision) || len(outcome.Retained) != 1 || outcome.Retained[0] != stale {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	after, err := os.ReadFile(layout.BinaryPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("binary changed=%q err=%v", after, err)
+	}
+}
+
+func TestInstallRejectsSymlinkedCodexDiscoverySkill(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on Windows")
+	}
+	root := t.TempDir()
+	layout, err := install.ResolveLayout("linux", map[string]string{"HOME": root, "XDG_DATA_HOME": filepath.Join(root, "data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(root, ".codex", "skills", "agent-team", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "outside"), stale); err != nil {
+		t.Fatal(err)
+	}
+	releaseRoot := filepath.Join(root, "release")
+	if err := os.MkdirAll(releaseRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := install.Install(context.Background(), layout, writeReleaseFixture(t, releaseRoot), []install.Host{install.Codex}, 0)
+	if !errors.Is(err, core.ErrRevision) || len(outcome.Retained) != 1 || outcome.Retained[0] != stale {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+}
 
 func TestFreshInstallUsesPerUserHostDefaults(t *testing.T) {
 	root := t.TempDir()

@@ -15,10 +15,13 @@ func TestPublicDocs(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := string(body)
-		for _, want := range []string{"agent-teamctl install --host codex|claude|both", "TASKS.md", "Beads", "Codex", "Claude", "BLOCKERS.md", "DECISIONS.md", "Windows", "macOS", "Linux", "legacy", "FIX", "CLEAN", "rollback", "uninstall"} {
+		for _, want := range []string{"TASKS.md", "Beads", "Codex", "Claude", "BLOCKERS.md", "DECISIONS.md", "Windows", "macOS", "Linux", "legacy", "FIX", "CLEAN", "rollback", "uninstall"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("%s missing %q", path, want)
 			}
+		}
+		if (path == "README.md" || path == "GETTING_STARTED.md") && !strings.Contains(text, "agent-teamctl install --host both --json") {
+			t.Fatalf("%s missing concrete install command", path)
 		}
 	}
 }

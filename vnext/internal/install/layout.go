@@ -29,6 +29,7 @@ func ResolveLayout(goos string, env map[string]string) (Layout, error) {
 	default:
 		return Layout{}, fmt.Errorf("unsupported platform %q", goos)
 	}
+	discoveryHome := home
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
@@ -43,10 +44,17 @@ func ResolveLayout(goos string, env map[string]string) (Layout, error) {
 	if goos == "windows" {
 		binary += ".exe"
 	}
+	discoveryPaths := []string{filepath.Join(codexHome, "skills", "agent-team", "SKILL.md")}
+	if discoveryHome != "" {
+		discoveryPaths = append(discoveryPaths,
+			filepath.Join(discoveryHome, ".codex", "skills", "agent-team", "SKILL.md"),
+			filepath.Join(discoveryHome, ".agents", "skills", "agent-team", "SKILL.md"))
+	}
 	layout := Layout{
 		DataRoot: dataRoot, BinaryPath: filepath.Join(dataRoot, "bin", binary), ContractPath: filepath.Join(dataRoot, "WORKER-CONTRACT"), ManifestPath: filepath.Join(dataRoot, "install-manifest.json"),
-		SkillRoots:  map[Host]string{Codex: filepath.Join(codexHome, "skills", "agent-team"), Claude: filepath.Join(claudeHome, "skills", "agent-team")},
-		ConfigPaths: map[Host]string{Codex: filepath.Join(codexHome, "hooks.json"), Claude: filepath.Join(claudeHome, "settings.json")},
+		SkillRoots:               map[Host]string{Codex: filepath.Join(codexHome, "skills", "agent-team"), Claude: filepath.Join(claudeHome, "skills", "agent-team")},
+		ConfigPaths:              map[Host]string{Codex: filepath.Join(codexHome, "hooks.json"), Claude: filepath.Join(claudeHome, "settings.json")},
+		CodexDiscoverySkillPaths: discoveryPaths,
 	}
 	if err := ValidateLayout(layout); err != nil {
 		return Layout{}, err

@@ -107,8 +107,33 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: vnext-release-artifacts, path: vnext/release-artifacts/* }
 
-  canary:
+  windows-bundle-canary:
     needs: package
+    permissions: { contents: read }
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: vnext-release-artifacts, path: vnext/release-artifacts }
+      - name: Verify and install the Windows amd64 bundle
+        shell: pwsh
+        run: |
+          $bundle = Join-Path $env:GITHUB_WORKSPACE "vnext/release-artifacts/agent-teamctl-${{ inputs.version }}-windows-amd64.zip"
+          $sidecar = "$bundle.sha256"
+          $line = Get-Content -Raw $sidecar
+          $expected = ((Get-FileHash -Algorithm SHA256 $bundle).Hash).ToLowerInvariant() + "  " + [IO.Path]::GetFileName($bundle) + "`n"
+          if ($line -cne $expected) { throw "Windows bundle checksum sidecar does not match" }
+          $distribution = Join-Path $env:RUNNER_TEMP "agent-team-windows-amd64"
+          Expand-Archive -LiteralPath $bundle -DestinationPath $distribution
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "local-app-data"
+          $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP "codex-home"
+          $env:CLAUDE_HOME = Join-Path $env:RUNNER_TEMP "claude-home"
+          $result = & (Join-Path $distribution "agent-teamctl.exe") install --host both --json
+          if ($LASTEXITCODE -ne 0) { throw "Windows bundle installer failed: $result" }
+          $json = $result | ConvertFrom-Json
+          if (-not $json.ok -or $json.action -ne "install") { throw "Windows bundle installer returned unexpected JSON: $result" }
+
+  canary:
+    needs: [package, windows-bundle-canary]
     permissions: { contents: read }
     runs-on: ubuntu-latest
     steps:
@@ -152,7 +177,7 @@ jobs:
             vnext/release-artifacts/*
 
   publish:
-    needs: [verify-linux, verify-macos, verify-windows, package, canary]
+    needs: [verify-linux, verify-macos, verify-windows, package, windows-bundle-canary, canary]
     permissions: { contents: write }
     runs-on: ubuntu-latest
     steps:

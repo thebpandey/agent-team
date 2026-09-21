@@ -103,6 +103,11 @@ func (b *journalBudget) reserve(size int64, field string) error {
 }
 
 func Install(ctx context.Context, layout Layout, release Release, hosts []Host, expected uint64) (CASOutcome, error) {
+	if containsHost(hosts, Codex) {
+		if outcome, err := rejectUnownedCodexSkill(layout, nil); err != nil {
+			return outcome, err
+		}
+	}
 	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", fmt.Sprintf("install:%d:%s", expected, release.Revision))
 	if err != nil {
 		return CASOutcome{}, err
@@ -125,6 +130,11 @@ func installLocked(ctx context.Context, layout Layout, release Release, hosts []
 	hosts, err := normalizeHosts(hosts)
 	if err != nil || len(hosts) == 0 {
 		return CASOutcome{}, core.ErrSettings
+	}
+	if containsHost(hosts, Codex) {
+		if outcome, err := rejectUnownedCodexSkill(layout, nil); err != nil {
+			return outcome, err
+		}
 	}
 	manifestStore := NewManifestStore(layout)
 	if current, readErr := manifestStore.Read(ctx); readErr == nil {
@@ -651,6 +661,11 @@ func snapshotUpdateBackups(layout Layout, current InstallManifest, desired []des
 }
 
 func Update(ctx context.Context, layout Layout, release Release, expected uint64) (CASOutcome, error) {
+	if current, err := NewManifestStore(layout).Read(ctx); err == nil && containsHost(current.Hosts, Codex) {
+		if outcome, conflictErr := rejectUnownedCodexSkill(layout, &current); conflictErr != nil {
+			return outcome, conflictErr
+		}
+	}
 	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", fmt.Sprintf("update:%d:%s", expected, release.Revision))
 	if err != nil {
 		return CASOutcome{}, err
@@ -671,6 +686,11 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 	}
 	if err := validateInstalledLayout(layout, current); err != nil {
 		return CASOutcome{}, err
+	}
+	if containsHost(current.Hosts, Codex) {
+		if outcome, err := rejectUnownedCodexSkill(layout, &current); err != nil {
+			return outcome, err
+		}
 	}
 	desired := releaseFiles(layout, release, current.Hosts)
 	hostReceipt, err := lifecycleHostCutoverReceipt(layout, current)
@@ -1220,6 +1240,48 @@ func atomicCreate(layout Layout, target string, data []byte, mode fs.FileMode) e
 type desiredFile struct {
 	owned  OwnedFile
 	source ReleaseFile
+}
+
+// rejectUnownedCodexSkill stops native lifecycle changes when another visible
+// Agent-Team skill could win discovery. Only a manifest-owned top-level file is safe to reuse.
+func rejectUnownedCodexSkill(layout Layout, current *InstallManifest) (CASOutcome, error) {
+	owned := map[string]bool{}
+	if current != nil {
+		for _, file := range current.Files {
+			owned[file.Path] = true
+		}
+	}
+	paths := append(append([]string(nil), layout.CodexDiscoverySkillPaths...), filepath.Join(layout.SkillRoots[Codex], "SKILL.md"))
+	seen := map[string]bool{}
+	for _, path := range paths {
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		root := filepath.Dir(path)
+		if info, err := os.Lstat(root); err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+			return CASOutcome{Retained: []string{path}}, fmt.Errorf("%w: conflicting Codex Agent-Team skill at %s; move it to a recoverable backup outside discovery paths and retry", core.ErrRevision, path)
+		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return CASOutcome{Retained: []string{path}}, fmt.Errorf("%w: conflicting Codex Agent-Team skill at %s; move it to a recoverable backup outside discovery paths and retry", core.ErrRevision, path)
+		}
+		info, err := os.Lstat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || !owned[path] {
+			return CASOutcome{Retained: []string{path}}, fmt.Errorf("%w: conflicting Codex Agent-Team skill at %s; move it to a recoverable backup outside discovery paths and retry", core.ErrRevision, path)
+		}
+	}
+	return CASOutcome{}, nil
+}
+
+func containsHost(hosts []Host, want Host) bool {
+	for _, host := range hosts {
+		if host == want {
+			return true
+		}
+	}
+	return false
 }
 
 func releaseFiles(layout Layout, release Release, hosts []Host) []desiredFile {
