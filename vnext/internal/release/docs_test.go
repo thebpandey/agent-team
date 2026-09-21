@@ -42,6 +42,13 @@ func TestHostSkillEntrypointsHaveValidFrontmatter(t *testing.T) {
 	}
 }
 
+func TestSkillMetadataVersionAcceptsCRLF(t *testing.T) {
+	body := "---\r\nmetadata:\r\n  version: \"8.0.7\"\r\n---\r\n"
+	if !hasSkillMetadataVersion(body, "8.0.7") {
+		t.Fatal("metadata version was not read from CRLF content")
+	}
+}
+
 func TestRootSkillRoutesLatestRepositoryToNativeRelease(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", "..", ".."))
 	versionRaw, err := os.ReadFile(filepath.Join(root, "vnext", "VERSION"))
@@ -54,7 +61,7 @@ func TestRootSkillRoutesLatestRepositoryToNativeRelease(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(body), "metadata:\n  version: \""+version+"\"") {
+		if !hasSkillMetadataVersion(string(body), version) {
 			t.Fatalf("%s metadata version does not match vnext/VERSION %q", path, version)
 		}
 	}
@@ -111,7 +118,7 @@ func TestDisplayedCurrentVersionsFollowNativeReleaseAuthority(t *testing.T) {
 		t.Fatalf("WORKER-CONTRACT must retain schema-1 actions and match vnext/VERSION %q", version)
 	}
 	for _, path := range []string{"SKILL.md", "vnext/codex/SKILL.md", "vnext/claude/SKILL.md"} {
-		if !strings.Contains(read(path), "metadata:\n  version: \""+version+"\"") {
+		if !hasSkillMetadataVersion(read(path), version) {
 			t.Fatalf("%s metadata version does not match vnext/VERSION %q", path, version)
 		}
 	}
@@ -161,6 +168,10 @@ func TestHistoricalVersionsAreExplicitlyLabeled(t *testing.T) {
 			t.Fatalf("%s must visibly label its historical release", path)
 		}
 	}
+}
+
+func hasSkillMetadataVersion(body, version string) bool {
+	return strings.Contains(strings.ReplaceAll(body, "\r\n", "\n"), "metadata:\n  version: \""+version+"\"")
 }
 
 func TestWindowsDownloadInstructionsUseSeparateExtractionDirectory(t *testing.T) {
