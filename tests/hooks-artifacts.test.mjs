@@ -109,6 +109,12 @@ test("source and extracted universal CLIs complete every host and scope lifecycl
   const packageRoot = path.join(extracted, "agent-team");
   const updatedRoot = path.join(updated, "agent-team");
   assert.equal(packageRoot.startsWith(sourceRoot), false);
+  assert.equal(JSON.parse(await readFile(path.join(packageRoot, "hooks", "manifest.json"), "utf8")).version, "7.3.1");
+  assert.equal(JSON.parse(await readFile(path.join(packageRoot, ".agent-team-source.json"), "utf8")).version, "7.3.1");
+  const rootSkill = await readFile(path.join(packageRoot, "SKILL.md"), "utf8");
+  assert.match(rootSkill, /version: "8\.0\.7"/);
+  assert.match(rootSkill, /Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract\./);
+  assert.match(rootSkill, /Historical Node package v7\.3\.1 materials are historical context only and are not native authority\./);
   await readFile(path.join(packageRoot, "hooks", "codex-hooks.json"));
   await readFile(path.join(packageRoot, "hooks", "claude-hooks.json"));
   assert.notEqual((await stat(path.join(packageRoot, "hooks", "agent-team-cli.mjs"))).mode & 0o111, 0);

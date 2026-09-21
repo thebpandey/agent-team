@@ -1,17 +1,19 @@
 ---
 name: agent-team
 metadata:
-  version: "7.3.1"
+  version: "8.0.7"
 description: Use when coordinating development in Codex or Claude Code, switching the same Agent-Team project between hosts or sessions, continuing tasks, or requesting setup, settings, start, status, pause, resume, or release.
 ---
 
-# Agent-Team
+# Agent-Team native v8
 
-## vNext native contract
+## Current native contract
 
-The Node-based v7.3.1 runtime described by legacy references is not vNext authority. Install the native candidate only from verified release bytes with `agent-teamctl install --host codex|claude|both`, selecting Codex, Claude, or both. Windows, macOS, and Linux use the same manifest contract. `rollback --version <version>` and `uninstall` act only on exact owned bytes.
+This latest-repository root entrypoint is the current native v8 authority. Install only verified release bytes with `agent-teamctl install --host both --json`; use `codex` or `claude` instead of `both` for one host. Published native downloads support Linux amd64 and Windows amd64; macOS has source verification but no published native binary. Historical Node package v7.3.1 materials are historical context only and are not native authority. `rollback --version <version>` and `uninstall` act only on exact owned bytes.
 
-The public actions are `setup`, `status`, `start`, `task add`, `one-off`, `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN is the internal independent-review state machine, not a public `review` action. Beads is canonical after approved cutover; `TASKS.md` remains legacy provenance. `BLOCKERS.md` and `DECISIONS.md` are bounded projections. Host switching is foreground-only and transfers no identity or lease.
+Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract. The public actions are `setup`, `status`, `start`, `task add`, `one-off`, `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN is the internal independent-review state machine, not a public `review` action. Beads is canonical after approved cutover; `TASKS.md` remains legacy provenance. `BLOCKERS.md` and `DECISIONS.md` are bounded projections. Host switching is foreground-only and transfers no identity or lease.
+
+Report the installed native binary version when available. If it differs from this repository entrypoint metadata, report that this repository version is available and require a checksum-verified native update; do not call the older controller updated. Without an installed controller, report the repository version as available and installation-needed.
 
 The dashboard is local-only. Preserve capacity caps and use native fallbacks whenever optional semantic, graph, compression, browser, or visual tooling is unavailable. Do not infer wider authority from a fallback. Release claims require the [benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and revision-bound release checks.
 
@@ -21,20 +23,22 @@ The orchestrator is strictly an orchestrator. It plans with the user, decides ev
 
 This complete package is Pro. Agent Team Lite is a separate dependency-free package; do not copy Pro-only browser/acceptance/preview procedures or dependencies into it. Publication always needs authority for its destination.
 
-## Route before acting
+## Native routing before acting
 
-Use `$agent-team` in Codex, `/agent-team` in Claude Code, or a clear natural-language request. These are skill actions, not invented native CLI commands. Read [actions](references/ACTIONS.md) and only the references for the requested action.
+Use a clear natural-language request, `$agent-team` in Codex, or `/agent-team` in Claude Code. The skill supplies operating guidance; the installed native contract performs the action. Do not route current work through the historical Node package or its hooks.
+
+The remaining sections are current native operating guidance for actions, models, teams, review, recovery, and release. Historical Node materials do not supply an alternate current-action route.
 
 | Request | Read and do |
 | --- | --- |
-| Help or version | [Help](references/HELP.md); no setup or mutations |
-| Status | [Status](references/STATUS.md); recorded facts only; then continue an already-authorized active run |
-| Setup | [Setup](references/SETUP.md); prepare selected capabilities, then always enter the current-effective settings wizard before readiness |
-| Take over or switch host/session | [Actions](references/ACTIONS.md#continue-in-another-host-or-session), then [projects](references/PROJECTS.md#session-continuity); verify the same native Git project and continue without transfer |
-| Settings | [Settings](references/SETTINGS.md); show roles/model/effort and edit the requested setting; bare settings remains targeted |
-| Start or feature request | Establish readiness, then [runs](references/RUNS.md) and [team dispatch](references/TEAM.md) |
-| Pause or resume | [Recovery](references/RECOVERY.md); preserve explicit pauses, claims and pending operations |
-| Preview approval or release | [Preview](references/PREVIEW.md) and [release](references/RELEASE.md); exact revision and existing authority |
+| Help or version | Inspect the installed native entrypoint; no setup or mutations |
+| Status | Read recorded facts only; then continue an already-authorized active run |
+| Setup | Prepare selected capabilities and enter the current settings flow before readiness |
+| Take over or switch host/session | Verify the same native Git project and continue without transferring identity |
+| Settings | Show roles, model, and effort; edit only the requested setting |
+| Start or feature request | Establish readiness, then dispatch bounded native work |
+| Pause or resume | Preserve explicit pauses, claims, and pending operations |
+| Release | Require the exact revision and existing authority |
 
 Use [compact output](references/OUTPUT.md): state first, role labels, meaningful changes and user action only when needed. Show branding on first setup/help, not every progress update.
 

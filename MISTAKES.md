@@ -147,3 +147,23 @@ Mistake: Two PE tests opened executable files without closing the returned handl
 Cause: Linux permits unlinking open files and concealed the leaked handle during local checks.
 Correction: Close every successful `debug/pe.Open` handle, including assertion-failure paths; confirm native Windows cleanup.
 Prevention: Register cleanup immediately after every successful file or archive open, and run affected filesystem tests on each supported OS.
+
+## M-011: Account for tracker audit-file side effects
+
+Status: Active
+Scope: Owner tracker operations with protected local files
+Source: Beads atv-5sh.44 close operations, 2026-09-21.
+Mistake: Closing two task blockers appended audit rows to a user-owned interactions file whose bytes had to remain unchanged.
+Cause: The tracker command's local JSONL audit side effect was not included in the write-scope check.
+Correction: Preserve the new task rows in task evidence, remove only those exact appended rows, and confirm the original file hash. Canonical Beads database records remain intact.
+Prevention: Check protected-file hashes after every tracker mutation that can append local audit data; preserve task audit rows separately when the existing file is outside task scope.
+
+## M-012: Align every current skill entrypoint with the native release
+
+Status: Active
+Scope: Repository-root and packaged native skill discovery
+Source: Beads atv-5sh.45, Windows repository-root install report after v8.0.6, 2026-09-21.
+Mistake: The v8.0.6 correction deliberately retained repository-root SKILL.md metadata7.3.1 while updating the native entrypoints. A current repository-root installation still reported the old version.
+Cause: The release check treated the root skill as historical content even though users can install that current public entrypoint.
+Correction: Bind repository-root metadata and active instructions to the current native release; keep old version references only as explicit historical migration context.
+Prevention: Before publication, test every current discoverable entrypoint against the canonical release version and native routing, including a latest-repository install on each supported published platform. Do not exclude a public root entrypoint merely because its body contains legacy material.

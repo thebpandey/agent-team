@@ -112,6 +112,7 @@ jobs:
     permissions: { contents: read }
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { name: vnext-release-artifacts, path: vnext/release-artifacts }
       - name: Verify and install the Windows amd64 bundle
@@ -124,13 +125,32 @@ jobs:
           if ($line -cne $expected) { throw "Windows bundle checksum sidecar does not match" }
           $distribution = Join-Path $env:RUNNER_TEMP "agent-team-windows-amd64"
           Expand-Archive -LiteralPath $bundle -DestinationPath $distribution
+          $fixtureHome = Join-Path $env:RUNNER_TEMP "root-skill-home"
+          $env:HOME = $fixtureHome
+          $env:USERPROFILE = $fixtureHome
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "local-app-data"
           $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP "codex-home"
           $env:CLAUDE_HOME = Join-Path $env:RUNNER_TEMP "claude-home"
+          $staleRoot = Join-Path $fixtureHome ".codex/skills/agent-team"
+          $staleSkill = Join-Path $staleRoot "SKILL.md"
+          New-Item -ItemType Directory -Force -Path $staleRoot | Out-Null
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "SKILL.md") -Destination $staleSkill
+          $rootSkill = Get-Content -Raw $staleSkill
+          if ($rootSkill -notmatch "version: `"${{ inputs.version }}`"") { throw "Source-root skill version does not match release input" }
+          if ($rootSkill -notmatch [regex]::Escape("Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract.")) { throw "Source-root skill does not route to native contract" }
+          $conflict = & (Join-Path $distribution "agent-teamctl.exe") install --host both --json 2>&1
+          if ($LASTEXITCODE -eq 0 -or "$conflict" -notmatch [regex]::Escape($staleSkill)) { throw "Windows source-root conflict was not rejected: $conflict" }
+          $manifest = Join-Path $env:LOCALAPPDATA "AgentTeam/install-manifest.json"
+          if (Test-Path -LiteralPath $manifest) { throw "Conflict created a native manifest" }
+          Move-Item -LiteralPath $staleRoot -Destination (Join-Path $env:RUNNER_TEMP "retired-root-skill")
           $result = & (Join-Path $distribution "agent-teamctl.exe") install --host both --json
           if ($LASTEXITCODE -ne 0) { throw "Windows bundle installer failed: $result" }
           $json = $result | ConvertFrom-Json
           if (-not $json.ok -or $json.action -ne "install") { throw "Windows bundle installer returned unexpected JSON: $result" }
+          $native = & (Join-Path $distribution "agent-teamctl.exe") version --json | ConvertFrom-Json
+          if ($native.version -ne "${{ inputs.version }}") { throw "Windows native version does not match release input" }
+          $installedSkill = Get-Content -Raw (Join-Path $env:CODEX_HOME "skills/agent-team/agent-team-vnext/SKILL.md")
+          if ($installedSkill -notmatch "version: `"${{ inputs.version }}`"") { throw "Installed Codex entrypoint version does not match release input" }
 
   canary:
     needs: [package, windows-bundle-canary]
