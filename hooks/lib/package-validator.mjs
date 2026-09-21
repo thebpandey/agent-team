@@ -61,10 +61,15 @@ async function validatePackage(root, { source }) {
   const readme = await readFile(path.join(root, "README.md"), "utf8").catch(() => "");
   const changelog = await readFile(path.join(root, "CHANGELOG.md"), "utf8").catch(() => "");
   const skillVersion = skill.match(/^\s*version:\s*["']?([^"'\s]+)["']?\s*$/m)?.[1];
-  const readmeVersion = readme.match(/current skill version is \*\*([^*]+)\*\*/i)?.[1];
+  const readmeVersion = readme.match(/current skill version is \*\*([^*]+)\*\*/i)?.[1]
+    ?? readme.match(/Node-based \*\*v([^*]+)\*\* package[^\n]*legacy/i)?.[1];
+  // The shared docs lead with the native release while retaining the v7 package.
+  const nativeVersion = readme.match(/native version is \*\*\[v([\d.]+)\]/i)?.[1];
   if (skillVersion !== manifest.version) errors.push(`SKILL.md version ${skillVersion ?? "missing"} does not match manifest ${manifest.version}.`);
   if (readmeVersion !== manifest.version) errors.push(`README.md version ${readmeVersion ?? "missing"} does not match manifest ${manifest.version}.`);
-  if (changelog.match(/^##\s+([^\s]+)\s+-/m)?.[1] !== manifest.version) errors.push(`CHANGELOG.md latest version does not match manifest ${manifest.version}.`);
+  const documentedVersions = [...changelog.matchAll(/^##\s+([^\s]+)\s+-/gm)].map((match) => match[1]);
+  if (!documentedVersions.includes(manifest.version)) errors.push(`CHANGELOG.md is missing manifest version ${manifest.version}.`);
+  if (documentedVersions[0] !== (nativeVersion ?? manifest.version)) errors.push(`CHANGELOG.md latest version does not match README version ${nativeVersion ?? manifest.version}.`);
   if (manifest.repository !== "https://github.com/thebpandey/agent-team") errors.push("Manifest repository is not the canonical Agent-Team source.");
 
   for (const file of manifest.files.filter((entry) => entry.endsWith(".md"))) {

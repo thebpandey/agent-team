@@ -13,7 +13,7 @@ The Node-based v7.3.1 runtime described by legacy references is not vNext author
 
 The public actions are `setup`, `status`, `start`, `task add`, `one-off`, `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN is the internal independent-review state machine, not a public `review` action. Beads is canonical after approved cutover; `TASKS.md` remains legacy provenance. `BLOCKERS.md` and `DECISIONS.md` are bounded projections. Host switching is foreground-only and transfers no identity or lease.
 
-The dashboard is local-only. Preserve capacity caps and use native fallbacks whenever optional semantic, graph, compression, browser, or visual tooling is unavailable. Do not infer wider authority from a fallback. Release claims require the [benchmark report](docs/benchmarks/vnext-optional-8.0.0.md) and revision-bound release checks.
+The dashboard is local-only. Preserve capacity caps and use native fallbacks whenever optional semantic, graph, compression, browser, or visual tooling is unavailable. Do not infer wider authority from a fallback. Release claims require the [benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and revision-bound release checks.
 
 One project orchestrator owns scope, task admission, integration and release. Delegate bounded implementation and independent review through the actual host controls. Deliver verified work with small task-specific contexts; keep engineering judgment with the orchestrator and routine state checks in the bundled helpers.
 

@@ -6,7 +6,7 @@ Install verified native bytes with `agent-teamctl install --host codex|claude|bo
 
 The supported foreground lifecycle is `setup`, `status`, `start`, `task add`, `one-off`, `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN is internal review, not a public `review` action. `rollback --version <version>` and `uninstall` retain changed or unknown files. Host switching transfers no lease; the dashboard is local-only; capacity caps and native fallbacks remain active when optional Serena, Graphify, LeanCTX, browser, or visual capabilities are absent.
 
-See the [vNext benchmark report](../docs/benchmarks/vnext-optional-8.0.0.md) and revision-bound release checks. Raw evidence stays outside release archives.
+See the [vNext benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and revision-bound release checks. Raw evidence stays outside release archives.
 
 Preparation makes a capability available; it does not load all its instructions or tool schemas into every agent. The project orchestrator owns setup and records source, tested version/revision, scope, prerequisites, compatibility profile and functional evidence. See [setup](SETUP.md).
 

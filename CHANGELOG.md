@@ -5,6 +5,7 @@
 - Restore Codex and Claude skill discovery with required descriptions and supported version metadata in both native entrypoints.
 - Validate entrypoint frontmatter with both Unix and Windows line endings.
 - Make installer deadline tests deterministic with a virtual clock, eliminating filesystem-speed-dependent failures on CI.
+- Keep shared documentation checks aware of separate native and legacy versions, and use public links for release documents excluded from legacy archives.
 
 ## 8.0.4 - candidate
 
@@ -36,7 +37,7 @@
 - Route optional LeanCTX, read-only Serena, code-only Graphify, Playwright, and visual skills by task with native fallbacks and no authority expansion.
 - Cut over stale or unverifiable v7 projects only through a short-lived, project-bound Ed25519 operator approval pinned outside the project; normal v8 and valid schema-4 receipt paths need no external trust.
 - Bind release claims to executable native checks, benchmark evidence, deterministic artifacts, canaries, rollback, provider verification, and final readiness evidence.
-- Publish a deterministic ZIP, `RELEASE.json`, native CycloneDX `SBOM.cdx.json`, and `SHA256SUMS`; see [benchmark evidence](docs/benchmarks/vnext-optional-8.0.0.md). The dashboard remains local-only, and no package registry or production service is introduced.
+- Publish a deterministic ZIP, `RELEASE.json`, native CycloneDX `SBOM.cdx.json`, and `SHA256SUMS`; see [benchmark evidence](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md). The dashboard remains local-only, and no package registry or production service is introduced.
 
 ## 7.3.1 - 2026-09-14
 
