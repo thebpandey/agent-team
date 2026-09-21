@@ -109,7 +109,9 @@ func TestReleaseMetadata(t *testing.T) {
 	workflowText := string(workflow)
 	checksumStep := "- run: sha256sum -c SHA256SUMS\n        working-directory: vnext/release-artifacts"
 	canonicalTempStep := "- name: Use canonical test temp\n        shell: bash\n        run: |\n          printf 'TMPDIR=%s\\nTMP=%s\\nTEMP=%s\\n' \"$RUNNER_TEMP\" \"$RUNNER_TEMP\" \"$RUNNER_TEMP\" >> \"$GITHUB_ENV\""
-	if !strings.Contains(workflowText, "${{ inputs.version }}") || !strings.Contains(workflowText, "permissions:\n  contents: read") || !strings.Contains(workflowText, "permissions: { contents: write }") || !strings.Contains(workflowText, "${{ github.workspace }}/vnext/release-artifacts") || strings.Count(workflowText, checksumStep) != 2 || strings.Count(workflowText, canonicalTempStep) != 2 {
+	readinessUpload := "with:\n          name: vnext-release-readiness\n          path: |\n            vnext/release-readiness.json\n            vnext/release-evidence/*\n            vnext/release-artifacts/*"
+	readinessDownload := "with: { name: vnext-release-readiness, path: vnext }"
+	if !strings.Contains(workflowText, "${{ inputs.version }}") || !strings.Contains(workflowText, "permissions:\n  contents: read") || !strings.Contains(workflowText, "permissions: { contents: write }") || !strings.Contains(workflowText, "${{ github.workspace }}/vnext/release-artifacts") || strings.Count(workflowText, checksumStep) != 2 || strings.Count(workflowText, canonicalTempStep) != 2 || !strings.Contains(workflowText, readinessUpload) || !strings.Contains(workflowText, readinessDownload) || !strings.Contains(workflowText, "verify-gates --evidence release-readiness.json") {
 		t.Fatal("workflow release contract is incomplete")
 	}
 }
