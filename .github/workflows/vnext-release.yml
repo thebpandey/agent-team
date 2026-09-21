@@ -172,7 +172,7 @@ jobs:
           git fetch --tags
           ! git rev-parse --verify --quiet "refs/tags/v${{ inputs.version }}"
           git push origin main
-          git tag -a "v${{ inputs.version }}" -m "Agent-Team v${{ inputs.version }}"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -a "v${{ inputs.version }}" -m "Agent-Team v${{ inputs.version }}"
           git push origin "v${{ inputs.version }}"
       - uses: softprops/action-gh-release@v2
         with: { tag_name: "v${{ inputs.version }}", files: vnext/release-artifacts/*, generate_release_notes: true }
