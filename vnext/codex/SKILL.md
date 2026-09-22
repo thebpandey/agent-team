@@ -16,6 +16,21 @@ payload and saved `profile` model/effort. Acknowledge only the exact returned
 canonical task name using `agent-teamctl start --action ack ...`; do not invent
 a handle or invoke an unproven worker shell command.
 
+Use this exact acknowledgement shape, replacing only returned JSON values:
+
+```text
+agent-teamctl start --action ack --team <team> --packet-digest <packet_digest> --host codex --identity <spawn_agent_task_name> --task <packet.task> --candidate <packet.specRevision> --json
+```
+
+Completion and retained reuse use the same exact handle fields:
+
+```text
+agent-teamctl start --action complete --team <team> --packet-digest <packet_digest> --host codex --identity <spawn_agent_task_name> --task <packet.task> --candidate <packet.specRevision> --json
+agent-teamctl start --action clean --team <team> --reviewer <independent_reviewer_identity> --json
+agent-teamctl start --action idle --team <team> --packet-digest <packet_digest> --host codex --identity <spawn_agent_task_name> --task <packet.task> --candidate <packet.specRevision> --json
+agent-teamctl start --action next --team <team> --json
+```
+
 For a retained queue handoff, first record completion, a distinct independent
 `clean` reviewer identity, and idle evidence through the native start actions.
 When `start --action next --team <team> --json` returns
