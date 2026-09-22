@@ -1186,8 +1186,11 @@ func validateTeam(team TeamRecord) error {
 		}
 	}
 	if team.IntentDigest == "" {
-		if team.Handle.Identity != "" || team.RetainedHandle.Identity != "" || team.CompletedTask != "" || team.ReviewedTask != "" || team.HostIdle {
+		if team.Handle.Identity != "" || team.CompletedTask != "" || team.ReviewedTask != "" || team.HostIdle {
 			return fmt.Errorf("%w: team intent state", core.ErrRevision)
+		}
+		if team.RetainedHandle.Identity != "" && (len(team.Queue) != 1 || team.State != core.Working || team.RetainedHandle.Run != team.RunID || team.RetainedHandle.Team != team.ID || team.RetainedHandle.Task == "" || team.RetainedHandle.Reviewer || !validDigest(team.RetainedHandle.PacketDigest)) {
+			return fmt.Errorf("%w: retained reservation state", core.ErrRevision)
 		}
 		return nil
 	}

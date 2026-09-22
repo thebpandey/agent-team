@@ -240,6 +240,11 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if queueErr != nil {
 			return managementError(args, stdout, stderr, queueErr)
 		}
+		if delta, reserved, reserveErr := start.ReserveRetainedHead(ctx, st, tracker.NewBeads(nil), team.ID); reserveErr != nil {
+			return managementError(args, stdout, stderr, reserveErr)
+		} else if reserved {
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "host_followup_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
+		}
 		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "team": team, "profile": settings.CodexDeveloper})
 	}
 	teamID := core.TeamID(values["--team"])
@@ -259,6 +264,23 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	case "idle":
 		team, err = start.RecordIdle(ctx, st, teamID, startHandle(values, current.RunID))
 	case "next":
+		if delta, reserved, reserveErr := start.ReserveRetainedHead(ctx, st, tracker.NewBeads(nil), teamID); reserveErr != nil {
+			err = reserveErr
+		} else if reserved {
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_followup_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
+		}
+		if err != nil {
+			break
+		}
+		if len(current.Queue) == 1 {
+			consumed, retained, idle, terminalErr := start.ConsumeHead(ctx, st, teamID)
+			if terminalErr != nil {
+				err = terminalErr
+			} else {
+				return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "consumed": consumed, "host_followup_required": false, "retained_handle": retained, "team": idle, "profile": settings.CodexDeveloper})
+			}
+			break
+		}
 		consumed, delta, waiting, nextErr := start.ConsumeForFollowup(ctx, st, tracker.NewBeads(nil), teamID)
 		if nextErr != nil {
 			err = nextErr

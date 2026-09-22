@@ -41,6 +41,7 @@ type Delta struct {
 	PacketDigest string
 	PacketPath   string
 	Retained     contracts.WorkerHandle
+	Team         run.TeamRecord
 }
 
 type packetRecord struct {
@@ -81,7 +82,8 @@ func AppendQueue(ctx context.Context, st *store.Store, selected tracker.Tracker,
 		if err != nil {
 			return err
 		}
-		if current.RunID != manifest.ID || len(taskIDs) > 8-len(current.Queue) || current.IntentDigest == "" {
+		idleRetained := len(current.Queue) == 0 && current.State == core.Idle && current.IntentDigest == "" && current.RetainedHandle.Identity != ""
+		if current.RunID != manifest.ID || len(taskIDs) > 8-len(current.Queue) || (current.IntentDigest == "" && !idleRetained) {
 			return core.ErrBatch
 		}
 		seen := make(map[core.TaskID]bool, len(current.Queue)+len(taskIDs))
@@ -116,6 +118,71 @@ func AppendQueue(ctx context.Context, st *store.Store, selected tracker.Tracker,
 		return err
 	})
 	return team, err
+}
+
+// ReserveRetainedHead publishes a fresh packet only for one task explicitly
+// appended to a consumed idle team. It never selects work or starts a worker;
+// the returned retained handle must acknowledge the packet before reuse.
+func ReserveRetainedHead(ctx context.Context, st *store.Store, selected tracker.Tracker, teamID core.TeamID) (Delta, bool, error) {
+	if selected == nil {
+		return Delta{}, false, core.ErrSettings
+	}
+	var delta Delta
+	reserved := false
+	err := withProjectLock(ctx, st, func() error {
+		repos := run.NewRepositories(st)
+		team, err := repos.Teams.Read(ctx, teamID)
+		if err != nil {
+			return err
+		}
+		team, err = reconcileTeamLocked(ctx, st, team.RunID, teamID)
+		if err != nil {
+			return err
+		}
+		if len(team.Queue) != 1 || team.IntentDigest != "" || team.Handle.Identity != "" || team.RetainedHandle.Identity == "" || team.CompletedTask != "" || team.ReviewedTask != "" || team.HostIdle {
+			return nil
+		}
+		manifest, err := repos.Runs.Read(ctx, team.RunID)
+		if err != nil {
+			return err
+		}
+		prior, _, err := readPacket(st, team.ID, team.RetainedHandle.PacketDigest)
+		if err != nil || prior.Packet.RunID != manifest.ID || prior.Packet.Team != team.ID {
+			return fmt.Errorf("%w: retained packet intent", core.ErrRevision)
+		}
+		task, err := selected.Get(ctx, team.Queue[0], manifest.TrackerRevision)
+		if err != nil || task.ID != team.Queue[0] {
+			return fmt.Errorf("%w: retained queued task", core.ErrRevision)
+		}
+		packet := core.AssignmentPacket{
+			RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: manifest.Project, RunID: manifest.ID, WrittenAt: manifest.WrittenAt, Revision: manifest.Revision},
+			SpecRevision:   manifest.SpecRevision, Task: task.ID, Team: team.ID, QueueFingerprint: team.QueueFingerprint,
+			Owner: prior.Packet.Owner, Worktree: prior.Packet.Worktree, Base: prior.Packet.Base,
+			Criteria: append([]string(nil), task.Criteria...), Scope: append([]string(nil), task.WritablePaths...), NextAction: "host_followup_required",
+		}
+		digest, err := knowledge.PacketDigest(packet)
+		if err != nil {
+			return err
+		}
+		path := packetPathFor(team.ID, digest)
+		if err := createOrReadPacket(st, path, packetRecord{Packet: packet, Digest: digest}); err != nil {
+			return err
+		}
+		retained := team.RetainedHandle
+		updated, err := mutateTeamLocked(ctx, st, manifest.ID, team.ID, func(value *run.TeamRecord) error {
+			if len(value.Queue) != 1 || value.Queue[0] != task.ID || value.IntentDigest != "" || value.Handle.Identity != "" || value.RetainedHandle != retained || value.CompletedTask != "" || value.ReviewedTask != "" || value.HostIdle {
+				return fmt.Errorf("%w: retained reservation changed", core.ErrRevision)
+			}
+			value.IntentDigest = digest
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		delta, reserved = Delta{Packet: packet, PacketDigest: digest, PacketPath: path, Retained: retained, Team: updated}, true
+		return nil
+	})
+	return delta, reserved, err
 }
 
 // AdmitDefaultRegistered creates the exact registered feature worktree for a
@@ -276,9 +343,7 @@ func Acknowledge(ctx context.Context, st *store.Store, teamID core.TeamID, diges
 	}
 	return mutateTeam(ctx, st, team.RunID, team.ID, func(value *run.TeamRecord) error {
 		value.Handle = handle
-		if value.RetainedHandle.Identity == "" {
-			value.RetainedHandle = handle
-		}
+		value.RetainedHandle = handle
 		return nil
 	})
 }

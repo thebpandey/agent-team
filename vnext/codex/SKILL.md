@@ -39,6 +39,16 @@ For a retained queue handoff, first record completion, a distinct independent
 When `start --action next --team <team> --json` returns
 `host_followup_required`, call `collaboration.followup_task` with the same
 acknowledged canonical handle and its fresh delta packet, then acknowledge the
-new packet using that same host identity. A packet reservation is not a launch.
+new packet using that same host identity. Do not follow up merely because work
+was appended: require a fresh native `host_followup_required: true` response
+after that idle evidence. A terminal `next` returns
+`host_followup_required: false`, consumes the final task, and requires no host
+action.
+
+`start --run <run> --task <task> --json` normally only appends an explicit
+already-snapshotted task. If it appends to a consumed idle retained team, it
+instead returns a fresh `host_followup_required` packet; use
+`collaboration.followup_task` with the returned retained handle, then
+acknowledge that packet with the same identity.
 
 For the status banner, use this installed native entrypoint's `metadata.version` or the matching native binary version. The latest-repository root entrypoint uses the same native version; historical v7.3.1 documents are not banner authority.

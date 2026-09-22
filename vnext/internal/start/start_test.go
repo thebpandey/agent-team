@@ -175,6 +175,44 @@ func TestAppendQueueRejectsTaskOwnedByAnotherRun(t *testing.T) {
 	}
 }
 
+func TestAppendQueueReusesConsumedIdleTeamWithSameHandleFollowup(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first := core.Task{RecordEnvelope: core.RecordEnvelope{Schema: 1, Revision: 7}, ID: "TASK-1", Objective: "first", State: core.Ready, Criteria: []string{"first"}, WritablePaths: []string{"src"}}
+	second := core.Task{RecordEnvelope: core.RecordEnvelope{Schema: 1, Revision: 7}, ID: "TASK-2", Objective: "second", State: core.Ready, Criteria: []string{"second"}, WritablePaths: []string{"src"}}
+	selected := &fakeTracker{page: core.TrackerPage{TrackerRevision: 7, TotalNonArchived: 2, Tasks: []core.Task{first, second}}}
+	st := store.New(root, core.DefaultConfig().Storage)
+	admitted, err := AdmitDefault(context.Background(), st, root, selected, "codex", filepath.Join(root, "worktree"), "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := contracts.WorkerHandle{Host: "codex", Identity: "retained", Run: admitted.Run.ID, Team: admitted.Team.ID, Task: first.ID, PacketDigest: admitted.PacketDigest, CandidateRevision: admitted.Packet.SpecRevision}
+	if _, err := Acknowledge(context.Background(), st, admitted.Team.ID, admitted.PacketDigest, handle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Complete(context.Background(), st, admitted.Team.ID, handle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordIndependentClean(context.Background(), st, admitted.Team.ID, "reviewer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordIdle(context.Background(), st, admitted.Team.ID, handle); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := ConsumeHead(context.Background(), st, admitted.Team.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendQueue(context.Background(), st, selected, admitted.Run.ID, admitted.Team.ID, []core.TaskID{second.ID}); err != nil {
+		t.Fatal(err)
+	}
+	delta, reserved, err := ReserveRetainedHead(context.Background(), st, selected, admitted.Team.ID)
+	if err != nil || !reserved || delta.Packet.Task != second.ID || delta.Retained != handle {
+		t.Fatalf("reused delta=%#v reserved=%v err=%v", delta, reserved, err)
+	}
+}
+
 func TestFollowupRequiresFreshPacketAndSameHostAcknowledgement(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o700); err != nil {
@@ -249,7 +287,7 @@ func TestFollowupRequiresFreshPacketAndSameHostAcknowledgement(t *testing.T) {
 	nextHandle.Task, nextHandle.PacketDigest = tasks[1].ID, delta.PacketDigest
 	nextHandle.CandidateRevision = delta.Packet.SpecRevision
 	acknowledged, err := Acknowledge(context.Background(), st, team.ID, delta.PacketDigest, nextHandle)
-	if err != nil || acknowledged.Handle != nextHandle || acknowledged.RetainedHandle != handle {
+	if err != nil || acknowledged.Handle != nextHandle || acknowledged.RetainedHandle != nextHandle {
 		t.Fatalf("acknowledged=%#v err=%v", acknowledged, err)
 	}
 	reloaded, err := repos.Teams.Read(context.Background(), team.ID)
