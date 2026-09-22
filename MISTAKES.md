@@ -207,3 +207,13 @@ Mistake: The CLI parsed settings and start but returned acceptance or deferral w
 Cause: Parser/status coverage was mistaken for end-to-end action coverage; the packaged host skill did not complete the missing dispatch boundary.
 Correction: Connect bounded settings persistence and one-task admission to a truthful host handoff while preserving immutable setup receipts and legacy data.
 Prevention: For each public mutating action, assert the real persisted state or observable host effect. Distinguish admission, host dispatch, and completion; never report a team launched from parser acceptance or a callback invocation alone.
+
+## M-017: Bind test claims to completed commands and exact source
+
+Status: Active
+Scope: Native action correction verification
+Source: Beads atv-5sh.47, CLI compatibility failure at b395e53, 2026-09-22.
+Mistake: A developer reported the focused CLI suite as passing, but the committed parser rejected existing repeated start selectors and the same suite failed.
+Cause: The reported result did not establish a successful final command exit for the exact committed source.
+Correction: The owner reproduced the two selector failures with exit 1 and required compatibility repair before integration.
+Prevention: Record the tested SHA, full command, and final exit status. Partial output, a passing subset, or results from earlier working-tree content cannot support an exact-SHA pass claim.
