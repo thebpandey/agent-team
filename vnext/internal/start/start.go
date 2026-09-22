@@ -94,6 +94,11 @@ func AppendQueue(ctx context.Context, st *store.Store, selected tracker.Tracker,
 				return core.ErrRevision
 			}
 			seen[id] = true
+			if ownerRun, found, ownerErr := existingTaskOwner(st, id); ownerErr != nil {
+				return ownerErr
+			} else if found {
+				return fmt.Errorf("%w: task already admitted by %s", core.ErrRevision, ownerRun)
+			}
 			task, getErr := selected.Get(ctx, id, manifest.TrackerRevision)
 			if getErr != nil {
 				return getErr
@@ -230,7 +235,7 @@ func admitPreparedLocked(ctx context.Context, st *store.Store, selected tracker.
 		if existing.Packet.RunID != currentRun.ID || existing.Packet.Team != team.ID || existing.Packet.Task != team.Queue[0] || existing.Packet.Owner != owner || existing.Packet.Worktree != worktree || existing.Packet.Base != base {
 			return Result{}, fmt.Errorf("%w: admitted packet differs", core.ErrRevision)
 		}
-		return Result{Run: currentRun, Team: team, Packet: existing.Packet, PacketDigest: existing.Digest, PacketPath: packetPath, HostDispatchRequired: true, AlreadyAdmitted: true}, nil
+		return Result{Run: currentRun, Team: team, Packet: existing.Packet, PacketDigest: existing.Digest, PacketPath: packetPath, AlreadyAdmitted: true}, nil
 	}
 	task, err := selected.Get(ctx, team.Queue[0], currentRun.TrackerRevision)
 	if err != nil {

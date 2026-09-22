@@ -113,6 +113,14 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - name: Use canonical test temp
+        shell: pwsh
+        run: |
+          "TMPDIR=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
       - uses: actions/download-artifact@v4
         with: { name: vnext-release-artifacts, path: vnext/release-artifacts }
       - name: Verify and install the Windows amd64 bundle
@@ -158,6 +166,12 @@ jobs:
           if ($native.schema -ne 1 -or $native.version -ne "${{ inputs.version }}" -or $native.revision -ne "${{ github.sha }}") { throw "Installed Windows native identity does not match release input" }
           $installedSkill = Get-Content -Raw (Join-Path $env:CODEX_HOME "skills/agent-team/agent-team-vnext/SKILL.md")
           if ($installedSkill -notmatch "version: `"${{ inputs.version }}`"") { throw "Installed Codex entrypoint version does not match release input" }
+      - name: Exercise extracted controller native-action protocol
+        shell: pwsh
+        working-directory: vnext
+        run: |
+          $env:VNEXT_RELEASE_BINARY = Join-Path $env:RUNNER_TEMP "agent-team-windows-amd64/agent-teamctl.exe"
+          go test ./cmd/agent-teamctl -run '^TestPackagedNativeActions$' -count=1 -v
 
   canary:
     needs: [package, windows-bundle-canary]

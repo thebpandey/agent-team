@@ -235,7 +235,7 @@ func (b *beads) Archive(ctx context.Context, id core.TaskID, reason string, expe
 }
 
 func (b *beads) snapshot(ctx context.Context) ([]core.Task, uint64, error) {
-	result := b.runner.Run(ctx, "bd", "list", "--json")
+	result := b.runner.Run(ctx, "bd", "list", "--json", "--all", "--limit", "0")
 	if err := commandResultError(result); err != nil {
 		return nil, 0, err
 	}
@@ -243,7 +243,11 @@ func (b *beads) snapshot(ctx context.Context) ([]core.Task, uint64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	return tasks, trackerRevision(result.Stdout), nil
+	revision := trackerRevision(result.Stdout)
+	for index := range tasks {
+		tasks[index].Revision = revision
+	}
+	return tasks, revision, nil
 }
 
 func commandResultError(result CommandResult) error {
@@ -317,9 +321,19 @@ func parseBeads(data []byte) ([]core.Task, error) {
 		if err := json.Unmarshal(encoded, &fields); err != nil || fields == nil {
 			return nil, fmt.Errorf("%w: malformed Beads issue", core.ErrPath)
 		}
-		allowed := map[string]bool{"id": true, "objective": true, "title": true, "description": true, "state": true, "status": true, "dependencies": true, "dependency_ids": true, "criteria": true, "checks": true, "writablePaths": true, "resources": true, "evidencePointers": true, "metadata": true, "archived": true}
+		allowed := map[string]bool{
+			"id": true, "objective": true, "title": true, "description": true, "state": true, "status": true,
+			"dependencies": true, "dependency_ids": true, "criteria": true, "checks": true, "writablePaths": true,
+			"resources": true, "evidencePointers": true, "metadata": true, "archived": true,
+			// These are observational fields emitted by `bd list --json`; they do not
+			// carry task authority and are deliberately ignored after type validation.
+			"priority": true, "issue_type": true, "owner": true, "created_at": true, "created_by": true,
+			"updated_at": true, "dependency_count": true, "dependent_count": true, "comment_count": true,
+			"acceptance_criteria": true, "notes": true, "assignee": true, "started_at": true, "labels": true,
+			"parent": true,
+		}
 		for key, value := range fields {
-			if !allowed[key] || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			if !allowed[key] || (bytes.Equal(bytes.TrimSpace(value), []byte("null")) && !beadsObservationalField(key)) {
 				return nil, fmt.Errorf("%w: invalid Beads field %q", core.ErrPath, key)
 			}
 		}
@@ -329,10 +343,22 @@ func parseBeads(data []byte) ([]core.Task, error) {
 		if _, ok := fields["status"]; !ok {
 			return nil, fmt.Errorf("%w: Beads issue has no status", core.ErrPath)
 		}
+		dependencies, err := parseBeadsDependencies(fields["dependencies"])
+		if err != nil {
+			return nil, err
+		}
+		if fields["dependencies"] != nil {
+			delete(fields, "dependencies")
+			encoded, err = json.Marshal(fields)
+			if err != nil {
+				return nil, fmt.Errorf("%w: normalize Beads dependencies", core.ErrPath)
+			}
+		}
 		var item beadTask
 		if err := json.Unmarshal(encoded, &item); err != nil {
 			return nil, fmt.Errorf("%w: malformed Beads issue", core.ErrPath)
 		}
+		item.Dependencies = dependencies
 		objective := item.Objective
 		if objective == "" {
 			objective = item.Title
@@ -353,9 +379,9 @@ func parseBeads(data []byte) ([]core.Task, error) {
 		if _, present := fields["archived"]; present && item.Archived != archived {
 			return nil, fmt.Errorf("%w: contradictory Beads archived flag", core.ErrPath)
 		}
-		dependencies := item.Dependencies
-		if dependencies == nil {
-			dependencies = item.DependencyIDs
+		taskDependencies := item.Dependencies
+		if taskDependencies == nil {
+			taskDependencies = item.DependencyIDs
 		}
 		if len(item.Metadata) > 0 {
 			var metadataFields map[string]json.RawMessage
@@ -394,7 +420,7 @@ func parseBeads(data []byte) ([]core.Task, error) {
 				item.EvidencePointers = metadata.EvidencePointers
 			}
 		}
-		task := core.Task{ID: item.ID, Objective: objective, State: state, Dependencies: dependencies, Criteria: item.Criteria, Checks: item.Checks, WritablePaths: item.WritablePaths, Resources: item.Resources, EvidencePointers: item.EvidencePointers, Archived: archived}
+		task := core.Task{ID: item.ID, Objective: objective, State: state, Dependencies: taskDependencies, Criteria: item.Criteria, Checks: item.Checks, WritablePaths: item.WritablePaths, Resources: item.Resources, EvidencePointers: item.EvidencePointers, Archived: archived}
 		if err := validateTask(task); err != nil {
 			return nil, err
 		}
@@ -405,6 +431,80 @@ func parseBeads(data []byte) ([]core.Task, error) {
 		tasks = append(tasks, task)
 	}
 	return tasks, nil
+}
+
+// parseBeadsDependencies accepts Beads' compact ID list and its documented
+// expanded dependency records. Only blocking dependencies carry scheduling
+// authority; other relation types are rejected instead of silently projected.
+func parseBeadsDependencies(value json.RawMessage) ([]core.TaskID, error) {
+	if value == nil {
+		return nil, nil
+	}
+	var raw []json.RawMessage
+	if err := json.Unmarshal(value, &raw); err != nil || raw == nil {
+		return nil, fmt.Errorf("%w: malformed Beads dependencies", core.ErrPath)
+	}
+	result := make([]core.TaskID, 0, len(raw))
+	for _, encoded := range raw {
+		var id core.TaskID
+		if err := json.Unmarshal(encoded, &id); err == nil {
+			result = append(result, id)
+			continue
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &fields); err != nil || fields == nil {
+			return nil, fmt.Errorf("%w: malformed Beads dependency", core.ErrPath)
+		}
+		allowed := map[string]bool{
+			"id": true, "objective": true, "title": true, "description": true, "state": true, "status": true,
+			"metadata": true, "priority": true, "issue_type": true, "owner": true, "created_at": true,
+			"created_by": true, "updated_at": true, "dependency_type": true, "issue_id": true,
+			"depends_on_id": true, "type": true,
+		}
+		for key, field := range fields {
+			if !allowed[key] || bytes.Equal(bytes.TrimSpace(field), []byte("null")) {
+				return nil, fmt.Errorf("%w: invalid Beads dependency field %q", core.ErrPath, key)
+			}
+		}
+		var relation struct {
+			ID          core.TaskID `json:"id"`
+			DependsOnID core.TaskID `json:"depends_on_id"`
+			Type        string      `json:"type"`
+			LegacyType  string      `json:"dependency_type"`
+		}
+		if err := json.Unmarshal(encoded, &relation); err != nil {
+			return nil, fmt.Errorf("%w: malformed Beads dependency relation", core.ErrPath)
+		}
+		kind := relation.Type
+		if kind == "" {
+			kind = relation.LegacyType
+		}
+		switch kind {
+		case "blocks":
+			id := relation.ID
+			if relation.DependsOnID != "" {
+				id = relation.DependsOnID
+			}
+			if id == "" {
+				return nil, fmt.Errorf("%w: invalid Beads blocking dependency", core.ErrPath)
+			}
+			result = append(result, id)
+		case "parent-child", "related":
+			// Provenance edges are not scheduling blockers.
+		default:
+			return nil, fmt.Errorf("%w: unknown Beads dependency relation %q", core.ErrPath, kind)
+		}
+	}
+	return result, nil
+}
+
+func beadsObservationalField(key string) bool {
+	switch key {
+	case "priority", "issue_type", "owner", "created_at", "created_by", "updated_at", "dependency_count", "dependent_count", "comment_count", "acceptance_criteria", "notes", "assignee", "started_at", "labels", "parent":
+		return true
+	default:
+		return false
+	}
 }
 
 func beadsState(status string) (core.TaskState, bool, bool) {

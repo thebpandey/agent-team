@@ -222,7 +222,7 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if err != nil {
 			return managementError(args, stdout, stderr, err)
 		}
-		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_dispatch_required": true, "packet": result.Packet, "packet_digest": result.PacketDigest, "packet_path": result.PacketPath, "run": result.Run.ID, "team": result.Team.ID, "profile": settings.CodexDeveloper, "already_admitted": result.AlreadyAdmitted})
+		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_dispatch_required": result.HostDispatchRequired, "packet": result.Packet, "packet_digest": result.PacketDigest, "packet_path": result.PacketPath, "run": result.Run.ID, "team": result.Team.ID, "profile": settings.CodexDeveloper, "already_admitted": result.AlreadyAdmitted})
 	}
 	if runValue := values["--run"]; runValue != "" {
 		manifest, readErr := run.NewRepositories(st).Runs.Read(ctx, core.RunID(runValue))

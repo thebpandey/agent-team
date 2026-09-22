@@ -2,6 +2,7 @@ package start
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,7 +46,7 @@ func TestAdmitDefaultPersistsCanonicalRunTeamAndPacket(t *testing.T) {
 		t.Fatalf("team=%#v err=%v", persistedTeam, err)
 	}
 	again, err := AdmitDefault(context.Background(), store.New(root, core.DefaultConfig().Storage), root, selected, "codex", worktree, "base")
-	if err != nil || !again.AlreadyAdmitted || again.PacketDigest != got.PacketDigest {
+	if err != nil || !again.AlreadyAdmitted || again.HostDispatchRequired || again.PacketDigest != got.PacketDigest {
 		t.Fatalf("duplicate=%#v err=%v", again, err)
 	}
 	packetBefore, _ := os.ReadFile(filepath.Join(root, filepath.FromSlash(got.PacketPath)))
@@ -150,6 +151,27 @@ func TestAppendQueuePersistsBoundedExplicitSeries(t *testing.T) {
 	}
 	if _, err := AppendQueue(context.Background(), st, selected, got.Run.ID, got.Team.ID, []core.TaskID{second.ID}); err == nil {
 		t.Fatal("duplicate queued task accepted")
+	}
+}
+
+func TestAppendQueueRejectsTaskOwnedByAnotherRun(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first := core.Task{RecordEnvelope: core.RecordEnvelope{Schema: 1, Revision: 7}, ID: "TASK-1", Objective: "first", State: core.Ready, Criteria: []string{"first"}, WritablePaths: []string{"src"}}
+	second := core.Task{RecordEnvelope: core.RecordEnvelope{Schema: 1, Revision: 8}, ID: "TASK-2", Objective: "second", State: core.Ready, Criteria: []string{"second"}, WritablePaths: []string{"src"}}
+	st := store.New(root, core.DefaultConfig().Storage)
+	firstRun, err := AdmitDefault(context.Background(), st, root, &fakeTracker{page: core.TrackerPage{TrackerRevision: 7, TotalNonArchived: 1, Tasks: []core.Task{first}}}, "codex", filepath.Join(root, "first"), "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRun, err := AdmitDefault(context.Background(), st, root, &fakeTracker{page: core.TrackerPage{TrackerRevision: 8, TotalNonArchived: 1, Tasks: []core.Task{second}}}, "codex", filepath.Join(root, "second"), "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendQueue(context.Background(), st, &fakeTracker{page: core.TrackerPage{TrackerRevision: 8, TotalNonArchived: 2, Tasks: []core.Task{first, second}}}, secondRun.Run.ID, secondRun.Team.ID, []core.TaskID{first.ID}); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("AppendQueue error = %v, want ErrRevision (first run %s)", err, firstRun.Run.ID)
 	}
 }
 

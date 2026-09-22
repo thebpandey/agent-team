@@ -9,12 +9,15 @@ metadata:
 
 Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract. Keep task authority in Beads and preserve native fallbacks.
 
-`agent-teamctl start --json` only reserves a packet and returns
-`host_dispatch_required`; it never starts a worker. Read the returned packet,
-then call the actual `collaboration.spawn_agent` tool with its bounded task
-payload and saved `profile` model/effort. Acknowledge only the exact returned
-canonical task name using `agent-teamctl start --action ack ...`; do not invent
-a handle or invoke an unproven worker shell command.
+`agent-teamctl start --json` only reserves a packet; it never starts a worker.
+Call `collaboration.spawn_agent` only when the response has
+`host_dispatch_required: true` and `already_admitted: false`. If it reports an
+already admitted packet or `host_dispatch_required: false`, observe the named
+team/packet and do not spawn or acknowledge a replacement worker. For a fresh
+packet, use its bounded task payload and saved `profile` model/effort, then
+acknowledge only the exact returned canonical task name using
+`agent-teamctl start --action ack ...`; do not invent a handle or invoke an
+unproven worker shell command.
 
 Use this exact acknowledgement shape, replacing only returned JSON values:
 
