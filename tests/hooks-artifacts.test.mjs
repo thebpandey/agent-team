@@ -112,7 +112,8 @@ test("source and extracted universal CLIs complete every host and scope lifecycl
   assert.equal(JSON.parse(await readFile(path.join(packageRoot, "hooks", "manifest.json"), "utf8")).version, "7.3.1");
   assert.equal(JSON.parse(await readFile(path.join(packageRoot, ".agent-team-source.json"), "utf8")).version, "7.3.1");
   const rootSkill = await readFile(path.join(packageRoot, "SKILL.md"), "utf8");
-  assert.match(rootSkill, /version: "8\.0\.7"/);
+  const nativeVersion = (await readFile(path.join(sourceRoot, "vnext", "VERSION"), "utf8")).trim();
+  assert.ok(rootSkill.includes(`version: "${nativeVersion}"`));
   assert.match(rootSkill, /Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract\./);
   assert.match(rootSkill, /Historical Node package v7\.3\.1 materials are historical context only and are not native authority\./);
   await readFile(path.join(packageRoot, "hooks", "codex-hooks.json"));
