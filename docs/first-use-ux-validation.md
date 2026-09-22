@@ -14,7 +14,7 @@ were not modified. Existing v8.0.10 downloads do not contain these repairs.
 | Native skill installed below `agent-team-vnext/` | Both hosts receive `agent-team/SKILL.md`; updates reconcile verified historical/manual moves without replacing custom files. |
 | Old Node hook failures | Native guidance requires no external hooks and resolves the installed controller even when it is absent from PATH. Unrelated hooks are not removed. |
 | Bare `settings` error on a fresh project | Structured setup states name the missing inputs and next action. Approved setup creates only missing artifacts after validation. Ordinary setup does not require release cutover evidence. |
-| `.beads` exceeds the canonical record limit | Fingerprint bounded Beads metadata, never the Dolt store. Check actual backend health before reporting the tracker prepared. |
+| `.beads` exceeds the canonical record limit | Fingerprint bounded metadata and the small Dolt manifest root hash, with a passive-export fallback; never walk the Dolt store. Keep the receipt digest a string and leave TASKS.md hashing unchanged. Check actual backend health before reporting the tracker prepared. |
 | Markdown fallback cannot start | Root and designated Markdown trackers are supported through setup, admission, and persisted run validation. |
 | Kickoff repeats setup or cannot hand off | Read approved 0.5.0 handoffs; prepare dependencies before binding setup; attach later handoffs without resetting settings or active packets. Default admission stays within approved task IDs. |
 | First-run role settings absent | Store independent Codex/Claude preferences for orchestrator, developer/coder, reviewer, and visual reviewer. Saving accepted inherited defaults completes the first settings step. |

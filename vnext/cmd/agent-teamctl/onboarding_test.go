@@ -116,6 +116,46 @@ func TestSetupRefusalPreservesReadyExistingInputs(t *testing.T) {
 	}
 }
 
+func TestSetupCLILargeEmbeddedDoltDoesNotConsumeArtifactBudget(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	dbPath := filepath.Join(root, ".beads/embeddeddolt/project/.dolt/noms")
+	if err := os.MkdirAll(dbPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".beads/metadata.json"), []byte(`{"backend":"dolt","dolt_mode":"embedded","dolt_database":"project"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := os.Create(filepath.Join(dbPath, "oversized-dolt-table"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Truncate(64 << 20); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "TASKS.md"), []byte("# Retained legacy tracker\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, result := invokeOnboarding(t, "setup", "--approve-kickoff")
+	if code != 0 || result["ok"] != true {
+		t.Fatalf("large Beads setup: %d %+v", code, result)
+	}
+	if selected, ok := result["tracker"].(map[string]any); !ok || selected["kind"] != "beads" {
+		t.Fatalf("wrong tracker: %+v", result)
+	}
+	setup, err := project.InspectSetup(context.Background(), root)
+	if err != nil || setup.ArtifactDigests[".beads"] == "" {
+		t.Fatalf("missing stable Beads receipt digest: %+v %v", setup, err)
+	}
+	if body, err := os.ReadFile(filepath.Join(root, "TASKS.md")); err != nil || string(body) != "# Retained legacy tracker\n" {
+		t.Fatal("setup changed legacy TASKS.md")
+	}
+}
+
 func TestKickoffCLIStartsDesignatedMarkdownFromSubdirectory(t *testing.T) {
 	root := testkit.GitRepo(t)
 	t.Chdir(root)
