@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/tracker"
 )
@@ -44,12 +45,21 @@ const (
 // TeamRecord is the durable bounded queue assigned to one retained team.
 type TeamRecord struct {
 	core.RecordEnvelope
-	ID               core.TeamID    `json:"teamId"`
-	Queue            []core.TaskID  `json:"queue"`
-	QueueFingerprint string         `json:"queueFingerprint"`
-	State            core.TaskState `json:"state"`
-	Paths            []string       `json:"paths,omitempty"`
-	Resources        []string       `json:"resources,omitempty"`
+	ID               core.TeamID            `json:"teamId"`
+	Queue            []core.TaskID          `json:"queue"`
+	QueueFingerprint string                 `json:"queueFingerprint"`
+	State            core.TaskState         `json:"state"`
+	Paths            []string               `json:"paths,omitempty"`
+	Resources        []string               `json:"resources,omitempty"`
+	IntentDigest     string                 `json:"intentDigest,omitempty"`
+	Handle           contracts.WorkerHandle `json:"handle,omitempty"`
+	// RetainedHandle is the last exact native handle while a queued follow-up
+	// waits for its own packet-bound acknowledgement. It is never retagged as
+	// acknowledgement of the next task.
+	RetainedHandle contracts.WorkerHandle `json:"retainedHandle,omitempty"`
+	CompletedTask  core.TaskID            `json:"completedTask,omitempty"`
+	ReviewedTask   core.TaskID            `json:"reviewedTask,omitempty"`
+	HostIdle       bool                   `json:"hostIdle,omitempty"`
 }
 
 // Run is the schema-1 authority for either a selected tracker snapshot or a
@@ -86,6 +96,115 @@ type AdmissionBatch struct {
 	TrackerRevision uint64        `json:"trackerRevision"`
 	Paths           []string      `json:"paths"`
 	Resources       []string      `json:"resources"`
+}
+
+// PreparedPlanAdmission is one tracker-derived ready task prepared for the
+// existing append-only admission service. It never changes the tracker.
+type PreparedPlanAdmission struct {
+	Run   Run
+	Team  TeamRecord
+	Batch AdmissionBatch
+}
+
+// PrepareQueueAdmission constructs one bounded append for an existing team.
+// It is deliberately limited to the team queue's remaining capacity; callers
+// still use admission.AppendAdmission for current-snapshot validation and the
+// durable admission commit.
+func PrepareQueueAdmission(manifest Run, team TeamRecord, tasks []core.Task) (AdmissionBatch, map[core.TaskID]uint64, error) {
+	if len(tasks) == 0 || len(tasks) > maxTeamQueue-len(team.Queue) || team.RunID != manifest.ID {
+		return AdmissionBatch{}, nil, core.ErrBatch
+	}
+	originalRevisions := make(map[core.TaskID]uint64, len(tasks))
+	for _, task := range tasks {
+		originalRevisions[task.ID] = task.Revision
+	}
+	normalized, err := normalizeTasks(tasks)
+	if err != nil {
+		return AdmissionBatch{}, nil, err
+	}
+	ids := make([]core.TaskID, len(normalized))
+	revisions := make(map[core.TaskID]uint64, len(normalized))
+	for index, task := range normalized {
+		if task.Archived || task.State != core.Ready {
+			return AdmissionBatch{}, nil, core.ErrPhase
+		}
+		revision := originalRevisions[task.ID]
+		if revision == 0 {
+			revision = manifest.TrackerRevision
+		}
+		ids[index], revisions[task.ID] = task.ID, revision
+	}
+	var rawPaths, rawResources []string
+	for _, task := range normalized {
+		rawPaths = append(rawPaths, task.WritablePaths...)
+		rawResources = append(rawResources, task.Resources...)
+	}
+	paths, err := normalizePaths(rawPaths)
+	if err != nil {
+		return AdmissionBatch{}, nil, err
+	}
+	resources, err := normalizeResources(rawResources)
+	if err != nil {
+		return AdmissionBatch{}, nil, err
+	}
+	batch := AdmissionBatch{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: manifest.Project, RunID: manifest.ID, WrittenAt: manifest.WrittenAt, Revision: 1}, BatchID: fmt.Sprintf("batch-%d", team.Revision+1), Tasks: ids, Team: team.ID, Sequence: team.Revision + 1, TrackerRevision: manifest.TrackerRevision, Paths: paths, Resources: resources}
+	batch.Fingerprint = admissionFingerprint(batch)
+	return batch, revisions, nil
+}
+
+// PrepareSinglePlanAdmission snapshots the selected authority and derives one
+// ready, dependency-satisfied task for one initially idle team. Callers must
+// persist the returned run/team and pass Batch to admission.AppendAdmission.
+func PrepareSinglePlanAdmission(ctx context.Context, project string, selected tracker.Tracker) (PreparedPlanAdmission, error) {
+	plan, err := CreatePlan(ctx, project, selected)
+	if err != nil {
+		return PreparedPlanAdmission{}, err
+	}
+	page, err := selected.Page(ctx, "", 1000)
+	if err != nil {
+		return PreparedPlanAdmission{}, err
+	}
+	byID := make(map[core.TaskID]core.Task, len(page.Tasks))
+	for _, task := range page.Tasks {
+		byID[task.ID] = task
+	}
+	var chosen core.Task
+	for _, task := range page.Tasks {
+		if task.Archived || task.State != core.Ready {
+			continue
+		}
+		ready := true
+		for _, dependency := range task.Dependencies {
+			prior, found := byID[dependency]
+			if !found || (prior.State != core.Clean && prior.State != core.Gated && prior.State != core.Integrated) {
+				ready = false
+				break
+			}
+		}
+		if ready && (chosen.ID == "" || task.ID < chosen.ID) {
+			chosen = task
+		}
+	}
+	if chosen.ID == "" {
+		return PreparedPlanAdmission{}, core.ErrPhase
+	}
+	paths, err := normalizePaths(chosen.WritablePaths)
+	if err != nil || len(paths) == 0 {
+		return PreparedPlanAdmission{}, core.ErrPath
+	}
+	resources, err := normalizeResources(chosen.Resources)
+	if err != nil {
+		return PreparedPlanAdmission{}, core.ErrPath
+	}
+	plan.Teams = []TeamRecord{{State: core.Idle}}
+	plan, err = finalizeRun(plan)
+	if err != nil {
+		return PreparedPlanAdmission{}, err
+	}
+	team := plan.Teams[0]
+	batch := AdmissionBatch{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: plan.Project, RunID: plan.ID, WrittenAt: canonicalWrittenAt, Revision: 1}, BatchID: "batch-1", Tasks: []core.TaskID{chosen.ID}, Team: team.ID, Sequence: 1, TrackerRevision: page.TrackerRevision, Paths: paths, Resources: resources}
+	batch.Fingerprint = admissionFingerprint(batch)
+	return PreparedPlanAdmission{Run: plan, Team: team, Batch: batch}, nil
 }
 
 // CreatePlan snapshots exactly one selected tracker. The returned ID and
@@ -786,6 +905,10 @@ func queueFingerprint(queue []core.TaskID) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// QueueFingerprint exposes the canonical bounded queue binding for retained
+// team transitions without giving callers permission to alter queue rules.
+func QueueFingerprint(queue []core.TaskID) string { return queueFingerprint(queue) }
+
 func digestJSON(value any) (string, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -1046,8 +1169,11 @@ func validateTeam(team TeamRecord) error {
 		return fmt.Errorf("%w: invalid team resources", core.ErrPath)
 	}
 	if len(team.Queue) == 0 {
-		if team.State != core.Idle || (team.QueueFingerprint != "" && team.QueueFingerprint != queueFingerprint(nil)) {
+		if team.State != core.Idle || (team.QueueFingerprint != "" && team.QueueFingerprint != queueFingerprint(nil)) || team.IntentDigest != "" || team.Handle.Identity != "" || team.CompletedTask != "" || team.ReviewedTask != "" || team.HostIdle {
 			return fmt.Errorf("%w: invalid empty team queue", core.ErrRevision)
+		}
+		if team.RetainedHandle.Identity != "" && (team.RetainedHandle.Run != team.RunID || team.RetainedHandle.Team != team.ID || team.RetainedHandle.Task == "" || team.RetainedHandle.Reviewer || !validDigest(team.RetainedHandle.PacketDigest)) {
+			return fmt.Errorf("%w: invalid retained idle host", core.ErrRevision)
 		}
 		return nil
 	}
@@ -1058,6 +1184,36 @@ func validateTeam(team TeamRecord) error {
 		if err := validateID(string(id)); err != nil {
 			return err
 		}
+	}
+	if team.IntentDigest == "" {
+		if team.Handle.Identity != "" || team.CompletedTask != "" || team.ReviewedTask != "" || team.HostIdle {
+			return fmt.Errorf("%w: team intent state", core.ErrRevision)
+		}
+		if team.RetainedHandle.Identity != "" && (len(team.Queue) != 1 || team.State != core.Working || team.RetainedHandle.Run != team.RunID || team.RetainedHandle.Team != team.ID || team.RetainedHandle.Task == "" || team.RetainedHandle.Reviewer || !validDigest(team.RetainedHandle.PacketDigest)) {
+			return fmt.Errorf("%w: retained reservation state", core.ErrRevision)
+		}
+		return nil
+	}
+	if !validDigest(team.IntentDigest) {
+		return fmt.Errorf("%w: team host intent", core.ErrRevision)
+	}
+	if team.Handle.Identity == "" {
+		if team.CompletedTask != "" || team.ReviewedTask != "" || team.HostIdle {
+			return fmt.Errorf("%w: team completion without acknowledgement", core.ErrRevision)
+		}
+		if team.RetainedHandle.Identity != "" && (team.RetainedHandle.Run != team.RunID || team.RetainedHandle.Team != team.ID || team.RetainedHandle.Task == "" || team.RetainedHandle.Reviewer || !validDigest(team.RetainedHandle.PacketDigest)) {
+			return fmt.Errorf("%w: retained team host handle", core.ErrRevision)
+		}
+		return nil
+	}
+	if team.Handle.Run != team.RunID || team.Handle.Team != team.ID || team.Handle.Task != team.Queue[0] || team.Handle.Reviewer || team.Handle.PacketDigest != team.IntentDigest {
+		return fmt.Errorf("%w: team host handle", core.ErrRevision)
+	}
+	if team.RetainedHandle.Identity != "" && (team.RetainedHandle.Host != team.Handle.Host || team.RetainedHandle.Identity != team.Handle.Identity) {
+		return fmt.Errorf("%w: retained team host identity", core.ErrRevision)
+	}
+	if (team.CompletedTask != "" && team.CompletedTask != team.Queue[0]) || (team.ReviewedTask != "" && team.ReviewedTask != team.Queue[0]) || team.HostIdle && (team.CompletedTask == "" || team.ReviewedTask == "") {
+		return fmt.Errorf("%w: team completion state", core.ErrRevision)
 	}
 	return nil
 }

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -85,6 +87,32 @@ func TestCoreAndCLIContracts(t *testing.T) {
 	var round core.RecordEnvelope
 	if json.Unmarshal(encoded, &round) != nil || round != first {
 		t.Fatal(round)
+	}
+}
+
+func TestSettingsRoutesToPersistedActionBoundary(t *testing.T) {
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	management := func(_ context.Context, args []string, stdout, _ io.Writer) int {
+		switch args[0] {
+		case "settings":
+			if err := os.WriteFile(settingsPath, []byte(`{"host":"codex","model":"gpt"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(stdout, `{"ok":true,"settings_path":"`+settingsPath+`"}`)
+		default:
+			return 1
+		}
+		return 0
+	}
+	for _, args := range [][]string{{"settings", "host.codex.model=gpt", "--json"}} {
+		var out bytes.Buffer
+		if code := cli.Run(context.Background(), args, core.Dependencies{Stdout: &out, Stderr: &out, Management: management}); code != 0 {
+			t.Fatalf("%v code=%d output=%q", args, code, out.String())
+		}
+	}
+	if raw, err := os.ReadFile(settingsPath); err != nil || !bytes.Contains(raw, []byte(`"host":"codex"`)) {
+		t.Fatalf("settings bytes=%q err=%v", raw, err)
 	}
 }
 
@@ -226,6 +254,7 @@ func TestCanonicalSelectorsNormalizeAndRepeat(t *testing.T) {
 func TestCanonicalRejectsMalformedArguments(t *testing.T) {
 	for _, args := range [][]string{
 		{"settings", "runtime.kind="},
+		{"settings", "parallel_teams=2", "parallel_teams=3"},
 		{"start", "--run"},
 		{"start", "--task"},
 		{"inspect", "--team"},

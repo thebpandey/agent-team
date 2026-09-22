@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,11 +17,70 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/cli"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/install"
+	"github.com/thebpandey/agent-team/vnext/internal/project"
 	releasepkg "github.com/thebpandey/agent-team/vnext/internal/release"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
+	"github.com/thebpandey/agent-team/vnext/internal/testkit"
 )
 
 const testRevision = "0123456789abcdef0123456789abcdef01234567"
+
+func TestSettingsCLIUsesReceiptBoundPersistence(t *testing.T) {
+	root := testkit.GitRepo(t)
+	for name, contents := range map[string]string{
+		"DECISIONS.md":        "# Decisions\n",
+		"AGENT_TEAM_RULES.md": "# Rules\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := project.NewSetupService(store.New(root, core.DefaultConfig().Storage)).Initialize(context.Background(), project.SetupInput{Root: root, Mode: project.PlanMode, Artifacts: []project.ArtifactDecision{
+		{Path: ".beads", Mode: project.ExistingArtifact, Confirmation: project.Approved},
+		{Path: "DECISIONS.md", Mode: project.ExistingArtifact, Confirmation: project.Approved},
+		{Path: "AGENT_TEAM_RULES.md", Mode: project.ExistingArtifact, Confirmation: project.Approved},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, ".agent-team", "config.json")
+	configBefore, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		ReceiptPath string `json:"receiptPath"`
+	}
+	if err := json.Unmarshal(configBefore, &config); err != nil {
+		t.Fatal(err)
+	}
+	receiptPath := filepath.Join(root, filepath.FromSlash(config.ReceiptPath))
+	receiptBefore, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	var out bytes.Buffer
+	args := []string{"settings", "parallel_teams=2", "continuous=true", "--json"}
+	if code := cli.Run(context.Background(), args, core.Dependencies{Stdout: &out, Stderr: &out, Management: runManagement}); code != 0 || !bytes.Contains(out.Bytes(), []byte(`"revision":1`)) {
+		t.Fatalf("code=%d output=%q", code, out.String())
+	}
+	settingsRaw, err := os.ReadFile(filepath.Join(root, ".agent-team", "v8", "settings.json"))
+	if err != nil || !bytes.Contains(settingsRaw, []byte(`"parallelTeams":2`)) {
+		t.Fatalf("settings bytes=%q err=%v", settingsRaw, err)
+	}
+	reloaded, err := project.NewSettingsService(store.New(root, core.DefaultConfig().Storage)).Inspect(context.Background())
+	if err != nil || reloaded.Revision != 1 || reloaded.Defaults.ParallelTeams != 2 || !reloaded.Defaults.Continuous {
+		t.Fatalf("reloaded=%#v err=%v", reloaded, err)
+	}
+	configAfter, _ := os.ReadFile(configPath)
+	receiptAfter, _ := os.ReadFile(receiptPath)
+	if !bytes.Equal(configBefore, configAfter) || !bytes.Equal(receiptBefore, receiptAfter) {
+		t.Fatal("CLI settings changed immutable setup bytes")
+	}
+}
 
 func TestRollbackRevisionDispatchWithJSONAndUniqueCompatibility(t *testing.T) {
 	const nextRevision = "abcdef0123456789abcdef0123456789abcdef01"

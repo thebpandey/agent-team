@@ -29,6 +29,32 @@ func TestAdmissionBatchConflictContract(t *testing.T) {
 	}
 }
 
+func TestPrepareSinglePlanAdmissionUsesOneReadyCanonicalTask(t *testing.T) {
+	root := t.TempDir()
+	ref := filepath.Join(root, "TASKS.md")
+	if err := os.WriteFile(ref, []byte("# tasks\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ready := oneOffTask("TASK-1", "implement bounded change", []string{"src/feature.go"}, nil)
+	ready.Revision = 7
+	blocked := oneOffTask("TASK-2", "wait for dependency", []string{"src/blocked.go"}, nil)
+	blocked.Revision = 8
+	blocked.Dependencies = []core.TaskID{"TASK-1"}
+	prepared, err := PrepareSinglePlanAdmission(context.Background(), root, trackerStub{ref: ref, page: core.TrackerPage{TrackerRevision: 9, TotalNonArchived: 2, Tasks: []core.Task{ready, blocked}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.Run.Teams) != 1 || len(prepared.Batch.Tasks) != 1 || prepared.Batch.Tasks[0] != ready.ID || prepared.Team.ID != prepared.Run.Teams[0].ID || prepared.Batch.Team != prepared.Team.ID {
+		t.Fatalf("prepared admission = %#v", prepared)
+	}
+	if err := validateRun(prepared.Run); err != nil {
+		t.Fatalf("run = %v", err)
+	}
+	if err := validateAdmission(prepared.Batch); err != nil {
+		t.Fatalf("batch = %v", err)
+	}
+}
+
 func TestCreateOneOffCanonicalReadOnlyAndConflicts(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
