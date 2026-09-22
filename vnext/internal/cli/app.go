@@ -45,7 +45,7 @@ func Run(ctx context.Context, args []string, deps core.Dependencies) int {
 		}
 		return 0
 	}
-	if isManagement(action.Name) || isMutationCleanup(action) {
+	if isManagement(action.Name) || (isProjectAction(action.Name) && deps.Management != nil) || isMutationCleanup(action) {
 		if deps.Management == nil {
 			return writeFailure(stdout, deps.Stderr, args, core.ErrTransition)
 		}
@@ -109,6 +109,8 @@ func Run(ctx context.Context, args []string, deps core.Dependencies) int {
 func isManagement(name string) bool {
 	return name == "install" || name == "update" || name == "rollback" || name == "uninstall" || name == "cutover"
 }
+
+func isProjectAction(name string) bool { return name == "settings" || name == "start" }
 
 func isMutationCleanup(action Action) bool {
 	return action.Name == "cleanup" && len(action.Args) > 0 && action.Args[0] == "--mutation-lock"

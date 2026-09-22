@@ -117,6 +117,35 @@ func TestBeadsFailuresAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestBeadsAcceptsRealListObservationsAndRequestsCompleteSnapshot(t *testing.T) {
+	body := `[{"id":"B-1","title":"fixture analysis","description":"read only","status":"open","priority":2,"issue_type":"task","owner":"fixture@example.test","created_at":"2026-09-22T15:46:51Z","created_by":"fixture","updated_at":"2026-09-22T15:46:51Z","metadata":{"criteria":["report findings"],"writablePaths":["reports"]},"dependency_count":0,"dependent_count":0,"comment_count":0}]`
+	runner := &scriptedRunner{results: []CommandResult{{Stdout: []byte(body)}}}
+	page, err := NewBeads(runner).Page(context.Background(), "", 8)
+	if err != nil || len(page.Tasks) != 1 || page.Tasks[0].ID != "B-1" || len(page.Tasks[0].Criteria) != 1 || page.Tasks[0].Revision != page.TrackerRevision {
+		t.Fatalf("Page = %#v, %v", page, err)
+	}
+	calls := runner.Calls()
+	if len(calls) != 1 || !containsArgs(calls[0], "list", "--json", "--all", "--limit", "0") {
+		t.Fatalf("snapshot command = %#v", calls)
+	}
+}
+
+func TestBeadsNormalizesRealBlocksDependencyObjects(t *testing.T) {
+	body := `[{"id":"B-2","title":"dependent","status":"open","dependencies":[{"id":"B-1","title":"prerequisite","status":"open","dependency_type":"blocks"}]}]`
+	page, err := NewBeads(NewFakeRunner(CommandResult{Stdout: []byte(body)})).Page(context.Background(), "", 8)
+	if err != nil || len(page.Tasks) != 1 || !reflect.DeepEqual(page.Tasks[0].Dependencies, []core.TaskID{"B-1"}) {
+		t.Fatalf("Page = %#v, %v", page, err)
+	}
+}
+
+func TestBeadsNormalizesCapturedDependencyRelationsWithoutBlockingProvenance(t *testing.T) {
+	body := `[{"id":"B-2","title":"dependent","status":"open","acceptance_criteria":"report","notes":"fixture","assignee":"fixture@example.test","started_at":"2026-09-22T15:46:51Z","labels":["fixture"],"parent":"B-parent","dependencies":[{"issue_id":"B-2","depends_on_id":"B-1","type":"blocks","created_at":"2026-09-22T15:46:51Z","created_by":"fixture","metadata":"{}"},{"issue_id":"B-2","depends_on_id":"B-parent","type":"parent-child","created_at":"2026-09-22T15:46:51Z","created_by":"fixture","metadata":"{}"},{"issue_id":"B-2","depends_on_id":"B-context","type":"related","created_at":"2026-09-22T15:46:51Z","created_by":"fixture","metadata":"{}"}]}]`
+	page, err := NewBeads(NewFakeRunner(CommandResult{Stdout: []byte(body)})).Page(context.Background(), "", 8)
+	if err != nil || len(page.Tasks) != 1 || !reflect.DeepEqual(page.Tasks[0].Dependencies, []core.TaskID{"B-1"}) {
+		t.Fatalf("Page = %#v, %v", page, err)
+	}
+}
+
 func TestExecutableResolverAcceptsBeadsPlatformNames(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"bd", "bd.exe", "bd.cmd"} {
@@ -202,6 +231,7 @@ func TestBeadsCreateReturnsVerifiedTaskAndReusesIdenticalID(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := core.Task{ID: "B-2", Objective: "new", State: core.Ready, Dependencies: []core.TaskID{"B-1"}, Criteria: []string{"works"}, Checks: []core.Check{{Name: "unit", Command: []string{"go", "test", "./..."}}}, WritablePaths: []string{"internal/tracker/**"}, Resources: []string{"browser:1"}, EvidencePointers: []string{"receipt:B-2"}}
+	want.Revision = trackerRevision([]byte(final))
 	got, err := tr.Create(context.Background(), want, page.TrackerRevision)
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Create = %#v, %v", got, err)

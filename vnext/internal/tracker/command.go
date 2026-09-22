@@ -48,6 +48,10 @@ func NewFakeRunner(result CommandResult) CommandRunner { return &FakeRunner{Resu
 
 type commandRunner struct{}
 
+// NewCommandRunner exposes the native bounded command runner for project
+// adapters that must use the same no-shell execution contract as Beads.
+func NewCommandRunner() CommandRunner { return commandRunner{} }
+
 func (commandRunner) Run(ctx context.Context, name string, args ...string) CommandResult {
 	resolved, err := resolveExecutable(name)
 	if err != nil {

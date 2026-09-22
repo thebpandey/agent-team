@@ -1,5 +1,12 @@
 # Changelog
 
+## 8.0.9 - 2026-09-22
+
+- Persist supported native settings in a receipt-bound overlay without changing setup receipts, legacy state, or Beads files.
+- Connect default one-task start admission to a registered worktree and immutable host packet. The installed Codex skill performs the actual host launch; admission alone is not reported as a launch.
+- Consume the existing bounded team queue sequentially and reuse the same idle Codex handle only after completion and independent CLEAN review, with a fresh bounded assignment.
+- Reject conflicting packet replays and duplicate ownership, and recover matching interrupted packet and team projections before host acknowledgement.
+
 ## 8.0.8 - 2026-09-21
 
 - Permit the closed legacy Beads authority during native v8 prepare and cutover. The existing `.beads` tree remains in place and unchanged; v8 writes separate authority and prepared-request artifacts.
