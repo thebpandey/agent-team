@@ -106,6 +106,52 @@ type PreparedPlanAdmission struct {
 	Batch AdmissionBatch
 }
 
+// PrepareQueueAdmission constructs one bounded append for an existing team.
+// It is deliberately limited to the team queue's remaining capacity; callers
+// still use admission.AppendAdmission for current-snapshot validation and the
+// durable admission commit.
+func PrepareQueueAdmission(manifest Run, team TeamRecord, tasks []core.Task) (AdmissionBatch, map[core.TaskID]uint64, error) {
+	if len(tasks) == 0 || len(tasks) > maxTeamQueue-len(team.Queue) || team.RunID != manifest.ID {
+		return AdmissionBatch{}, nil, core.ErrBatch
+	}
+	originalRevisions := make(map[core.TaskID]uint64, len(tasks))
+	for _, task := range tasks {
+		originalRevisions[task.ID] = task.Revision
+	}
+	normalized, err := normalizeTasks(tasks)
+	if err != nil {
+		return AdmissionBatch{}, nil, err
+	}
+	ids := make([]core.TaskID, len(normalized))
+	revisions := make(map[core.TaskID]uint64, len(normalized))
+	for index, task := range normalized {
+		if task.Archived || task.State != core.Ready {
+			return AdmissionBatch{}, nil, core.ErrPhase
+		}
+		revision := originalRevisions[task.ID]
+		if revision == 0 {
+			revision = manifest.TrackerRevision
+		}
+		ids[index], revisions[task.ID] = task.ID, revision
+	}
+	var rawPaths, rawResources []string
+	for _, task := range normalized {
+		rawPaths = append(rawPaths, task.WritablePaths...)
+		rawResources = append(rawResources, task.Resources...)
+	}
+	paths, err := normalizePaths(rawPaths)
+	if err != nil {
+		return AdmissionBatch{}, nil, err
+	}
+	resources, err := normalizeResources(rawResources)
+	if err != nil {
+		return AdmissionBatch{}, nil, err
+	}
+	batch := AdmissionBatch{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: manifest.Project, RunID: manifest.ID, WrittenAt: manifest.WrittenAt, Revision: 1}, BatchID: fmt.Sprintf("batch-%d", team.Revision+1), Tasks: ids, Team: team.ID, Sequence: team.Revision + 1, TrackerRevision: manifest.TrackerRevision, Paths: paths, Resources: resources}
+	batch.Fingerprint = admissionFingerprint(batch)
+	return batch, revisions, nil
+}
+
 // PrepareSinglePlanAdmission snapshots the selected authority and derives one
 // ready, dependency-satisfied task for one initially idle team. Callers must
 // persist the returned run/team and pass Batch to admission.AppendAdmission.

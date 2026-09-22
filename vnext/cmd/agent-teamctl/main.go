@@ -224,6 +224,24 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_dispatch_required": true, "packet": result.Packet, "packet_digest": result.PacketDigest, "packet_path": result.PacketPath, "run": result.Run.ID, "team": result.Team.ID, "profile": settings.CodexDeveloper, "already_admitted": result.AlreadyAdmitted})
 	}
+	if runValue := values["--run"]; runValue != "" {
+		manifest, readErr := run.NewRepositories(st).Runs.Read(ctx, core.RunID(runValue))
+		if readErr != nil || len(manifest.Teams) != 1 {
+			if readErr == nil {
+				readErr = core.ErrSettings
+			}
+			return managementError(args, stdout, stderr, readErr)
+		}
+		ids := startTaskIDs(action.Args)
+		if len(ids) == 0 {
+			return managementError(args, stdout, stderr, core.ErrPhase)
+		}
+		team, queueErr := start.AppendQueue(ctx, st, tracker.NewBeads(nil), manifest.ID, manifest.Teams[0].ID, ids)
+		if queueErr != nil {
+			return managementError(args, stdout, stderr, queueErr)
+		}
+		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "team": team, "profile": settings.CodexDeveloper})
+	}
 	teamID := core.TeamID(values["--team"])
 	var team any
 	current, currentErr := run.NewRepositories(st).Teams.Read(ctx, teamID)
@@ -260,6 +278,16 @@ func startValues(args []string) map[string]string {
 		values[args[index]] = args[index+1]
 	}
 	return values
+}
+
+func startTaskIDs(args []string) []core.TaskID {
+	var ids []core.TaskID
+	for index := 0; index+1 < len(args); index += 2 {
+		if args[index] == "--task" {
+			ids = append(ids, core.TaskID(args[index+1]))
+		}
+	}
+	return ids
 }
 
 func startHandle(values map[string]string, runID core.RunID) contracts.WorkerHandle {

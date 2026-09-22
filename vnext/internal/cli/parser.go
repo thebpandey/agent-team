@@ -253,6 +253,9 @@ func parseStartArgs(args []string) ([]string, error) {
 	if len(args) == 0 {
 		return nil, nil
 	}
+	if args[0] == "--run" {
+		return parseSelectors(args, map[string]bool{"--run": true, "--task": true}, true)
+	}
 	allowed := map[string]bool{"--action": true, "--team": true, "--packet-digest": true, "--host": true, "--identity": true, "--task": true, "--candidate": true, "--reviewer": true}
 	values, err := parseSelectors(args, allowed, false)
 	if err != nil {

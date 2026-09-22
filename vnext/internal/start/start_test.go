@@ -124,6 +124,35 @@ func TestAdmitDefaultRegisteredRejectsOwnedTaskBeforeCreatingWorktree(t *testing
 	}
 }
 
+func TestAppendQueuePersistsBoundedExplicitSeries(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "worktree"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first := core.Task{RecordEnvelope: core.RecordEnvelope{Schema: 1, Revision: 7}, ID: "TASK-1", Objective: "first", State: core.Ready, Criteria: []string{"first"}, WritablePaths: []string{"src"}}
+	second := core.Task{RecordEnvelope: core.RecordEnvelope{Schema: 1, Revision: 7}, ID: "TASK-2", Objective: "second", State: core.Ready, Criteria: []string{"second"}, WritablePaths: []string{"src"}}
+	selected := &fakeTracker{page: core.TrackerPage{TrackerRevision: 7, TotalNonArchived: 2, Tasks: []core.Task{first, second}}}
+	st := store.New(root, core.DefaultConfig().Storage)
+	got, err := AdmitDefault(context.Background(), st, root, selected, "codex", filepath.Join(root, "worktree"), "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := AppendQueue(context.Background(), st, selected, got.Run.ID, got.Team.ID, []core.TaskID{second.ID})
+	if err != nil || len(queued.Queue) != 2 || queued.Queue[1] != second.ID {
+		t.Fatalf("queued=%#v err=%v", queued, err)
+	}
+	reloaded, err := run.NewRepositories(st).Teams.Read(context.Background(), got.Team.ID)
+	if err != nil || len(reloaded.Queue) != 2 || reloaded.QueueFingerprint != run.QueueFingerprint(reloaded.Queue) {
+		t.Fatalf("reloaded=%#v err=%v", reloaded, err)
+	}
+	if _, err := AppendQueue(context.Background(), st, selected, got.Run.ID, got.Team.ID, []core.TaskID{second.ID}); err == nil {
+		t.Fatal("duplicate queued task accepted")
+	}
+}
+
 func TestFollowupRequiresFreshPacketAndSameHostAcknowledgement(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o700); err != nil {

@@ -64,6 +64,55 @@ func AdmitDefault(ctx context.Context, st *store.Store, project string, selected
 	return admitPrepared(ctx, st, selected, prepared, owner, worktree, base)
 }
 
+// AppendQueue adds explicitly selected ready tasks to one retained team. It is
+// a bounded user-requested series, never a scheduler refill.
+func AppendQueue(ctx context.Context, st *store.Store, selected tracker.Tracker, runID core.RunID, teamID core.TeamID, taskIDs []core.TaskID) (run.TeamRecord, error) {
+	if selected == nil || len(taskIDs) == 0 {
+		return run.TeamRecord{}, core.ErrSettings
+	}
+	var team run.TeamRecord
+	err := withProjectLock(ctx, st, func() error {
+		repos := run.NewRepositories(st)
+		manifest, err := repos.Runs.Read(ctx, runID)
+		if err != nil {
+			return err
+		}
+		current, err := repos.Teams.Read(ctx, teamID)
+		if err != nil {
+			return err
+		}
+		if current.RunID != manifest.ID || len(taskIDs) > 8-len(current.Queue) || current.IntentDigest == "" {
+			return core.ErrBatch
+		}
+		seen := make(map[core.TaskID]bool, len(current.Queue)+len(taskIDs))
+		for _, id := range current.Queue {
+			seen[id] = true
+		}
+		tasks := make([]core.Task, len(taskIDs))
+		for index, id := range taskIDs {
+			if seen[id] {
+				return core.ErrRevision
+			}
+			seen[id] = true
+			task, getErr := selected.Get(ctx, id, manifest.TrackerRevision)
+			if getErr != nil {
+				return getErr
+			}
+			tasks[index] = task
+		}
+		batch, revisions, err := run.PrepareQueueAdmission(manifest, current, tasks)
+		if err != nil {
+			return err
+		}
+		if _, err := admission.AppendAdmission(ctx, st, selected, manifest.ID, manifest.Revision, current.ID, current.Revision, manifest.TrackerRevision, revisions, batch); err != nil {
+			return err
+		}
+		team, err = repos.Teams.Read(ctx, teamID)
+		return err
+	})
+	return team, err
+}
+
 // AdmitDefaultRegistered creates the exact registered feature worktree for a
 // prepared team before publishing the packet that names it.
 func AdmitDefaultRegistered(ctx context.Context, st *store.Store, project string, selected tracker.Tracker, manager contracts.WorktreeManager, owner, base string) (Result, error) {
