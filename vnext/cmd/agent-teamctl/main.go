@@ -51,6 +51,9 @@ func main() {
 }
 
 func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "setup" {
+		return runSetup(ctx, args, stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "start" {
 		return runStart(ctx, args, stdout, stderr)
 	}
@@ -197,6 +200,53 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return managementError(args, stdout, stderr, err)
 	}
 	return managementResult(args, stdout, map[string]any{"ok": true, "action": action, "revision": outcome.Manifest.Revision, "retained": outcome.Retained})
+}
+
+func runSetup(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	action, err := cli.Parse(args)
+	if err != nil || action.Name != "setup" {
+		return managementError(args, stdout, stderr, core.ErrPhase)
+	}
+	root, err := filepath.Abs(".")
+	if err != nil {
+		return managementError(args, stdout, stderr, err)
+	}
+	mode := project.PlanMode
+	for index := 0; index+1 < len(action.Args); index++ {
+		if action.Args[index] == "--mode" {
+			mode = project.RunMode(action.Args[index+1])
+			break
+		}
+	}
+	input := project.SetupInput{Root: root, Mode: mode}
+	if mode == project.PlanMode {
+		trackerPath := ""
+		for _, candidate := range []string{".beads", "TASKS.md"} {
+			if _, statErr := os.Stat(filepath.Join(root, candidate)); statErr == nil {
+				if trackerPath != "" {
+					return managementError(args, stdout, stderr, core.ErrSettings)
+				}
+				trackerPath = candidate
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return managementError(args, stdout, stderr, statErr)
+			}
+		}
+		for _, path := range []string{trackerPath, "DECISIONS.md", "AGENT_TEAM_RULES.md"} {
+			if path == "" {
+				return managementError(args, stdout, stderr, core.ErrSettings)
+			}
+			input.Artifacts = append(input.Artifacts, project.ArtifactDecision{Path: path, Mode: project.ExistingArtifact, Confirmation: project.Approved})
+		}
+	}
+	result, err := project.NewSetupService(store.New(root, core.DefaultConfig().Storage)).Initialize(ctx, input)
+	if err != nil {
+		return managementError(args, stdout, stderr, err)
+	}
+	return managementResult(args, stdout, map[string]any{
+		"ok": true, "action": "setup", "status": "initialized", "mode": mode,
+		"config_revision": result.ConfigRevision, "receipt_path": result.ReceiptPath,
+		"tracker": result.Config.Tracker,
+	})
 }
 
 func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int {
