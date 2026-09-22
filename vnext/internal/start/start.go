@@ -37,11 +37,12 @@ type Result struct {
 // Delta is a fresh bounded packet for the next queued task. The retained
 // handle is evidence of the idle host, not an acknowledgement of this packet.
 type Delta struct {
-	Packet       core.AssignmentPacket
-	PacketDigest string
-	PacketPath   string
-	Retained     contracts.WorkerHandle
-	Team         run.TeamRecord
+	Packet          core.AssignmentPacket
+	PacketDigest    string
+	PacketPath      string
+	Retained        contracts.WorkerHandle
+	Team            run.TeamRecord
+	AlreadyAdmitted bool
 }
 
 type packetRecord struct {
@@ -139,12 +140,20 @@ func ReserveRetainedHead(ctx context.Context, st *store.Store, selected tracker.
 		if err != nil {
 			return err
 		}
-		if len(team.Queue) != 1 || team.IntentDigest != "" || team.Handle.Identity != "" || team.RetainedHandle.Identity == "" || team.CompletedTask != "" || team.ReviewedTask != "" || team.HostIdle {
+		if len(team.Queue) != 1 || team.Handle.Identity != "" || team.RetainedHandle.Identity == "" || team.CompletedTask != "" || team.ReviewedTask != "" || team.HostIdle {
 			return nil
 		}
 		manifest, err := repos.Runs.Read(ctx, team.RunID)
 		if err != nil {
 			return err
+		}
+		if team.IntentDigest != "" {
+			existing, path, err := readPacket(st, team.ID, team.IntentDigest)
+			if err != nil || existing.Packet.RunID != manifest.ID || existing.Packet.Team != team.ID || existing.Packet.Task != team.Queue[0] || existing.Packet.QueueFingerprint != team.QueueFingerprint {
+				return fmt.Errorf("%w: retained replay intent", core.ErrRevision)
+			}
+			delta = Delta{Packet: existing.Packet, PacketDigest: existing.Digest, PacketPath: path, Retained: team.RetainedHandle, Team: team, AlreadyAdmitted: true}
+			return nil
 		}
 		prior, _, err := readPacket(st, team.ID, team.RetainedHandle.PacketDigest)
 		if err != nil || prior.Packet.RunID != manifest.ID || prior.Packet.Team != team.ID {

@@ -211,6 +211,10 @@ func TestAppendQueueReusesConsumedIdleTeamWithSameHandleFollowup(t *testing.T) {
 	if err != nil || !reserved || delta.Packet.Task != second.ID || delta.Retained != handle {
 		t.Fatalf("reused delta=%#v reserved=%v err=%v", delta, reserved, err)
 	}
+	replay, fresh, err := ReserveRetainedHead(context.Background(), st, selected, admitted.Team.ID)
+	if err != nil || fresh || !replay.AlreadyAdmitted || replay.PacketDigest != delta.PacketDigest || replay.Retained != handle {
+		t.Fatalf("replayed delta=%#v fresh=%v err=%v", replay, fresh, err)
+	}
 }
 
 func TestFollowupRequiresFreshPacketAndSameHostAcknowledgement(t *testing.T) {

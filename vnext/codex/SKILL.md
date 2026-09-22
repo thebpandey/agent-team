@@ -43,7 +43,10 @@ new packet using that same host identity. Do not follow up merely because work
 was appended: require a fresh native `host_followup_required: true` response
 after that idle evidence. A terminal `next` returns
 `host_followup_required: false`, consumes the final task, and requires no host
-action.
+action. If a retained-intent retry returns the same packet with
+`already_admitted: true` and `host_followup_required: false`, observe it only:
+do not call `followup_task` again or issue a replacement acknowledgement; the
+original exact acknowledgement remains the only valid continuation.
 
 `start --run <run> --task <task> --json` normally only appends an explicit
 already-snapshotted task. If it appends to a consumed idle retained team, it

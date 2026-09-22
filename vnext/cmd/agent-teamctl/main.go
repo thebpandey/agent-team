@@ -242,8 +242,10 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		if delta, reserved, reserveErr := start.ReserveRetainedHead(ctx, st, tracker.NewBeads(nil), team.ID); reserveErr != nil {
 			return managementError(args, stdout, stderr, reserveErr)
+		} else if delta.AlreadyAdmitted {
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "host_followup_required": false, "already_admitted": true, "observation_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
 		} else if reserved {
-			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "host_followup_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "host_followup_required": true, "already_admitted": false, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
 		}
 		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "team": team, "profile": settings.CodexDeveloper})
 	}
@@ -266,8 +268,10 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	case "next":
 		if delta, reserved, reserveErr := start.ReserveRetainedHead(ctx, st, tracker.NewBeads(nil), teamID); reserveErr != nil {
 			err = reserveErr
+		} else if delta.AlreadyAdmitted {
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_followup_required": false, "already_admitted": true, "observation_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
 		} else if reserved {
-			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_followup_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_followup_required": true, "already_admitted": false, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
 		}
 		if err != nil {
 			break
