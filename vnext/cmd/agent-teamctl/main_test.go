@@ -207,7 +207,7 @@ func TestLifecycleCLIReusesInstalledCustomHostHomesWithoutEnvironment(t *testing
 		t.Fatalf("rolled manifest=%+v err=%v", manifest, err)
 	}
 	for host, file := range old.Entrypoints {
-		got, err := os.ReadFile(filepath.Join(layout.SkillRoots[host], "agent-team-vnext", "SKILL.md"))
+		got, err := os.ReadFile(filepath.Join(layout.SkillRoots[host], "SKILL.md"))
 		want, _ := os.ReadFile(file.Path)
 		if err != nil || !bytes.Equal(got, want) {
 			t.Fatalf("%s entrypoint=%q err=%v", host, got, err)

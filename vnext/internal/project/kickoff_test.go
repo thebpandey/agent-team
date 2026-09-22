@@ -1,0 +1,147 @@
+package project
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/testkit"
+)
+
+func kickoffFixture(t *testing.T) (string, map[string]any) {
+	t.Helper()
+	root := testkit.GitRepo(t)
+	rev, err := git(context.Background(), root, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchName, err := git(context.Background(), root, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root, map[string]any{
+		"schemaVersion": 1, "kind": "project-kickoff-agent-team-handoff", "status": "approved",
+		"projectKickoff": map[string]any{"version": "0.5.0", "approvalId": "APR-005", "approvedRevision": rev},
+		"agentTeam":      map[string]any{"testedVersion": "7.3.1", "initializationSource": "existing"},
+		"project":        map[string]any{"id": "demo", "root": root, "branch": branchName, "revision": rev},
+		"tracker":        map[string]any{"kind": "markdown", "path": "TASKS.md"},
+		"plan": map[string]any{
+			"scope": "Approved release", "branch": branchName, "acceptance": []string{"works offline"},
+			"verification": []string{"printf '%s' 'quoted value' && go test ./..."},
+			"authority":    map[string]any{"ownedPaths": []string{"src/**"}, "externalActions": []string{}},
+			"tasks":        []map[string]string{{"id": "AT-001"}, {"id": "AT-002"}},
+		},
+	}
+}
+
+func writeKickoffFixture(t *testing.T, root string, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "kickoff.json"
+	if err := os.WriteFile(filepath.Join(root, path), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestLoadKickoffNormalizesApproved050WithoutWriting(t *testing.T) {
+	root, value := kickoffFixture(t)
+	value["plan"].(map[string]any)["requiredCapabilities"] = []string{"graphify", "serena"}
+	path := writeKickoffFixture(t, root, value)
+	before := testkit.SnapshotTree(t, root)
+	got, err := LoadKickoff(root, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TrackerKind != "tasks-md" || got.TrackerRef != "TASKS.md" || !reflect.DeepEqual(got.TaskIDs, []core.TaskID{"AT-001", "AT-002"}) || !reflect.DeepEqual(got.Capabilities, []string{"graphify", "serena"}) || len(got.Resources) != 0 || !reflect.DeepEqual(got.WritablePaths, []string{"src/**"}) {
+		t.Fatalf("lost approved facts: %#v", got)
+	}
+	if len(got.Checks) != 1 || got.Checks[0].Command[len(got.Checks[0].Command)-1] != "printf '%s' 'quoted value' && go test ./..." {
+		t.Fatalf("verification changed: %#v", got.Checks)
+	}
+	if !reflect.DeepEqual(before, testkit.SnapshotTree(t, root)) {
+		t.Fatal("reader changed project")
+	}
+}
+
+func TestLoadKickoffRejectsInvalidApprovedFacts(t *testing.T) {
+	for _, name := range []string{"status", "root", "branch", "revision", "approved-revision", "unsafe-path", "duplicate-task", "unknown-tracker", "external-action", "version"} {
+		t.Run(name, func(t *testing.T) {
+			root, value := kickoffFixture(t)
+			project := value["project"].(map[string]any)
+			plan := value["plan"].(map[string]any)
+			switch name {
+			case "status":
+				value["status"] = "pending"
+			case "root":
+				project["root"] = t.TempDir()
+			case "branch":
+				project["branch"] = "unapproved"
+			case "revision":
+				project["revision"] = strings.Repeat("0", 40)
+			case "approved-revision":
+				value["projectKickoff"].(map[string]any)["approvedRevision"] = strings.Repeat("0", 40)
+			case "unsafe-path":
+				plan["authority"].(map[string]any)["ownedPaths"] = []string{"../outside"}
+			case "duplicate-task":
+				plan["tasks"] = []map[string]string{{"id": "AT-001"}, {"id": "AT-001"}}
+			case "unknown-tracker":
+				value["tracker"].(map[string]any)["kind"] = "other"
+			case "external-action":
+				plan["authority"].(map[string]any)["externalActions"] = []string{"deploy"}
+			case "version":
+				value["projectKickoff"].(map[string]any)["version"] = "99.0.0"
+			}
+			if _, err := LoadKickoff(root, writeKickoffFixture(t, root, value)); err == nil {
+				t.Fatal("accepted invalid handoff")
+			}
+		})
+	}
+}
+
+func TestLoadKickoffFlatNativeAndOptionalCapabilities(t *testing.T) {
+	root, value := kickoffFixture(t)
+	project := value["project"].(map[string]any)
+	flat := core.KickoffHandoff{ApprovedPlanRevision: project["revision"].(string), Branch: project["branch"].(string), TrackerKind: "beads", TrackerRef: ".beads", TaskIDs: []core.TaskID{"AT-1"}, Acceptance: []string{"works"}, Checks: []core.Check{{Name: "test", Command: []string{"go", "test", "./..."}}}, WritablePaths: []string{"src"}}
+	got, err := LoadKickoff(root, writeKickoffFixture(t, root, flat))
+	if err != nil || !reflect.DeepEqual(got, flat) {
+		t.Fatalf("flat handoff: %#v, %v", got, err)
+	}
+}
+
+func TestLoadKickoffDesignatedMarkdownWithoutOptionalCapabilities(t *testing.T) {
+	root, value := kickoffFixture(t)
+	value["tracker"].(map[string]any)["path"] = ".agent-team/TASKS.md"
+	got, err := LoadKickoff(root, writeKickoffFixture(t, root, value))
+	if err != nil || got.TrackerRef != ".agent-team/TASKS.md" || len(got.Capabilities) != 0 || len(got.Resources) != 0 {
+		t.Fatalf("optional capabilities became required: %#v, %v", got, err)
+	}
+}
+
+func TestLoadKickoffBoundsAndContainsInput(t *testing.T) {
+	root, value := kickoffFixture(t)
+	outside := t.TempDir()
+	path := writeKickoffFixture(t, outside, value)
+	if _, err := LoadKickoff(root, filepath.Join(outside, path)); err == nil {
+		t.Fatal("accepted outside handoff")
+	}
+	if err := os.Symlink(filepath.Join(outside, path), filepath.Join(root, "link.json")); err == nil {
+		if _, err := LoadKickoff(root, "link.json"); err == nil {
+			t.Fatal("accepted symlink escape")
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "large.json"), []byte(strings.Repeat(" ", 251*1024)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadKickoff(root, "large.json"); err == nil {
+		t.Fatal("accepted oversized handoff")
+	}
+}

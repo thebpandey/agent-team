@@ -14,7 +14,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -55,6 +54,9 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if len(args) > 0 && args[0] == "setup" {
 		return runSetup(ctx, args, stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "status" {
+		return runStatus(ctx, args, stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "start" {
 		return runStart(ctx, args, stdout, stderr)
 	}
@@ -63,7 +65,11 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		if err != nil || action.Name != "settings" {
 			return managementError(args, stdout, stderr, core.ErrPhase)
 		}
-		service := project.NewSettingsService(store.New(".", core.DefaultConfig().Storage))
+		p, discoverErr := project.Discover(ctx, ".")
+		if discoverErr != nil {
+			return managementError(args, stdout, stderr, discoverErr)
+		}
+		service := project.NewSettingsService(store.New(p.TopLevel, core.DefaultConfig().Storage))
 		var settings project.Settings
 		if len(action.Args) == 0 {
 			settings, err = service.Inspect(ctx)
@@ -200,107 +206,7 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		return managementError(args, stdout, stderr, err)
 	}
-	return managementResult(args, stdout, map[string]any{"ok": true, "action": action, "revision": outcome.Manifest.Revision, "retained": outcome.Retained})
-}
-
-func runSetup(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	action, err := cli.Parse(args)
-	if err != nil || action.Name != "setup" {
-		return managementError(args, stdout, stderr, core.ErrPhase)
-	}
-	root, err := filepath.Abs(".")
-	if err != nil {
-		return managementError(args, stdout, stderr, err)
-	}
-	mode := project.PlanMode
-	for index := 0; index+1 < len(action.Args); index++ {
-		if action.Args[index] == "--mode" {
-			mode = project.RunMode(action.Args[index+1])
-			break
-		}
-	}
-	input := project.SetupInput{Root: root, Mode: mode}
-	approved := slices.Contains(action.Args, "--approve-kickoff")
-	var generated []string
-	if mode == project.PlanMode {
-		exists := func(name string) (bool, error) {
-			_, statErr := os.Stat(filepath.Join(root, name))
-			if statErr == nil {
-				return true, nil
-			}
-			if errors.Is(statErr, os.ErrNotExist) {
-				return false, nil
-			}
-			return false, statErr
-		}
-		// Beads is canonical once present; a leftover TASKS.md is legacy provenance.
-		trackerPath := ""
-		for _, candidate := range []string{".beads", "TASKS.md"} {
-			present, statErr := exists(candidate)
-			if statErr != nil {
-				return managementError(args, stdout, stderr, statErr)
-			}
-			if present {
-				trackerPath = candidate
-				break
-			}
-		}
-		if trackerPath == "" {
-			trackerPath = "TASKS.md"
-		}
-		var missing []string
-		for _, path := range []string{trackerPath, "DECISIONS.md", "AGENT_TEAM_RULES.md"} {
-			present, statErr := exists(path)
-			if statErr != nil {
-				return managementError(args, stdout, stderr, statErr)
-			}
-			if !present {
-				missing = append(missing, path)
-			}
-			input.Artifacts = append(input.Artifacts, project.ArtifactDecision{Path: path, Mode: project.ExistingArtifact, Confirmation: project.Approved})
-		}
-		if len(missing) > 0 && !approved {
-			return managementError(args, stdout, stderr, fmt.Errorf("%w: missing %s; rerun with --approve-kickoff to create minimal versions", core.ErrSettings, strings.Join(missing, ", ")))
-		}
-		// An approved fresh setup bootstraps the missing inputs itself. Skip when
-		// the project is already initialized so a replay never touches user files,
-		// and validate first so a rejected setup still writes nothing.
-		if initialized, statErr := exists(filepath.Join(".agent-team", "config.json")); statErr != nil {
-			return managementError(args, stdout, stderr, statErr)
-		} else if !initialized && len(missing) > 0 {
-			preflight := input
-			preflight.Artifacts = slices.Clone(input.Artifacts)
-			for index := range preflight.Artifacts {
-				if slices.Contains(missing, preflight.Artifacts[index].Path) {
-					preflight.Artifacts[index].Mode = project.GeneratedArtifact
-				}
-			}
-			if _, err := project.ValidateSetup(ctx, preflight); err != nil {
-				return managementError(args, stdout, stderr, err)
-			}
-			for _, path := range missing {
-				if err := os.WriteFile(filepath.Join(root, path), []byte(setupStubs[path]), 0o644); err != nil {
-					return managementError(args, stdout, stderr, err)
-				}
-				generated = append(generated, path)
-			}
-		}
-	}
-	result, err := project.NewSetupService(store.New(root, core.DefaultConfig().Storage)).Initialize(ctx, input)
-	if err != nil {
-		return managementError(args, stdout, stderr, err)
-	}
-	return managementResult(args, stdout, map[string]any{
-		"ok": true, "action": "setup", "status": "initialized", "mode": mode,
-		"config_revision": result.ConfigRevision, "receipt_path": result.ReceiptPath,
-		"tracker": result.Config.Tracker, "generated": generated,
-	})
-}
-
-var setupStubs = map[string]string{
-	"TASKS.md":            "# Tasks\n\n| ID | Task | Depends on | Status |\n| --- | --- | --- | --- |\n",
-	"DECISIONS.md":        "# Decisions\n\nBounded projection of ratified project decisions.\n",
-	"AGENT_TEAM_RULES.md": "# Agent-Team rules\n\nProject rules every Agent-Team worker reads before acting.\n",
+	return managementResult(args, stdout, map[string]any{"ok": true, "action": action, "revision": outcome.Manifest.Revision, "retained": outcome.Retained, "binary_path": layout.BinaryPath})
 }
 
 func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -308,25 +214,62 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil || action.Name != "start" {
 		return managementError(args, stdout, stderr, core.ErrPhase)
 	}
-	root, err := filepath.Abs(".")
+	p, err := project.Discover(ctx, ".")
 	if err != nil {
 		return managementError(args, stdout, stderr, err)
 	}
+	root := p.TopLevel
 	st := store.New(root, core.DefaultConfig().Storage)
 	settings, err := project.NewSettingsService(st).Inspect(ctx)
 	if err != nil {
+		if _, statErr := os.Stat(filepath.Join(root, ".agent-team", "config.json")); errors.Is(statErr, os.ErrNotExist) {
+			if _, oldErr := os.Stat(filepath.Join(root, ".agent-team", "v8", "authority.json")); errors.Is(oldErr, os.ErrNotExist) {
+				return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "setup_required", "next_action": "setup", "message": "Run Agent-Team setup to choose dependencies, tracker, and role settings."})
+			}
+		}
 		return managementError(args, stdout, stderr, err)
 	}
 	values := startValues(action.Args)
-	if len(action.Args) == 0 {
-		// The native command reserves work only. A Codex skill later performs the
-		// actual collaboration.spawn_agent call and acknowledges its exact handle.
-		manager := worktree.NewManager(root, root, st, tracker.NewCommandRunner())
-		result, err := start.AdmitDefaultRegistered(ctx, st, root, tracker.NewBeads(nil), manager, "codex", "HEAD")
+	hostName := values["--host"]
+	if hostName == "" {
+		hostName = "codex"
+	}
+	if hostName != "codex" && hostName != "claude" {
+		return managementError(args, stdout, stderr, core.ErrSettings)
+	}
+	profile := settings.Profile(hostName, "developer")
+	var selected tracker.Tracker
+	var setup project.SetupResult
+	if values["--action"] == "" || values["--action"] == "next" {
+		selected, setup, err = projectTracker(ctx, root)
 		if err != nil {
 			return managementError(args, stdout, stderr, err)
 		}
-		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_dispatch_required": result.HostDispatchRequired, "packet": result.Packet, "packet_digest": result.PacketDigest, "packet_path": result.PacketPath, "run": result.Run.ID, "team": result.Team.ID, "profile": settings.CodexDeveloper, "already_admitted": result.AlreadyAdmitted})
+	}
+	if values["--action"] == "" && values["--run"] == "" {
+		if settings.Revision == 0 {
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "settings_required", "next_action": "settings", "message": "Choose role models and effort, or accept inherited defaults, before starting.", "settings": settings})
+		}
+		if err := requiredCapabilities(ctx, root, setup.Handoff.Capabilities); err != nil {
+			return managementError(args, stdout, stderr, err)
+		}
+		if p.Head == "" {
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "commit_required", "next_action": "project_kickoff", "message": "Commit the approved project scaffold before creating task worktrees."})
+		}
+		// The native command reserves work only. A Codex skill later performs the
+		// actual collaboration.spawn_agent call and acknowledges its exact handle.
+		manager := worktree.NewManager(root, root, st, tracker.NewCommandRunner())
+		result, err := start.AdmitDefaultRegistered(ctx, st, root, selected, manager, hostName, "HEAD")
+		if err != nil {
+			if errors.Is(err, core.ErrPhase) {
+				return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "no_ready_tasks", "next_action": "inspect_tracker", "message": "No approved task is ready with satisfied dependencies. Review the selected tracker or continue Project Kickoff."})
+			}
+			return managementError(args, stdout, stderr, err)
+		}
+		if result.Packet.Owner == "codex" || result.Packet.Owner == "claude" {
+			profile = settings.Profile(result.Packet.Owner, "developer")
+		}
+		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "actual_host": result.Packet.Owner, "observation_required": result.AlreadyAdmitted, "host_dispatch_required": result.HostDispatchRequired, "packet": result.Packet, "packet_digest": result.PacketDigest, "packet_path": result.PacketPath, "run": result.Run.ID, "team": result.Team.ID, "profile": profile, "already_admitted": result.AlreadyAdmitted})
 	}
 	if runValue := values["--run"]; runValue != "" {
 		manifest, readErr := run.NewRepositories(st).Runs.Read(ctx, core.RunID(runValue))
@@ -340,24 +283,30 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if len(ids) == 0 {
 			return managementError(args, stdout, stderr, core.ErrPhase)
 		}
-		team, queueErr := start.AppendQueue(ctx, st, tracker.NewBeads(nil), manifest.ID, manifest.Teams[0].ID, ids)
+		if selectedHost := retainedHost(manifest.Teams[0]); selectedHost != "" {
+			profile = settings.Profile(selectedHost, "developer")
+		}
+		team, queueErr := start.AppendQueue(ctx, st, selected, manifest.ID, manifest.Teams[0].ID, ids)
 		if queueErr != nil {
 			return managementError(args, stdout, stderr, queueErr)
 		}
-		if delta, reserved, reserveErr := start.ReserveRetainedHead(ctx, st, tracker.NewBeads(nil), team.ID); reserveErr != nil {
+		if delta, reserved, reserveErr := start.ReserveRetainedHead(ctx, st, selected, team.ID); reserveErr != nil {
 			return managementError(args, stdout, stderr, reserveErr)
 		} else if delta.AlreadyAdmitted {
-			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "host_followup_required": false, "already_admitted": true, "observation_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "host_followup_required": false, "already_admitted": true, "observation_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": profile})
 		} else if reserved {
-			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "host_followup_required": true, "already_admitted": false, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "host_followup_required": true, "already_admitted": false, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": profile})
 		}
-		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "team": team, "profile": settings.CodexDeveloper})
+		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "team": team, "profile": profile})
 	}
 	teamID := core.TeamID(values["--team"])
 	var team any
 	current, currentErr := run.NewRepositories(st).Teams.Read(ctx, teamID)
 	if currentErr != nil {
 		return managementError(args, stdout, stderr, currentErr)
+	}
+	if selectedHost := retainedHost(current); selectedHost != "" {
+		profile = settings.Profile(selectedHost, "developer")
 	}
 	switch values["--action"] {
 	case "ack":
@@ -370,12 +319,12 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	case "idle":
 		team, err = start.RecordIdle(ctx, st, teamID, startHandle(values, current.RunID))
 	case "next":
-		if delta, reserved, reserveErr := start.ReserveRetainedHead(ctx, st, tracker.NewBeads(nil), teamID); reserveErr != nil {
+		if delta, reserved, reserveErr := start.ReserveRetainedHead(ctx, st, selected, teamID); reserveErr != nil {
 			err = reserveErr
 		} else if delta.AlreadyAdmitted {
-			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_followup_required": false, "already_admitted": true, "observation_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_followup_required": false, "already_admitted": true, "observation_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": profile})
 		} else if reserved {
-			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_followup_required": true, "already_admitted": false, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": settings.CodexDeveloper})
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_followup_required": true, "already_admitted": false, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": profile})
 		}
 		if err != nil {
 			break
@@ -385,21 +334,28 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			if terminalErr != nil {
 				err = terminalErr
 			} else {
-				return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "consumed": consumed, "host_followup_required": false, "retained_handle": retained, "team": idle, "profile": settings.CodexDeveloper})
+				return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "consumed": consumed, "host_followup_required": false, "retained_handle": retained, "team": idle, "profile": profile})
 			}
 			break
 		}
-		consumed, delta, waiting, nextErr := start.ConsumeForFollowup(ctx, st, tracker.NewBeads(nil), teamID)
+		consumed, delta, waiting, nextErr := start.ConsumeForFollowup(ctx, st, selected, teamID)
 		if nextErr != nil {
 			err = nextErr
 		} else {
-			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "consumed": consumed, "host_followup_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": waiting, "profile": settings.CodexDeveloper})
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "consumed": consumed, "host_followup_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": waiting, "profile": profile})
 		}
 	}
 	if err != nil {
 		return managementError(args, stdout, stderr, err)
 	}
-	return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "team": team, "profile": settings.CodexDeveloper})
+	return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "team": team, "profile": profile})
+}
+
+func retainedHost(team run.TeamRecord) string {
+	if team.Handle.Host != "" {
+		return team.Handle.Host
+	}
+	return team.RetainedHandle.Host
 }
 
 func startValues(args []string) map[string]string {

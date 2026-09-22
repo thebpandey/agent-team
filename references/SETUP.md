@@ -1,154 +1,126 @@
-# First-run setup
+# Native first-use setup
 
-Setup prepares the selected host/project without starting development or enabling deployment. Use [settings](SETTINGS.md) for saved defaults and [dependencies](DEPENDENCIES.md) for the catalog. Every state-changing setup invocation enters the complete settings wizard after dependency preparation, seeded from current effective values. Bare `settings` remains a distinct targeted action.
+Setup inspects and reuses the canonical Git project, prepares approved missing
+artifacts and dependencies, and records readiness without launching workers.
+Native v8 requires no external hooks. Historical Node hook registration and
+trust flows are not part of this setup contract.
 
 ## Inspect and reuse
 
-Before dependency or settings mutations, confirm from trusted runtime metadata that the current native Codex or Claude Code session resolves to this canonical Git project. Do not compare it with a recorded coordinator, require a takeover, inspect an ownership epoch, or repair legacy owner records. Keep model fallback selection separate from session continuity.
+Determine the actual host from runtime metadata. Resolve the installed native
+controller as described in the host skill; it need not be on PATH. Run from the
+Git project:
 
-Resolve canonical Git root/worktree metadata and the existing setup receipt. Read approved Kickoff handoff if present; otherwise adopt usable project state or prepare the requested standalone scope. Preserve the chosen tracker and integration branch. A missing optional skill never changes either.
-
-Confirm actual Codex/Claude Code runtime from trusted metadata. Select that host by default; install both only on explicit request. Show the chosen project/user scope and what will change. Preserve per-host model choices, custom files and unrelated hooks/MCP servers.
-
-Group inspection into four short results: host/access; runtimes/tools; selected skills; task readiness. Report Ready, Missing, Manual action or Unavailable with a concrete reason. A path or version string alone is not functional readiness, and a companion-tool diagnostic is not task readiness.
-
-## Prerequisite order
-
-1. The user installs/opens a supported Codex or Claude Code host and signs in to its own account. Agent-Team cannot create an account or buy model access.
-2. Verify Git and the runtime required by Agent-Team's installed release. For GitHub installation/publishing verify GitHub CLI and authentication with `gh auth status`; if sign-in is needed, the user completes `gh auth login` in the trusted local flow. Never ask for a token in chat.
-3. Inspect selected tool installation requirements. Prepare their free runtimes/package managers before tools: Node/npm for Node tools; Python/uv for Serena when required by the selected release. Prefer supported binaries/runtime management over unrelated source-build toolchains.
-4. Install the complete Agent-Team package for the selected host/scope and preserve handler-level ownership. Verify the extracted installation's required files and entrypoints.
-5. Prepare selected default profiles, including Serena and Microsoft Playwright CLI unless declined. Qualify the exact selected Playwright CLI with a real browser operation; do not substitute a Node REPL package import or a different native browser adapter.
-6. Prepare optional Context7 or dashboard/bv only if selected. Reuse working compatible dependencies instead of upgrading on every run.
-7. Verify useful direct operations and observe fresh-worker discovery where the host exposes it. Record versions, sources, capability state and configuration effects without secrets. An unobserved fresh-worker check is `unknown`, not a global setup failure.
-8. Restart/reload the host session when installed skills/hooks are not yet visible. Review the installed definitions in the host's hook trust flow; Codex uses `/hooks`. A skill cannot fabricate trust. Claude settings changes may also require reload/review according to the installed host.
-9. Enter the settings wizard seeded from current effective values. `Cancel` means Keep Existing and reports `settingsOutcome: "kept_existing"`; it preserves the pre-wizard setup bytes, setup version, settings operation list, roles, fallbacks, run defaults, dashboard, and deployment fields while retaining completed dependency receipts.
-10. Verify the active plan. Only its explicit `requiredCapabilities` can block dispatch. Show a compact role/model/effort/defaults summary and the command to start authorized development. A setup-only request stops after this summary.
-
-If an operating-system prerequisite requires administrator approval, an auth challenge, a new purchase, or overwriting a customization, explain that specific step. Do not silently bypass it. Keep successful installations and continue independent safe preparation.
-
-## Automatic preparation policy
-
-First use and explicit setup prepare selected default catalog items at the established scope—no one-question-per-plugin ceremony. Explain each item's purpose in a short summary and link its official source. Defaults may be declined unless the active plan explicitly requires them; optional choices remain user decisions.
-
-Inspect and pin an official released version or reviewed revision before executing installation. Record checksums when provided and verify extraction/installed behavior. Do not pipe an uninspected moving-branch script into a shell. Install shared prerequisites and mutate a shared package/config store serially.
-
-A prepared package must include its required companion files; a copied SKILL.md alone may not be enough. Use the host's actual discovery locations and installation support. Scoped installation must not silently change the other host or a wider scope. Customized/ambiguous resources are preserved and reported.
-
-LeanCTX is a separate narrowed profile, not a proxy. Snapshot affected configurations, merge only owned entries, inspect security-sensitive permission additions, preserve unrelated hooks/roles and verify exact-output recovery. Do not invoke broad initializers blindly. See [LeanCTX](LEAN-CTX.md).
-
-## Readiness and repair
-
-The one execution-readiness contract covers scope/acceptance, actionable tasks/dependencies, canonical branch, checks, capabilities and authority. Reuse approved decisions; ask only about a missing material decision. Project Kickoff is not a prerequisite.
-
-Keep Beads when selected. If its backend is unavailable, diagnose/repair within authority or report that capability unavailable; never activate a temporary Markdown tracker. A selected root or designated TASKS.md is fully supported.
-
-Ordinary install/check failures trigger bounded diagnosis, repair and recheck. Preserve already passed results and usable installations. A required capability may remain unavailable while independent work progresses; do not pass affected acceptance until it works. A failed selected default does not block unrelated dispatch.
-
-Read-only status and health do not enter setup, write a receipt, repair a cache, increment a version, or install anything. Read-only help and version likewise never enter setup or open the settings wizard. During authorized setup/development, repair clearly owned malformed/missing artifacts; preserve uncertain user customization.
-
-## Defaults and later changes
-
-Setup always shows current/recommended values in the current-effective wizard. Change one setting or role directly for a bare targeted settings request. Save only explicitly confirmed validated changes atomically, preserve concurrent edits and apply them to future runs only. No answer, timeout, or interruption is not consent: write no settings, setup-version increment, inferred default, or synthetic operation receipt; retain completed dependency preparation and record settings consent pending so the next native setup resumes from current effective values.
-
-Authentication, administrator permission and native hook trust are separate host/user actions, not implied by a saved installation preference. Reload does not prove hooks ran: distinguish installed, registered, trusted/unknown, supported and exercised states.
-
-## Bundled setup helpers
-
-The orchestrator uses the complete installed [Agent-Team package](https://github.com/thebpandey/agent-team), not invented native host subcommands. Users can simply say “Agent-Team setup.” These helpers do not spawn agents or replace native trust controls.
-
-1. Adopt approved facts with `project-initialize --project /absolute/project --request /absolute/initialization.json`. The request uses the workflow envelope from [hooks](HOOKS.md): `schemaVersion: 1`, actual `actorSessionId`, expected setup version and a `request` body containing `projectId`, unique `operationId`, `source` (`standalone` or `existing`), selected `tracker`, and `plan`.
-2. The plan contains `scope`, nonempty `acceptance`, existing integration `branch`, nonempty `verification`, `authority.ownedPaths`, and canonical task IDs. Standalone tasks also include title/status/dependencies. Existing adoption preserves the complete selected tracker; a subset is a conflict, not permission to hide tasks. Existing Beads must already be initialized through its supported setup; this helper never invents a database or a fallback tracker.
-3. `canonicalReady` means canonical records and eligible tasks exist. The CLI still reports `ready: false` until a separate scoped readiness check. It never treats initialization as dependency or native-host certification.
-4. Inspect dependencies, prepare selected components, verify real host discovery, then inspect readiness. Settings belong to the canonical project; dependency scope can be user or project. Match the readiness scope to the prepared capability scope.
-
-From the installed package, agent-run examples are:
-
-```bash
-node hooks/agent-team-cli.mjs dependencies --project /absolute/project --host codex --scope user
-node hooks/agent-team-cli.mjs dependencies-prepare --project /absolute/project --host codex --scope user --request /absolute/preparation.json
-node hooks/agent-team-cli.mjs readiness --project /absolute/project --host codex --scope user
-node hooks/agent-team-cli.mjs settings --project /absolute/project --host codex --scope project
-node hooks/agent-team-cli.mjs settings --project /absolute/project --host codex --scope project --role developer
-node hooks/agent-team-cli.mjs helpers --project /absolute/project --host codex --scope project
-node hooks/agent-team-cli.mjs context-reduction --project /absolute/project --host codex --scope project
+```text
+agent-teamctl setup --host <codex-or-claude> --json
 ```
 
-For Claude Code select `--host claude-code`. Do not install both hosts by inference. A dependency preparation request has this separate setup-mutation envelope:
+Reuse the selected Beads or `TASKS.md` tracker, existing governance, role
+preferences, and approved Project Kickoff facts. Setup does not migrate an
+existing tracker merely because another tool is available. Changing established
+tracker authority needs an explicit data migration.
 
-```json
-{
-  "schemaVersion": 1,
-  "expectedVersion": 1,
-  "operationId": "prepare-selected-components-unique-id",
-  "writer": { "id": "actual-native-session", "role": "project_orchestrator" },
-  "request": { "selections": {} }
-}
+Read the structured response even when setup exits with `needs_input`. Follow
+`next_action`, including when `status` is already `initialized`:
+
+| Next action | Required continuation |
+| --- | --- |
+| `choose_tracker` | Resolve the tracker choice: `tasks-md` or `beads`. |
+| `approve_artifacts` | Describe missing files and obtain approval for their creation. |
+| `approve_kickoff` | Confirm using the discovered or explicitly selected handoff. |
+| `initialize_beads` | Approve initialization of the selected Beads tracker and resume setup. |
+| `approve_dependencies` | Approve the selected install bundle once; carry earlier consent forward. |
+| `resolve_dependencies` | Read dependency results; repair preparation or agree on an available fallback. |
+| `prepare_dependencies` | Prepare the approved handoff's missing required capabilities. |
+| `project_kickoff` | Continue approved planning and tracker seeding, then import the handoff. |
+| `settings` | Inspect role choices and save accepted settings, even when the choice is `inherit`. |
+| `start` | Continue a requested start through the actual host tools; a setup-only request ends with readiness. |
+| `inspect_tracker` | Inspect the selected tracker's readiness and missing task criteria; do not invent ready work. |
+
+An explicit `--refuse-kickoff` returns rejected (CLI exit 2) or cancelled from
+the defensive management path, without setup writes. Respect that refusal;
+do not continue initialization or dispatch from this flow.
+
+After consent, create only missing governance/tracker files with
+`setup --tracker <tasks-md-or-beads> --approve --host <host> --json`.
+`DECISIONS.md` and `AGENT_TEAM_RULES.md` are reused when present. The controller
+does not overwrite an existing plan with its minimal scaffold. `BLOCKERS.md`
+and `DECISIONS.md` remain projections rather than alternative task stores.
+
+## Planning before setup
+
+When planning is still in progress, prepare dependencies without initializing
+the project setup receipt:
+
+```text
+agent-teamctl setup --install beads,serena,graphify --tracker beads --approve --prepare-only --host <host> --json
 ```
 
-Use the freshly observed setup version and actual native session; example values are not authority. Empty selections retain current default choices and remembered declines. Optional selections are explicit. Safe user preparation uses managed user tool/skill locations; project preparation stays in the canonical project. A linked feature worktree never becomes another configuration root.
+Use only the approved names and selected tracker. `--prepare-only` returns
+dependency observations and a next action; it does not generate governance or
+attach a handoff. Continue approved Project Kickoff planning and seed its
+selected tracker before importing the resulting handoff. Dependency preparation
+does not prove that planning or task acceptance is complete.
 
-`helpers` is read-only. Native `helpers-install` copies the three bundled scripts into `<project>/scripts/agent-team`, records exact hashes in the canonical setup receipt, and preserves customized files as conflicts. Helper self-checks do not grant workflow authority.
+The current discovery path is `.project-kickoff/AGENT_TEAM_HANDOFF.json`.
+The loader supports the nested Project Kickoff 0.5.0 handoff contract. Reuse
+scope, checks, task identities, and tracker facts instead of interviewing the
+user again. Import after approval:
 
-Context reduction never disables a capability from a bare inspection. Automatic MCP/plugin visibility is unavailable from current executable hook payloads, so absence of inventory returns `visibility_unknown`. A native session may provide a closed report of the capabilities it actually sees; the offer is then `offered_unverified` with reported provenance and visibility still unknown. Apply requires the exact current proposal and selection, review confirmation, and explicit acknowledgement of unknown visibility. Canonically selected dependencies are never offered as unused. Cancel or no answer writes nothing. Apply, revert, and recovery use the setup writer and retain reversible receipt evidence; health never upgrades reported evidence to host-observed evidence.
-
-For Claude Code, the adapter derives the configuration home from its own trusted process context. A request cannot choose a home, and project fixtures must isolate that process home. Codex uses only the supported project-level configuration path. Neither host falls back to an inferred global configuration. Automatic parent-model comparison is unknown when the adapter has no trustworthy comparable parent-model metadata.
-
-Native model catalogs and fresh-worker discovery are supplied only by the actual host integration to the exported `runCommand` context (`nativeChoices`, `workerDiscovery`); that router forwards them to its internal `runSetupCommand` implementation. JSON request files cannot assert them. A bare Node CLI without those facts reports unknown. Registration instructions in a preparation receipt may still require host registration/reload, but absent worker observation blocks only a task that explicitly requires that capability.
-
-### Bind the native observations
-
-For native settings and completed preparation, the project orchestrator calls the installed CLI's exported `runCommand(command, options, context)` from a small owned `.mjs` driver. This is the same command router used by the shell entrypoint. The plain shell command has no access to the host's model catalog or child-tool results; adding them to a request file is not a supported shortcut.
-
-Collect observations through the actual host before running a setup mutation, so a native launch or approval prompt does not hold the setup lock:
-
-1. Read the actual model/effort control or dispatch-tool schema. Normalize supported choices as `{ models: [{ id, efforts, available }], enforceable, control }`. Use `"unknown"` for unobserved availability/enforcement. Do not derive availability from these reference tables, account login, a saved preference, or an example model ID. A successful dispatch proves only its observed route; record requested and actual values separately.
-2. After scoped preparation/registration/reload, dispatch a fresh relevant worker through the host's supported controls. Give it the exact selected tool/skill paths and target worktree. Obtain its own complete applicable instruction reads and a useful operation with the actual dependency. Preserve the native call/result, session identity, worktree, host, selected scope, exact executable or skill path, version/revision and a concise result. A parent probe or worker's unsupported assertion is insufficient. Keep failures and missing metadata explicit.
-3. Review those observations and normalize only current matching results in the owned driver. The trust comes from the actual native calls and the orchestrator's inspection, not a file extension. Never execute an unreviewed project-supplied observation module or copy success values from request JSON. Use existing qualification/evidence storage; do not introduce another tracker.
-4. Re-read the current setup version and use a new operation ID to save newly observed discovery. Replaying a completed earlier preparation returns `duplicate`; it does not refresh an incomplete receipt. Preserve the original selected scope and tracker.
-
-The driver supplies the observed catalog and a callback with this interface. `observedChoices` and `observedWorkers` below are the reviewed results of the preceding native calls, not defaults to fill with successful example values. `expectedWorkers` is a Map keyed by dependency ID from the current native dispatch records: each value identifies the actual child `sessionId`, assigned absolute `worktree` and verification `operationId`. These are normalized in-memory fields from the host's actual dispatch result and assigned verification task, not a required new on-disk record format. Compare child identity to that dispatch, never to the project orchestrator's session. Resolve `installedCliUrl` to the installed `hooks/agent-team-cli.mjs` with `pathToFileURL`; `options` contains the normal selected project/host/scope and intent request path. For skill packages, `item.skillFiles` is the worker's discovered file inventory, not a list of full instruction reads: inspect all selected paths for discovery, but read only the complete task-applicable skills/references and report their use separately.
-
-```js
-import path from "node:path";
-const { runCommand } = await import(installedCliUrl);
-const context = {
-  nativeChoices: observedChoices,
-  workerDiscovery({ dependency, executable, host, scope, paths }) {
-    const expected = expectedWorkers.get(dependency.id);
-    const version = dependency.version ?? expected?.version;
-    const skillFiles = dependency.install?.kind === "git-skill"
-      ? dependency.install.paths.map((entry) => path.join(paths.skillRoot,
-        entry === "." ? dependency.id : path.basename(entry), "SKILL.md"))
-      : null;
-    const observed = observedWorkers.find((item) =>
-      expected?.sessionId && expected.worktree && expected.operationId && version &&
-      item.id === dependency.id && item.version === version &&
-      item.host === host && item.scope === scope &&
-      item.projectRoot === paths.projectRoot &&
-      item.toolRoot === paths.toolRoot && item.skillRoot === paths.skillRoot &&
-      item.sessionId === expected.sessionId && item.worktree === expected.worktree &&
-      item.operationId === expected.operationId &&
-      (skillFiles ? skillFiles.length > 0 &&
-        item.skillFiles?.length === skillFiles.length &&
-        skillFiles.every((file) => item.skillFiles.includes(file))
-        : item.executable === executable) &&
-      item.evidence && item.current === true);
-    return observed
-      ? { status: observed.status, evidence: observed.evidence }
-      : { status: "unverified", evidence: "No current matching native worker observation." };
-  },
-};
-const result = await runCommand(command, options, context);
-console.log(JSON.stringify(result));
+```text
+agent-teamctl setup --approve-kickoff --host <host> --json
+agent-teamctl setup --kickoff <path> --approve-kickoff --host <host> --json
 ```
 
-Use this route for `settings`, `settings-wizard`, role/fallback `settings-update`, and the new `dependencies-prepare` operation. The production runner still performs installation, probes and functional checks; this callback supplies only worker discovery. Verify canonical `readiness` at the same scope afterward. Only a current useful worker operation may normalize to `status: "passed"`; bind its worktree to the intended assignment and invalidate it when paths, versions or relevant host configuration change. Missing native controls remain unavailable. Do not create dummy callbacks, edit `setup.json` directly, or replace the production runner with passing fixtures to complete setup.
+The second form selects an explicit handoff. A late handoff may attach to an
+existing setup without rewriting its setup receipt, settings, tracker contents,
+or active run packets. It must agree with existing tracker authority. Preserve
+an error or conflicting handoff for diagnosis; do not reset setup to force it.
+Without any handoff, approved setup can create a minimal scaffold. Project
+Kickoff remains optional.
 
-For skill-only packages, `skillFiles` records discovery of the actual selected installed files; it does not require reading unrelated instructions. The worker still completely reads and applies the task-relevant subset. Do not report the runner's synthetic `bin/<skill-package>` path as an executable. Normalize paths consistently before comparison. A catalog entry with no pinned version additionally needs the explicitly reviewed selected version in the dispatch record; missing version evidence stays unverified.
+## Dependency consent and preparation
 
-For selected Context7, a trusted caller may additionally provide `createDependencyRunner` wrapping the exported production factory with `functionalAdapters.context7`. Run the actual native MCP library-resolution and documentation query first, retain that result, and return it from the adapter only for the matching public library/version/query. Its separate fresh-worker discovery remains required. No additional Node Context7 client is required, and an unselected Context7 remains optional.
+Inspect before installing and offer the selected missing bundle once. Native
+installation recipes cover selected Beads plus Serena, Graphify, rg, ast-grep,
+and LeanCTX. Include their required scoped installer/Python prerequisites in
+the bundle consent; do not change global PATH or registry. An executable is not automatically prepared
+for this project or available to a fresh worker.
 
-`settings-update` takes `request.change`; `dashboard-configure` takes `request.dashboard` in the same versioned setup envelope. Neither starts development. For saved HTML use `{ "snapshot": true, "graph": { "enabled": false, "termsAcknowledged": false } }`. Enabling the external graph requires the selected Beads tracker and positive upstream-terms acknowledgement; an optional configured executable must be absolute. Start the live server only through a separate explicit `dashboard-start` request. All returned conflicts/unavailable states require inspection even when the process exit code is zero.
+Run the approved selection with
+`setup --install <comma-separated-names> --approve --host <host> --json`.
+Include `--tracker beads` when preparing the selected Beads tracker. Installs
+use project scope and add no external hooks. Preserve compatible tools and
+unrelated host settings. Report missing package managers, runtimes, access, or
+customized-file conflicts specifically; do not infer permission to change them.
 
-For an opted-in Beads graph, save `graph: { enabled: true, termsAcknowledged: true }`, then include `"beads-viewer"` in `dependencies-prepare`'s `request.selections.optionals`. Preparation verifies the pinned bv 0.24.1 prebuilt archive checksum, retains its complete LICENSE, and runs an isolated fresh Beads export and dependency-graph check. After that check passes, it records the selected executable in the dependency receipt and dashboard configuration. Fresh-worker discovery remains separately verified. Missing or incompatible explicitly configured executables are preserved and reported; they are never overwritten or replaced silently. Automatic binary installation supports Linux and macOS on x64/arm64; other platforms report an unavailable installer. Snapshot/live rendering uses the saved executable and preserves the base task view if the optional graph is unavailable.
+Optional tools retain bounded native fallbacks. An approved handoff's required
+capabilities still gate affected work. Never claim executable discovery proves
+MCP registration, worker access, a successful workload, or readiness of the
+selected tracker. Reuse successful preparation rather than reinstalling it.
+
+## Save accepted settings
+
+Read `settings --json` and present the requested host/roles using
+[supported settings](SETTINGS.md). Both hosts support orchestrator, developer
+(coder alias), reviewer, and visual_reviewer model/effort preferences.
+Setup asks for settings while their saved revision is zero.
+
+Accepting inherited defaults is a real save. After consent, execute
+`settings codex.developer.model=inherit --json` in Codex or
+`settings claude.developer.model=inherit --json` in Claude. The revision advances
+even when the effective choice remains inherited. Inspection alone cannot
+complete this step. Cancel, no answer, or interruption saves nothing.
+
+## Bind the native observations
+
+The controller's JSON reports project and dependency facts. The foreground
+host supplies actual runtime identity, tool availability, worker IDs, and
+supported model/effort fields. Record unavailable or unobserved facts honestly;
+do not replace native observations with passing fixtures or edit receipts.
+
+After readiness, `start --host <host> --json` reserves a packet. Follow the
+installed host skill for the real Agent/collaboration call and exact returned
+handle acknowledgement. `status --json` is read-only and does not prepare,
+install, repair, or dispatch. Switching foreground hosts transfers no live
+worker ownership, and an unknown writer remains occupied.

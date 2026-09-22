@@ -69,6 +69,15 @@ func ValidateSetup(ctx context.Context, input SetupInput) (SetupResult, error) {
 	result := SetupResult{
 		Project: project, Config: core.DefaultConfig(), ArtifactDigests: make(map[string]string),
 	}
+	if input.Tracker.Kind != "" {
+		if input.Tracker.Kind != "beads" && input.Tracker.Kind != "tasks-md" {
+			return SetupResult{}, fmt.Errorf("%w: unsupported tracker %q", core.ErrSettings, input.Tracker.Kind)
+		}
+		if _, _, err := inputPath(project.Root, input.Tracker.Path); err != nil {
+			return SetupResult{}, err
+		}
+		result.Config.Tracker = input.Tracker
+	}
 	seen := make(map[string]struct{}, len(input.Artifacts))
 	for _, artifact := range input.Artifacts {
 		relative, fullPath, err := inputPath(project.Root, artifact.Path)
@@ -99,10 +108,10 @@ func ValidateSetup(ctx context.Context, input SetupInput) (SetupResult, error) {
 		default:
 			return SetupResult{}, fmt.Errorf("%w: unsupported artifact mode %q", core.ErrSettings, artifact.Mode)
 		}
-		if relative == "TASKS.md" {
+		if input.Tracker.Kind == "" && relative == "TASKS.md" {
 			result.Config.Tracker = core.TrackerConfig{Kind: "tasks-md", Path: relative}
 		}
-		if relative == ".beads" {
+		if input.Tracker.Kind == "" && relative == ".beads" {
 			result.Config.Tracker = core.TrackerConfig{Kind: "beads", Path: relative}
 		}
 	}
@@ -110,7 +119,7 @@ func ValidateSetup(ctx context.Context, input SetupInput) (SetupResult, error) {
 		return SetupResult{}, fmt.Errorf("%w: one-off setup cannot select tracker artifacts", core.ErrSettings)
 	}
 	if input.Mode == PlanMode {
-		if err := validatePlanArtifacts(seen); err != nil {
+		if err := validateSelectedPlanArtifacts(seen, result.Config.Tracker); err != nil {
 			return SetupResult{}, err
 		}
 	}
@@ -130,15 +139,18 @@ func ValidateSetup(ctx context.Context, input SetupInput) (SetupResult, error) {
 		if !validDigest(input.Kickoff.Digest) || input.Kickoff.Digest != actual {
 			return SetupResult{}, fmt.Errorf("%w: Project Kickoff digest mismatch", core.ErrSettings)
 		}
-		var handoff core.KickoffHandoff
-		if err := json.Unmarshal(contents, &handoff); err != nil {
-			return SetupResult{}, fmt.Errorf("%w: malformed Project Kickoff handoff: %v", core.ErrSettings, err)
+		handoff, err := decodeKickoffHandoff(project.Root, contents)
+		if err != nil {
+			return SetupResult{}, err
 		}
 		if err := validateHandoff(project.Root, handoff); err != nil {
 			return SetupResult{}, err
 		}
 		result.Handoff = handoff
 		if handoff.TrackerKind == "tasks-md" || handoff.TrackerKind == "beads" {
+			if handoff.TrackerKind != result.Config.Tracker.Kind || handoff.TrackerRef != result.Config.Tracker.Path {
+				return SetupResult{}, fmt.Errorf("%w: kickoff tracker differs from selected tracker", core.ErrSettings)
+			}
 			result.Config.Tracker = core.TrackerConfig{Kind: handoff.TrackerKind, Path: handoff.TrackerRef}
 		}
 	}
@@ -160,6 +172,24 @@ func validatePlanArtifacts(artifacts map[string]struct{}) error {
 		if _, ok := artifacts[required]; !ok {
 			return fmt.Errorf("%w: plan mode requires approved %s", core.ErrSettings, required)
 		}
+	}
+	return nil
+}
+
+func validateSelectedPlanArtifacts(artifacts map[string]struct{}, selected core.TrackerConfig) error {
+	if selected.Path == "TASKS.md" || selected.Path == ".beads" {
+		return validatePlanArtifacts(artifacts)
+	}
+	if selected.Kind != "tasks-md" {
+		return fmt.Errorf("%w: unsupported tracker path", core.ErrSettings)
+	}
+	for _, path := range []string{selected.Path, "DECISIONS.md", "AGENT_TEAM_RULES.md"} {
+		if _, ok := artifacts[path]; !ok {
+			return fmt.Errorf("%w: plan mode requires approved %s", core.ErrSettings, path)
+		}
+	}
+	if len(artifacts) != 3 {
+		return fmt.Errorf("%w: select exactly one tracker", core.ErrSettings)
 	}
 	return nil
 }
@@ -456,67 +486,9 @@ func digestArtifact(root, relative, full string, limit int64) (string, error) {
 		if relative != ".beads" {
 			return "", fmt.Errorf("directory artifact is not a tracker authority")
 		}
-		return digestDirectory(root, relative, limit)
+		return digestBeadsIdentity(root, relative, limit)
 	}
 	return digestFile(root, relative, limit)
-}
-
-func digestDirectory(rootPath, relative string, limit int64) (string, error) {
-	root, err := os.OpenRoot(rootPath)
-	if err != nil {
-		return "", err
-	}
-	defer root.Close()
-	hash := sha256.New()
-	var used int64
-	var walk func(string) error
-	walk = func(directory string) error {
-		file, err := root.Open(directory)
-		if err != nil {
-			return err
-		}
-		entries, err := file.ReadDir(-1)
-		_ = file.Close()
-		if err != nil {
-			return err
-		}
-		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-		for _, entry := range entries {
-			child := filepath.ToSlash(filepath.Join(directory, entry.Name()))
-			info, err := root.Lstat(child)
-			if err != nil {
-				return err
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("symbolic link in tracker")
-			}
-			if info.IsDir() {
-				if err := walk(child); err != nil {
-					return err
-				}
-				continue
-			}
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("non-regular tracker artifact")
-			}
-			body, err := readBoundedContained(rootPath, child, limit-used)
-			if err != nil {
-				return err
-			}
-			used += int64(len(body))
-			if used > limit {
-				return fmt.Errorf("%w: tracker exceeds %d bytes", core.ErrLimit, limit)
-			}
-			_, _ = io.WriteString(hash, filepath.ToSlash(child)+"\x00")
-			_, _ = hash.Write(body)
-		}
-		return nil
-	}
-	err = walk(relative)
-	if err != nil {
-		return "", err
-	}
-	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 // readBoundedContained uses os.Root for the final open, so a symlink/reparse
@@ -573,7 +545,7 @@ func validateHandoff(root string, handoff core.KickoffHandoff) error {
 	if handoff.ApprovedPlanRevision == "" || handoff.Branch == "" || handoff.TrackerKind == "" || handoff.TrackerRef == "" {
 		return fmt.Errorf("%w: incomplete Project Kickoff handoff", core.ErrSettings)
 	}
-	if len(handoff.TaskIDs) == 0 || len(handoff.Acceptance) == 0 || len(handoff.Checks) == 0 || len(handoff.WritablePaths) == 0 || len(handoff.Resources) == 0 || len(handoff.Capabilities) == 0 {
+	if len(handoff.TaskIDs) == 0 || len(handoff.Acceptance) == 0 || len(handoff.Checks) == 0 || len(handoff.WritablePaths) == 0 {
 		return fmt.Errorf("%w: Project Kickoff handoff lacks required approved facts", core.ErrSettings)
 	}
 	if handoff.TrackerKind != "tasks-md" && handoff.TrackerKind != "beads" {

@@ -1,0 +1,202 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/thebpandey/agent-team/vnext/internal/cli"
+	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/preparation"
+	"github.com/thebpandey/agent-team/vnext/internal/project"
+	"github.com/thebpandey/agent-team/vnext/internal/testkit"
+)
+
+func invokeOnboarding(t *testing.T, args ...string) (int, map[string]any) {
+	t.Helper()
+	var out bytes.Buffer
+	code := cli.Run(context.Background(), append(args, "--json"), core.Dependencies{Stdout: &out, Stderr: &out, Management: runManagement})
+	var result map[string]any
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("%v: code=%d output=%s", args, code, out.String())
+	}
+	return code, result
+}
+
+func TestFirstUseCLISelectsMarkdownAndClaudeWithoutCutover(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	code, result := invokeOnboarding(t, "setup", "--tracker", "tasks-md", "--approve", "--host", "claude")
+	if code != 0 || result["next_action"] != "settings" {
+		t.Fatalf("setup: %d %+v", code, result)
+	}
+	if code, result = invokeOnboarding(t, "settings", "claude.developer.model=inherit", "claude.reviewer.model=inherit"); code != 0 {
+		t.Fatalf("settings: %+v", result)
+	}
+	fixture := []core.Task{{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: root, Revision: 1}, ID: "task-1", Objective: "Implement approved test change", State: core.Ready, Dependencies: []core.TaskID{}, Resources: []string{}, EvidencePointers: []string{}, Criteria: []string{"test passes"}, WritablePaths: []string{"src"}, Checks: []core.Check{{Name: "test", Command: []string{"npm", "test"}}}}}
+	raw, _ := json.Marshal(fixture)
+	if err := os.WriteFile(filepath.Join(root, "TASKS.md"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, result = invokeOnboarding(t, "start", "--host", "claude")
+	if code != 0 || result["host_dispatch_required"] != true {
+		t.Fatalf("start: %d %+v", code, result)
+	}
+	packet := result["packet"].(map[string]any)
+	if packet["owner"] != "claude" || packet["task"] != "task-1" {
+		t.Fatalf("packet=%+v", packet)
+	}
+	if code, result = invokeOnboarding(t, "setup", "--host", "codex"); code != 0 || result["status"] != "initialized" {
+		t.Fatalf("host switch: %d %+v", code, result)
+	}
+	if code, result = invokeOnboarding(t, "start", "--host", "codex"); code != 0 || result["already_admitted"] != true || result["host_dispatch_required"] != false {
+		t.Fatalf("cross-host replay: %d %+v", code, result)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agent-team/v8/authority.json")); !os.IsNotExist(err) {
+		t.Fatal("ordinary setup created cutover authority")
+	}
+}
+
+func TestStatusCLIReportsCorruptKickoffBinding(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	if code, result := invokeOnboarding(t, "setup", "--tracker", "tasks-md", "--approve"); code != 0 {
+		t.Fatalf("setup: %d %+v", code, result)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".agent-team/v8"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".agent-team/v8/kickoff.json"), []byte("broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code, result := invokeOnboarding(t, "status"); code == 0 || result["ok"] != false {
+		t.Fatalf("status hid corrupt authority: %d %+v", code, result)
+	}
+}
+
+func TestFirstUseCLIReportsSetupBeforeStart(t *testing.T) {
+	t.Chdir(testkit.GitRepo(t))
+	code, result := invokeOnboarding(t, "start", "--host", "codex")
+	if code != 0 || result["status"] != "setup_required" || result["next_action"] != "setup" {
+		t.Fatalf("start: %d %+v", code, result)
+	}
+}
+
+func TestStatusCLIDoesNotClaimUninitializedProjectAccepted(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	code, result := invokeOnboarding(t, "status")
+	if code != 0 || result["status"] != "setup_required" {
+		t.Fatalf("status: %d %+v", code, result)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agent-team")); !os.IsNotExist(err) {
+		t.Fatal("status wrote project state")
+	}
+}
+
+func TestSetupRefusalPreservesReadyExistingInputs(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	for _, name := range []string{"TASKS.md", "DECISIONS.md", "AGENT_TEAM_RULES.md"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("# Existing user file\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, result := invokeOnboarding(t, "setup", "--refuse-kickoff")
+	if code != 2 || result["status"] != "rejected" {
+		t.Fatalf("refusal: %d %+v", code, result)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agent-team")); !os.IsNotExist(err) {
+		t.Fatal("refusal initialized project")
+	}
+}
+
+func TestKickoffCLIStartsDesignatedMarkdownFromSubdirectory(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	p, err := project.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchBytes, err := exec.Command("git", "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := strings.TrimSpace(string(branchBytes))
+	if err := os.MkdirAll(filepath.Join(root, ".agent-team"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	tasks := "## Active tasks\n| ID | Intended outcome / acceptance pointer | Status | Depends on |\n| --- | --- | --- | --- |\n| AT-001 | Unrelated work | ready | None |\n| AT-002 | Approved feature | ready | None |\n"
+	if err := os.WriteFile(filepath.Join(root, ".agent-team/TASKS.md"), []byte(tasks), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handoff := map[string]any{
+		"schemaVersion": 1, "kind": "project-kickoff-agent-team-handoff", "status": "approved",
+		"projectKickoff": map[string]any{"version": "0.5.0", "approvalId": "APR-001", "approvedRevision": p.Head},
+		"agentTeam":      map[string]any{"testedVersion": "8.0.10", "initializationSource": "existing"},
+		"project":        map[string]any{"id": "demo", "root": root, "branch": branch, "revision": p.Head},
+		"tracker":        map[string]any{"kind": "markdown", "path": ".agent-team/TASKS.md"},
+		"plan":           map[string]any{"scope": "Approved feature", "branch": branch, "acceptance": []string{"tests pass"}, "verification": []string{"npm test"}, "authority": map[string]any{"ownedPaths": []string{"src"}, "externalActions": []string{}}, "tasks": []map[string]string{{"id": "AT-002"}}},
+	}
+	raw, _ := json.Marshal(handoff)
+	if err := os.WriteFile(filepath.Join(root, "kickoff.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code, result := invokeOnboarding(t, "setup", "--kickoff", "kickoff.json", "--approve-kickoff"); code != 0 || result["next_action"] != "settings" {
+		t.Fatalf("setup: %d %+v", code, result)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Join(root, "src"))
+	if code, result := invokeOnboarding(t, "settings", "codex.developer.model=inherit"); code != 0 {
+		t.Fatalf("settings: %d %+v", code, result)
+	}
+	code, result := invokeOnboarding(t, "start", "--host", "codex")
+	if code != 0 || result["host_dispatch_required"] != true {
+		t.Fatalf("start: %d %+v", code, result)
+	}
+	packet := result["packet"].(map[string]any)
+	if packet["task"] != "AT-002" || packet["objective"] != "Approved feature" {
+		t.Fatalf("wrong scope: %+v", packet)
+	}
+	if checks, ok := packet["checks"].([]any); !ok || len(checks) != 1 {
+		t.Fatalf("missing checks: %+v", packet)
+	}
+}
+
+func TestPrepareOnlyDoesNotBindUnfinishedKickoff(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	oldInstall, oldInitialize := installDependencies, initializeDependencies
+	t.Cleanup(func() { installDependencies, initializeDependencies = oldInstall, oldInitialize })
+	installed, initialized := false, false
+	installDependencies = func(_ context.Context, gotRoot string, names []string, approved bool) ([]preparation.Dependency, error) {
+		if gotRoot != root || len(names) != 1 || names[0] != "graphify" || !approved {
+			t.Fatal("unexpected install request")
+		}
+		installed = true
+		return []preparation.Dependency{{Name: "graphify", Available: true}}, nil
+	}
+	initializeDependencies = func(_ context.Context, _ string, _ []string, approved bool) ([]preparation.Dependency, error) {
+		if !approved {
+			t.Fatal("missing approval")
+		}
+		initialized = true
+		return []preparation.Dependency{{Name: "graphify", Available: true, Prepared: true}}, nil
+	}
+	code, result := invokeOnboarding(t, "setup", "--prepare-only", "--install", "graphify", "--approve")
+	if code != 0 || result["status"] != "prepared" || !installed || !initialized {
+		t.Fatalf("prepare: %d %+v", code, result)
+	}
+	for _, name := range []string{"TASKS.md", "DECISIONS.md", "AGENT_TEAM_RULES.md", ".agent-team/config.json"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+			t.Fatalf("premature setup write: %s", name)
+		}
+	}
+}

@@ -44,6 +44,13 @@ type AuthorityMetadataProvider interface {
 	AuthorityMetadata() AuthorityMetadata
 }
 
+// AutomaticAdmissionScope narrows automatic task selection without hiding any
+// tracker records or changing their status. Explicit user-requested admission
+// continues to use the complete selected tracker and its own authorization.
+type AutomaticAdmissionScope interface {
+	AllowsAutomaticAdmission(core.TaskID) bool
+}
+
 func trackerRevision(data []byte) uint64 {
 	sum := sha256.Sum256(data)
 	revision := binary.BigEndian.Uint64(sum[:8])

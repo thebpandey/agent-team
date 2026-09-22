@@ -388,7 +388,7 @@ func validateLifecycleJournal(layout Layout, journal lifecycleJournal) error {
 		} else if mutation.PostMode == 0 || !validSHA256(mutation.PostSHA256) || mutation.PostBytes != int64(len(mutation.Replacement)) || digestContent(mutation.Replacement) != mutation.PostSHA256 {
 			return core.ErrRevision
 		}
-		if mutation.Exclusive && (mutation.Existed || (journal.Operation != "install" && journal.Operation != "update")) {
+		if mutation.Exclusive && (mutation.Existed || (journal.Operation != "install" && journal.Operation != "update" && journal.Operation != "rollback")) {
 			return core.ErrRevision
 		}
 	}
@@ -661,11 +661,9 @@ func snapshotUpdateBackups(layout Layout, current InstallManifest, desired []des
 }
 
 func Update(ctx context.Context, layout Layout, release Release, expected uint64) (CASOutcome, error) {
-	if current, err := NewManifestStore(layout).Read(ctx); err == nil && containsHost(current.Hosts, Codex) {
-		if outcome, conflictErr := rejectUnownedCodexSkill(layout, &current); conflictErr != nil {
-			return outcome, conflictErr
-		}
-	}
+	// Recover an interrupted migration before discovery checks: its new root
+	// entrypoint may already contain the next release while the manifest still
+	// owns the old nested path. updateLocked checks discovery under this guard.
 	releaseGuard, err := store.AcquireProjectMutation(ctx, layout.DataRoot, "install", fmt.Sprintf("update:%d:%s", expected, release.Revision))
 	if err != nil {
 		return CASOutcome{}, err
@@ -687,6 +685,8 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 	if err := validateInstalledLayout(layout, current); err != nil {
 		return CASOutcome{}, err
 	}
+	original := cloneManifest(current)
+	current = reconcileMovedEntrypoints(layout, current)
 	if containsHost(current.Hosts, Codex) {
 		if outcome, err := rejectUnownedCodexSkill(layout, &current); err != nil {
 			return outcome, err
@@ -704,7 +704,7 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			}
 		}
 	}
-	if installedReleaseMatches(current, desired) {
+	if reflect.DeepEqual(original, current) && installedReleaseMatches(current, desired) {
 		if err := VerifyRelease(release); err != nil {
 			return CASOutcome{}, core.ErrRevision
 		}
@@ -716,7 +716,7 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 		return CASOutcome{}, err
 	}
 	budget := newJournalBudget()
-	plan := updateJournalPlan(layout, release, current, desired, backups, owner, expected, hostReceipt != nil)
+	plan := updateJournalPlan(layout, release, current, desired, backups, owner, expected, true)
 	var receiptRaw []byte
 	if hostReceipt != nil {
 		receiptRaw, err = updatedHostCutoverReceipt(*hostReceipt, release.Version, release.Revision, desired)
@@ -735,13 +735,15 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			if err := budget.reserve(current.Files[index].Bytes, "preimage"); err != nil {
 				return CASOutcome{}, err
 			}
-			if hostReceipt != nil && current.Files[index].Path != target.owned.Path {
+			if current.Files[index].Path != target.owned.Path {
 				info, statErr := os.Lstat(target.owned.Path)
-				if statErr != nil || !info.Mode().IsRegular() {
+				if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) || statErr == nil && !info.Mode().IsRegular() {
 					return CASOutcome{}, core.ErrRevision
 				}
-				if err := budget.reserve(info.Size(), "preimage"); err != nil {
-					return CASOutcome{}, err
+				if statErr == nil {
+					if err := budget.reserve(info.Size(), "preimage"); err != nil {
+						return CASOutcome{}, err
+					}
 				}
 			}
 			if !backups[backupPath(layout, current.Files[index])] {
@@ -806,6 +808,9 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 		if err != nil {
 			return CASOutcome{Retained: append(retained, target.owned.Path)}, err
 		}
+		if next.Files[index].Path != target.owned.Path && !targetMutation.Existed {
+			targetMutation.Exclusive = true
+		}
 		if !backupExists {
 			backupMutation, err := prepareMutation(layout, backup.Path, oldBytes, 0o600, false, true, nil)
 			if err != nil {
@@ -814,7 +819,7 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 			mutations = append(mutations, backupMutation)
 		}
 		mutations = append(mutations, targetMutation)
-		if hostReceipt != nil && next.Files[index].Path != target.owned.Path {
+		if next.Files[index].Path != target.owned.Path {
 			removeMutation, err := prepareMutation(layout, next.Files[index].Path, nil, 0, true, false, nil)
 			if err != nil {
 				return CASOutcome{Retained: append(retained, next.Files[index].Path)}, err
@@ -832,11 +837,14 @@ func updateLocked(ctx context.Context, layout Layout, release Release, expected 
 		}
 		mutations = append(mutations, receiptMutation)
 	}
-	previous := cloneManifest(current)
+	previous := original
 	intended := cloneManifest(next)
 	intended.Revision = expected + 1
 	intended.HostHomes, _ = layoutHostHomes(layout)
 	journal := lifecycleJournal{Schema: 1, Operation: "update", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended, Mutations: mutations, Retained: retained}
+	if err := prepareDiscoveryJournal(layout, &journal); err != nil {
+		return CASOutcome{}, err
+	}
 	outcome, err := executeLifecycleJournal(ctx, layout, manifestStore, &journal)
 	outcome.Retained = append([]string(nil), retained...)
 	return outcome, err
@@ -905,6 +913,8 @@ func rollbackLocked(ctx context.Context, layout Layout, version, revision string
 	if err := validateInstalledLayout(layout, current); err != nil {
 		return CASOutcome{}, err
 	}
+	original := cloneManifest(current)
+	current = reconcileMovedEntrypoints(layout, current)
 	selected, targetRevision, err := selectRollbackBackups(current, version, revision)
 	if err != nil {
 		return CASOutcome{}, err
@@ -1000,11 +1010,14 @@ func rollbackLocked(ctx context.Context, layout Layout, version, revision string
 		mutations = append(mutations, receiptMutation)
 	}
 	next.Version, next.ReleaseRevision = version, targetRevision
-	previous := cloneManifest(current)
+	previous := original
 	intended := cloneManifest(next)
 	intended.Revision = expected + 1
 	intended.HostHomes, _ = layoutHostHomes(layout)
 	journal := lifecycleJournal{Schema: 1, Operation: "rollback", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended, Mutations: mutations, Retained: retained}
+	if err := prepareDiscoveryJournal(layout, &journal); err != nil {
+		return CASOutcome{}, err
+	}
 	outcome, err := executeLifecycleJournal(ctx, layout, manifestStore, &journal)
 	outcome.Retained = retained
 	return outcome, err
@@ -1036,6 +1049,8 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64, owner 
 	if err := validateInstalledLayout(layout, current); err != nil {
 		return nil, CASOutcome{}, err
 	}
+	original := cloneManifest(current)
+	current = reconcileMovedEntrypoints(layout, current)
 	if err := budget.accountMetadata(uninstallJournalPlan(current, owner, expected)); err != nil {
 		return nil, CASOutcome{}, err
 	}
@@ -1088,11 +1103,14 @@ func uninstallLocked(ctx context.Context, layout Layout, expected uint64, owner 
 		}
 		mutations = append(mutations, mutation)
 	}
-	previous := cloneManifest(current)
+	previous := original
 	intended := cloneManifest(next)
 	intended.Revision = expected + 1
 	intended.HostHomes, _ = layoutHostHomes(layout)
 	journal := lifecycleJournal{Schema: 1, Operation: "uninstall", ExpectedRevision: expected, Owner: owner, Previous: &previous, Intended: intended, Mutations: mutations, Retained: retained}
+	if err := prepareDiscoveryJournal(layout, &journal); err != nil {
+		return retained, CASOutcome{}, err
+	}
 	outcome, err := executeLifecycleJournal(ctx, layout, manifestStore, &journal)
 	outcome.Retained = append([]string(nil), retained...)
 	return retained, outcome, err
@@ -1249,6 +1267,12 @@ func rejectUnownedCodexSkill(layout Layout, current *InstallManifest) (CASOutcom
 	if current != nil {
 		for _, file := range current.Files {
 			owned[file.Path] = true
+			if file.Role == EntrypointRole && file.Path == nestedEntrypoint(layout, file.Host) {
+				top := filepath.Join(layout.SkillRoots[file.Host], "SKILL.md")
+				if diskMatches(top, file.SHA256, file.Bytes) {
+					owned[top] = true
+				}
+			}
 		}
 	}
 	paths := append(append([]string(nil), layout.CodexDiscoverySkillPaths...), filepath.Join(layout.SkillRoots[Codex], "SKILL.md"))
@@ -1291,7 +1315,7 @@ func releaseFiles(layout Layout, release Release, hosts []Host) []desiredFile {
 	}
 	for _, host := range hosts {
 		entrypoint := release.Entrypoints[host]
-		files = append(files, desiredFile{OwnedFile{Role: EntrypointRole, Host: host, Path: filepath.Join(layout.SkillRoots[host], "agent-team-vnext", "SKILL.md"), SHA256: entrypoint.SHA256, Version: release.Version, Revision: release.Revision, Bytes: entrypoint.Bytes}, entrypoint})
+		files = append(files, desiredFile{OwnedFile{Role: EntrypointRole, Host: host, Path: filepath.Join(layout.SkillRoots[host], "SKILL.md"), SHA256: entrypoint.SHA256, Version: release.Version, Revision: release.Revision, Bytes: entrypoint.Bytes}, entrypoint})
 	}
 	return files
 }

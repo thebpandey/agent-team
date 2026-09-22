@@ -187,6 +187,25 @@ func parseSetupArgs(args []string) ([]string, error) {
 	seenMode, seenApprove, seenRefuse := false, false, false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--host", "--tracker", "--kickoff", "--install":
+			flag := args[i]
+			if slices.Contains(out, flag) || i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" || strings.HasPrefix(args[i+1], "--") {
+				return nil, core.ErrPhase
+			}
+			value := strings.TrimSpace(args[i+1])
+			if flag == "--host" && value != "codex" && value != "claude" {
+				return nil, core.ErrPhase
+			}
+			if flag == "--tracker" && value != "beads" && value != "tasks-md" {
+				return nil, core.ErrPhase
+			}
+			out = append(out, flag, value)
+			i++
+		case "--approve", "--prepare-only":
+			if slices.Contains(out, args[i]) || seenRefuse {
+				return nil, core.ErrPhase
+			}
+			out = append(out, args[i])
 		case "--mode":
 			if seenMode || i+1 >= len(args) {
 				return nil, core.ErrPhase
@@ -205,7 +224,7 @@ func parseSetupArgs(args []string) ([]string, error) {
 			seenApprove = true
 			out = append(out, args[i])
 		case "--refuse-kickoff":
-			if seenRefuse || seenApprove {
+			if seenRefuse || seenApprove || slices.Contains(out, "--approve") {
 				return nil, core.ErrPhase
 			}
 			seenRefuse = true
@@ -253,8 +272,8 @@ func parseStartArgs(args []string) ([]string, error) {
 	if len(args) == 0 {
 		return nil, nil
 	}
-	if args[0] == "--run" {
-		return parseSelectors(args, map[string]bool{"--run": true, "--task": true}, true)
+	if slices.Contains(args, "--run") {
+		return parseSelectors(args, map[string]bool{"--run": true, "--task": true, "--host": true}, true)
 	}
 	allowed := map[string]bool{"--action": true, "--team": true, "--packet-digest": true, "--host": true, "--identity": true, "--task": true, "--candidate": true, "--reviewer": true}
 	values, err := parseSelectors(args, allowed, false)
@@ -266,6 +285,12 @@ func parseStartArgs(args []string) ([]string, error) {
 		seen[values[index]] = values[index+1]
 	}
 	action := seen["--action"]
+	if host := seen["--host"]; host != "" && host != "codex" && host != "claude" {
+		return nil, core.ErrPhase
+	}
+	if action == "" && len(seen) == 1 && seen["--host"] != "" {
+		return values, nil
+	}
 	switch action {
 	case "ack":
 		for _, key := range []string{"--team", "--packet-digest", "--host", "--identity", "--task", "--candidate"} {

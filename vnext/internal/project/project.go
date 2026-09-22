@@ -57,6 +57,7 @@ type SetupInput struct {
 	Mode      RunMode
 	Artifacts []ArtifactDecision
 	Kickoff   *KickoffDecision
+	Tracker   core.TrackerConfig
 }
 
 type SetupResult struct {

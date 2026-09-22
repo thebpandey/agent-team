@@ -53,6 +53,33 @@ func TestAuthorityPrepareCutoverRollbackPreservesLegacyBeadsTree(t *testing.T) {
 	if _, err := install.Install(context.Background(), layout, releaseFixture, []install.Host{install.Codex, install.Claude}, 0); err != nil {
 		t.Fatal(err)
 	}
+	// Recreate the historical staged layout that this migration consumes.
+	// Fresh installs now own the discoverable top-level SKILL.md; leaving the
+	// manifest there and overwriting it with v7 bytes would be a real conflict.
+	manifest, err := install.NewManifestStore(layout).Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, file := range manifest.Files {
+		if file.Role != install.EntrypointRole {
+			continue
+		}
+		nested := filepath.Join(layout.SkillRoots[file.Host], "agent-team-vnext", "SKILL.md")
+		if err := os.MkdirAll(filepath.Dir(nested), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(file.Path, nested); err != nil {
+			t.Fatal(err)
+		}
+		manifest.Files[index].Path = nested
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layout.ManifestPath, manifestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, host := range []install.Host{install.Codex, install.Claude} {
 		skill := []byte("legacy " + string(host) + "\n")
 		if err := os.WriteFile(filepath.Join(layout.SkillRoots[host], "SKILL.md"), skill, 0o600); err != nil {

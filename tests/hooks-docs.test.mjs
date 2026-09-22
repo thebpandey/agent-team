@@ -319,35 +319,36 @@ test("mapping cache and hook identities never become authority", async () => {
 
 test("settings preserve independent host routes and distinguish configured from enforced", async () => {
   const [settings, codex, claude] = await readMany(["references/SETTINGS.md", "references/PLATFORM-CODEX.md", "references/PLATFORM-CLAUDE.md"]);
-  assert.match(settings, /trusted host metadata/);
-  assert.match(settings, /Persist independent routing per host/);
-  assert.match(settings, /without deleting the other profile/);
-  assert.match(settings, /Never discard custom routing because the host changed/);
-  assert.match(settings, /configured versus actually enforced/);
-  assert.match(settings, /cannot switch its parent process\/model/);
+  assert.match(settings, /Hosts are `codex` and `claude`/);
+  for (const role of ["orchestrator", "developer", "reviewer", "visual_reviewer"]) assert.ok(settings.includes("`" + role + "`"));
+  assert.match(settings, /`coder` is an alias for `developer`/);
+  assert.match(settings, /without deleting the first profile or taking over its live workers/);
+  assert.match(settings, /Preserve and flag unavailable saved choices rather than silently\s+substituting another model/);
+  assert.match(settings, /saving it does not prove account availability or native enforcement/);
+  assert.match(settings, /no setting switches the current parent\s+model or retroactively changes an active worker/);
   assert.match(codex, /preserving Claude Code routing and all run defaults/);
   assert.match(claude, /preserving Codex routing and all run defaults/);
   assert.doesNotMatch(settings, /remove.*role_routing.*adapter defaults/i);
 });
 
-test("setup docs distinguish bounded records from output and unverified native context", async () => {
+test("native setup separates observations from readiness and historical hook limits", async () => {
   const [settings, setup, codex, claude, hooks, gettingStarted] = await readMany([
     "references/SETTINGS.md", "references/SETUP.md", "references/PLATFORM-CODEX.md", "references/PLATFORM-CLAUDE.md",
     "references/HOOKS.md", "GETTING_STARTED.md",
   ]);
-  assert.match(settings, /canonicalRecordMaxBytes.*16777216/s);
-  assert.match(settings, /subprocessMaxBufferBytes.*2097152/s);
-  assert.match(settings, /workerUpdateMaxChars.*2000/s);
-  assert.match(setup, /offered_unverified/);
-  assert.match(setup, /native Codex or Claude Code session.*canonical Git project/is);
-  assert.match(setup, /unobserved fresh-worker check is `unknown`/i);
-  assert.match(setup, /automatic.*visibility.*unavailable/i);
-  assert.match(setup, /parent-model comparison.*unknown/i);
+  assert.match(setup, /actual host from runtime metadata/);
+  assert.match(setup, /canonical Git project/);
+  assert.match(setup, /Native v8 requires no external hooks/);
+  assert.match(setup, /Never claim executable discovery proves\s+MCP registration, worker access, a successful workload, or readiness/);
+  assert.match(setup, /Record unavailable or unobserved facts honestly/);
+  assert.match(settings, /Missing\s+usage or parent-model metadata stays unknown/);
   assert.match(codex, /same Git project.*continue/is);
   assert.match(claude, /trusted.*home.*process/i);
   assert.match(hooks, /helpers-install/);
   assert.match(hooks, /context-reduction-apply/);
   assert.match(gettingStarted, /canonical records at 16777216 bytes/);
+  assert.match(gettingStarted, /subprocess output is bounded at 2097152 bytes/);
+  assert.match(gettingStarted, /lane worker updates at 2000 characters/);
 });
 
 test("workflow guides route lane state and evidence through the single lane protocol", async () => {
@@ -366,15 +367,23 @@ test("workflow guides route lane state and evidence through the single lane prot
   assert.match(guides[7], /logical.*native.*capacity/is);
 });
 
-test("settings keep targeted edits distinct from the mandatory setup wizard", async () => {
-  const [settings, setup, actions] = await readMany(["references/SETTINGS.md", "references/SETUP.md", "references/ACTIONS.md"]);
-  for (const pattern of [/every available role/i, /numbered choices/i, /model.*compatible effort/i,
-    /Quality-first is the default/i, /Back and Cancel/i, /Cancelled\/invalid drafts cause no settings write/i,
-    /detect concurrent changes/i, /bare.*settings.*targeted/i, /future dispatches use them/i]) assert.match(settings, pattern);
-  for (const pattern of [/every state-changing setup invocation/i, /current effective/i,
-    /settingsOutcome.*kept_existing/i, /no answer|timeout|interruption/i, /Read-only.*status.*health.*help.*version/is]) assert.match(setup, pattern);
-  assert.match(actions, /state-changing setup.*settings wizard/i);
-  assert.match(settings, /neither kind waives tests or required review/i);
+test("native first-use settings require an accepted save and preserve targeted edits", async () => {
+  const [settings, setup, codex, claude] = await readMany(["references/SETTINGS.md", "references/SETUP.md", "vnext/codex/SKILL.md", "vnext/claude/SKILL.md"]);
+  assert.match(settings, /next_action: settings.*revision is zero/s);
+  assert.match(settings, /verbal acceptance or a read-only inspection does\s+not advance the revision/);
+  assert.match(settings, /successful save advances\s+revision even when the effective preference remains inherited/);
+  assert.match(settings, /Cancel, no answer, or interruption saves nothing/);
+  assert.match(settings, /request to change one role asks only for its relevant choices/);
+  assert.match(settings, /re-reads settings under the project mutation lock/);
+  assert.match(settings, /review, tests, explicit pauses, task scope, or destination approval/);
+  for (const [host, skill] of [["codex", codex], ["claude", claude]]) {
+    const save = `settings ${host}.developer.model=inherit --json`;
+    assert.ok(settings.includes(save));
+    assert.ok(setup.includes(save));
+    assert.ok(skill.includes(save));
+    assert.match(skill, /actually save/);
+    assert.match(skill, /settings revision beyond zero/);
+  }
 });
 
 test("active orchestration follows one ordered question continuation loop", async () => {
@@ -499,17 +508,45 @@ test("artifact instructions match the accepted Linux descriptor-root installer",
   ]) assert.match(hooks, pattern);
 });
 
-test("setup automatically prepares defaults while keeping optional and manual authority boundaries", async () => {
+test("native setup prepares one approved dependency bundle and preserves planning authority", async () => {
   const [setup, actions, release] = await readMany(["references/SETUP.md", "references/ACTIONS.md", "references/RELEASE.md"]);
-  for (const pattern of [/explicit setup prepare selected default catalog items/i,
-    /optional choices remain user decisions/i, /gh auth status/, /gh auth login/,
-    /Never ask for a token in chat/i, /administrator approval/i, /never activate a temporary Markdown tracker/i,
-    /Project Kickoff is not a prerequisite/i, /Restart\/reload/i, /cannot fabricate trust/i,
-    /Read-only status and health do not enter setup/i]) assert.match(setup, pattern);
+  for (const pattern of [/Inspect before installing and offer the selected missing bundle once/i,
+    /setup --install <comma-separated-names> --approve --host <host> --json/,
+    /project scope and add no external hooks/i, /`tasks-md` or `beads`/,
+    /--prepare-only.*does not generate governance or\s+attach a handoff/s,
+    /late handoff.*without rewriting its setup receipt, settings, tracker contents,\s+or active run packets/s,
+    /Kickoff remains optional/i, /status --json.*read-only.*does not prepare,\s+install, repair, or dispatch/s,
+    /required\s+capabilities still gate affected work/i]) assert.match(setup, pattern);
+  for (const action of ["choose_tracker", "approve_artifacts", "approve_kickoff", "initialize_beads", "approve_dependencies", "resolve_dependencies", "prepare_dependencies", "project_kickoff", "settings", "start", "inspect_tracker"]) {
+    assert.ok(setup.includes("| `" + action + "` |"), action);
+  }
+  assert.match(setup, /--refuse-kickoff.*rejected \(CLI exit 2\) or cancelled.*without setup writes/s);
+  assert.match(setup, /do not continue initialization or dispatch/);
   assert.match(actions, /Saved auto-deploy does not prompt for confirmation/i);
   assert.match(release, /authority|authorization/i);
   assert.doesNotMatch(setup, /each missing dependency.*one at a time.*numbered/is);
   assert.doesNotMatch(actions + release, /ask whether to keep auto-deploy or use no auto-deploy/i);
+});
+
+test("native host guidance requires real dispatch and observes uncertain cross-host replay", async () => {
+  const [codex, claude] = await readMany(["vnext/codex/SKILL.md", "vnext/claude/SKILL.md"]);
+  assert.match(codex, /collaboration\.spawn_agent/);
+  assert.match(codex, /collaboration\.followup_task/);
+  assert.match(claude, /actual Claude `Agent` tool/);
+  assert.match(claude, /same acknowledged agent.*supported Agent resume/s);
+  for (const [host, skill] of [["codex", codex], ["claude", claude]]) {
+    assert.ok(skill.includes(`start --host ${host} --json`));
+    assert.ok(skill.includes(`--host ${host} --identity`));
+    for (const flag of ["host_dispatch_required", "already_admitted", "host_followup_required", "actual_host", "observation_required"]) assert.ok(skill.includes(flag), `${host}: ${flag}`);
+    assert.match(skill, /missing\s+ack after a possible launch is uncertain/i);
+    assert.match(skill, /observe the original host rather\s+than treating the missing ack as permission to spawn again/);
+    assert.match(skill, /independent CLEAN review/);
+    assert.match(skill, /observed\s+(?:host\s+)?idle state/);
+    assert.match(skill, /beads,serena,graphify,rg,ast-grep,lean-ctx --approve/);
+    assert.match(skill, /scoped installer\/Python preparation in that consent/);
+    assert.match(skill, /never\s+rewrite global PATH or registry/);
+    assert.match(skill, /do not resume setup or dispatch after `--refuse-kickoff` is rejected\/cancelled/);
+  }
 });
 
 test("continuity instructions preserve facts and native compaction as fallback", async () => {

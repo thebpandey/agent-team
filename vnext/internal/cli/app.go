@@ -112,7 +112,7 @@ func isManagement(name string) bool {
 }
 
 func isProjectAction(name string) bool {
-	return name == "setup" || name == "settings" || name == "start"
+	return name == "setup" || name == "settings" || name == "start" || name == "status"
 }
 
 func isMutationCleanup(action Action) bool {

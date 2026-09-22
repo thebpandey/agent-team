@@ -293,7 +293,7 @@ func TestSettingsServiceRejectsIncompleteMigratedAuthorityWithoutWriting(t *test
 	}
 }
 
-func TestBeadsTraversalRejectsNestedLink(t *testing.T) {
+func TestBeadsIdentityRejectsMetadataLink(t *testing.T) {
 	root := testkit.GitRepo(t)
 	for name, contents := range map[string]string{"DECISIONS.md": "# Decisions\n", "AGENT_TEAM_RULES.md": "# Rules\n"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o644); err != nil {
@@ -303,7 +303,7 @@ func TestBeadsTraversalRejectsNestedLink(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".beads", "nested"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(t.TempDir(), filepath.Join(root, ".beads", "nested", "outside")); err != nil {
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, ".beads", "metadata.json")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	input := SetupInput{Root: root, Mode: PlanMode, Artifacts: []ArtifactDecision{
@@ -312,7 +312,7 @@ func TestBeadsTraversalRejectsNestedLink(t *testing.T) {
 		{Path: "AGENT_TEAM_RULES.md", Mode: ExistingArtifact, Confirmation: Approved},
 	}}
 	if _, err := ValidateSetup(context.Background(), input); err == nil {
-		t.Fatal("nested Beads symlink was accepted")
+		t.Fatal("Beads metadata symlink was accepted")
 	}
 }
 
@@ -370,7 +370,7 @@ func TestSetupValidatesDecisionsAndPersistsIdempotently(t *testing.T) {
 		t.Fatalf("bad kickoff digest error = %v, want ErrSettings", err)
 	}
 	incomplete := handoff
-	incomplete.Capabilities = nil
+	incomplete.Acceptance = nil
 	incompleteBytes, err := json.Marshal(incomplete)
 	if err != nil {
 		t.Fatal(err)

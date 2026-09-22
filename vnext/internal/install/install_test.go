@@ -263,7 +263,7 @@ func TestFreshInstallUsesPerUserHostDefaults(t *testing.T) {
 		t.Fatalf("manifest host homes = %#v", outcome.Manifest.HostHomes)
 	}
 	for host, home := range outcome.Manifest.HostHomes {
-		if _, err := os.Lstat(filepath.Join(home, "skills", "agent-team", "agent-team-vnext", "SKILL.md")); err != nil {
+		if _, err := os.Lstat(filepath.Join(home, "skills", "agent-team", "SKILL.md")); err != nil {
 			t.Fatalf("%s default entrypoint: %v", host, err)
 		}
 	}
@@ -290,7 +290,7 @@ func TestInstallUpdateRollbackUninstallPreserveChangedFiles(t *testing.T) {
 	oldBinary, _ := os.ReadFile(release.Binary.Path)
 	oldContract, _ := os.ReadFile(release.Contract.Path)
 	oldEntrypoint, _ := os.ReadFile(release.Entrypoints[install.Codex].Path)
-	changed := filepath.Join(layout.SkillRoots[install.Codex], "agent-team-vnext", "SKILL.md")
+	changed := filepath.Join(layout.SkillRoots[install.Codex], "SKILL.md")
 	if err := os.WriteFile(changed, []byte("user change"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestInstallUpdateRollbackUninstallPreserveChangedFiles(t *testing.T) {
 	if got, _ := os.ReadFile(layout.ContractPath); !bytes.Equal(got, oldContract) {
 		t.Fatalf("contract rollback=%q", got)
 	}
-	claudePath := filepath.Join(layout.SkillRoots[install.Claude], "agent-team-vnext", "SKILL.md")
+	claudePath := filepath.Join(layout.SkillRoots[install.Claude], "SKILL.md")
 	if got, _ := os.ReadFile(claudePath); !bytes.Equal(got, oldEntrypoint) {
 		t.Fatalf("entrypoint rollback=%q", got)
 	}
@@ -554,7 +554,7 @@ func TestOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changed := filepath.Join(layout.SkillRoots[install.Codex], "agent-team-vnext", "SKILL.md")
+	changed := filepath.Join(layout.SkillRoots[install.Codex], "SKILL.md")
 	if err := os.WriteFile(changed, []byte("user-owned"), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -671,6 +671,7 @@ func TestLegacyHostCutoverAcceptsOnlyVerifiedSourceInventory(t *testing.T) {
 	if _, err := Install(context.Background(), layout, release, []Host{Codex, Claude}, 0); err != nil {
 		t.Fatal(err)
 	}
+	stageHistoricalEntrypoints(t, layout)
 	for _, host := range []Host{Codex, Claude} {
 		skill := []byte("legacy-" + string(host) + "\n")
 		if err := os.WriteFile(filepath.Join(layout.SkillRoots[host], "SKILL.md"), skill, 0o600); err != nil {
@@ -1030,6 +1031,7 @@ func TestLegacyHostCutoverRejectsForeignHandlerBeforeMutation(t *testing.T) {
 
 func legacyHostFixture(t *testing.T, layout Layout) string {
 	t.Helper()
+	stageHistoricalEntrypoints(t, layout)
 	type legacyFile struct {
 		SHA256 string `json:"sha256"`
 		Mode   uint32 `json:"mode"`

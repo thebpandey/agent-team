@@ -122,6 +122,7 @@ type KickoffHandoff struct {
 	Branch               string   `json:"branch"`
 	TrackerKind          string   `json:"trackerKind"`
 	TrackerRef           string   `json:"trackerRef"`
+	TrackerExecutable    string   `json:"trackerExecutable,omitempty"`
 	TrackerRevision      uint64   `json:"trackerRevision"`
 	TaskIDs              []TaskID `json:"taskIds"`
 	Acceptance           []string `json:"acceptance"`
@@ -135,6 +136,7 @@ type AssignmentPacket struct {
 	RecordEnvelope
 	SpecRevision     string           `json:"specRevision"`
 	Task             TaskID           `json:"task"`
+	Objective        string           `json:"objective,omitempty"`
 	Team             TeamID           `json:"team"`
 	QueueFingerprint string           `json:"queueFingerprint"`
 	Owner            string           `json:"owner"`

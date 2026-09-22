@@ -136,7 +136,7 @@ func (t *tasksMD) Create(ctx context.Context, task core.Task, expected uint64) (
 	if err := ctx.Err(); err != nil {
 		return core.Task{}, err
 	}
-	if err := t.write(renderTasks(tasks)); err != nil {
+	if err := t.writeTaskMutation(tasks, revision, &task, ""); err != nil {
 		return core.Task{}, err
 	}
 	_, revision, err = t.snapshot()
@@ -182,7 +182,7 @@ func (t *tasksMD) Archive(ctx context.Context, id core.TaskID, reason string, ex
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := t.write(renderTasks(tasks)); err != nil {
+	if err := t.writeTaskMutation(tasks, revision, nil, id); err != nil {
 		return err
 	}
 	t.warning = warningFor(nonArchived(tasks))
@@ -198,7 +198,11 @@ func (t *tasksMD) snapshot() ([]core.Task, uint64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	return tasks, trackerRevision(data), nil
+	revision := trackerRevision(data)
+	for index := range tasks {
+		tasks[index].Revision = revision
+	}
+	return tasks, revision, nil
 }
 
 func (t *tasksMD) limit() int64 {
@@ -258,6 +262,9 @@ func readBounded(path string, limit int64) ([]byte, error) {
 }
 
 func parseTasksMD(data []byte) ([]core.Task, error) {
+	if table, found, err := parseKickoffTable(data); found || err != nil {
+		return table.tasks, err
+	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) > 0 && (trimmed[0] == '[' || trimmed[0] == '{') {
 		return parseTasksJSON(trimmed)
@@ -358,6 +365,242 @@ func parseTasksMD(data []byte) ([]core.Task, error) {
 		}
 	}
 	return tasks, nil
+}
+
+// A Kickoff table is the same selected authority as native TASKS.md. Keep its
+// surrounding records and unknown columns intact rather than re-rendering the
+// whole document in the native heading format.
+type kickoffTable struct {
+	lines   []string
+	headers map[string]int
+	rows    map[core.TaskID]int
+	tasks   []core.Task
+	insert  int
+	width   int
+}
+
+func parseKickoffTable(data []byte) (kickoffTable, bool, error) {
+	table := kickoffTable{lines: strings.Split(string(data), "\n"), headers: map[string]int{}, rows: map[core.TaskID]int{}}
+	section := -1
+	for i, line := range table.lines {
+		if strings.EqualFold(strings.TrimSpace(line), "## Active tasks") {
+			if section >= 0 {
+				return table, true, fmt.Errorf("%w: multiple Active tasks sections", core.ErrPath)
+			}
+			section = i
+		}
+	}
+	if section < 0 {
+		return table, false, nil
+	}
+	fail := func(reason string) (kickoffTable, bool, error) {
+		return table, true, fmt.Errorf("%w: kickoff task table: %s", core.ErrPath, reason)
+	}
+	header := section + 1
+	for header < len(table.lines) && strings.TrimSpace(table.lines[header]) == "" {
+		header++
+	}
+	if header+1 >= len(table.lines) {
+		return fail("missing header")
+	}
+	fields := kickoffRow(table.lines[header])
+	if len(fields) < 3 {
+		return fail("missing header")
+	}
+	table.width = len(fields) - 2
+	for i, raw := range fields[1 : len(fields)-1] {
+		key := strings.ToLower(strings.TrimSpace(raw))
+		if _, duplicate := table.headers[key]; duplicate {
+			return fail("duplicate column")
+		}
+		table.headers[key] = i + 1
+	}
+	for _, key := range []string{"id", "intended outcome / acceptance pointer", "status", "depends on"} {
+		if _, ok := table.headers[key]; !ok {
+			return fail("missing " + key + " column")
+		}
+	}
+	separator := kickoffRow(table.lines[header+1])
+	if len(separator) != len(fields) {
+		return fail("invalid separator")
+	}
+	for _, cell := range separator[1 : len(separator)-1] {
+		if strings.Trim(strings.TrimSpace(cell), "-:") != "" || !strings.Contains(cell, "-") {
+			return fail("invalid separator")
+		}
+	}
+	table.insert = header + 2
+	for index := header + 2; index < len(table.lines); index++ {
+		line := table.lines[index]
+		if !strings.HasPrefix(strings.TrimSpace(line), "|") {
+			break
+		}
+		row := kickoffRow(line)
+		if len(row) != len(fields) {
+			return fail("wrong column count")
+		}
+		cell := func(key string) string {
+			if pos, ok := table.headers[key]; ok {
+				return strings.TrimSpace(row[pos])
+			}
+			return ""
+		}
+		task := core.Task{ID: core.TaskID(cell("id")), Objective: cell("intended outcome / acceptance pointer")}
+		state, ok := kickoffState(cell("status"))
+		if !ok {
+			return fail("unknown status")
+		}
+		task.State, task.Archived = state, state == core.Archived
+		if err := validateTask(task); err != nil {
+			return table, true, err
+		}
+		if _, ok := table.rows[task.ID]; ok {
+			return fail("duplicate task ID")
+		}
+		task.Criteria = []string{task.Objective}
+		deps := cell("depends on")
+		if !kickoffEmpty(deps) {
+			seen := map[core.TaskID]bool{}
+			for _, id := range appendTaskIDs(nil, deps) {
+				if validateTaskID(id) != nil || id == task.ID || seen[id] {
+					return fail("invalid dependency")
+				}
+				seen[id] = true
+				task.Dependencies = append(task.Dependencies, id)
+			}
+		}
+		if evidence := cell("revision / evidence"); !kickoffEmpty(evidence) {
+			task.EvidencePointers = []string{evidence}
+		}
+		table.rows[task.ID] = index
+		table.tasks = append(table.tasks, task)
+		table.insert = index + 1
+	}
+	return table, true, nil
+}
+
+// Split only unescaped table delimiters. Keeping the outer cells and each
+// cell's whitespace lets an archive replace its status without touching any
+// other byte on that row.
+func kickoffRow(line string) []string {
+	if !strings.HasPrefix(strings.TrimSpace(line), "|") || !strings.HasSuffix(strings.TrimSpace(line), "|") {
+		return nil
+	}
+	var cells []string
+	start, slashes := 0, 0
+	for index, character := range line {
+		if character == '|' && slashes%2 == 0 {
+			cells = append(cells, line[start:index])
+			start = index + 1
+		}
+		if character == '\\' {
+			slashes++
+		} else {
+			slashes = 0
+		}
+	}
+	return append(cells, line[start:])
+}
+
+func kickoffEmpty(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "none", "none yet", "-", "unassigned":
+		return true
+	}
+	return false
+}
+
+func kickoffState(value string) (core.TaskState, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "open", "todo", "pending", "ready":
+		return core.Ready, true
+	case "verified", "deployed", "closed", "done", "complete", "completed", "integrated":
+		return core.Integrated, true
+	case "in_progress", "active", "working":
+		return core.Working, true
+	case "deferred", "approved deferred", "approved_deferred", "parked", "paused":
+		return core.Paused, true
+	case "canceled", "cancelled":
+		return core.Cancelled, true
+	}
+	state := core.TaskState(strings.ToLower(strings.TrimSpace(value)))
+	return state, knownTaskState(state)
+}
+
+func (t *tasksMD) writeTaskMutation(tasks []core.Task, revision uint64, created *core.Task, archived core.TaskID) error {
+	data, err := readBounded(t.path, t.limit())
+	if err != nil {
+		return err
+	}
+	if err := requireRevision(revision, trackerRevision(data)); err != nil {
+		return err
+	}
+	table, found, err := parseKickoffTable(data)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return t.write(renderTasks(tasks))
+	}
+	if created != nil {
+		// This old table contract has no per-task command or ownership columns.
+		// Reject unrepresentable facts rather than silently throwing them away.
+		if len(created.Checks) > 0 || len(created.WritablePaths) > 0 || len(created.Resources) > 0 || len(created.EvidencePointers) > 1 || len(created.Criteria) > 1 || (len(created.Criteria) == 1 && created.Criteria[0] != created.Objective) {
+			return fmt.Errorf("%w: kickoff table cannot represent task checks, ownership, or separate criteria; approve a tracker format migration first", core.ErrSettings)
+		}
+		cells := make([]string, table.width+2)
+		for i := 1; i <= table.width; i++ {
+			cells[i] = " "
+		}
+		set := func(key, value string) error {
+			if strings.ContainsAny(value, "|\r\n") {
+				return fmt.Errorf("%w: task value cannot be represented in kickoff table", core.ErrPath)
+			}
+			if pos, ok := table.headers[key]; ok {
+				cells[pos] = " " + value + " "
+				return nil
+			}
+			if value != "" {
+				return fmt.Errorf("%w: kickoff table missing %s column", core.ErrSettings, key)
+			}
+			return nil
+		}
+		deps := make([]string, len(created.Dependencies))
+		for i, id := range created.Dependencies {
+			deps[i] = string(id)
+		}
+		values := map[string]string{"id": string(created.ID), "intended outcome / acceptance pointer": created.Objective, "status": string(created.State), "depends on": strings.Join(deps, ", ")}
+		if created.Archived {
+			values["status"] = "archived"
+		}
+		if len(created.EvidencePointers) > 0 {
+			values["revision / evidence"] = created.EvidencePointers[0]
+		}
+		for key, value := range values {
+			if err := set(key, value); err != nil {
+				return err
+			}
+		}
+		row := strings.Join(cells, "|")
+		table.lines = append(table.lines[:table.insert], append([]string{row}, table.lines[table.insert:]...)...)
+	} else {
+		index, ok := table.rows[archived]
+		if !ok {
+			return core.ErrPath
+		}
+		cells := kickoffRow(table.lines[index])
+		pos := table.headers["status"]
+		original := cells[pos]
+		leading := original[:len(original)-len(strings.TrimLeft(original, " \t"))]
+		trailing := original[len(strings.TrimRight(original, " \t\r")):]
+		cells[pos] = leading + "archived" + trailing
+		table.lines[index] = strings.Join(cells, "|")
+	}
+	output := []byte(strings.Join(table.lines, "\n"))
+	if _, _, err := parseKickoffTable(output); err != nil {
+		return err
+	}
+	return t.write(output)
 }
 
 func normalizeField(value string) string {
