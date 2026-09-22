@@ -2,7 +2,7 @@
 name: agent-team
 description: Use when a Claude Code request involves Agent-Team setup, status, or starting coordinated development work.
 metadata:
-  version: "8.0.9"
+  version: "8.0.10"
 ---
 
 # Agent-Team for Claude

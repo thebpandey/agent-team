@@ -317,8 +317,8 @@ test("archives identify the canonical repository and pinned release source", asy
     assert.equal(source.updateUrl, "https://github.com/thebpandey/agent-team/releases/latest");
     assert.equal(source.sourceRevision, releaseRevision);
     assert.match(source.sourceRevision, /^[a-f0-9]{40}$/);
-    assert.equal(Object.keys(source.packageFileMap).length, 107);
-    assert.equal(entries.length, 108);
+    assert.equal(Object.keys(source.packageFileMap).length, 111);
+	assert.equal(entries.length, 112);
   }
 });
 

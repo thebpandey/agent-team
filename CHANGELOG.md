@@ -1,5 +1,10 @@
 # Changelog
 
+## 8.0.10 - 2026-09-22
+
+- Make the public native `setup` command initialize the existing single Beads or Markdown tracker and write its immutable v8 config/receipt binding instead of returning an acceptance placeholder with no state change.
+- Preserve the explicit Project Kickoff refusal path and reject ambiguous dual-tracker projects without writing.
+
 ## 8.0.9 - 2026-09-22
 
 - Persist supported native settings in a receipt-bound overlay without changing setup receipts, legacy state, or Beads files.

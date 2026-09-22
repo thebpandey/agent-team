@@ -20,7 +20,7 @@ Foreground orchestration with durable project records and revision-bound transit
 
 ## Capabilities and Constraints
 
-- Current native release: 8.0.9.
+- Current native release: 8.0.10.
 - Supports Codex and Claude Code while preserving one project authority.
 - Retained teams may queue up to eight tasks within an unchanged run snapshot.
 - Linux amd64 and Windows amd64 are published native platforms.

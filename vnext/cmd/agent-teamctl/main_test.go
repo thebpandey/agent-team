@@ -25,6 +25,33 @@ import (
 
 const testRevision = "0123456789abcdef0123456789abcdef01234567"
 
+func TestSetupCLIInitializesExistingBeadsProject(t *testing.T) {
+	root := testkit.GitRepo(t)
+	for name, contents := range map[string]string{
+		"DECISIONS.md":        "# Decisions\n",
+		"AGENT_TEAM_RULES.md": "# Rules\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	var out bytes.Buffer
+	if code := cli.Run(context.Background(), []string{"setup", "--mode", "plan", "--json"}, core.Dependencies{Stdout: &out, Stderr: &out, Management: runManagement}); code != 0 {
+		t.Fatalf("code=%d output=%q", code, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agent-team", "config.json")); err != nil {
+		t.Fatalf("setup did not initialize native project authority: %v; output=%q", err, out.String())
+	}
+	settings, err := project.NewSettingsService(store.New(root, core.DefaultConfig().Storage)).Inspect(context.Background())
+	if err != nil || settings.ReceiptPath == "" || settings.ReceiptDigest == "" {
+		t.Fatalf("setup did not establish settings/admission binding: settings=%#v err=%v", settings, err)
+	}
+}
+
 func TestSettingsCLIUsesReceiptBoundPersistence(t *testing.T) {
 	root := testkit.GitRepo(t)
 	for name, contents := range map[string]string{
