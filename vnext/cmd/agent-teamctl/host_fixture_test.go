@@ -158,6 +158,7 @@ func TestPackagedNativeActions(t *testing.T) {
 	if err := json.Unmarshal(first["packet"], &packet); err != nil || packet.Task != "atf-1" {
 		t.Fatalf("packet=%+v error=%v", packet, err)
 	}
+	firstWorktree, firstBase, firstTeam := packet.Worktree, packet.Base, packet.Team
 	var digest string
 	_ = json.Unmarshal(first["packet_digest"], &digest)
 	invoke("start", "--run", string(packet.RunID), "--task", "atf-2")
@@ -173,6 +174,9 @@ func TestPackagedNativeActions(t *testing.T) {
 	}
 	if err := json.Unmarshal(next["packet"], &packet); err != nil || packet.Task != "atf-2" {
 		t.Fatalf("next packet=%+v error=%v", packet, err)
+	}
+	if packet.Worktree != firstWorktree || packet.Base != firstBase || packet.Team != firstTeam || len(packet.Scope) != 1 || packet.Scope[0] != "result-2.txt" {
+		t.Fatalf("next packet lost retained identity or fresh scope: %+v", packet)
 	}
 	_ = json.Unmarshal(next["packet_digest"], &digest)
 	invoke("start", "--action", "ack", "--team", string(packet.Team), "--packet-digest", digest, "--host", "codex", "--identity", "/fixture/retained-worker", "--task", string(packet.Task), "--candidate", packet.SpecRevision)
