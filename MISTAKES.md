@@ -187,3 +187,13 @@ Mistake: The Windows canary put literal Markdown backticks in a PowerShell doubl
 Cause: Static source assertions and review did not execute the comparison in its target shell before the release run.
 Correction: Use literal quoting, decode structured command output before semantic checks, and verify the complete canary boundary before retrying publication.
 Prevention: Exercise shell-sensitive literals and serialized native output in the target shell, including expected failures and Windows paths; a source-string presence check alone is not behavioral proof.
+
+## M-015: Preserve supported legacy tracker authority in place
+
+Status: Active
+Scope: Native cutover from valid v7 projects
+Source: Beads atv-5sh.46, v7 Beads preparation rejection, 2026-09-22.
+Mistake: Legacy authority validation accepted only a markdown tracker and rejected valid projects that already used Beads.
+Cause: The migration input guard represented one legacy tracker instead of the supported legacy authority boundary.
+Correction: Accept supported legacy Beads authority without changing the canonical v8 setup or moving, converting, or rewriting the existing Beads tree.
+Prevention: Cover each supported legacy tracker declaration at the authority boundary. For an in-place tracker transition, compare the complete tracker tree before and after preparation, cutover, and rollback; preserve the existing scope and authorization checks.
