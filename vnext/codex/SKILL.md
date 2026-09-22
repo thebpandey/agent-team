@@ -107,8 +107,9 @@ then resume the original setup/start request without another generic confirmatio
 
 `start`, `task add --execute`, and `one-off` packets use this same native dispatch protocol.
 `agent-teamctl start --host codex --json` only reserves a packet; it never starts a worker. Call
-`collaboration.spawn_agent` only when the response has `host_dispatch_required: true` and `already_admitted: false`. If
-it reports an already admitted packet or `host_dispatch_required: false`, observe the named team/packet and do not
+`collaboration.spawn_agent` only when the response has `host_dispatch_required: true` and `already_admitted: false`.
+The confirmed no-launch retry below is the only exception to this flag rule. Outside that exception, if the response
+reports an already admitted packet or `host_dispatch_required: false`, observe the named team/packet and do not
 spawn or acknowledge a replacement worker. For a fresh packet, use its bounded task payload and saved `profile`
 model/effort, then acknowledge the exact returned canonical task name. Never invent a handle or a worker shell command.
 
@@ -123,7 +124,8 @@ worker identity or ownership. If a required host tool is unavailable, report the
 unacknowledged. Give each worker its exact scope, worktree, acceptance checks, and applicable instructions; preserve
 other agents' edits.
 
-On replay, honor `actual_host` (the packet owner) and `observation_required`; preserve its profile and worker identity.
+On replay, honor `actual_host` (the packet owner) and `observation_required`; preserve its worker identity.
+Preserve its assignment profile except for an approved correction in the confirmed no-launch retry below.
 A missing ack after a possible launch is uncertain: observe the original host rather
 than treating the missing ack as permission to spawn again. Copy returned values for acknowledgement:
 
@@ -142,11 +144,29 @@ Record actual completion, independent CLEAN review with a distinct reviewer, and
 For a fresh `host_followup_required: true` packet, call `collaboration.followup_task` on the same acknowledged handle
 with its fresh delta, then acknowledge that packet with the same identity. Queue append alone never authorizes follow-up.
 A terminal `next` consumes the final task with `host_followup_required: false` and requires no host action.
-An `already_admitted: true` retained retry means observe only: never repeat follow-up or replacement acknowledgement.
+An `already_admitted: true` retained retry means observe only, except for the confirmed no-delivery retry below.
 
 `start --run <run> --task <task> --json` normally only appends an explicit already-snapshotted task. If it appends to a
 consumed idle retained team, it instead returns a fresh `host_followup_required` packet; use
 `collaboration.followup_task` with the returned retained handle, then acknowledge that packet with the same identity.
+
+### Confirmed no-launch retry
+
+Use this exception only in the original uninterrupted foreground attempt when the actual native tool response expressly
+guarantees **no worker was created**, or **no follow-up was delivered**. An unavailable-model label alone is insufficient.
+Retain that actual response as evidence. Read the updated approved profile for the original host and assignment role;
+verify it against current native model/capability metadata without substituting a fallback.
+
+Re-read the reservation and controls: the exact packet, digest, owner, task, queue fingerprint, worktree and candidate revision
+must be unchanged, still unacknowledged, with no applicable admission or control hold. Retained work also requires the
+unchanged retained handle. If every check passes, make one bounded retry of the original native call with that packet,
+owner/handle and approved profile, even when replay reports `host_dispatch_required: false`, `host_followup_required: false`
+or `already_admitted: true`. Do not create another reservation, clear intent, transfer ownership or invent an acknowledgment.
+Acknowledge only the actual successful result; another failure ends this retry.
+
+Timeouts, generic errors, missing handles, lost responses or possible launch/delivery remain uncertain: observe the original
+host without retrying. Cross-session requests or unavailable original evidence invalidate this exception; report recovery blocked
+and continue observation, never claim recovered execution.
 
 ## Tasks, one-off work and scoped controls
 

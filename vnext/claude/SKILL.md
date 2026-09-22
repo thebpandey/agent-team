@@ -112,7 +112,8 @@ then resume the original setup/start request without another generic confirmatio
 
 `start`, `task add --execute`, and `one-off` packets use this same native dispatch protocol. Run
 `agent-teamctl start --host claude --json`. This reserves a bounded packet; it does not launch a worker. Call the
-actual Claude `Agent` tool only when `host_dispatch_required: true` and `already_admitted: false`. Use the returned
+actual Claude `Agent` tool only when `host_dispatch_required: true` and `already_admitted: false`.
+The confirmed no-launch retry below is the only exception to this flag rule. Use the returned
 scope, worktree, acceptance checks, and saved `profile`; tell the worker to preserve other agents' edits. Acknowledge
 the exact agent ID returned by that tool. Never invent an ID, substitute a task label, or use a fictional CLI worker. If
 the host cannot return an observable ID, report the blocker and leave the packet unacknowledged. Report a launch only
@@ -140,14 +141,33 @@ creating a replacement is not evidence of retained reuse.
 
 `start --run <run> --task <task> --json` normally appends an explicit task from the existing snapshot. Appending to a
 consumed idle team may instead return a fresh `host_followup_required` packet; apply the same resume-and-ack rule. Queue
-append alone never authorizes a follow-up. An `already_admitted: true` retry or `host_followup_required: false` means
-observe only; do not resume or acknowledge again. A terminal `next` consumes the last task and needs no host action.
+append alone never authorizes a follow-up. Outside the confirmed no-delivery retry below, an `already_admitted: true` retry
+or `host_followup_required: false` means observe only; do not resume or acknowledge again. A terminal `next` consumes the last task and needs no host action.
 Observe foreign live handles without duplicating them. Changing the foreground host transfers no worker identity or
 ownership.
 
-On replay, honor `actual_host` (the packet owner) and `observation_required`; retain its developer profile and identity.
+On replay, honor `actual_host` (the packet owner) and `observation_required`; preserve its worker identity.
+Preserve its assignment profile except for an approved correction in the confirmed no-launch retry below.
 A missing ack after a possible launch is uncertain: observe the original host rather
 than treating the missing ack as permission to spawn again.
+
+### Confirmed no-launch retry
+
+Use this exception only in the original uninterrupted foreground attempt when the actual native tool response expressly
+guarantees **no worker was created**, or **no follow-up was delivered**. An unavailable-model label alone is insufficient.
+Retain that actual response as evidence. Read the updated approved profile for the original host and assignment role;
+verify it against current native model/capability metadata without substituting a fallback.
+
+Re-read the reservation and controls: the exact packet, digest, owner, task, queue fingerprint, worktree and candidate revision
+must be unchanged, still unacknowledged, with no applicable admission or control hold. Retained work also requires the
+unchanged retained handle. If every check passes, make one bounded retry of the original native call with that packet,
+owner/handle and approved profile, even when replay reports `host_dispatch_required: false`, `host_followup_required: false`
+or `already_admitted: true`. Do not create another reservation, clear intent, transfer ownership or invent an acknowledgment.
+Acknowledge only the actual successful result; another failure ends this retry.
+
+Timeouts, generic errors, missing handles, lost responses or possible launch/delivery remain uncertain: observe the original
+host without retrying. Cross-session requests or unavailable original evidence invalidate this exception; report recovery blocked
+and continue observation, never claim recovered execution.
 
 ## Tasks, one-off work and scoped controls
 

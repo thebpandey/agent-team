@@ -157,3 +157,33 @@ The old uninstall also processes skill directories and Claude agent definitions;
 the settings-only repair was narrower. No project files, skill files, or legacy
 receipts were modified by this repair. This verifies the settings change, not a
 newly opened Claude session.
+
+## Confirmed no-launch recovery guidance
+
+The native skills now allow one bounded retry in the original uninterrupted
+foreground attempt when the actual host response expressly guarantees no worker
+was created or no follow-up was delivered. The packet and original owner remain
+unchanged; current reservation, hold and native capability checks still apply.
+An approved profile correction does not create a new reservation or authorize a
+replacement worker. This is a skill exception, not a new controller API.
+
+A fresh-context baseline review found that both original skills blocked the
+proven no-worker case, while correctly rejecting timeout retries. A separate
+fresh-context pressure review reached these decisions for both updated skills:
+
+| Evidence and state | Permitted action |
+| --- | --- |
+| Express no-worker guarantee, same foreground, approved supported profile, unchanged unacknowledged packet, no holds | One retry of the original native spawn |
+| Express no-delivery guarantee and unchanged retained handle, with the same checks | One retry of the original follow-up |
+| Timeout, missing handle or caller inference | Observe the original host; no retry |
+| New session or missing original evidence | Exception invalid; report recovery blocked and observe |
+| Applicable pause/control hold | Preserve the hold; no retry |
+
+That review also identified a general replay-profile wording ambiguity; both
+skills now explicitly permit only the approved profile correction inside this
+exception. The new documentation regression failed against the old text. All
+36 `tests/hooks-docs.test.mjs` checks and the focused native release
+Doc/Skill/Version/Historical checks passed after the change. No Go/controller
+implementation changed. These are guidance and fixture checks: no actual host
+model rejection, recovered spawn, or recovered follow-up was exercised. No
+cross-session recovery capability is claimed.

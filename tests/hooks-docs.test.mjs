@@ -556,6 +556,39 @@ test("native host guidance requires real dispatch and observes uncertain cross-h
   }
 });
 
+test("native confirmed no-launch recovery is bounded and preserves uncertain replay protection", async () => {
+  for (const host of ["codex", "claude"]) {
+    const skill = await read(`vnext/${host}/SKILL.md`);
+    const normalized = skill.replace(/\s+/g, " ");
+    assert.match(normalized, /confirmed no-launch retry below is the only exception to this flag rule/);
+    assert.match(normalized, /Preserve its assignment profile except for an approved correction in the confirmed no-launch retry below/);
+    const recovery = skill.match(/### Confirmed no-launch retry\n([\s\S]*?)(?:\n## |\n### |$)/)?.[1]?.replace(/\s+/g, " ");
+    assert.ok(recovery, `${host}: missing explicit recovery procedure`);
+    for (const required of [
+      "original uninterrupted foreground attempt",
+      "actual native tool response expressly guarantees",
+      "no worker was created",
+      "no follow-up was delivered",
+      "An unavailable-model label alone is insufficient",
+      "approved profile",
+      "current native model/capability metadata",
+      "exact packet, digest, owner, task, queue fingerprint, worktree and candidate revision",
+      "still unacknowledged",
+      "no applicable admission or control hold",
+      "unchanged retained handle",
+      "one bounded retry",
+      "host_dispatch_required: false",
+      "host_followup_required: false",
+      "already_admitted: true",
+      "Do not create another reservation, clear intent, transfer ownership or invent an acknowledgment",
+      "Timeouts, generic errors, missing handles, lost responses",
+      "Cross-session requests or unavailable original evidence invalidate this exception",
+      "report recovery blocked",
+    ]) assert.ok(recovery.includes(required), `${host}: missing ${required}`);
+    assert.doesNotMatch(skill, /retain its developer profile and identity/);
+  }
+});
+
 test("native task and lifecycle guidance separates intent from actual host results", async () => {
   for (const host of ["codex", "claude"]) {
     const skill = await read(`vnext/${host}/SKILL.md`);
