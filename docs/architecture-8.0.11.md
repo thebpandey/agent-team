@@ -145,3 +145,10 @@ checks the corresponding manifest. This covers the linked
 | Admission, intent, controls and dispatch | `vnext/internal/admission/`, `vnext/internal/start/`, `vnext/internal/dispatch/` |
 | Mutation ownership and recovery | `vnext/internal/store/`, `vnext/internal/install/` |
 | Native package, module provenance and SBOM | `vnext/internal/release/` |
+
+Windows mutation recovery validates the recorded local PID and canonical process
+creation FILETIME before probing liveness. With the fixed `OpenProcess` arguments,
+`ERROR_INVALID_PARAMETER` identifies a process object that no longer exists;
+access failures and errors from later identity queries remain unknown and block
+recovery. Existing process objects still require creation-identity comparison and
+the wait result. Recovery continues to remove only the exact recorded owner token.

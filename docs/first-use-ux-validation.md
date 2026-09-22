@@ -187,3 +187,12 @@ Doc/Skill/Version/Historical checks passed after the change. No Go/controller
 implementation changed. These are guidance and fixture checks: no actual host
 model rejection, recovered spawn, or recovered follow-up was exercised. No
 cross-session recovery capability is claimed.
+
+Windows CI exposed a real abandoned-owner recovery failure after a child exited
+and its final process handle closed. The Windows liveness probe now distinguishes
+an absent process from an inaccessible or unverifiable process, after validating
+the recorded PID and creation identity. Windows boundary tests cover invalid
+identities/PIDs, foreign hosts and ambiguous API errors; the existing real-child
+primary/recovery-claim tests remain enabled. Linux store/preparation tests and
+Windows cross-compilation are local checks; native Windows CI must verify the
+process-object disappearance path.
