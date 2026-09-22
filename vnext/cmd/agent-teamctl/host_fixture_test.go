@@ -197,6 +197,10 @@ func TestPackagedNativeActions(t *testing.T) {
 	if string(reused["host_followup_required"]) != "true" || json.Unmarshal(reused["packet"], &packet) != nil || packet.Task != "atf-3" || packet.Team != firstTeam || packet.Worktree != firstWorktree || len(packet.Scope) != 1 || packet.Scope[0] != "result-3.txt" {
 		t.Fatalf("empty retained team was not reused with a fresh bounded packet: %s", reused)
 	}
+	replay := invoke("start", "--action", "next", "--team", string(packet.Team))
+	if string(replay["host_followup_required"]) != "false" || string(replay["already_admitted"]) != "true" || !bytes.Equal(replay["packet"], reused["packet"]) || !bytes.Equal(replay["packet_digest"], reused["packet_digest"]) || len(replay["observation_required"]) == 0 {
+		t.Fatalf("retained retry must return exact packet without another host effect: %s", replay)
+	}
 	_ = json.Unmarshal(reused["packet_digest"], &digest)
 	invoke("start", "--action", "ack", "--team", string(packet.Team), "--packet-digest", digest, "--host", "codex", "--identity", "/fixture/retained-worker", "--task", string(packet.Task), "--candidate", packet.SpecRevision)
 	after, _ := os.ReadFile(configPath)
