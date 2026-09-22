@@ -681,8 +681,8 @@ func validateLegacyAuthority(project string) error {
 		}
 		if required == ".agent-team/setup.json" {
 			tracker, _ := value["tracker"].(map[string]any)
-			if tracker["kind"] != "markdown" {
-				return fmt.Errorf("%w: legacy tracker is not markdown", core.ErrRevision)
+			if tracker["kind"] != "markdown" && tracker["kind"] != "beads" {
+				return fmt.Errorf("%w: unsupported legacy tracker", core.ErrRevision)
 			}
 		}
 	}

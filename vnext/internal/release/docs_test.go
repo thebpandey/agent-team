@@ -47,10 +47,10 @@ func TestSkillMetadataVersionMatchesExactVersionWithLFAndCRLF(t *testing.T) {
 		name, body, version string
 		want                bool
 	}{
-		{name: "LF current", body: "---\nmetadata:\n  version: \"8.0.7\"\n---\n", version: "8.0.7", want: true},
-		{name: "CRLF current", body: "---\r\nmetadata:\r\n  version: \"8.0.7\"\r\n---\r\n", version: "8.0.7", want: true},
-		{name: "LF wrong version", body: "---\nmetadata:\n  version: \"8.0.7\"\n---\n", version: "8.0.6", want: false},
-		{name: "CRLF wrong version", body: "---\r\nmetadata:\r\n  version: \"8.0.7\"\r\n---\r\n", version: "8.0.6", want: false},
+		{name: "LF current", body: "---\nmetadata:\n  version: \"8.0.8\"\n---\n", version: "8.0.8", want: true},
+		{name: "CRLF current", body: "---\r\nmetadata:\r\n  version: \"8.0.8\"\r\n---\r\n", version: "8.0.8", want: true},
+		{name: "LF wrong version", body: "---\nmetadata:\n  version: \"8.0.8\"\n---\n", version: "8.0.6", want: false},
+		{name: "CRLF wrong version", body: "---\r\nmetadata:\r\n  version: \"8.0.8\"\r\n---\r\n", version: "8.0.6", want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := hasSkillMetadataVersion(test.body, test.version); got != test.want {
