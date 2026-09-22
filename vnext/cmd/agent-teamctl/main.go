@@ -23,6 +23,7 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/install"
 	"github.com/thebpandey/agent-team/vnext/internal/lifecycle"
 	"github.com/thebpandey/agent-team/vnext/internal/migrate"
+	"github.com/thebpandey/agent-team/vnext/internal/project"
 	releasepkg "github.com/thebpandey/agent-team/vnext/internal/release"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
@@ -45,6 +46,28 @@ func main() {
 }
 
 func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "settings" {
+		action, err := cli.Parse(args)
+		if err != nil || action.Name != "settings" {
+			return managementError(args, stdout, stderr, core.ErrPhase)
+		}
+		service := project.NewSettingsService(store.New(".", core.DefaultConfig().Storage))
+		var settings project.Settings
+		if len(action.Args) == 0 {
+			settings, err = service.Inspect(ctx)
+		} else {
+			updates := make(map[string]string, len(action.Args))
+			for _, setting := range action.Args {
+				key, value, _ := strings.Cut(setting, "=")
+				updates[key] = value
+			}
+			settings, err = service.Update(ctx, updates)
+		}
+		if err != nil {
+			return managementError(args, stdout, stderr, err)
+		}
+		return managementResult(args, stdout, map[string]any{"ok": true, "action": "settings", "settings": settings})
+	}
 	if len(args) > 0 && args[0] == "cleanup" {
 		owner, err := recoverMutationLock(ctx, ".", args, store.NativeLiveness{})
 		if err != nil {

@@ -219,12 +219,14 @@ func parseSetupArgs(args []string) ([]string, error) {
 
 func parseSettingsArgs(args []string) ([]string, error) {
 	out := make([]string, 0, len(args))
+	seen := make(map[string]bool, len(args))
 	for _, arg := range args {
 		key, value, ok := strings.Cut(arg, "=")
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-		if !ok || key == "" || value == "" || strings.HasPrefix(key, "-") {
+		if !ok || key == "" || value == "" || strings.HasPrefix(key, "-") || seen[key] {
 			return nil, core.ErrPhase
 		}
+		seen[key] = true
 		out = append(out, key+"="+value)
 	}
 	return out, nil
