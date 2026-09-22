@@ -1,7 +1,7 @@
 ---
 name: agent-team
 metadata:
-  version: "8.0.8"
+  version: "8.0.9"
 description: Use when coordinating development in Codex or Claude Code, switching the same Agent-Team project between hosts or sessions, continuing tasks, or requesting setup, settings, start, status, pause, resume, or release.
 ---
 
@@ -14,6 +14,8 @@ This latest-repository root entrypoint is the current native v8 authority. Insta
 Route `setup`, `status`, and `start` through the installed native `agent-teamctl` contract. The public actions are `setup`, `status`, `start`, `task add`, `one-off`, `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN is the internal independent-review state machine, not a public `review` action. Beads is canonical after approved cutover; `TASKS.md` remains legacy provenance. `BLOCKERS.md` and `DECISIONS.md` are bounded projections. Host switching is foreground-only and transfers no identity or lease.
 
 Report the installed native binary version when available. If it differs from this repository entrypoint metadata, report that this repository version is available and require a checksum-verified native update; do not call the older controller updated. Without an installed controller, report the repository version as available and installation-needed.
+
+Settings persist only supported keys in a receipt-bound overlay; do not rewrite immutable setup or Beads. Native start admission is not a launch. In Codex, follow the installed native Codex skill to call the actual collaboration tool, acknowledge its returned handle, and reuse a retained team only after completion, independent CLEAN review, and observed idle state. Each follow-up receives a fresh bounded packet for the existing queue. A standalone command or an unproven worker shell command does not establish host launch.
 
 The dashboard is local-only. Preserve capacity caps and use native fallbacks whenever optional semantic, graph, compression, browser, or visual tooling is unavailable. Do not infer wider authority from a fallback. Release claims require the [benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and revision-bound release checks.
 
