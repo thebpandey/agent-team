@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -219,23 +220,70 @@ func runSetup(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 	}
 	input := project.SetupInput{Root: root, Mode: mode}
+	approved := slices.Contains(action.Args, "--approve-kickoff")
+	var generated []string
 	if mode == project.PlanMode {
+		exists := func(name string) (bool, error) {
+			_, statErr := os.Stat(filepath.Join(root, name))
+			if statErr == nil {
+				return true, nil
+			}
+			if errors.Is(statErr, os.ErrNotExist) {
+				return false, nil
+			}
+			return false, statErr
+		}
+		// Beads is canonical once present; a leftover TASKS.md is legacy provenance.
 		trackerPath := ""
 		for _, candidate := range []string{".beads", "TASKS.md"} {
-			if _, statErr := os.Stat(filepath.Join(root, candidate)); statErr == nil {
-				if trackerPath != "" {
-					return managementError(args, stdout, stderr, core.ErrSettings)
-				}
-				trackerPath = candidate
-			} else if !errors.Is(statErr, os.ErrNotExist) {
+			present, statErr := exists(candidate)
+			if statErr != nil {
 				return managementError(args, stdout, stderr, statErr)
 			}
+			if present {
+				trackerPath = candidate
+				break
+			}
 		}
+		if trackerPath == "" {
+			trackerPath = "TASKS.md"
+		}
+		var missing []string
 		for _, path := range []string{trackerPath, "DECISIONS.md", "AGENT_TEAM_RULES.md"} {
-			if path == "" {
-				return managementError(args, stdout, stderr, core.ErrSettings)
+			present, statErr := exists(path)
+			if statErr != nil {
+				return managementError(args, stdout, stderr, statErr)
+			}
+			if !present {
+				missing = append(missing, path)
 			}
 			input.Artifacts = append(input.Artifacts, project.ArtifactDecision{Path: path, Mode: project.ExistingArtifact, Confirmation: project.Approved})
+		}
+		if len(missing) > 0 && !approved {
+			return managementError(args, stdout, stderr, fmt.Errorf("%w: missing %s; rerun with --approve-kickoff to create minimal versions", core.ErrSettings, strings.Join(missing, ", ")))
+		}
+		// An approved fresh setup bootstraps the missing inputs itself. Skip when
+		// the project is already initialized so a replay never touches user files,
+		// and validate first so a rejected setup still writes nothing.
+		if initialized, statErr := exists(filepath.Join(".agent-team", "config.json")); statErr != nil {
+			return managementError(args, stdout, stderr, statErr)
+		} else if !initialized && len(missing) > 0 {
+			preflight := input
+			preflight.Artifacts = slices.Clone(input.Artifacts)
+			for index := range preflight.Artifacts {
+				if slices.Contains(missing, preflight.Artifacts[index].Path) {
+					preflight.Artifacts[index].Mode = project.GeneratedArtifact
+				}
+			}
+			if _, err := project.ValidateSetup(ctx, preflight); err != nil {
+				return managementError(args, stdout, stderr, err)
+			}
+			for _, path := range missing {
+				if err := os.WriteFile(filepath.Join(root, path), []byte(setupStubs[path]), 0o644); err != nil {
+					return managementError(args, stdout, stderr, err)
+				}
+				generated = append(generated, path)
+			}
 		}
 	}
 	result, err := project.NewSetupService(store.New(root, core.DefaultConfig().Storage)).Initialize(ctx, input)
@@ -245,8 +293,14 @@ func runSetup(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	return managementResult(args, stdout, map[string]any{
 		"ok": true, "action": "setup", "status": "initialized", "mode": mode,
 		"config_revision": result.ConfigRevision, "receipt_path": result.ReceiptPath,
-		"tracker": result.Config.Tracker,
+		"tracker": result.Config.Tracker, "generated": generated,
 	})
+}
+
+var setupStubs = map[string]string{
+	"TASKS.md":            "# Tasks\n\n| ID | Task | Depends on | Status |\n| --- | --- | --- | --- |\n",
+	"DECISIONS.md":        "# Decisions\n\nBounded projection of ratified project decisions.\n",
+	"AGENT_TEAM_RULES.md": "# Agent-Team rules\n\nProject rules every Agent-Team worker reads before acting.\n",
 }
 
 func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int {
