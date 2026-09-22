@@ -126,7 +126,7 @@ func TestPackagedNativeActions(t *testing.T) {
 	bin := t.TempDir()
 	fixtureCommand(t, "", nil, "go", "test", "-c", "-o", filepath.Join(bin, "bd"+executableSuffix()), ".")
 	snapshot := filepath.Join(bin, "beads.json")
-	if err := os.WriteFile(snapshot, []byte(`[{"id":"atf-1","title":"Report ALPHA","status":"open","priority":2,"issue_type":"task","metadata":{"criteria":["Report ALPHA"],"writablePaths":["result-1.txt"]}},{"id":"atf-2","title":"Report BETA","status":"open","priority":2,"issue_type":"task","metadata":{"criteria":["Report BETA"],"writablePaths":["result-2.txt"]}}]`), 0o644); err != nil {
+	if err := os.WriteFile(snapshot, []byte(`[{"id":"atf-1","title":"Report ALPHA","status":"open","priority":2,"issue_type":"task","metadata":{"criteria":["Report ALPHA"],"writablePaths":["result-1.txt"]}},{"id":"atf-2","title":"Report BETA","status":"open","priority":2,"issue_type":"task","metadata":{"criteria":["Report BETA"],"writablePaths":["result-2.txt"]}},{"id":"atf-3","title":"Report GAMMA","status":"open","priority":2,"issue_type":"task","metadata":{"criteria":["Report GAMMA"],"writablePaths":["result-3.txt"]}}]`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	env := []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "AGENT_TEAM_BD_FIXTURE_JSON=" + snapshot}
@@ -179,6 +179,25 @@ func TestPackagedNativeActions(t *testing.T) {
 		t.Fatalf("next packet lost retained identity or fresh scope: %+v", packet)
 	}
 	_ = json.Unmarshal(next["packet_digest"], &digest)
+	fields = []string{"--team", string(packet.Team), "--packet-digest", digest, "--host", "codex", "--identity", "/fixture/retained-worker", "--task", string(packet.Task), "--candidate", packet.SpecRevision}
+	for _, action := range []string{"ack", "complete"} {
+		invoke(append([]string{"start", "--action", action}, fields...)...)
+	}
+	invoke("start", "--action", "clean", "--team", string(packet.Team), "--reviewer", "/fixture/independent-reviewer")
+	invoke(append([]string{"start", "--action", "idle"}, fields...)...)
+	terminal := invoke("start", "--action", "next", "--team", string(packet.Team))
+	var terminalTeam struct {
+		Queue []string `json:"queue"`
+		State string   `json:"state"`
+	}
+	if json.Unmarshal(terminal["team"], &terminalTeam) != nil || len(terminalTeam.Queue) != 0 || terminalTeam.State != "idle" || string(terminal["host_followup_required"]) != "false" {
+		t.Fatalf("last task was not consumed into an idle retained team: %s", terminal)
+	}
+	reused := invoke("start", "--run", string(packet.RunID), "--task", "atf-3")
+	if string(reused["host_followup_required"]) != "true" || json.Unmarshal(reused["packet"], &packet) != nil || packet.Task != "atf-3" || packet.Team != firstTeam || packet.Worktree != firstWorktree || len(packet.Scope) != 1 || packet.Scope[0] != "result-3.txt" {
+		t.Fatalf("empty retained team was not reused with a fresh bounded packet: %s", reused)
+	}
+	_ = json.Unmarshal(reused["packet_digest"], &digest)
 	invoke("start", "--action", "ack", "--team", string(packet.Team), "--packet-digest", digest, "--host", "codex", "--identity", "/fixture/retained-worker", "--task", string(packet.Task), "--candidate", packet.SpecRevision)
 	after, _ := os.ReadFile(configPath)
 	if !bytes.Equal(before, after) {
