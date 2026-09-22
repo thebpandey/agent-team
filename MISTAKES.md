@@ -206,7 +206,7 @@ Source: Beads atv-5sh.47, Windows settings/start no-op report, 2026-09-22.
 Mistake: The CLI parsed settings and start but returned acceptance or deferral without persisting settings or providing an executable host-dispatch path.
 Cause: Parser/status coverage was mistaken for end-to-end action coverage; the packaged host skill did not complete the missing dispatch boundary.
 Correction: Connect bounded settings persistence and one-task admission to a truthful host handoff while preserving immutable setup receipts and legacy data.
-Prevention: For each public mutating action, assert the real persisted state or observable host effect. Distinguish admission, host dispatch, and completion; never report a team launched from parser acceptance or a callback invocation alone.
+Prevention: For each public mutating action, assert the real persisted state or observable host effect. Exercise the actual command with real tracker output and consistent snapshot/task revisions; service mocks alone can hide incompatible external data. Distinguish admission, host dispatch, and completion; never report a team launched from parser acceptance or a callback invocation alone. Repeat a start before acknowledgement and require no second dispatch authorization.
 
 ## M-017: Bind test claims to completed commands and exact source
 
