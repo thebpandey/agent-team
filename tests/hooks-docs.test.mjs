@@ -88,15 +88,15 @@ test("landing-page workflow board is current and has a useful accessible descrip
   const index = await read("index.html");
   assert.match(index, /class="hero-board" role="img" aria-labelledby="hero-board-title hero-board-desc"/);
   assert.match(index, /same Git project, either host/);
-  assert.match(index, /Bounded work/);
+  assert.match(index, /Agree on the work and files to change/);
   assert.match(index, /Build \+ review/);
   assert.doesNotMatch(index, /agent-team-banner-ultrawide\.webp/);
   const version = (await read("vnext/VERSION")).trim();
   assert.ok(index.includes(`Agent-Team ${version} development flow`));
   assert.match(index, /aria-labelledby="flow-title flow-desc"/);
   assert.match(index, /<text x="1120" y="80">Release<\/text>/);
-  assert.match(index, /authorized target/);
-  assert.match(index, /FIX returns only the affected candidate to its writer/);
+  assert.match(index, /with your approval/);
+  assert.match(index, /Review findings go back to the agent that made the change/);
 });
 
 test("landing page links current source and the versioned native release", async () => {
