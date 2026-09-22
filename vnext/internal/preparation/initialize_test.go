@@ -10,9 +10,15 @@ import (
 	"testing"
 )
 
+// Keep PATH fixtures outside the project with native absolute paths, including
+// the Windows drive and executable suffix. The fake runner never executes them.
+func fixtureExecutable(root, name string) string {
+	return filepath.Join(filepath.Dir(root), "fixture-tools", executable(name))
+}
+
 func initRunner(t *testing.T, root string, mutate func(invocation) (string, error)) *fakeRunner {
 	t.Helper()
-	f := &fakeRunner{paths: map[string]string{"bd": "/tools/bd", "serena": "/tools/serena", "graphify": "/tools/graphify", "git": "/tools/git"}}
+	f := &fakeRunner{paths: map[string]string{"bd": fixtureExecutable(root, "bd"), "serena": fixtureExecutable(root, "serena"), "graphify": fixtureExecutable(root, "graphify"), "git": fixtureExecutable(root, "git")}}
 	f.run = func(ctx context.Context, c invocation) (string, error) {
 		if _, ok := ctx.Deadline(); !ok {
 			t.Fatal("unbounded initialization command")
@@ -20,7 +26,7 @@ func initRunner(t *testing.T, root string, mutate func(invocation) (string, erro
 		if c.Dir != root {
 			t.Fatalf("wrong project scope: %#v", c)
 		}
-		if c.Path == "/tools/git" && len(c.Args) > 0 && c.Args[0] == "ls-files" {
+		if c.Path == fixtureExecutable(root, "git") && len(c.Args) > 0 && c.Args[0] == "ls-files" {
 			var names []string
 			err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 				if err != nil {
@@ -56,7 +62,7 @@ func TestInitializeWithoutConsentDoesNotWriteOrRunMutation(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "main.go", "package fixture\n")
 	f := initRunner(t, root, func(c invocation) (string, error) {
-		if c.Path == "/tools/git" {
+		if c.Path == fixtureExecutable(root, "git") {
 			return strings.Repeat("a", 40), nil
 		}
 		t.Fatalf("unexpected mutation: %#v", c)
@@ -85,7 +91,7 @@ func TestBeadsInitializationUsesExactSelectedPathAndSafeFlags(t *testing.T) {
 			return `{"summary":{"total_issues":0}}`, nil
 		}
 		calls++
-		if c.Path != "/tools/bd" || strings.Join(c.Args, " ") != "init --skip-hooks --skip-agents --non-interactive --init-if-missing" || c.Env["BEADS_DIR"] != filepath.Join(root, ".beads") {
+		if c.Path != fixtureExecutable(root, "bd") || strings.Join(c.Args, " ") != "init --skip-hooks --skip-agents --non-interactive --init-if-missing" || c.Env["BEADS_DIR"] != filepath.Join(root, ".beads") {
 			t.Fatalf("unsafe init: %#v", c)
 		}
 		writeFixture(t, root, ".beads/metadata.json", `{"database":"dolt","backend":"dolt"}`)
@@ -107,7 +113,7 @@ func TestSerenaInitializationConfinesHomeAndReusesConfig(t *testing.T) {
 	calls := 0
 	f := initRunner(t, root, func(c invocation) (string, error) {
 		calls++
-		if c.Path != "/tools/serena" || strings.Join(c.Args[:2], " ") != "project create" || c.Args[2] != root || c.Env["SERENA_HOME"] != filepath.Join(root, ".agent-team", "dependencies", "serena-home") {
+		if c.Path != fixtureExecutable(root, "serena") || strings.Join(c.Args[:2], " ") != "project create" || c.Args[2] != root || c.Env["SERENA_HOME"] != filepath.Join(root, ".agent-team", "dependencies", "serena-home") {
 			t.Fatalf("unscoped Serena init %#v", c)
 		}
 		writeFixture(t, root, ".serena/project.yml", "project_name: fixture\nlanguage_servers:\n- go\n")
@@ -146,7 +152,7 @@ func TestExistingBeadsMetadataWithoutBackendIsNotPrepared(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, ".beads/metadata.json", `{"database":"dolt"}`)
 	f := initRunner(t, root, func(c invocation) (string, error) {
-		if c.Path != "/tools/bd" || strings.Join(c.Args, " ") != "--readonly status --json --no-activity" || c.Env["BEADS_DIR"] != filepath.Join(root, ".beads") {
+		if c.Path != fixtureExecutable(root, "bd") || strings.Join(c.Args, " ") != "--readonly status --json --no-activity" || c.Env["BEADS_DIR"] != filepath.Join(root, ".beads") {
 			t.Fatalf("unsafe health probe %#v", c)
 		}
 		return "", errors.New("database unavailable")
@@ -163,13 +169,13 @@ func TestGraphifyPreparationReusesSameRevisionAndRefreshesChangedHEAD(t *testing
 	revision := strings.Repeat("a", 40)
 	extracts := 0
 	f := initRunner(t, root, func(c invocation) (string, error) {
-		if c.Path == "/tools/git" {
+		if c.Path == fixtureExecutable(root, "git") {
 			if strings.Join(c.Args, " ") != "rev-parse --verify HEAD" {
 				t.Fatalf("unexpected git %#v", c)
 			}
 			return revision, nil
 		}
-		if c.Path != "/tools/graphify" || strings.Join(c.Args, " ") != "extract . --code-only --no-viz" {
+		if c.Path != fixtureExecutable(root, "graphify") || strings.Join(c.Args, " ") != "extract . --code-only --no-viz" {
 			t.Fatalf("unsafe extraction %#v", c)
 		}
 		extracts++
@@ -205,7 +211,7 @@ func TestUnknownExistingProjectStatePreserved(t *testing.T) {
 			}
 			writeFixture(t, root, dir+"/custom.txt", "preserve me")
 			f := initRunner(t, root, func(c invocation) (string, error) {
-				if c.Path == "/tools/git" {
+				if c.Path == fixtureExecutable(root, "git") {
 					return strings.Repeat("a", 40), nil
 				}
 				t.Fatalf("overwrote unknown state %#v", c)
@@ -251,7 +257,7 @@ func TestModifiedOwnedGraphIsPreserved(t *testing.T) {
 	writeFixture(t, root, "main.go", "package fixture\n")
 	extracts := 0
 	f := initRunner(t, root, func(c invocation) (string, error) {
-		if c.Path == "/tools/git" {
+		if c.Path == fixtureExecutable(root, "git") {
 			return strings.Repeat("a", 40), nil
 		}
 		extracts++
@@ -276,7 +282,7 @@ func TestGraphHEADChangeDuringExtractionDoesNotCertifyGraph(t *testing.T) {
 	writeFixture(t, root, "main.go", "package fixture\n")
 	revision := strings.Repeat("a", 40)
 	f := initRunner(t, root, func(c invocation) (string, error) {
-		if c.Path == "/tools/git" {
+		if c.Path == fixtureExecutable(root, "git") {
 			return revision, nil
 		}
 		writeGraphFixture(t, root, c, "graph.json", `{"nodes":[],"links":[]}`)
@@ -311,7 +317,7 @@ func TestGraphifyOutputEnvironmentIsBoundToProject(t *testing.T) {
 	writeFixture(t, root, "main.go", "package fixture\n")
 	t.Setenv("GRAPHIFY_OUT", t.TempDir())
 	f := initRunner(t, root, func(c invocation) (string, error) {
-		if c.Path == "/tools/git" {
+		if c.Path == fixtureExecutable(root, "git") {
 			return strings.Repeat("a", 40), nil
 		}
 		if !strings.HasPrefix(c.Env["GRAPHIFY_OUT"], filepath.Join(root, ".agent-team", "dependencies", "prepared")+string(os.PathSeparator)) {
@@ -335,7 +341,7 @@ func TestGraphifyChangedOrRedirectedSidecarsPreventRefresh(t *testing.T) {
 				revision := strings.Repeat("a", 40)
 				extracts := 0
 				f := initRunner(t, root, func(c invocation) (string, error) {
-					if c.Path == "/tools/git" {
+					if c.Path == fixtureExecutable(root, "git") {
 						return revision, nil
 					}
 					extracts++
@@ -395,7 +401,7 @@ func TestFailedGraphExtractionPreservesPublishedGraphAndCanRetry(t *testing.T) {
 	revision := strings.Repeat("a", 40)
 	fail := false
 	f := initRunner(t, root, func(c invocation) (string, error) {
-		if c.Path == "/tools/git" {
+		if c.Path == fixtureExecutable(root, "git") {
 			return revision, nil
 		}
 		writeGraphFixture(t, root, c, "graph.json", `{"nodes":[],"links":[]}`)
@@ -435,7 +441,7 @@ func TestGraphSourceEditsInvalidateWithoutHEADChange(t *testing.T) {
 	writeFixture(t, root, "main.go", "package first\n")
 	extracts := 0
 	f := initRunner(t, root, func(c invocation) (string, error) {
-		if c.Path == "/tools/git" {
+		if c.Path == fixtureExecutable(root, "git") {
 			return strings.Repeat("a", 40), nil
 		}
 		extracts++

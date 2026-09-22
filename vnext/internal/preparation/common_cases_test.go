@@ -24,7 +24,7 @@ func TestSerenaYAMLSyntaxAndTypesAreRequired(t *testing.T) {
 func TestEmptyProjectPreparationIsDeferred(t *testing.T) {
 	root := t.TempDir()
 	f := initRunner(t, root, func(c invocation) (string, error) {
-		if c.Path == "/tools/git" {
+		if c.Path == fixtureExecutable(root, "git") {
 			return "", errors.New("no HEAD")
 		}
 		t.Fatalf("unexpected initializer %#v", c)
@@ -58,7 +58,7 @@ func TestCommittedDocumentOnlyGraphPreparationIsDeferred(t *testing.T) {
 				writeFixture(t, root, name, "Project plans\n")
 			}
 			f := initRunner(t, root, func(c invocation) (string, error) {
-				if c.Path == "/tools/git" {
+				if c.Path == fixtureExecutable(root, "git") {
 					return strings.Repeat("a", 40), nil
 				}
 				t.Fatalf("document-only project ran extractor: %#v", c)
@@ -78,7 +78,7 @@ func TestGraphSourceAndUnknownFileErrorsRemainFailures(t *testing.T) {
 		writeFixture(t, root, name, "source fixture\n")
 		extracts := 0
 		f := initRunner(t, root, func(c invocation) (string, error) {
-			if c.Path == "/tools/git" {
+			if c.Path == fixtureExecutable(root, "git") {
 				return strings.Repeat("a", 40), nil
 			}
 			extracts++
@@ -137,12 +137,12 @@ func TestChangedPartialSerenaOutputIsPreserved(t *testing.T) {
 func TestApprovedBrokenGlobalCLIUsesPinnedProjectCopy(t *testing.T) {
 	root := t.TempDir()
 	local := filepath.Join(root, ".agent-team", "dependencies", "bin", executable("graphify"))
-	f := &fakeRunner{paths: map[string]string{"graphify": "/global/graphify", "uv": "/tools/uv"}}
+	f := &fakeRunner{paths: map[string]string{"graphify": fixtureExecutable(root, "graphify"), "uv": fixtureExecutable(root, "uv")}}
 	f.run = func(ctx context.Context, c invocation) (string, error) {
-		if c.Path == "/global/graphify" {
+		if c.Path == fixtureExecutable(root, "graphify") {
 			return "", errors.New("incompatible installed version")
 		}
-		if c.Path == "/tools/uv" {
+		if c.Path == fixtureExecutable(root, "uv") {
 			return "", os.WriteFile(local, []byte("fixture"), 0700)
 		}
 		if c.Path == local {
@@ -156,11 +156,11 @@ func TestApprovedBrokenGlobalCLIUsesPinnedProjectCopy(t *testing.T) {
 		t.Fatalf("repair preview %#v %v", preview, err)
 	}
 	got, err := prepare(context.Background(), root, []string{"graphify"}, true, true, f)
-	if err != nil || !got[0].Available || got[0].Path != local || got[0].RepairSourcePath != "/global/graphify" {
+	if err != nil || !got[0].Available || got[0].Path != local || got[0].RepairSourcePath != fixtureExecutable(root, "graphify") {
 		t.Fatalf("repair %#v %v", got, err)
 	}
 	for _, c := range f.calls {
-		if c.Path == "/global/graphify" && strings.Join(c.Args, " ") != "--version" {
+		if c.Path == fixtureExecutable(root, "graphify") && strings.Join(c.Args, " ") != "--version" {
 			t.Fatalf("mutated global CLI %#v", c)
 		}
 	}
@@ -236,12 +236,12 @@ func TestUnsupportedGlobalCommandAllowsApprovedScopedRepair(t *testing.T) {
 			writeFixture(t, root, "main.go", "package fixture\n")
 			local := filepath.Join(root, ".agent-team", "dependencies", "bin", executable("serena"))
 			installs := 0
-			f := &fakeRunner{paths: map[string]string{"serena": "/global/serena", "uv": "/tools/uv"}}
+			f := &fakeRunner{paths: map[string]string{"serena": fixtureExecutable(root, "serena"), "uv": fixtureExecutable(root, "uv")}}
 			f.run = func(_ context.Context, c invocation) (string, error) {
 				if strings.Join(c.Args, " ") == "--version" {
 					return "Serena 1.0.0", nil
 				}
-				if c.Path == "/tools/uv" {
+				if c.Path == fixtureExecutable(root, "uv") {
 					installs++
 					return "", os.WriteFile(local, []byte("scoped fixture"), 0700)
 				}
@@ -259,10 +259,10 @@ func TestUnsupportedGlobalCommandAllowsApprovedScopedRepair(t *testing.T) {
 				t.Fatal(err)
 			}
 			if unsupported {
-				if installs != 1 || got[0].Path != local || got[0].RepairSourcePath != "/global/serena" {
+				if installs != 1 || got[0].Path != local || got[0].RepairSourcePath != fixtureExecutable(root, "serena") {
 					t.Fatalf("unsupported retry reused global %#v installs%d", got, installs)
 				}
-			} else if installs != 0 || got[0].Path != "/global/serena" {
+			} else if installs != 0 || got[0].Path != fixtureExecutable(root, "serena") {
 				t.Fatalf("project error triggered reinstall %#v", got)
 			}
 		})
