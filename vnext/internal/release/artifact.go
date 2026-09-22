@@ -32,7 +32,7 @@ func BuildArtifact(root, output string, manifest Manifest) (Artifact, error) {
 			return Artifact{}, pathErr
 		}
 		body, readErr := os.ReadFile(full)
-		if readErr != nil || sha256Hex(body) != manifest.Checksums[path] {
+		if readErr != nil || sha256Hex(body) != manifest.Checksums[path] || path == manifest.Executable && !executableModulesMatch(body, manifest) {
 			archive.Close()
 			file.Close()
 			return Artifact{}, core.ErrRevision
@@ -78,6 +78,9 @@ func validateManifest(manifest Manifest) error {
 		return core.ErrRevision
 	}
 	if !sort.StringsAreSorted(manifest.Files) || !contains(manifest.Files, manifest.Executable) {
+		return core.ErrRevision
+	}
+	if !validGoModules(manifest.GoModules) {
 		return core.ErrRevision
 	}
 	seen := map[string]bool{}

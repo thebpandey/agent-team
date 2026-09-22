@@ -88,15 +88,15 @@ test("landing-page workflow board is current and has a useful accessible descrip
   const index = await read("index.html");
   assert.match(index, /class="hero-board" role="img" aria-labelledby="hero-board-title hero-board-desc"/);
   assert.match(index, /same Git project, either host/);
-  assert.match(index, /Bounded work/);
+  assert.match(index, /Agree on the work and files to change/);
   assert.match(index, /Build \+ review/);
   assert.doesNotMatch(index, /agent-team-banner-ultrawide\.webp/);
   const version = (await read("vnext/VERSION")).trim();
   assert.ok(index.includes(`Agent-Team ${version} development flow`));
   assert.match(index, /aria-labelledby="flow-title flow-desc"/);
   assert.match(index, /<text x="1120" y="80">Release<\/text>/);
-  assert.match(index, /authorized target/);
-  assert.match(index, /FIX returns only the affected candidate to its writer/);
+  assert.match(index, /with your approval/);
+  assert.match(index, /Review findings go back to the agent that made the change/);
 });
 
 test("landing page links current source and the versioned native release", async () => {
@@ -377,12 +377,19 @@ test("native first-use settings require an accepted save and preserve targeted e
   assert.match(settings, /re-reads settings under the project mutation lock/);
   assert.match(settings, /review, tests, explicit pauses, task scope, or destination approval/);
   for (const [host, skill] of [["codex", codex], ["claude", claude]]) {
-    const save = `settings ${host}.developer.model=inherit --json`;
+    const save = `settings ${host}.<role>.model=inherit ${host}.<role>.effort=inherit --json`;
     assert.ok(settings.includes(save));
     assert.ok(setup.includes(save));
-    assert.ok(skill.includes(save));
-    assert.match(skill, /actually save/);
-    assert.match(skill, /settings revision beyond zero/);
+    assert.ok(skill.includes(`settings ${host}.<role>.model=<mapped-ID-or-inherit> ${host}.<role>.effort=<mapped-effort-or-inherit> ... --json`));
+    assert.match(skill, /every role the user wants inherited, actually save both fields as `inherit`/);
+    assert.match(skill, /Keep on first use, persist the shown preference.*revision advances/);
+    assert.match(skill, /all requested model\/effort answers/);
+    assert.match(skill, /never pin an observed runtime model or effort/);
+    for (const guide of [skill, setup, settings]) {
+      assert.match(guide, /every role the user wants inherited/i);
+      assert.match(guide, /preserve other\s+explicit choices/i);
+    }
+    for (const guide of [setup, settings]) assert.match(guide, /all requested roles/);
   }
 });
 
@@ -546,6 +553,26 @@ test("native host guidance requires real dispatch and observes uncertain cross-h
     assert.match(skill, /scoped installer\/Python preparation in that consent/);
     assert.match(skill, /never\s+rewrite global PATH or registry/);
     assert.match(skill, /do not resume setup or dispatch after `--refuse-kickoff` is rejected\/cancelled/);
+  }
+});
+
+test("native task and lifecycle guidance separates intent from actual host results", async () => {
+  for (const host of ["codex", "claude"]) {
+    const skill = await read(`vnext/${host}/SKILL.md`);
+    for (const action of ["observe_run", "repair_tracker", "provide_task_details", "resume", "observe_control"]) assert.ok(skill.includes("`" + action + "`"), `${host}: ${action}`);
+    assert.match(skill, /start retry does not cancel a pause/);
+    assert.match(skill, /deferred.*source files.*Git commit/is);
+    assert.ok(skill.includes(`task add --queue --from <task.json> --host ${host} --json`));
+    assert.ok(skill.includes(`task add --execute --from <task.json> --host ${host} --json`));
+    assert.ok(skill.includes(`one-off <feature|audit|review> --from <task.json> --host ${host} --json`));
+    assert.match(skill, /start.*,.*task add --execute.*,.*one-off.*same.*dispatch/is);
+    assert.match(skill, /read_only.*no writes/is);
+    assert.match(skill, /pending_handles.*actual host/is);
+    assert.match(skill, /unacknowledged_teams.*reconcile.*repeat/is);
+    assert.match(skill, /blocking_scopes.*remain held/is);
+    assert.match(skill, /--action ack --control-id <control_id> --run <run> --team <team> --task <task>/);
+    assert.match(skill, /paused.*stopped.*running/is);
+    assert.match(skill, /unsupported.*control.*report.*blocker/is);
   }
 });
 

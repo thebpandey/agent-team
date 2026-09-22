@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -26,8 +27,9 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/workflow"
 )
 
-// TestPhase1Acceptance keeps the command boundary deliberately shallow: Phase
-// 1 parses and reports actions, but never starts hosts or changes product files.
+// TestPhase1Acceptance exercises the CLI boundary without native services.
+// Task and one-off mutations must fail closed unless a native handler owns
+// their actual result; parsing alone never establishes creation or execution.
 func TestPhase1Acceptance(t *testing.T) {
 	ctx := context.Background()
 	root := testkit.GitRepo(t)
@@ -52,11 +54,11 @@ func TestPhase1Acceptance(t *testing.T) {
 		{"settings", []string{"settings", "runtime.kind=native", "--json"}, 0, cliEnvelope{Schema: 1, Action: "settings", Status: "accepted", Message: "settings accepted"}},
 		{"status", []string{"status", "--json"}, 0, cliEnvelope{Schema: 1, Action: "status", Status: "accepted", Message: "status accepted"}},
 		{"start deferred", []string{"start", "--run", "RUN-1", "--json"}, 2, cliEnvelope{Schema: 1, Action: "start", Status: "deferred", Message: "start deferred"}},
-		{"queue task", []string{"task", "add", "--queue", "queue work", "--json"}, 0, cliEnvelope{Schema: 1, Action: "task add", Status: "accepted", Message: "task add accepted"}},
-		{"execute deferred", []string{"task", "add", "--execute", "execute work", "--json"}, 2, cliEnvelope{Schema: 1, Action: "task add", Status: "deferred", Message: "task add deferred"}},
-		{"feature", []string{"one-off", "feature", "--objective", "feature work", "--json"}, 0, cliEnvelope{Schema: 1, Action: "one-off feature", Status: "accepted", Message: "one-off feature accepted"}},
-		{"audit", []string{"one-off", "audit", "--objective", "audit work", "--json"}, 0, cliEnvelope{Schema: 1, Action: "one-off audit", Status: "accepted", Message: "one-off audit accepted"}},
-		{"review", []string{"one-off", "review", "--objective", "review work", "--json"}, 0, cliEnvelope{Schema: 1, Action: "one-off review", Status: "accepted", Message: "one-off review accepted"}},
+		{"queue requires native handler", []string{"task", "add", "--queue", "queue work", "--json"}, 1, cliEnvelope{Schema: 1, Action: "task", Status: "rejected", Message: "transition: this action requires the native project handler"}},
+		{"execute requires native handler", []string{"task", "add", "--execute", "execute work", "--json"}, 1, cliEnvelope{Schema: 1, Action: "task", Status: "rejected", Message: "transition: this action requires the native project handler"}},
+		{"feature requires native handler", []string{"one-off", "feature", "--objective", "feature work", "--json"}, 1, cliEnvelope{Schema: 1, Action: "one-off", Status: "rejected", Message: "transition: this action requires the native project handler"}},
+		{"audit requires native handler", []string{"one-off", "audit", "--objective", "audit work", "--json"}, 1, cliEnvelope{Schema: 1, Action: "one-off", Status: "rejected", Message: "transition: this action requires the native project handler"}},
+		{"review requires native handler", []string{"one-off", "review", "--objective", "review work", "--json"}, 1, cliEnvelope{Schema: 1, Action: "one-off", Status: "rejected", Message: "transition: this action requires the native project handler"}},
 		{"pause", []string{"pause", "--scope", "team:TEAM-1", "--json"}, 1, cliEnvelope{Schema: 1, Action: "pause", Status: "rejected", Message: "transition"}},
 		{"inspect", []string{"inspect", "--run", "RUN-1", "--json"}, 0, cliEnvelope{Schema: 1, Action: "inspect", Status: "accepted", Message: "inspect accepted"}},
 		{"cleanup deferred", []string{"cleanup", "--team", "TEAM-1", "--json"}, 2, cliEnvelope{Schema: 1, Action: "cleanup", Status: "deferred", Message: "cleanup deferred"}},
@@ -65,6 +67,24 @@ func TestPhase1Acceptance(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assertCLIOutcome(t, ctx, root, tc.args, tc.code, tc.want)
+			if tc.args[0] == "task" || tc.args[0] == "one-off" {
+				for _, nativeCode := range []int{0, 1} {
+					var out bytes.Buffer
+					calls := 0
+					response := fmt.Sprintf(`{"ok":%t,"status":"needs_input","required_fields":["criteria"]}`, nativeCode == 0)
+					code := cli.Run(ctx, tc.args, core.Dependencies{ProjectRoot: root, Stdout: &out, Stderr: &out, Management: func(_ context.Context, args []string, stdout, _ io.Writer) int {
+						calls++
+						if !slices.Equal(args, tc.args) {
+							t.Fatalf("native request changed: got=%v want=%v", args, tc.args)
+						}
+						_, _ = io.WriteString(stdout, response)
+						return nativeCode
+					}})
+					if calls != 1 || code != nativeCode || out.String() != response {
+						t.Fatalf("native result replaced: calls=%d code=%d output=%q", calls, code, out.String())
+					}
+				}
+			}
 		})
 	}
 	testkit.RequireNoProjectWrites(t, root, beforeRoot)

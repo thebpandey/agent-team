@@ -162,7 +162,18 @@ func admissionAllowedUnlocked(ctx context.Context, state *store.Store, packet co
 	if !teamOK || !taskOK {
 		return core.ErrTransition
 	}
-	for _, scope := range []core.Scope{{Kind: core.ScopeProject, ID: manifest.Project}, {Kind: core.ScopeRun, ID: string(packet.RunID)}, {Kind: core.ScopeTeam, ID: string(packet.Team)}, {Kind: core.ScopeTask, ID: string(packet.Task)}} {
+	packet.Project = manifest.Project
+	return AdmissionBarriersAllowed(ctx, state, packet)
+}
+
+// AdmissionBarriersAllowed checks existing barriers before a new run or queue
+// reservation exists. The caller owns the project mutation guard and validates
+// its proposed run/team/task; AdmissionAllowed additionally checks membership.
+func AdmissionBarriersAllowed(ctx context.Context, state *store.Store, packet core.AssignmentPacket) error {
+	if err := validAdmissionPacket(ctx, packet); err != nil || state == nil || packet.Project == "" {
+		return core.ErrTransition
+	}
+	for _, scope := range []core.Scope{{Kind: core.ScopeProject, ID: packet.Project}, {Kind: core.ScopeRun, ID: string(packet.RunID)}, {Kind: core.ScopeTeam, ID: string(packet.Team)}, {Kind: core.ScopeTask, ID: string(packet.Task)}} {
 		var barrier record
 		err := state.ReadJSON(recordPath(packet.RunID, scope), 64<<10, &barrier)
 		if errors.Is(err, os.ErrNotExist) {

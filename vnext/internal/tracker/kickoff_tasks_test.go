@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -83,11 +84,131 @@ func TestKickoffTableMutationNeverRewritesUnknownContent(t *testing.T) {
 		t.Fatalf("mutation not readable: %#v %v", page, err)
 	}
 	before := string(got)
-	if _, err := tr.Create(context.Background(), core.Task{ID: "AT-4", Objective: "unrepresentable", Checks: []core.Check{{Name: "test", Command: []string{"go", "test"}}}}, page.TrackerRevision); err == nil {
-		t.Fatal("silently discarded task check")
+	if _, err := tr.Create(context.Background(), core.Task{ID: "AT-4", Objective: "invalid\nrow"}, page.TrackerRevision); err == nil {
+		t.Fatal("accepted an invalid table row")
 	}
 	got, _ = os.ReadFile(path)
 	if string(got) != before {
 		t.Fatal("failed mutation changed tracker")
+	}
+}
+
+func TestKickoffTableCreatesFullTaskWithoutLosingExistingContent(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "TASKS.md")
+	if err := os.WriteFile(path, []byte(kickoffTasks), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tr := NewTasksMD(path, store.New(root, core.DefaultConfig().Storage))
+	page, err := tr.Page(context.Background(), "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := core.Task{
+		ID: "AT-003", Objective: "Deliver full approved task", State: core.Ready, Dependencies: []core.TaskID{"AT-001"},
+		Criteria:      []string{"Accept | reject correctly", "Preserve \"quotes\"\nand lines"},
+		Checks:        []core.Check{{Name: "shell | check", Command: []string{"sh", "-c", `printf '%s' 'path\name | quoted'`, "literal\nargument"}}},
+		WritablePaths: []string{"src/**", "tests/**"}, Resources: []string{"db:fixture"}, EvidencePointers: []string{"docs/checks.md", "evidence|raw"},
+	}
+	created, err := tr.Create(context.Background(), want, page.TrackerRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := tr.Get(context.Background(), want.ID, created.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.RecordEnvelope = core.RecordEnvelope{}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("task details lost:\ngot %#v\nwant %#v", got, want)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeLines := strings.Split(kickoffTasks, "\n")
+	afterLines := strings.Split(string(data), "\n")
+	for _, line := range beforeLines {
+		found := false
+		for _, after := range afterLines {
+			if after == line || (strings.HasPrefix(line, "|") && strings.HasPrefix(after, line)) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("old table/custom/prose bytes changed: %q", line)
+		}
+	}
+	page, err = tr.Page(context.Background(), "", 100)
+	if err != nil || len(page.Tasks) != 3 || page.Tasks[0].Objective != "Preserve existing data" || len(page.Tasks[0].Checks) != 0 || !reflect.DeepEqual(page.Tasks[0].EvidencePointers, []string{"proof.md"}) {
+		t.Fatalf("extension changed old task facts: %#v %v", page, err)
+	}
+	header := strings.Split(strings.Split(string(data), "## Active tasks\n")[1], "\n")[0]
+	want.ID = "AT-004"
+	if _, err := tr.Create(context.Background(), want, page.TrackerRevision); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated := strings.Split(strings.Split(string(data), "## Active tasks\n")[1], "\n")[0]; updated != header {
+		t.Fatal("repeated Create duplicated optional columns")
+	}
+}
+
+func TestKickoffTableRejectsMalformedStructuredCells(t *testing.T) {
+	for _, cell := range []string{`null`, `{"name":"not-an-array"}`, `[{"name":"test","command":"not-argv"}]`, `[{"name":"test","command":["go"],"unknown":true}]`, `[] []`} {
+		body := "## Active tasks\n| ID | Intended outcome / acceptance pointer | Status | Depends on | Checks |\n| --- | --- | --- | --- | --- |\n| AT-1 | task | ready | None | " + cell + " |\n"
+		if _, err := parseTasksMD([]byte(body)); err == nil {
+			t.Fatalf("accepted malformed check cell %s", cell)
+		}
+	}
+}
+
+func TestKickoffTableDraftDoesNotAddUnusedColumns(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "TASKS.md")
+	if err := os.WriteFile(path, []byte(kickoffTasks), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tr := NewTasksMD(path, store.New(root, core.DefaultConfig().Storage))
+	page, err := tr.Page(context.Background(), "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := tr.Create(context.Background(), core.Task{ID: "AT-DRAFT", Objective: "Refine requirements", State: core.Blocked}, page.TrackerRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := tr.Get(context.Background(), draft.ID, draft.Revision)
+	if err != nil || got.State != core.Blocked {
+		t.Fatalf("draft lost blocked state: %#v %v", got, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || strings.Contains(string(data), "| Checks |") {
+		t.Fatal("draft added unused columns")
+	}
+}
+
+func TestKickoffTableOversizedDetailsLeaveFileUntouched(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "TASKS.md")
+	if err := os.WriteFile(path, []byte(kickoffTasks), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tr := NewTasksMD(path, store.New(root, core.DefaultConfig().Storage))
+	page, err := tr.Page(context.Background(), "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tr.Create(context.Background(), core.Task{ID: "AT-BIG", Objective: "too large", Criteria: []string{strings.Repeat("x", 65<<10)}}, page.TrackerRevision)
+	if !errors.Is(err, core.ErrLimit) {
+		t.Fatalf("oversized details not bounded: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != kickoffTasks {
+		t.Fatal("failed extension changed existing tracker")
 	}
 }

@@ -24,8 +24,43 @@ Recipes were checked on 2026-09-22. Version probing establishes CLI availability
 
 `Initialize` is separately consent gated and never installs tools. Missing optional tools retain native fallback guidance. Unknown or redirected project state is preserved.
 
+Existing Serena YAML is parsed with the YAML organization's security-maintained
+[`go.yaml.in/yaml/v3` v3.0.5](https://github.com/yaml/go-yaml/releases/tag/v3.0.5),
+pinned in `go.mod` and `go.sum`. This is an intentional native library dependency:
+configuration syntax and scalar/list types require a YAML parser, while reused
+Serena installations need not expose a discoverable Python interpreter. Reads are
+limited to 64 KiB; custom fields are accepted and never rewritten. The compiled
+module appears in Go build information; release module provenance should include
+the pin alongside the existing file-oriented SBOM.
+
+Empty source projects and projects without a committed HEAD report `deferred`,
+with CLI availability preserved and `Prepared=false`. Planning can proceed;
+required capability gates still require preparation before dispatch. Failed
+Serena creation records a complete digest of its generated partial directory;
+an approved retry isolates only an unchanged matching partial tree. Customized
+or unknown output remains untouched.
+
+Graphify also defers committed empty or document-only inventories before consent
+or extraction. The conservative document suffix list comes from pinned 0.9.65
+`graphify/detect.py` (`.md`, `.mdx`, `.qmd`, `.skill`, `.txt`, `.rst`, `.html`).
+Unknown files, scripts and package manifests still reach the extractor, so actual
+extraction failures are retained rather than reclassified as empty projects.
+
+An approved attempt that receives a clear unsupported command/option/flag error
+from a global CLI records its exact path/version (plus executable digest when
+bounded). A later approved install can select a pinned project-local copy.
+Generic project/configuration errors do not request reinstall, and shared CLI
+files are never overwritten.
+
+Approved installs and project initialization share a recoverable mutation guard
+under `.agent-team/dependencies/coordination`. It uses the store's exact owner
+token and native process-identity liveness proof before recovering abandoned
+primary or recovery locks. Live or unverifiable owners are preserved. Legacy
+empty `.install-lock` and `.graphify-lock` markers are preserved but no longer
+control preparation; no process is killed to recover a lock.
+
 - Serena: `serena project create <root> --name <basename> --language <language> ...`. A bounded scan selects recognized source extensions and passes explicit supported language IDs, avoiding the upstream CLI's interactive inference prompt on mixed-language projects. Generated dependency/build folders are excluded; empty or unsupported source projects receive actionable guidance. The [v1.7.0 CLI](https://github.com/oraios/serena/blob/v1.7.0/src/serena/cli.py) defines these options and the [language-server enumeration](https://github.com/oraios/serena/blob/v1.7.0/src/solidlsp/ls_config.py) defines their values. The [configuration implementation](https://github.com/oraios/serena/blob/v1.7.0/src/serena/config/serena_config.py) supports `SERENA_HOME`. Initialization sets that variable to `.agent-team/dependencies/serena-home`, containing generated global config and project registration inside the project. Existing recognizable `.serena/project.yml` is reused. No language-server indexing or MCP registration runs.
-- Graphify: `graphify extract . --code-only --no-viz`, documented by the [upstream README](https://github.com/Graphify-Labs/graphify) and published `graphifyy` CLI. Extraction runs from the source project, writing to a unique staging directory under `.agent-team/dependencies/prepared` via explicit `GRAPHIFY_OUT`. Receipt schema 2 in `.agent-team/dependencies/prepared/graphify.json` binds the graph and entire output tree to the project, HEAD, executable path/version, and current tracked/untracked nonignored source-file bytes. Generated `.agent-team`, `.beads`, `.serena`, and `graphify-out` state is excluded from source fingerprints. Dirty or untracked source edits invalidate reuse even if HEAD is unchanged; approved preparation refreshes the graph. Source fingerprints are bounded to 50,000 regular files and 256 MiB; unsupported source shapes fail with guidance. Symlinks, special files, and altered output sidecars prevent reuse or replacement. HEAD and source bytes are rechecked before publishing; prior output survives extraction failures. Pinned upstream manifest/cache entries refer to the source root, so moving staged output preserves their meaning. Temporary staging files are removed.
+- Graphify: `graphify extract . --code-only --no-viz`, documented by the [upstream README](https://github.com/Graphify-Labs/graphify) and published `graphifyy` CLI. Extraction runs from the source project, writing to a unique staging directory under `.agent-team/dependencies/prepared` via explicit `GRAPHIFY_OUT`. Receipt schema 2 in `.agent-team/dependencies/prepared/graphify.json` binds the graph and entire output tree to the project, HEAD, executable path/version, and current tracked/untracked nonignored source-file bytes. Generated `.agent-team`, `.beads`, `.serena`, and `graphify-out` state is excluded from source fingerprints. Dirty or untracked source edits invalidate reuse even if HEAD is unchanged; approved preparation refreshes the graph. Source fingerprints record symlink target text without following external targets, plus gitlink object IDs and checked-out submodule sources. Each source tree is bounded to 50,000 entries and 256 MiB, nesting to eight submodules, and the overall fingerprint deadline to 30 seconds. Symlinks, special files, and altered **output** sidecars prevent reuse or replacement. HEAD and source bytes are rechecked before publishing; prior output survives extraction failures. Pinned upstream manifest/cache entries refer to the source root, so moving staged output preserves their meaning. Temporary staging files are removed.
 - `Prepared` describes project artifacts, not backend transactions, language-server operations or fresh-worker capability inheritance. Those remain independent workload checks.
 
 ## Other optional executables

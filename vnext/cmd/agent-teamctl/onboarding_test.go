@@ -108,7 +108,7 @@ func TestSetupRefusalPreservesReadyExistingInputs(t *testing.T) {
 		}
 	}
 	code, result := invokeOnboarding(t, "setup", "--refuse-kickoff")
-	if code != 2 || result["status"] != "rejected" {
+	if code != 0 || result["status"] != "cancelled" {
 		t.Fatalf("refusal: %d %+v", code, result)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".agent-team")); !os.IsNotExist(err) {
@@ -238,5 +238,65 @@ func TestPrepareOnlyDoesNotBindUnfinishedKickoff(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
 			t.Fatalf("premature setup write: %s", name)
 		}
+	}
+}
+
+func TestEmptyTrackerDirectsPlanningAndInvalidTrackerDirectsRepair(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	if code, r := invokeOnboarding(t, "setup", "--tracker", "tasks-md", "--approve"); code != 0 {
+		t.Fatalf("setup: %d %+v", code, r)
+	}
+	if code, r := invokeOnboarding(t, "settings", "codex.developer.model=inherit"); code != 0 {
+		t.Fatalf("settings: %d %+v", code, r)
+	}
+	for _, action := range []string{"status", "setup", "start"} {
+		code, r := invokeOnboarding(t, action)
+		if code != 0 || r["next_action"] != "project_kickoff" || r["status"] != "no_ready_tasks" {
+			t.Fatalf("empty %s: %d %+v", action, code, r)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "TASKS.md"), []byte("not a valid tracker"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"status", "setup", "start"} {
+		code, r := invokeOnboarding(t, action)
+		if code != 0 || r["next_action"] != "repair_tracker" {
+			t.Fatalf("invalid %s: %d %+v", action, code, r)
+		}
+	}
+}
+
+func TestRequestedDependencyFailureDoesNotAdvanceSetup(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	old := installDependencies
+	t.Cleanup(func() { installDependencies = old })
+	installDependencies = func(context.Context, string, []string, bool) ([]preparation.Dependency, error) {
+		return []preparation.Dependency{{Name: "graphify", Status: "failed", Error: "download failed"}}, nil
+	}
+	code, r := invokeOnboarding(t, "setup", "--install", "graphify", "--tracker", "tasks-md", "--approve")
+	if code != 0 || r["next_action"] != "resolve_dependencies" {
+		t.Fatalf("failed install: %d %+v", code, r)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agent-team/config.json")); !os.IsNotExist(err) {
+		t.Fatal("failed preparation advanced setup")
+	}
+}
+
+func TestDeferredPreparationPermitsPlanningWithoutClaimingPrepared(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	oldInstall, oldInitialize := installDependencies, initializeDependencies
+	t.Cleanup(func() { installDependencies, initializeDependencies = oldInstall, oldInitialize })
+	installDependencies = func(context.Context, string, []string, bool) ([]preparation.Dependency, error) {
+		return []preparation.Dependency{{Name: "serena", Available: true}}, nil
+	}
+	initializeDependencies = func(context.Context, string, []string, bool) ([]preparation.Dependency, error) {
+		return []preparation.Dependency{{Name: "serena", Available: true, Status: "deferred"}}, nil
+	}
+	code, r := invokeOnboarding(t, "setup", "--prepare-only", "--install", "serena", "--approve")
+	if code != 0 || r["status"] != "deferred" || r["next_action"] != "project_kickoff" {
+		t.Fatalf("deferred: %d %+v", code, r)
 	}
 }

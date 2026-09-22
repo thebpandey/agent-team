@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // Initialize prepares selected project state, without installing executables or
@@ -43,6 +45,15 @@ func initialize(ctx context.Context, root string, names []string, approved bool,
 		if !d.Available {
 			continue
 		}
+		var release func() error
+		if approved && (d.Name == "beads" || d.Name == "serena" || d.Name == "graphify") {
+			guard, err := acquirePreparationLock(ctx, root, "initialize-"+d.Name)
+			if err != nil {
+				preparationFailure(d, err)
+				continue
+			}
+			release = guard.Release
+		}
 		switch d.Name {
 		case "beads", "serena":
 			initializeConfig(ctx, root, d, approved, run)
@@ -51,6 +62,11 @@ func initialize(ctx context.Context, root string, names []string, approved bool,
 		default:
 			d.Prepared = true
 			d.Guidance = "CLI requires no project initialization. " + d.Guidance
+		}
+		if release != nil {
+			if err := release(); err != nil {
+				preparationFailure(d, err)
+			}
 		}
 	}
 	return deps, nil
@@ -64,10 +80,15 @@ func initializeConfig(ctx context.Context, root string, d *Dependency, approved 
 		artifact = "project.yml"
 	}
 	path := filepath.Join(root, dir, artifact)
-	data, readErr := readProjectFile(root, path, 1<<20)
+	limit := int64(1 << 20)
+	if d.Name == "serena" {
+		limit = 64 << 10
+	}
+	data, readErr := readProjectFile(root, path, limit)
 	if readErr == nil && configured(d.Name, data) {
 		if d.Name == "beads" {
 			if err := probeBeadsBackend(ctx, root, d.Path, run); err != nil {
+				recordUnsupportedFailure(root, d, approved, err)
 				preparationFailure(d, err)
 				return
 			}
@@ -77,8 +98,35 @@ func initializeConfig(ctx context.Context, root string, d *Dependency, approved 
 		return
 	}
 	if _, err := os.Lstat(filepath.Join(root, dir)); err == nil || !os.IsNotExist(err) {
-		needsReview(d, "Existing "+dir+" is not recognized as a complete project configuration. Review or move it explicitly before retrying; setup preserves it.")
-		return
+		retried := false
+		if d.Name == "serena" && approved {
+			cleanup, ok, retryErr := recoverSerenaPartial(root)
+			if retryErr != nil {
+				preparationFailure(d, retryErr)
+				return
+			}
+			if ok {
+				defer cleanup()
+				retried = true
+			}
+		}
+		if !retried {
+			needsReview(d, "Existing "+dir+" is not recognized as a complete project configuration. Review or move it explicitly before retrying; setup preserves it.")
+			return
+		}
+	}
+	var languages []string
+	if d.Name == "serena" {
+		var err error
+		languages, err = serenaLanguages(root)
+		if errors.Is(err, errNoSource) {
+			deferPreparation(d, "Project planning can continue. Add source files, then rerun setup to prepare Serena.")
+			return
+		}
+		if err != nil {
+			preparationFailure(d, err)
+			return
+		}
 	}
 	if !approved {
 		needsReview(d, "Approve project initialization with setup --install "+d.Name+" --approve.")
@@ -89,11 +137,6 @@ func initializeConfig(ctx context.Context, root string, d *Dependency, approved 
 		call.Args = []string{"init", "--skip-hooks", "--skip-agents", "--non-interactive", "--init-if-missing"}
 		call.Env["BEADS_DIR"] = filepath.Join(root, ".beads")
 	} else {
-		languages, err := serenaLanguages(root)
-		if err != nil {
-			preparationFailure(d, err)
-			return
-		}
 		home := filepath.Join(root, ".agent-team", "dependencies", "serena-home")
 		if err := ensureDirectory(root, home); err != nil {
 			preparationFailure(d, err)
@@ -107,11 +150,19 @@ func initializeConfig(ctx context.Context, root string, d *Dependency, approved 
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+	if d.Name == "serena" {
+		defer func() {
+			if !d.Prepared {
+				_ = recordSerenaPartial(root)
+			}
+		}()
+	}
 	if _, err := run.execute(callCtx, call); err != nil {
+		recordUnsupportedFailure(root, d, approved, err)
 		preparationFailure(d, err)
 		return
 	}
-	data, err := readProjectFile(root, path, 1<<20)
+	data, err := readProjectFile(root, path, limit)
 	if err != nil {
 		preparationFailure(d, fmt.Errorf("initializer did not produce readable project configuration: %w", err))
 		return
@@ -122,6 +173,7 @@ func initializeConfig(ctx context.Context, root string, d *Dependency, approved 
 	}
 	if d.Name == "beads" {
 		if err := probeBeadsBackend(ctx, root, d.Path, run); err != nil {
+			recordUnsupportedFailure(root, d, approved, err)
 			preparationFailure(d, err)
 			return
 		}
@@ -149,12 +201,44 @@ func probeBeadsBackend(ctx context.Context, root, path string, run runner) error
 	return nil
 }
 
-var projectNameLine = regexp.MustCompile(`(?m)^project_name:[ \t]*[^\s#][^\r\n]*$`)
-var projectLanguagesLine = regexp.MustCompile(`(?m)^(?:language_servers|languages):`)
-
 func configured(name string, data []byte) bool {
 	if name == "serena" {
-		return projectNameLine.Match(data) && projectLanguagesLine.Match(data)
+		if len(data) > 64<<10 {
+			return false
+		}
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		var config map[string]any
+		if decoder.Decode(&config) != nil {
+			return false
+		}
+		var trailing any
+		if decoder.Decode(&trailing) != io.EOF {
+			return false
+		}
+		project, ok := config["project_name"].(string)
+		if !ok || strings.TrimSpace(project) == "" {
+			return false
+		}
+		value, ok := config["language_servers"]
+		if !ok {
+			value = config["languages"]
+		}
+		languages, ok := value.([]any)
+		if !ok || len(languages) == 0 {
+			return false
+		}
+		for _, value := range languages {
+			language, ok := value.(string)
+			if !ok || strings.TrimSpace(language) == "" {
+				return false
+			}
+		}
+		if value, ok := config["read_only"]; ok {
+			if _, ok := value.(bool); !ok {
+				return false
+			}
+		}
+		return true
 	}
 	var metadata map[string]json.RawMessage
 	if json.Unmarshal(data, &metadata) != nil {
@@ -197,10 +281,6 @@ func initializeGraph(ctx context.Context, root string, d *Dependency, approved b
 		needsReview(d, "Existing graphify-out has no matching Agent-Team code-only receipt. Review or move it explicitly before retrying; setup preserves it.")
 		return
 	}
-	if !approved && !owned {
-		needsReview(d, "Approve offline project extraction with setup --install graphify --approve.")
-		return
-	}
 	git, err := run.lookPath("git")
 	if err != nil {
 		preparationFailure(d, errors.New("Git is required to bind Graphify preparation to HEAD"))
@@ -212,12 +292,16 @@ func initializeGraph(ctx context.Context, root string, d *Dependency, approved b
 	head = strings.TrimSpace(head)
 	decoded, decodeErr := hex.DecodeString(head)
 	if err != nil || decodeErr != nil || (len(decoded) != 20 && len(decoded) != 32) {
-		preparationFailure(d, errors.New("Graphify requires a committed Git HEAD; commit the project and retry"))
+		deferPreparation(d, "Project planning can continue. Create a first Git commit, then rerun setup to prepare Graphify.")
 		return
 	}
-	sourceDigest, err := graphSourceDigest(ctx, root, git, run)
+	sourceDigest, potentialCode, err := graphSourceInventory(ctx, root, git, run)
 	if err != nil {
 		preparationFailure(d, err)
+		return
+	}
+	if !potentialCode {
+		deferPreparation(d, "Project planning can continue. Add source code, then rerun setup to prepare Graphify.")
 		return
 	}
 	if owned && receipt.Revision == head && receipt.Path == d.Path && receipt.Version == d.Version && receipt.SourceDigest == sourceDigest {
@@ -233,14 +317,6 @@ func initializeGraph(ctx context.Context, root string, d *Dependency, approved b
 		preparationFailure(d, err)
 		return
 	}
-	lockPath := filepath.Join(filepath.Dir(receiptPath), ".graphify-lock")
-	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		preparationFailure(d, fmt.Errorf("Graphify preparation is locked: %w", err))
-		return
-	}
-	_ = lock.Close()
-	defer os.Remove(lockPath)
 	stage, err := os.MkdirTemp(filepath.Dir(receiptPath), ".graphify-stage-")
 	if err != nil {
 		preparationFailure(d, err)
@@ -253,6 +329,7 @@ func initializeGraph(ctx context.Context, root string, d *Dependency, approved b
 	defer stop()
 	_, err = run.execute(callCtx, invocation{Path: d.Path, Args: []string{"extract", ".", "--code-only", "--no-viz"}, Dir: root, Env: map[string]string{"GRAPHIFY_QUERY_LOG_DISABLE": "1", "GRAPHIFY_OUT": stage}})
 	if err != nil {
+		recordUnsupportedFailure(root, d, approved, err)
 		preparationFailure(d, err)
 		return
 	}
@@ -292,6 +369,14 @@ func initializeGraph(ctx context.Context, root string, d *Dependency, approved b
 	d.Prepared = true
 	d.Status = "prepared"
 	d.Guidance = "Offline code-only graph prepared at Git HEAD " + head + "; no host integration was registered."
+}
+
+func deferPreparation(d *Dependency, guidance string) {
+	d.Status = "deferred"
+	d.Deferred = true
+	d.Prepared = false
+	d.Error = ""
+	d.Guidance = guidance
 }
 
 func validGraph(data []byte) bool {

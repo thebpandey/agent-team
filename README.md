@@ -1,8 +1,8 @@
 # Agent-Team
 
-Created by [thebpandey](https://github.com/thebpandey). Agent-Team coordinates bounded development in Codex and Claude Code with isolated writers, independent review, verified integration, durable recovery, and explicit release authority.
+Created by [thebpandey](https://github.com/thebpandey). Agent-Team coordinates AI agents to build software from an approved plan, review the changes, and fix problems. You set the direction and approve important decisions; the team keeps tasks, progress, and focused working context together in Codex or Claude Code.
 
-The native version is **[v8.0.10](https://github.com/thebpandey/agent-team/releases/tag/v8.0.10)**. It publishes verified native downloads for Linux amd64 and Windows amd64; macOS source checks do not imply a published macOS binary. The historical Node package **v7.3.1** described in older sections is retained only for its historical runtime contract. The repository-root `SKILL.md` routes to this native release and is not the Node runtime. For release history, see the [changelog](CHANGELOG.md); for the compact operator walkthrough, see [Getting Started](GETTING_STARTED.md).
+The native version is **[v8.0.11](https://github.com/thebpandey/agent-team/blob/main/docs/releases/8.0.11-readiness.md)**, an **unpublished candidate** pending revision-bound release gates. The latest published native release remains [v8.0.10](https://github.com/thebpandey/agent-team/releases/tag/v8.0.10). The candidate targets verified Linux amd64 and Windows amd64 packages; macOS source checks do not imply a published macOS binary. The historical Node package **v7.3.1** described in older sections is retained only for its historical runtime contract. The repository-root `SKILL.md` routes to the native controller and is not the Node runtime. For release history, see the [changelog](CHANGELOG.md); for the compact operator walkthrough, see [Getting Started](GETTING_STARTED.md).
 
 ## vNext native transition
 
@@ -18,21 +18,34 @@ Inspect saved preferences with `agent-teamctl settings --json`. The current sour
 
 The current source uses `agent-teamctl start --host codex|claude --json` to reserve a packet with the selected tracker and host profile. The installed skill calls Codex's actual collaboration tool or Claude's actual Agent tool and acknowledges its returned handle before reporting a launch. A terminal command alone does not launch workers. Retained reuse requires completion, independent CLEAN review, observed idle state, and the same host handle; Claude also requires its runtime's supported resume facility. A foreign live handle is observed without duplication. These source changes do not announce a new published release.
 
+<details>
+<summary>Advanced: migrating a historical v7 installation</summary>
+
+These instructions apply to old v7 installations. New projects use the setup flow above.
+
 Existing v7 projects and hosts use the explicit native transaction `agent-teamctl cutover --request /absolute/path.json`. Start with the read-only `prepare` request described in `GETTING_STARTED.md`; it emits an exclusive canonical unsigned payload and detached-signature request skeleton while inventorying the project, independently observed remote, evidence, staged native install, and both legacy hosts. The v7 state and operation receipts are writable integrity records, not an immutable authorization root, so project cutover accepts only a short-lived Ed25519 approval whose signer is pinned outside the project. The fixed trust store is `/etc/agent-team/cutover-trust.json` on Unix and `C:\ProgramData\Agent-Team\cutover-trust.json` on Windows; it must be owned and writable only by root, Local System, or Administrators, schema 1, and contain a key-ID-sorted `keys` array. Unknown Windows ACL entries or reparse points fail closed. There is no v7-receipt, project-local, unsigned, or request-pinned fallback. The signed record binds project, operation, exact revision and task scope, canonical review/test/readiness IDs, paths and SHA-256 digests, recovery, configured remote URL/refs, and exact host activation inventory. The transaction observes that remote independently before mutation and again before receipt publication. The first project pass remains held; `reconcile` and rollback must match the recorded approval and receipt digest. Host requests are `host-cutover`, `host-status`, or `host-rollback`; they accept either the exact schema-4 v7 install receipt or an explicit canonical project plus the SHA-256 of its fixed, matching signed authority receipt—never a caller-selected receipt path or inventory—and preserve a durable rollback receipt. Unknown, modified, cross-project, or ambiguous v7 files and handlers are retained and fail closed.
 
 A legacy project that already uses Beads keeps its selected `.beads` tree in place. Native prepare, cutover, and rollback add only separate v8 authority and prepared-request artifacts; they do not convert, delete, rewrite, or re-home Beads files.
 
-The dashboard is local-only and read-only. Capacity caps remain enforced. Optional Serena, Graphify, LeanCTX, browser, and visual tools have bounded native fallbacks; absence never widens authority. See the [honest v8 benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and the [v8.0.10 revision-bound release checks](https://github.com/thebpandey/agent-team/blob/main/docs/releases/8.0.10-readiness.md) before treating a candidate as published.
+</details>
 
-Linux amd64: download `agent-teamctl-8.0.10.zip`, `RELEASE.json`, `SBOM.cdx.json`, and `SHA256SUMS` from the release into one empty folder. Run `sha256sum -c SHA256SUMS`, extract `agent-teamctl-8.0.10.zip` into that folder, then run `./agent-teamctl install --host both --json`. Use `codex` or `claude` instead of `both` to install one host.
+The dashboard is local-only and read-only. Capacity caps remain enforced. Optional Serena, Graphify, LeanCTX, browser, and visual tools have bounded native fallbacks; absence never widens authority. See the [honest v8 benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and the [v8.0.11 revision-bound release checks](https://github.com/thebpandey/agent-team/blob/main/docs/releases/8.0.11-readiness.md) before treating a candidate as published.
 
-Windows amd64: download only `agent-teamctl-8.0.10-windows-amd64.zip` and its `.sha256` sidecar. In PowerShell, verify the sidecar with `Get-FileHash -Algorithm SHA256`, extract the ZIP once into a new subfolder, then run `.\agent-teamctl.exe install --host both --json` from that extracted folder. Use `codex` or `claude` instead of `both` to install one host. The extracted folder contains the executable, the strict canonical release files, and the inner archive.
+The following v8.0.11 assets and download commands apply **after publication**; their planned names do not establish that downloads are available. Until then, use only a locally verified candidate distribution for candidate testing.
+
+Linux amd64: download `agent-teamctl-8.0.11.zip`, `RELEASE.json`, `SBOM.cdx.json`, and `SHA256SUMS` from the verified release into one empty folder. Run `sha256sum -c SHA256SUMS`, extract `agent-teamctl-8.0.11.zip` into that folder, then run `./agent-teamctl install --host both --json`. Use `codex` or `claude` instead of `both` to install one host.
+
+Windows amd64: download only `agent-teamctl-8.0.11-windows-amd64.zip` and its `.sha256` sidecar. In PowerShell, verify the sidecar with `Get-FileHash -Algorithm SHA256`, extract the ZIP once into a new subfolder, then run `.\agent-teamctl.exe install --host both --json` from that extracted folder. Use `codex` or `claude` instead of `both` to install one host. The extracted folder contains the executable, the strict canonical release files, and the inner archive.
 
 If install or update reports a conflicting Codex Agent-Team skill, it has not changed the target installation. Move the reported whole root to a recoverable backup outside `~/.codex/skills` and `~/.agents/skills`, then retry. Do not merge files from an unknown root into the native installation.
 
 ![Agent-Team overview: one orchestrator coordinates bounded implementation, independent review, integration, and release.](assets/guide/agent-team-essence-16x9.webp)
 
 ## What Agent-Team does
+
+See the [8.0.11 architecture changes](docs/architecture-8.0.11.md) for host/tool
+boundaries, first-use preparation, durable dispatch and recovery, and release
+dependency provenance.
 
 Agent-Team keeps one project orchestrator responsible for scope, task admission, coordination, integration, and release. Developers work on bounded assignments in separate worktrees. Independent reviewers verify exact revisions. Ordinary in-scope failures return to the owning developer for repair; they do not become repeated permission prompts.
 
@@ -75,9 +88,11 @@ The binary need not be on PATH. The skill first uses `command -v agent-teamctl`,
 
 The following first-use flow describes the current source. Invoke `$agent-team setup` in Codex or `/agent-team setup` in Claude Code; a first `start` also guides setup before dispatch. The skill runs `agent-teamctl setup --host codex|claude --json`, inspects existing facts, and follows any `needs_input` / `next_action` response.
 
+Setup offers numbered model and effort choices for each role from the active host's available options, with Keep and Inherit choices; no typed model IDs are required.
+
 Choose `tasks-md` or `beads` only when the project has no unambiguous selected tracker. After consent, `setup --tracker tasks-md --approve --host codex --json` creates only missing governance/tracker files; substitute the selected tracker and host. Existing files and task identities are reused.
 
-Project Kickoff is optional. Setup discovers nested Project Kickoff 0.5.0 handoffs and reuses their facts without repeating the interview. Approve the discovered handoff with `setup --approve-kickoff --approve --host codex --json`, or identify one explicitly with `--kickoff <path>`. Without a handoff, approved setup can create a minimal scaffold.
+Project Kickoff is optional. Setup discovers nested Project Kickoff 0.5.1 handoffs (0.5.0 remains supported) and reuses their facts without repeating the interview. Approve the discovered handoff with `setup --approve-kickoff --approve --host codex --json`, or identify one explicitly with `--kickoff <path>`. Without a handoff, approved setup can create a minimal scaffold.
 
 Find published Project Kickoff packages on its [latest release page](https://github.com/thebpandey/project-kickoff/releases/latest). The native integration described here remains the current source contract; a published package's version alone does not prove handoff compatibility.
 

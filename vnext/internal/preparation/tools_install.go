@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 )
@@ -134,18 +133,7 @@ func installPinnedArchive(ctx context.Context, dest string, archive pinnedArchiv
 	if err != nil {
 		return err
 	}
-	// Never replace an existing installation or follow a destination symlink.
-	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
-	if err != nil {
-		return err
-	}
-	_, writeErr := f.Write(binary)
-	closeErr := f.Close()
-	if writeErr != nil || closeErr != nil {
-		_ = os.Remove(dest)
-		return errors.Join(writeErr, closeErr)
-	}
-	return nil
+	return publishExecutable(dest, binary)
 }
 
 // Extract exactly one fixed member to memory; archive names never become paths

@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
@@ -23,9 +27,10 @@ const (
 // CommandFailure distinguishes a timed-out command, a normal non-zero exit,
 // and a failure to launch or transport the command.
 type CommandFailure struct {
-	Kind commandFailureKind
-	Exit int
-	Err  error
+	Kind       commandFailureKind
+	Exit       int
+	Err        error
+	Diagnostic string
 }
 
 func (e *CommandFailure) Error() string {
@@ -33,7 +38,11 @@ func (e *CommandFailure) Error() string {
 	case commandTimedOut:
 		return "beads command timed out or was cancelled"
 	case commandExited:
-		return fmt.Sprintf("beads command exited with status %d", e.Exit)
+		message := fmt.Sprintf("beads command exited with status %d", e.Exit)
+		if e.Diagnostic != "" {
+			message += ": " + e.Diagnostic
+		}
+		return message
 	default:
 		return fmt.Sprintf("beads command transport failed: %v", e.Err)
 	}
@@ -103,7 +112,7 @@ func (b *beads) Get(ctx context.Context, id core.TaskID, expected uint64) (core.
 			return task, nil
 		}
 	}
-	return core.Task{}, fmt.Errorf("%w: task %q", core.ErrPath, id)
+	return core.Task{}, fmt.Errorf("%w: task %q is outside the active Beads and prerequisite view; use bd show for unrelated history", core.ErrPath, id)
 }
 
 func (b *beads) Refresh(ctx context.Context, expected uint64) (core.TrackerPage, error) {
@@ -166,11 +175,11 @@ func (b *beads) Create(ctx context.Context, task core.Task, expected uint64) (co
 		return core.Task{}, fmt.Errorf("%w: creation would exceed %d tasks", core.ErrCapacity, capacity)
 	}
 	metadata, err := json.Marshal(struct {
-		Criteria         []string     `json:"criteria"`
-		Checks           []core.Check `json:"checks"`
-		WritablePaths    []string     `json:"writablePaths"`
-		Resources        []string     `json:"resources"`
-		EvidencePointers []string     `json:"evidencePointers"`
+		Criteria         []string     `json:"criteria,omitempty"`
+		Checks           []core.Check `json:"checks,omitempty"`
+		WritablePaths    []string     `json:"writablePaths,omitempty"`
+		Resources        []string     `json:"resources,omitempty"`
+		EvidencePointers []string     `json:"evidencePointers,omitempty"`
 	}{task.Criteria, task.Checks, task.WritablePaths, task.Resources, task.EvidencePointers})
 	if err != nil {
 		return core.Task{}, fmt.Errorf("%w: encode Beads metadata: %v", core.ErrPath, err)
@@ -204,6 +213,8 @@ func (b *beads) Create(ctx context.Context, task core.Task, expected uint64) (co
 	return core.Task{}, fmt.Errorf("%w: created Beads task %q was not found", core.ErrPath, task.ID)
 }
 
+// Archive terminally closes a Beads issue. Closed issues leave the active view;
+// only issues referenced as prerequisites remain as completed evidence.
 func (b *beads) Archive(ctx context.Context, id core.TaskID, reason string, expected uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -223,10 +234,33 @@ func (b *beads) Archive(ctx context.Context, id core.TaskID, reason string, expe
 	if err := requireRevision(expected, revision); err != nil {
 		return err
 	}
+	found := false
 	for _, task := range tasks {
-		if task.ID == id && task.Archived {
+		if task.ID == id {
+			found = true
+		}
+		if task.ID == id && (task.Archived || task.State == core.Integrated) {
 			return nil
 		}
+	}
+	if !found {
+		// Retrying an archive must not rewrite unrelated completed history just
+		// because that issue has correctly left the bounded active view.
+		response := b.runner.Run(ctx, "bd", "--readonly", "show", "--json", "--", string(id))
+		if err := commandResultError(response); err != nil {
+			return err
+		}
+		historical, err := parseBeads(response.Stdout)
+		if err != nil {
+			return err
+		}
+		if len(historical) != 1 || historical[0].ID != id {
+			return fmt.Errorf("%w: unexpected Beads archive identity", core.ErrRevision)
+		}
+		if historical[0].State == core.Integrated || historical[0].Archived {
+			return nil
+		}
+		return fmt.Errorf("%w: Beads archive target differs from active snapshot", core.ErrRevision)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -235,7 +269,7 @@ func (b *beads) Archive(ctx context.Context, id core.TaskID, reason string, expe
 }
 
 func (b *beads) snapshot(ctx context.Context) ([]core.Task, uint64, error) {
-	result := b.runner.Run(ctx, "bd", "list", "--json", "--all", "--limit", "0")
+	result := b.runner.Run(ctx, "bd", "--readonly", "list", "--json", "--limit", "1001")
 	if err := commandResultError(result); err != nil {
 		return nil, 0, err
 	}
@@ -243,11 +277,83 @@ func (b *beads) snapshot(ctx context.Context) ([]core.Task, uint64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	revision := trackerRevision(result.Stdout)
+	if len(tasks) > capacity {
+		return nil, 0, fmt.Errorf("%w: Beads active snapshot exceeds %d issues", core.ErrCapacity, capacity)
+	}
+	known := make(map[core.TaskID]bool, len(tasks))
+	for _, task := range tasks {
+		known[task.ID] = true
+	}
+	// The active list excludes closed history. Fetch only missing prerequisites,
+	// recursively and in bounded batches, so completion evidence stays available
+	// without allowing unrelated closed history to consume tracker capacity.
+	for {
+		missing := map[core.TaskID]bool{}
+		for _, task := range tasks {
+			for _, id := range task.Dependencies {
+				if !known[id] {
+					missing[id] = true
+				}
+			}
+		}
+		if len(missing) == 0 {
+			break
+		}
+		if len(tasks)+len(missing) > capacity {
+			return nil, 0, fmt.Errorf("%w: active Beads issues and prerequisite evidence exceed %d", core.ErrCapacity, capacity)
+		}
+		ids := make([]string, 0, len(missing))
+		for id := range missing {
+			if validateTaskID(id) != nil || len(id) > 128 {
+				return nil, 0, fmt.Errorf("%w: invalid Beads prerequisite ID", core.ErrPath)
+			}
+			ids = append(ids, string(id))
+		}
+		sort.Strings(ids)
+		for offset := 0; offset < len(ids); offset += 64 {
+			end := min(offset+64, len(ids))
+			args := append([]string{"--readonly", "show", "--json", "--"}, ids[offset:end]...)
+			response := b.runner.Run(ctx, "bd", args...)
+			if err := commandResultError(response); err != nil {
+				return nil, 0, err
+			}
+			prerequisites, err := parseBeads(response.Stdout)
+			if err != nil {
+				return nil, 0, err
+			}
+			requested := map[core.TaskID]bool{}
+			for _, id := range ids[offset:end] {
+				requested[core.TaskID(id)] = true
+			}
+			if len(prerequisites) != len(requested) {
+				return nil, 0, fmt.Errorf("%w: incomplete Beads prerequisite response", core.ErrRevision)
+			}
+			for _, task := range prerequisites {
+				if !requested[task.ID] || known[task.ID] || (task.State != core.Integrated && !task.Archived) {
+					return nil, 0, fmt.Errorf("%w: Beads prerequisite differs from active snapshot", core.ErrRevision)
+				}
+				known[task.ID] = true
+				tasks = append(tasks, task)
+			}
+		}
+	}
+	revision := beadsRevision(tasks)
 	for index := range tasks {
 		tasks[index].Revision = revision
 	}
 	return tasks, revision, nil
+}
+
+// Bind CAS to the complete task view, including fetched prerequisite facts,
+// independently of list/show response order and unrelated observation fields.
+func beadsRevision(tasks []core.Task) uint64 {
+	ordered := append([]core.Task{}, tasks...)
+	for i := range ordered {
+		ordered[i].RecordEnvelope = core.RecordEnvelope{}
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+	raw, _ := json.Marshal(ordered)
+	return trackerRevision(raw)
 }
 
 func commandResultError(result CommandResult) error {
@@ -258,9 +364,45 @@ func commandResultError(result CommandResult) error {
 		return &CommandFailure{Kind: commandTransport, Err: errors.Join(core.ErrPath, result.Transport)}
 	}
 	if result.Exit != 0 {
-		return &CommandFailure{Kind: commandExited, Exit: result.Exit}
+		return &CommandFailure{Kind: commandExited, Exit: result.Exit, Diagnostic: beadsDiagnostic(result.Stderr)}
 	}
 	return nil
+}
+
+var beadsURLCredentials = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+:[^\s/@]*@`)
+var beadsSecretAssignment = regexp.MustCompile(`(?i)((?:token|secret|password|credential|api[_-]?key|authorization)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)`)
+var beadsBearerCredential = regexp.MustCompile(`(?i)(bearer\s+)[^\s,;]+`)
+
+// A backend error is useful evidence, but command output must never echo known
+// environment credentials, credential-bearing URLs, or common secret fields.
+func beadsDiagnostic(stderr []byte) string {
+	message := string(stderr)
+	var secrets []string
+	for _, entry := range os.Environ() {
+		name, value, ok := strings.Cut(entry, "=")
+		name = strings.ToUpper(name)
+		if ok && len(value) >= 4 && (strings.Contains(name, "TOKEN") || strings.Contains(name, "SECRET") || strings.Contains(name, "PASSWORD") || strings.Contains(name, "CREDENTIAL") || strings.Contains(name, "KEY")) {
+			secrets = append(secrets, value)
+		}
+	}
+	sort.Slice(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
+	for _, secret := range secrets {
+		message = strings.ReplaceAll(message, secret, "[redacted]")
+	}
+	message = beadsURLCredentials.ReplaceAllString(message, "${1}[redacted]@")
+	message = beadsBearerCredential.ReplaceAllString(message, "${1}[redacted]")
+	message = beadsSecretAssignment.ReplaceAllString(message, "${1}[redacted]")
+	message = strings.Join(strings.Fields(message), " ")
+	message = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, message)
+	if len(message) > 512 {
+		message = strings.ToValidUTF8(message[:512], "") + "..."
+	}
+	return message
 }
 
 type beadTask struct {
@@ -330,7 +472,7 @@ func parseBeads(data []byte) ([]core.Task, error) {
 			"priority": true, "issue_type": true, "owner": true, "created_at": true, "created_by": true,
 			"updated_at": true, "dependency_count": true, "dependent_count": true, "comment_count": true,
 			"acceptance_criteria": true, "notes": true, "assignee": true, "started_at": true, "labels": true,
-			"parent": true,
+			"parent": true, "closed_at": true, "close_reason": true, "revision": true, "defer_until": true, "due_at": true,
 		}
 		for key, value := range fields {
 			if !allowed[key] || (bytes.Equal(bytes.TrimSpace(value), []byte("null")) && !beadsObservationalField(key)) {
@@ -390,7 +532,7 @@ func parseBeads(data []byte) ([]core.Task, error) {
 			}
 			allowedMetadata := map[string]bool{"criteria": true, "checks": true, "writablePaths": true, "resources": true, "evidencePointers": true}
 			for key, value := range metadataFields {
-				if !allowedMetadata[key] || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				if allowedMetadata[key] && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 					return nil, fmt.Errorf("%w: invalid Beads metadata field %q", core.ErrPath, key)
 				}
 			}
@@ -500,7 +642,7 @@ func parseBeadsDependencies(value json.RawMessage) ([]core.TaskID, error) {
 
 func beadsObservationalField(key string) bool {
 	switch key {
-	case "priority", "issue_type", "owner", "created_at", "created_by", "updated_at", "dependency_count", "dependent_count", "comment_count", "acceptance_criteria", "notes", "assignee", "started_at", "labels", "parent":
+	case "priority", "issue_type", "owner", "created_at", "created_by", "updated_at", "dependency_count", "dependent_count", "comment_count", "acceptance_criteria", "notes", "assignee", "started_at", "labels", "parent", "closed_at", "close_reason", "revision", "defer_until", "due_at":
 		return true
 	default:
 		return false
@@ -519,9 +661,11 @@ func beadsState(status string) (core.TaskState, bool, bool) {
 		return core.Reviewing, false, true
 	case "blocked":
 		return core.Blocked, false, true
-	case "paused":
+	case "paused", "deferred":
 		return core.Paused, false, true
-	case "closed", "archived":
+	case "closed":
+		return core.Integrated, false, true
+	case "archived":
 		return core.Archived, true, true
 	default:
 		return "", false, false
@@ -530,6 +674,28 @@ func beadsState(status string) (core.TaskState, bool, bool) {
 
 func sameTask(a, b core.Task) bool {
 	a.RecordEnvelope, b.RecordEnvelope = core.RecordEnvelope{}, core.RecordEnvelope{}
+	// Empty optional lists and omitted lists describe the same task. Beads may
+	// omit empty metadata fields on output, including for a minimal task create.
+	for _, task := range []*core.Task{&a, &b} {
+		if len(task.Dependencies) == 0 {
+			task.Dependencies = nil
+		}
+		if len(task.Criteria) == 0 {
+			task.Criteria = nil
+		}
+		if len(task.Checks) == 0 {
+			task.Checks = nil
+		}
+		if len(task.WritablePaths) == 0 {
+			task.WritablePaths = nil
+		}
+		if len(task.Resources) == 0 {
+			task.Resources = nil
+		}
+		if len(task.EvidencePointers) == 0 {
+			task.EvidencePointers = nil
+		}
+	}
 	left, _ := json.Marshal(a)
 	right, _ := json.Marshal(b)
 	return bytes.Equal(left, right)

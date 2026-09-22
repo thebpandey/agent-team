@@ -239,20 +239,27 @@ func TestInstallThenReuseProjectExecutable(t *testing.T) {
 }
 
 // Probe failure must preserve the existing installation and report it unusable.
-func TestUnhealthyExistingBeadsIsNotOverwritten(t *testing.T) {
+func TestUnhealthyProjectBeadsIsNotOverwritten(t *testing.T) {
 	root := t.TempDir()
+	local := filepath.Join(root, ".agent-team", "dependencies", "bin", executable("bd"))
+	if err := os.MkdirAll(filepath.Dir(local), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte("custom project binary"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	f := &fakeRunner{paths: map[string]string{"bd": "/selected/bd"}, run: func(_ context.Context, c invocation) (string, error) {
-		if c.Path != "/selected/bd" || strings.Join(c.Args, " ") != "version" {
+		if c.Path != local || strings.Join(c.Args, " ") != "version" {
 			t.Fatalf("unexpected command %#v", c)
 		}
 		return "", errors.New("broken executable")
 	}}
 	got, err := prepare(context.Background(), root, []string{"beads"}, true, true, f)
-	if err != nil || got[0].Status != "failed" || got[0].Available || got[0].Path != "/selected/bd" || len(f.calls) != 1 {
+	if err != nil || got[0].Status != "failed" || got[0].Available || got[0].Path != local || len(f.calls) != 1 {
 		t.Fatalf("got %#v, %v", got, err)
 	}
-	entries, _ := os.ReadDir(root)
-	if len(entries) != 0 {
+	data, _ := os.ReadFile(local)
+	if string(data) != "custom project binary" {
 		t.Fatal("overwrote an existing dependency")
 	}
 }

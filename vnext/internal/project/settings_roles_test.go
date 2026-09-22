@@ -67,8 +67,8 @@ func TestRoleSettingsPersistBothHostsAcrossAuthorityBindings(t *testing.T) {
 			for _, host := range []string{"codex", "claude"} {
 				for _, role := range []string{"orchestrator", "developer", "reviewer", "visual_reviewer"} {
 					profile, ok := view.Hosts[host].Roles[role]
-					if !ok || profile != (RoleProfile{}) {
-						t.Fatalf("missing inherited profile %s.%s: %s", host, role, encoded)
+					if !ok || profile != defaultRoleProfile(host, role) {
+						t.Fatalf("missing current default profile %s.%s: %s", host, role, encoded)
 					}
 				}
 			}

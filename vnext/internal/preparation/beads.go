@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -120,18 +119,7 @@ func installBeads(ctx context.Context, dest, goos, arch string, fetch fetcher) e
 	if len(data) == 0 {
 		return errors.New("verified release archive has no Beads executable")
 	}
-	// O_EXCL preserves a concurrently created or custom installation.
-	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
-	if err != nil {
-		return err
-	}
-	_, writeErr := f.Write(data)
-	closeErr := f.Close()
-	if writeErr != nil || closeErr != nil {
-		_ = os.Remove(dest)
-		return errors.Join(writeErr, closeErr)
-	}
-	return nil
+	return publishExecutable(dest, data)
 }
 
 func readBounded(r io.Reader, limit int64) ([]byte, error) {

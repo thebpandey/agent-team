@@ -1,7 +1,7 @@
 ---
 name: agent-team-visual-tester
 description: Perform Pro-only visual browser review for substantial UI work using Opus at high effort.
-model: claude-opus-5
+model: claude-opus-5-5
 effort: high
 disallowedTools: Agent
 ---

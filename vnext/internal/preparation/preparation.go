@@ -20,18 +20,20 @@ import (
 )
 
 type Dependency struct {
-	Name          string   `json:"name"`
-	Status        string   `json:"status"`
-	Available     bool     `json:"available"`
-	Prepared      bool     `json:"prepared"`
-	Path          string   `json:"path,omitempty"`
-	Version       string   `json:"version,omitempty"`
-	Source        string   `json:"source"`
-	Scope         string   `json:"scope,omitempty"`
-	Prerequisites []string `json:"prerequisites,omitempty"`
-	Guidance      string   `json:"guidance"`
-	Fallback      string   `json:"fallback"`
-	Error         string   `json:"error,omitempty"`
+	Name             string   `json:"name"`
+	Status           string   `json:"status"`
+	Available        bool     `json:"available"`
+	Prepared         bool     `json:"prepared"`
+	Deferred         bool     `json:"deferred,omitempty"`
+	RepairSourcePath string   `json:"repair_source_path,omitempty"`
+	Path             string   `json:"path,omitempty"`
+	Version          string   `json:"version,omitempty"`
+	Source           string   `json:"source"`
+	Scope            string   `json:"scope,omitempty"`
+	Prerequisites    []string `json:"prerequisites,omitempty"`
+	Guidance         string   `json:"guidance"`
+	Fallback         string   `json:"fallback"`
+	Error            string   `json:"error,omitempty"`
 }
 
 // All returns the accepted catalog names. An empty selection inspects this list.
@@ -132,12 +134,25 @@ func prepare(ctx context.Context, root string, names []string, install, approved
 			return out, err
 		}
 		d := inspect(ctx, root, r, run)
-		if !install || d.Available || d.Status == "failed" {
+		if install && d.Available && hasUnsupportedFailure(root, d) {
+			d.Available = false
+			d.Status = "failed"
+			d.Error = "The selected executable rejected a required command or option during approved preparation."
+		}
+		repairSource := ""
+		if d.Status == "failed" && d.Scope == "existing" {
+			repairSource = d.Path
+		}
+		if !install || d.Available || (d.Status == "failed" && repairSource == "") {
 			out = append(out, d)
 			continue
 		}
 		if !approved {
 			d.Status = "needs_consent"
+			if repairSource != "" {
+				d.RepairSourcePath = repairSource
+				d.Guidance = "Approve a pinned project-local installation to repair the unavailable " + d.Name + " capability. " + d.Fallback
+			}
 			out = append(out, d)
 			continue
 		}
@@ -154,16 +169,22 @@ func prepare(ctx context.Context, root string, names []string, install, approved
 			out = append(out, d)
 			continue
 		}
-		// A project lock prevents concurrent preparations from racing tool installers.
-		lockPath := filepath.Join(base, ".install-lock")
-		lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		guard, err := acquirePreparationLock(ctx, root, "install-"+r.name)
 		if err != nil {
 			d.Status = "failed"
-			d.Error = "Dependency preparation is locked; check " + lockPath + ": " + err.Error()
+			d.Error = "Dependency preparation lock: " + err.Error()
 			out = append(out, d)
 			continue
 		}
-		_ = lock.Close()
+		// Another approved preparation may have installed while we waited.
+		if current := inspect(ctx, root, r, run); current.Available && !hasUnsupportedFailure(root, current) {
+			if err := guard.Release(); err != nil {
+				current.Status = "failed"
+				current.Error = err.Error()
+			}
+			out = append(out, current)
+			continue
+		}
 		callCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 		var installErr error
 		if r.manager == "release" {
@@ -176,7 +197,7 @@ func prepare(ctx context.Context, root string, names []string, install, approved
 			}
 		}
 		cancel()
-		_ = os.Remove(lockPath)
+		installErr = errors.Join(installErr, guard.Release())
 		if installErr != nil {
 			d.Status = "failed"
 			d.Error = "Installation failed: " + installErr.Error()
@@ -184,6 +205,7 @@ func prepare(ctx context.Context, root string, names []string, install, approved
 			continue
 		}
 		d = inspect(ctx, root, r, run)
+		d.RepairSourcePath = repairSource
 		if !d.Available {
 			d.Status = "failed"
 			if d.Error == "" {

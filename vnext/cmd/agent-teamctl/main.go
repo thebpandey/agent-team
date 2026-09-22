@@ -51,6 +51,12 @@ func main() {
 }
 
 func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "task" || args[0] == "one-off") {
+		return runTaskAction(ctx, args, stdout, stderr)
+	}
+	if len(args) > 0 && (args[0] == "pause" || args[0] == "resume" || args[0] == "stop" || args[0] == "cancel") {
+		return runLifecycle(ctx, args, stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "setup" {
 		return runSetup(ctx, args, stdout, stderr)
 	}
@@ -220,7 +226,25 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	root := p.TopLevel
 	st := store.New(root, core.DefaultConfig().Storage)
+	values := startValues(action.Args)
+	var oneOff *run.Run
+	if teamID := core.TeamID(values["--team"]); teamID != "" {
+		team, readErr := run.NewRepositories(st).Teams.Read(ctx, teamID)
+		if readErr != nil {
+			return managementError(args, stdout, stderr, readErr)
+		}
+		manifest, readErr := run.NewRepositories(st).Runs.Read(ctx, team.RunID)
+		if readErr != nil {
+			return managementError(args, stdout, stderr, readErr)
+		}
+		if manifest.Mode == "one-off" {
+			oneOff = &manifest
+		}
+	}
 	settings, err := project.NewSettingsService(st).Inspect(ctx)
+	if oneOff != nil {
+		settings, err = optionalOneOffSettings(ctx, st)
+	}
 	if err != nil {
 		if _, statErr := os.Stat(filepath.Join(root, ".agent-team", "config.json")); errors.Is(statErr, os.ErrNotExist) {
 			if _, oldErr := os.Stat(filepath.Join(root, ".agent-team", "v8", "authority.json")); errors.Is(oldErr, os.ErrNotExist) {
@@ -229,7 +253,6 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		return managementError(args, stdout, stderr, err)
 	}
-	values := startValues(action.Args)
 	hostName := values["--host"]
 	if hostName == "" {
 		hostName = "codex"
@@ -237,12 +260,23 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if hostName != "codex" && hostName != "claude" {
 		return managementError(args, stdout, stderr, core.ErrSettings)
 	}
-	profile := settings.Profile(hostName, "developer")
+	role := "developer"
+	if oneOff != nil {
+		role = assignmentRole(*oneOff)
+	}
+	profile := settings.Profile(hostName, role)
 	var selected tracker.Tracker
 	var setup project.SetupResult
 	if values["--action"] == "" || values["--action"] == "next" {
-		selected, setup, err = projectTracker(ctx, root)
+		if oneOff != nil {
+			selected, err = start.TrackerForOneOff(*oneOff)
+		} else {
+			selected, setup, err = projectTracker(ctx, root)
+		}
 		if err != nil {
+			if values["--action"] == "" && values["--run"] == "" {
+				return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "needs_input", "next_action": "repair_tracker", "message": err.Error()})
+			}
 			return managementError(args, stdout, stderr, err)
 		}
 	}
@@ -251,23 +285,37 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "settings_required", "next_action": "settings", "message": "Choose role models and effort, or accept inherited defaults, before starting.", "settings": settings})
 		}
 		if err := requiredCapabilities(ctx, root, setup.Handoff.Capabilities); err != nil {
-			return managementError(args, stdout, stderr, err)
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "needs_input", "next_action": "prepare_dependencies", "message": err.Error()})
 		}
 		if p.Head == "" {
 			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "commit_required", "next_action": "project_kickoff", "message": "Commit the approved project scaffold before creating task worktrees."})
+		}
+		page, readErr := selected.Page(ctx, "", 1000)
+		if readErr != nil {
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "needs_input", "next_action": "repair_tracker", "message": "The selected tracker could not be read: " + readErr.Error()})
+		}
+		if page.TotalNonArchived == 0 {
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "no_ready_tasks", "next_action": "project_kickoff", "message": "The selected tracker is empty. Continue Project Kickoff or add a bounded task before starting."})
 		}
 		// The native command reserves work only. A Codex skill later performs the
 		// actual collaboration.spawn_agent call and acknowledges its exact handle.
 		manager := worktree.NewManager(root, root, st, tracker.NewCommandRunner())
 		result, err := start.AdmitDefaultRegistered(ctx, st, root, selected, manager, hostName, "HEAD")
 		if err != nil {
+			var held *start.AdmissionHeldError
+			if errors.As(err, &held) {
+				return startAdmissionError(args, stdout, stderr, err)
+			}
 			if errors.Is(err, core.ErrPhase) {
 				return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "no_ready_tasks", "next_action": "inspect_tracker", "message": "No approved task is ready with satisfied dependencies. Review the selected tracker or continue Project Kickoff."})
+			}
+			if strings.Contains(err.Error(), "needs approved writable paths") {
+				return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "status": "needs_input", "next_action": "task_details", "message": err.Error()})
 			}
 			return managementError(args, stdout, stderr, err)
 		}
 		if result.Packet.Owner == "codex" || result.Packet.Owner == "claude" {
-			profile = settings.Profile(result.Packet.Owner, "developer")
+			profile = settings.Profile(result.Packet.Owner, assignmentRole(result.Run))
 		}
 		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "actual_host": result.Packet.Owner, "observation_required": result.AlreadyAdmitted, "host_dispatch_required": result.HostDispatchRequired, "packet": result.Packet, "packet_digest": result.PacketDigest, "packet_path": result.PacketPath, "run": result.Run.ID, "team": result.Team.ID, "profile": profile, "already_admitted": result.AlreadyAdmitted})
 	}
@@ -284,14 +332,14 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return managementError(args, stdout, stderr, core.ErrPhase)
 		}
 		if selectedHost := retainedHost(manifest.Teams[0]); selectedHost != "" {
-			profile = settings.Profile(selectedHost, "developer")
+			profile = settings.Profile(selectedHost, assignmentRole(manifest))
 		}
 		team, queueErr := start.AppendQueue(ctx, st, selected, manifest.ID, manifest.Teams[0].ID, ids)
 		if queueErr != nil {
-			return managementError(args, stdout, stderr, queueErr)
+			return startAdmissionError(args, stdout, stderr, queueErr)
 		}
 		if delta, reserved, reserveErr := start.ReserveRetainedHead(ctx, st, selected, team.ID); reserveErr != nil {
-			return managementError(args, stdout, stderr, reserveErr)
+			return startAdmissionError(args, stdout, stderr, reserveErr)
 		} else if delta.AlreadyAdmitted {
 			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "queue_appended": true, "host_followup_required": false, "already_admitted": true, "observation_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": delta.Team, "profile": profile})
 		} else if reserved {
@@ -306,7 +354,7 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return managementError(args, stdout, stderr, currentErr)
 	}
 	if selectedHost := retainedHost(current); selectedHost != "" {
-		profile = settings.Profile(selectedHost, "developer")
+		profile = settings.Profile(selectedHost, role)
 	}
 	switch values["--action"] {
 	case "ack":
@@ -346,9 +394,45 @@ func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 	}
 	if err != nil {
-		return managementError(args, stdout, stderr, err)
+		return startAdmissionError(args, stdout, stderr, err)
 	}
 	return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "team": team, "profile": profile})
+}
+
+func startAdmissionError(args []string, stdout, stderr io.Writer, err error) int {
+	var held *start.AdmissionHeldError
+	if !errors.As(err, &held) {
+		return managementError(args, stdout, stderr, err)
+	}
+	output := map[string]any{"ok": true, "action": "start", "status": "admission_held", "admission_held": true, "host_dispatch_required": false, "host_followup_required": false, "control": held.Control}
+	addControlGuidance(output, []start.ControlResult{held.Control})
+	return managementResult(args, stdout, output)
+}
+
+func addControlGuidance(output map[string]any, controls []start.ControlResult) bool {
+	for _, control := range controls {
+		if !control.AdmissionHeld && !control.ObservationRequired {
+			continue
+		}
+		output["controls"] = controls
+		output["status"], output["next_action"] = "admission_held", "resume"
+		output["message"] = "Admission is held. Run resume for the listed scope when ready, then continue its existing workers."
+		if !control.AdmissionHeld {
+			output["status"] = control.Status
+		}
+		if control.ObservationRequired {
+			output["next_action"] = "observe_control"
+			output["message"] = "Complete the requested native host action for the listed exact handles and acknowledge its observation. Then resume the held scope when ready; keep existing assignments."
+			if control.Action == "resume" {
+				output["message"] = "Continue the pending exact handles through their native host using the existing assignments, then acknowledge running observations."
+			}
+			if len(control.UnacknowledgedTeams) > 0 {
+				output["message"] = "Reconcile the listed unacknowledged teams to recover their actual host handles, then repeat the control request and record its observations."
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func retainedHost(team run.TeamRecord) string {
@@ -610,11 +694,68 @@ func managementResult(args []string, stdout io.Writer, value map[string]any) int
 		}
 		return 0
 	}
-	_, err := fmt.Fprintf(stdout, "%s accepted\n", args[0])
+	ok, _ := value["ok"].(bool)
+	action, _ := value["action"].(string)
+	if action == "" && len(args) > 0 {
+		action = args[0]
+	}
+	if action == "" {
+		action = "Command"
+	}
+	message, _ := value["message"].(string)
+	status, _ := value["status"].(string)
+	dispatch, _ := value["host_dispatch_required"].(bool)
+	followup, _ := value["host_followup_required"].(bool)
+	observe, _ := value["observation_required"].(bool)
+	if message == "" && !ok {
+		message, _ = value["error"].(string)
+	}
+	if message == "" {
+		switch {
+		case status != "":
+			message = action + ": " + strings.ReplaceAll(status, "_", " ")
+		case !ok:
+			message = action + " failed"
+		case dispatch || followup:
+			message = action + ": packet reserved"
+		case observe:
+			message = action + ": existing reservation"
+		default:
+			message = action + " completed"
+		}
+	}
+	lines := []string{message}
+	var required []string
+	switch fields := value["required_fields"].(type) {
+	case []string:
+		required = fields
+	case []any:
+		for _, field := range fields {
+			if name, ok := field.(string); ok {
+				required = append(required, name)
+			}
+		}
+	}
+	if len(required) != 0 {
+		lines = append(lines, "Required: "+strings.Join(required, ", "))
+	}
+	if dispatch {
+		lines = append(lines, "Host dispatch required; acknowledge the returned worker handle.")
+	}
+	if followup {
+		lines = append(lines, "Host follow-up required; resume the retained worker and acknowledge its handle.")
+	}
+	if observe {
+		lines = append(lines, "Observe the existing worker before taking further action.")
+	}
+	if next, _ := value["next_action"].(string); next != "" {
+		lines = append(lines, "Next: "+strings.ReplaceAll(next, "_", " "))
+	}
+	_, err := fmt.Fprintln(stdout, strings.Join(lines, "\n"))
 	if err != nil {
 		return 1
 	}
-	if ok, _ := value["ok"].(bool); !ok {
+	if !ok {
 		return 1
 	}
 	return 0

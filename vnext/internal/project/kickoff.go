@@ -61,7 +61,7 @@ type kickoff050 struct {
 }
 
 // LoadKickoff reads approved handoff facts without writing project or runtime
-// state. The 0.5.0 envelope is a compatibility input, not a v7 runtime request.
+// state. The 0.5.0/0.5.1 envelope is a compatibility input, not a v7 runtime request.
 // Verification strings retain their shell semantics and are never executed here.
 func LoadKickoff(root, path string) (core.KickoffHandoff, error) {
 	var result core.KickoffHandoff
@@ -106,7 +106,7 @@ func decodeKickoffHandoff(canonical string, data []byte) (core.KickoffHandoff, e
 		if err := decodeKickoff(data, &source); err != nil {
 			return result, err
 		}
-		if source.SchemaVersion != 1 || source.Kind != "project-kickoff-agent-team-handoff" || source.Status != "approved" || source.ProjectKickoff.Version != "0.5.0" || !kickoffID.MatchString(source.ProjectKickoff.ApprovalID) || !kickoffID.MatchString(source.Project.ID) || source.AgentTeam.InitializationSource != "existing" {
+		if source.SchemaVersion != 1 || source.Kind != "project-kickoff-agent-team-handoff" || source.Status != "approved" || (source.ProjectKickoff.Version != "0.5.0" && source.ProjectKickoff.Version != "0.5.1") || !kickoffID.MatchString(source.ProjectKickoff.ApprovalID) || !kickoffID.MatchString(source.Project.ID) || source.AgentTeam.InitializationSource != "existing" {
 			return result, fmt.Errorf("%w: unsupported or unapproved Project Kickoff handoff", core.ErrSettings)
 		}
 		if !filepath.IsAbs(source.Project.Root) || filepath.Clean(source.Project.Root) != canonical || source.Project.Revision != current.Head || source.Plan.Branch != source.Project.Branch || strings.TrimSpace(source.Plan.Scope) == "" {

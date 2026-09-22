@@ -164,8 +164,21 @@ jobs:
           if ($nativeExit -ne 0) { throw "Installed Windows controller version failed: $nativeRaw" }
           $native = $nativeRaw | ConvertFrom-Json
           if ($native.schema -ne 1 -or $native.version -ne "${{ inputs.version }}" -or $native.revision -ne "${{ github.sha }}") { throw "Installed Windows native identity does not match release input" }
-          $installedSkill = Get-Content -Raw (Join-Path $env:CODEX_HOME "skills/agent-team/agent-team-vnext/SKILL.md")
-          if ($installedSkill -notmatch "version: `"${{ inputs.version }}`"") { throw "Installed Codex entrypoint version does not match release input" }
+          $installedManifest = Get-Content -Raw (Join-Path $manifestRoot "install-manifest.json") | ConvertFrom-Json
+          $hostHomes = @{ codex = $env:CODEX_HOME; claude = $env:CLAUDE_HOME }
+          foreach ($hostName in $hostHomes.Keys) {
+            $hostHome = $hostHomes[$hostName]
+            $skillPath = Join-Path $hostHome "skills/agent-team/SKILL.md"
+            $installedSkill = Get-Content -Raw $skillPath
+            if ($installedSkill -notmatch "version: `"${{ inputs.version }}`"") { throw "Installed $hostName entrypoint version does not match release input" }
+            $entrypoint = @($installedManifest.files | Where-Object { $_.role -eq "skill-entrypoint" -and $_.host -eq $hostName })
+            if ($entrypoint.Count -ne 1) { throw "Installed $hostName entrypoint ownership is ambiguous" }
+            if ([IO.Path]::GetFullPath($entrypoint[0].path) -cne [IO.Path]::GetFullPath($skillPath)) { throw "Installed $hostName entrypoint manifest path does not match discovery path" }
+            $skillDigest = (Get-FileHash -Algorithm SHA256 $skillPath).Hash.ToLowerInvariant()
+            if ($skillDigest -cne $entrypoint[0].sha256 -or (Get-Item -LiteralPath $skillPath).Length -ne $entrypoint[0].bytes) { throw "Installed $hostName entrypoint bytes do not match ownership" }
+            $nestedSkill = Join-Path $hostHome "skills/agent-team/agent-team-vnext/SKILL.md"
+            if (Test-Path -LiteralPath $nestedSkill) { throw "Installed $hostName entrypoint remains nested" }
+          }
       - name: Exercise extracted controller native-action protocol
         shell: pwsh
         working-directory: vnext

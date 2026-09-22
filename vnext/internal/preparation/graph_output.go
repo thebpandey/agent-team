@@ -19,6 +19,22 @@ import (
 // Hash tracked and untracked nonignored source files, excluding generated
 // tool state. File bytes detect further edits even when Git status is unchanged.
 func graphSourceDigest(ctx context.Context, root, git string, run runner) (string, error) {
+	digest, _, err := graphSourceInventory(ctx, root, git, run)
+	return digest, err
+}
+
+func graphSourceInventory(ctx context.Context, root, git string, run runner) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	potentialCode := false
+	digest, err := graphSourceDigestAt(ctx, root, git, run, 0, &potentialCode)
+	return digest, potentialCode, err
+}
+
+func graphSourceDigestAt(ctx context.Context, root, git string, run runner, depth int, potentialCode *bool) (string, error) {
+	if depth > 8 {
+		return "", errors.New("Graphify submodule nesting exceeds limit")
+	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	names, err := run.execute(callCtx, invocation{Path: git, Dir: root, Args: []string{"ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ".", ":(exclude).agent-team", ":(exclude)graphify-out", ":(exclude).serena", ":(exclude).beads"}, OutputLimit: 4 << 20})
@@ -57,8 +73,50 @@ func graphSourceDigest(ctx context.Context, root, git string, run runner) (strin
 		if err != nil {
 			return "", err
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			*potentialCode = true // Classification must not follow an external target.
+			target, err := os.Readlink(path)
+			if err != nil {
+				return "", err
+			}
+			_, _ = fmt.Fprintf(hash, "symlink %q %q\n", rel, target)
+			continue
+		}
+		if info.IsDir() {
+			stage, err := run.execute(callCtx, invocation{Path: git, Dir: root, Args: []string{"ls-files", "--stage", "-z", "--", rel}, OutputLimit: 4096})
+			if err != nil {
+				return "", err
+			}
+			record := strings.SplitN(strings.TrimSuffix(stage, "\x00"), "\t", 2)
+			fields := strings.Fields(record[0])
+			if len(record) != 2 || record[1] != rel || len(fields) != 3 || fields[0] != "160000" || fields[2] != "0" {
+				return "", fmt.Errorf("source directory is not a recognized gitlink: %s", rel)
+			}
+			oid, err := hex.DecodeString(fields[1])
+			if err != nil || (len(oid) != 20 && len(oid) != 32) {
+				return "", errors.New("invalid gitlink object identity")
+			}
+			_, _ = fmt.Fprintf(hash, "gitlink %q %s\n", rel, fields[1])
+			if gitInfo, err := os.Lstat(filepath.Join(path, ".git")); err == nil && gitInfo.Mode()&os.ModeSymlink == 0 {
+				subDigest, err := graphSourceDigestAt(callCtx, path, git, run, depth+1, potentialCode)
+				if err != nil {
+					return "", err
+				}
+				_, _ = fmt.Fprintf(hash, "submodule %q %s\n", rel, subDigest)
+			}
+			continue
+		}
 		if !info.Mode().IsRegular() {
 			return "", fmt.Errorf("Graphify source fingerprint requires regular files: %s", rel)
+		}
+		// Pinned Graphify 0.9.65 detect.py routes these extensions exclusively
+		// to document extraction, which --code-only skips. Be conservative:
+		// unknown files, extensionless scripts and package manifests still run
+		// the extractor, and real extractor errors remain failures.
+		switch strings.ToLower(filepath.Ext(rel)) {
+		case ".md", ".mdx", ".qmd", ".skill", ".txt", ".rst", ".html":
+		default:
+			*potentialCode = true
 		}
 		if info.Size() > 256<<20-total {
 			return "", errors.New("Graphify source fingerprint exceeds byte limit")

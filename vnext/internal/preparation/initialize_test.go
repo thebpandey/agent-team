@@ -54,7 +54,14 @@ func initRunner(t *testing.T, root string, mutate func(invocation) (string, erro
 
 func TestInitializeWithoutConsentDoesNotWriteOrRunMutation(t *testing.T) {
 	root := t.TempDir()
-	f := initRunner(t, root, func(c invocation) (string, error) { t.Fatalf("unexpected mutation: %#v", c); return "", nil })
+	writeFixture(t, root, "main.go", "package fixture\n")
+	f := initRunner(t, root, func(c invocation) (string, error) {
+		if c.Path == "/tools/git" {
+			return strings.Repeat("a", 40), nil
+		}
+		t.Fatalf("unexpected mutation: %#v", c)
+		return "", nil
+	})
 	got, err := initialize(context.Background(), root, []string{"beads", "serena", "graphify"}, false, f)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +72,7 @@ func TestInitializeWithoutConsentDoesNotWriteOrRunMutation(t *testing.T) {
 		}
 	}
 	entries, _ := os.ReadDir(root)
-	if len(entries) != 0 {
+	if len(entries) != 1 || entries[0].Name() != "main.go" {
 		t.Fatal("created files without consent")
 	}
 }
@@ -152,6 +159,7 @@ func TestExistingBeadsMetadataWithoutBackendIsNotPrepared(t *testing.T) {
 
 func TestGraphifyPreparationReusesSameRevisionAndRefreshesChangedHEAD(t *testing.T) {
 	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package fixture\n")
 	revision := strings.Repeat("a", 40)
 	extracts := 0
 	f := initRunner(t, root, func(c invocation) (string, error) {
@@ -240,6 +248,7 @@ func TestInvalidSerenaConfigIsNotReportedPrepared(t *testing.T) {
 
 func TestModifiedOwnedGraphIsPreserved(t *testing.T) {
 	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package fixture\n")
 	extracts := 0
 	f := initRunner(t, root, func(c invocation) (string, error) {
 		if c.Path == "/tools/git" {
@@ -264,6 +273,7 @@ func TestModifiedOwnedGraphIsPreserved(t *testing.T) {
 
 func TestGraphHEADChangeDuringExtractionDoesNotCertifyGraph(t *testing.T) {
 	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package fixture\n")
 	revision := strings.Repeat("a", 40)
 	f := initRunner(t, root, func(c invocation) (string, error) {
 		if c.Path == "/tools/git" {
@@ -298,6 +308,7 @@ func TestSymlinkedProjectConfigurationIsNotReused(t *testing.T) {
 
 func TestGraphifyOutputEnvironmentIsBoundToProject(t *testing.T) {
 	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package fixture\n")
 	t.Setenv("GRAPHIFY_OUT", t.TempDir())
 	f := initRunner(t, root, func(c invocation) (string, error) {
 		if c.Path == "/tools/git" {
@@ -320,6 +331,7 @@ func TestGraphifyChangedOrRedirectedSidecarsPreventRefresh(t *testing.T) {
 		for _, redirect := range []bool{false, true} {
 			t.Run(sidecar+"/"+map[bool]string{false: "modified", true: "symlink"}[redirect], func(t *testing.T) {
 				root := t.TempDir()
+				writeFixture(t, root, "main.go", "package fixture\n")
 				revision := strings.Repeat("a", 40)
 				extracts := 0
 				f := initRunner(t, root, func(c invocation) (string, error) {
@@ -379,6 +391,7 @@ func writeGraphFixture(t *testing.T, root string, c invocation, rel, content str
 
 func TestFailedGraphExtractionPreservesPublishedGraphAndCanRetry(t *testing.T) {
 	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package fixture\n")
 	revision := strings.Repeat("a", 40)
 	fail := false
 	f := initRunner(t, root, func(c invocation) (string, error) {

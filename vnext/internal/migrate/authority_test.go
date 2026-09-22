@@ -809,7 +809,7 @@ func authorityFixture(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	cmd := exec.Command("git", "init", "-q", project)
+	cmd := exec.Command("git", "init", "-q", "--initial-branch=master", project)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %s: %v", output, err)
 	}

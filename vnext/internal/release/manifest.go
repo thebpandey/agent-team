@@ -21,6 +21,7 @@ type Manifest struct {
 	Checksums    map[string]string `json:"checksums"`
 	SBOMPath     string            `json:"sbomPath"`
 	SBOMTool     string            `json:"sbomTool"`
+	GoModules    []GoModule        `json:"goModules,omitempty"`
 }
 
 type Artifact struct {
@@ -64,6 +65,9 @@ func BuildManifest(root, version, commit, spec string, files []string) (Manifest
 			return Manifest{}, core.ErrPath
 		}
 		m.Checksums[path] = sha256Hex(body)
+		if path == m.Executable {
+			m.GoModules = executableGoModules(body)
+		}
 	}
 	if _, ok := m.Checksums[m.Executable]; !ok {
 		return Manifest{}, core.ErrPath

@@ -25,7 +25,7 @@ func TestMain(m *testing.M) {
 			fmt.Fprintln(os.Stdout, "bd version 0.60.0 (fixture)")
 			os.Exit(0)
 		}
-		if strings.Join(os.Args[1:], " ") != "list --json --all --limit 0" {
+		if strings.Join(os.Args[1:], " ") != "--readonly list --json --limit 1001" {
 			os.Exit(2)
 		}
 		raw, err := os.ReadFile(os.Getenv("AGENT_TEAM_BD_FIXTURE_JSON"))

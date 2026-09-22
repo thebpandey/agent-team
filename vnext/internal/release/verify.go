@@ -50,7 +50,7 @@ func verifyArchiveFiles(files []*zip.File, manifest Manifest) error {
 		}
 		body, readErr := io.ReadAll(reader)
 		closeErr := reader.Close()
-		if readErr != nil || closeErr != nil || sha256Hex(body) != manifest.Checksums[entry.Name] {
+		if readErr != nil || closeErr != nil || sha256Hex(body) != manifest.Checksums[entry.Name] || entry.Name == manifest.Executable && !executableModulesMatch(body, manifest) {
 			return core.ErrRevision
 		}
 	}

@@ -93,6 +93,9 @@ func AppendQueue(ctx context.Context, st *store.Store, selected tracker.Tracker,
 		}
 		tasks := make([]core.Task, len(taskIDs))
 		for index, id := range taskIDs {
+			if err := AdmissionAllowed(ctx, st, core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: manifest.ID}, Team: current.ID, Task: id}); err != nil {
+				return err
+			}
 			if seen[id] {
 				return core.ErrRevision
 			}
@@ -145,6 +148,9 @@ func ReserveRetainedHead(ctx context.Context, st *store.Store, selected tracker.
 		}
 		manifest, err := repos.Runs.Read(ctx, team.RunID)
 		if err != nil {
+			return err
+		}
+		if err := AdmissionAllowed(ctx, st, core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: manifest.ID}, Team: team.ID, Task: team.Queue[0]}); err != nil {
 			return err
 		}
 		if team.IntentDigest != "" {
@@ -214,6 +220,9 @@ func AdmitDefaultRegistered(ctx context.Context, st *store.Store, project string
 	}
 	var result Result
 	err = withProjectLock(ctx, st, func() error {
+		if err := AdmissionAllowed(ctx, st, core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: prepared.Run.ID}, Team: prepared.Team.ID, Task: prepared.Batch.Tasks[0]}); err != nil {
+			return err
+		}
 		if ownerRun, found, ownerErr := existingTaskOwner(st, prepared.Batch.Tasks[0]); ownerErr != nil {
 			return ownerErr
 		} else if found && ownerRun != prepared.Run.ID {
@@ -245,6 +254,12 @@ func admitPrepared(ctx context.Context, st *store.Store, selected tracker.Tracke
 
 func admitPreparedLocked(ctx context.Context, st *store.Store, selected tracker.Tracker, prepared run.PreparedPlanAdmission, owner, worktree, base string) (Result, error) {
 	if err := validateBoundary(st, prepared, worktree, base); err != nil {
+		return Result{}, err
+	}
+	if len(prepared.Batch.Tasks) == 0 {
+		return Result{}, core.ErrBatch
+	}
+	if err := AdmissionAllowed(ctx, st, core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: prepared.Run.ID}, Team: prepared.Team.ID, Task: prepared.Batch.Tasks[0]}); err != nil {
 		return Result{}, err
 	}
 	if ownerRun, found, err := existingTaskOwner(st, prepared.Batch.Tasks[0]); err != nil {
@@ -323,7 +338,7 @@ func admitPreparedLocked(ctx context.Context, st *store.Store, selected tracker.
 	}
 	packet := core.AssignmentPacket{
 		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: currentRun.Project, RunID: currentRun.ID, WrittenAt: currentRun.WrittenAt, Revision: currentRun.Revision},
-		SpecRevision:   currentRun.SpecRevision, Task: task.ID, Team: team.ID, QueueFingerprint: team.QueueFingerprint,
+		SpecRevision:   assignmentSpecRevision(currentRun), Task: task.ID, Team: team.ID, QueueFingerprint: team.QueueFingerprint,
 		Owner: owner, Worktree: worktree, Base: base,
 		Objective: task.Objective, Criteria: task.Criteria, Scope: task.WritablePaths, Checks: task.Checks,
 		Resources: core.ResourceSnapshot{External: task.Resources}, NextAction: "host_dispatch_required",
@@ -464,6 +479,9 @@ func ConsumeForFollowup(ctx context.Context, st *store.Store, selected tracker.T
 		if err != nil {
 			return err
 		}
+		if err := AdmissionAllowed(ctx, st, core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: manifest.ID}, Team: team.ID, Task: team.Queue[1]}); err != nil {
+			return err
+		}
 		nextTask, err := selected.Get(ctx, team.Queue[1], manifest.TrackerRevision)
 		if err != nil || nextTask.ID != team.Queue[1] {
 			return fmt.Errorf("%w: queued follow-up task", core.ErrRevision)
@@ -563,6 +581,9 @@ func mutateTeamLocked(ctx context.Context, st *store.Store, runID core.RunID, te
 	next := currentTeam
 	if err := mutate(&next); err != nil {
 		return run.TeamRecord{}, err
+	}
+	if currentRun.Mode == "one-off" && len(next.Queue) == 0 {
+		next.Paths, next.Resources = nil, nil
 	}
 	slot := -1
 	for index := range currentRun.Teams {
@@ -741,6 +762,9 @@ func existingTaskOwner(st *store.Store, task core.TaskID) (core.RunID, bool, err
 func validateBoundary(st *store.Store, prepared run.PreparedPlanAdmission, worktree, base string) error {
 	if err := validateStoreProject(st, prepared.Run.Root); err != nil {
 		return err
+	}
+	if readOnlyOneOff(prepared.Run) {
+		return validateReadOnlyOneOffBoundary(prepared, worktree, base)
 	}
 	return validateWorktreeSpec(prepared, worktree, base)
 }

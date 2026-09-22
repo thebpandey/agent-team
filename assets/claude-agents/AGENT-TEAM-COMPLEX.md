@@ -1,7 +1,7 @@
 ---
 name: agent-team-complex
 description: Solve Sol-level Agent-Team implementation or debugging tasks at xhigh effort.
-model: claude-opus-5
+model: claude-opus-5-5
 effort: xhigh
 disallowedTools: Agent
 ---

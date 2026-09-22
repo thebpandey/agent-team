@@ -63,7 +63,7 @@ selected tracker before importing the resulting handoff. Dependency preparation
 does not prove that planning or task acceptance is complete.
 
 The current discovery path is `.project-kickoff/AGENT_TEAM_HANDOFF.json`.
-The loader supports the nested Project Kickoff 0.5.0 handoff contract. Reuse
+The loader supports nested Project Kickoff 0.5.1 and historical 0.5.0 handoffs. Reuse
 scope, checks, task identities, and tracker facts instead of interviewing the
 user again. Import after approval:
 
@@ -106,9 +106,12 @@ Read `settings --json` and present the requested host/roles using
 (coder alias), reviewer, and visual_reviewer model/effort preferences.
 Setup asks for settings while their saved revision is zero.
 
-Accepting inherited defaults is a real save. After consent, execute
-`settings codex.developer.model=inherit --json` in Codex or
-`settings claude.developer.model=inherit --json` in Claude. The revision advances
+For every role the user wants inherited, save both model and effort after consent:
+`settings codex.<role>.model=inherit codex.<role>.effort=inherit --json` in Codex or
+`settings claude.<role>.model=inherit claude.<role>.effort=inherit --json` in Claude.
+Repeat for all requested roles, or bundle assignments in one save. Preserve other
+explicit choices; saving developer alone does not make reviewer/visual reviewer
+inherit instead of their defaults. The revision advances
 even when the effective choice remains inherited. Inspection alone cannot
 complete this step. Cancel, no answer, or interruption saves nothing.
 

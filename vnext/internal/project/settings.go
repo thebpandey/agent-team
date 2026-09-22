@@ -37,7 +37,15 @@ type Settings struct {
 	Revision         uint64                 `json:"revision"`
 	Defaults         RunDefaults            `json:"defaults"`
 	Hosts            map[string]HostProfile `json:"hosts"`
+	ModelUpdates     []RoleModelUpdate      `json:"modelUpdates,omitempty"`
 	CodexDeveloper   RoleProfile            `json:"-"`
+}
+
+type RoleModelUpdate struct {
+	Host     string `json:"host"`
+	Role     string `json:"role"`
+	Previous string `json:"previous"`
+	Current  string `json:"current"`
 }
 
 // HostProfile keeps role preferences independent between native hosts.
@@ -57,7 +65,42 @@ func (s Settings) Profile(host, role string) RoleProfile {
 	if role == "coder" {
 		role = "developer"
 	}
-	return s.Hosts[host].Roles[role]
+	profile, exists := s.Hosts[host].Roles[role]
+	if !exists {
+		return defaultRoleProfile(host, role)
+	}
+	profile.Model = currentRoleModel(host, profile.Model)
+	return profile
+}
+
+func defaultRoleProfile(host, role string) RoleProfile {
+	if role == "orchestrator" || !knownRole(role) {
+		return RoleProfile{}
+	}
+	switch host {
+	case "codex":
+		return RoleProfile{Model: "gpt-6-sol"}
+	case "claude":
+		return RoleProfile{Model: "claude-opus-5-5"}
+	}
+	return RoleProfile{}
+}
+
+// Only former Agent-Team canonical recommendations move forward. Explicit
+// inherit, other families, dated pins, gateways, and unknown hosts stay intact.
+func currentRoleModel(host, model string) string {
+	if host == "codex" {
+		switch model {
+		case "gpt-5.6-sol":
+			return "gpt-6-sol"
+		case "gpt-5.6-luna":
+			return "gpt-6-luna"
+		}
+	}
+	if host == "claude" && model == "claude-opus-5" {
+		return "claude-opus-5-5"
+	}
+	return model
 }
 
 // SettingsService exposes read-only inspection and receipt-bound updates.
@@ -103,6 +146,11 @@ func (s *settingsService) Update(ctx context.Context, updates map[string]string)
 	}
 	if raw == nil {
 		raw = make(map[string]json.RawMessage)
+	}
+	// Persist effective defaults/migrations only with an explicit settings write.
+	// Inspect remains read-only, and nested extension fields are kept byte-safe.
+	if err := refreshRoleModels(raw); err != nil {
+		return Settings{}, err
 	}
 	if err := applySettingsUpdates(&record.Defaults, raw, updates); err != nil {
 		return Settings{}, err
@@ -224,7 +272,9 @@ func (s settingsState) load(binding settingsBinding) (Settings, map[string]json.
 	err := s.store.ReadJSON(settingsPath, core.DefaultConfig().Storage.CanonicalBytes, &document)
 	if errors.Is(err, os.ErrNotExist) {
 		profiles, _ := hostProfiles(nil)
-		return Settings{Schema: 1, BaseConfigDigest: binding.baseConfigDigest, ReceiptPath: binding.receiptPath, ReceiptDigest: binding.receiptDigest, Defaults: defaultRunDefaults(), Hosts: profiles}, nil, nil
+		record := Settings{Schema: 1, BaseConfigDigest: binding.baseConfigDigest, ReceiptPath: binding.receiptPath, ReceiptDigest: binding.receiptDigest, Defaults: defaultRunDefaults(), Hosts: profiles}
+		record.CodexDeveloper = record.Profile("codex", "developer")
+		return record, nil, nil
 	}
 	if err != nil {
 		return Settings{}, nil, err
@@ -248,6 +298,7 @@ func (s settingsState) load(binding settingsBinding) (Settings, map[string]json.
 	}
 	record.Hosts = profiles
 	record.CodexDeveloper = record.Profile("codex", "developer")
+	record.ModelUpdates = modelUpdates(document)
 	return record, document, nil
 }
 
@@ -349,6 +400,9 @@ func profileObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
 }
 
 func setRoleProfile(document map[string]json.RawMessage, host, role, field, value string) error {
+	if field == "model" {
+		value = currentRoleModel(host, value)
+	}
 	hosts, err := profileObject(document["hosts"])
 	if err != nil {
 		return err
@@ -399,6 +453,9 @@ func hostProfiles(document map[string]json.RawMessage) (map[string]HostProfile, 
 				return nil, err
 			}
 			profile := RoleProfile{}
+			if _, exists := roles[role]; !exists {
+				profile = defaultRoleProfile(host, role)
+			}
 			for field, destination := range map[string]*string{"model": &profile.Model, "effort": &profile.Effort} {
 				raw, exists := fields[field]
 				if !exists {
@@ -411,9 +468,73 @@ func hostProfiles(document map[string]json.RawMessage) (map[string]HostProfile, 
 					*destination = ""
 				}
 			}
+			profile.Model = currentRoleModel(host, profile.Model)
 			profiles[role] = profile
 		}
 		result[host] = HostProfile{Roles: profiles}
 	}
 	return result, nil
+}
+
+func refreshRoleModels(document map[string]json.RawMessage) error {
+	hosts, err := profileObject(document["hosts"])
+	if err != nil {
+		return err
+	}
+	for _, host := range []string{"codex", "claude"} {
+		hostValue, err := profileObject(hosts[host])
+		if err != nil {
+			return err
+		}
+		roles, err := profileObject(hostValue["roles"])
+		if err != nil {
+			return err
+		}
+		for _, role := range []string{"orchestrator", "developer", "reviewer", "visual_reviewer"} {
+			fields, err := profileObject(roles[role])
+			if err != nil {
+				return err
+			}
+			if _, exists := roles[role]; !exists {
+				if model := defaultRoleProfile(host, role).Model; model != "" {
+					if err := setRoleProfile(document, host, role, "model", model); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+			var model string
+			if raw, exists := fields["model"]; exists {
+				if json.Unmarshal(raw, &model) != nil {
+					return core.ErrRevision
+				}
+				if current := currentRoleModel(host, model); current != model {
+					if err := setRoleProfile(document, host, role, "model", current); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// modelUpdates is called only after hostProfiles validates known shapes.
+func modelUpdates(document map[string]json.RawMessage) []RoleModelUpdate {
+	hosts, _ := profileObject(document["hosts"])
+	var updates []RoleModelUpdate
+	for _, host := range []string{"codex", "claude"} {
+		hostValue, _ := profileObject(hosts[host])
+		roles, _ := profileObject(hostValue["roles"])
+		for _, role := range []string{"orchestrator", "developer", "reviewer", "visual_reviewer"} {
+			fields, _ := profileObject(roles[role])
+			var previous string
+			if json.Unmarshal(fields["model"], &previous) == nil {
+				if current := currentRoleModel(host, previous); current != previous {
+					updates = append(updates, RoleModelUpdate{Host: host, Role: role, Previous: previous, Current: current})
+				}
+			}
+		}
+	}
+	return updates
 }

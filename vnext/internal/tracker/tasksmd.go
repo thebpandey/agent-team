@@ -373,6 +373,7 @@ func parseTasksMD(data []byte) ([]core.Task, error) {
 type kickoffTable struct {
 	lines   []string
 	headers map[string]int
+	header  int
 	rows    map[core.TaskID]int
 	tasks   []core.Task
 	insert  int
@@ -408,6 +409,7 @@ func parseKickoffTable(data []byte) (kickoffTable, bool, error) {
 		return fail("missing header")
 	}
 	table.width = len(fields) - 2
+	table.header = header
 	for i, raw := range fields[1 : len(fields)-1] {
 		key := strings.ToLower(strings.TrimSpace(raw))
 		if _, duplicate := table.headers[key]; duplicate {
@@ -472,6 +474,27 @@ func parseKickoffTable(data []byte) (kickoffTable, bool, error) {
 		if evidence := cell("revision / evidence"); !kickoffEmpty(evidence) {
 			task.EvidencePointers = []string{evidence}
 		}
+		// Optional JSON cells retain per-task facts without creating another
+		// tracker. A blank cell leaves legacy acceptance/evidence pointers intact.
+		for _, field := range []struct {
+			name   string
+			target any
+		}{
+			{"criteria", &task.Criteria}, {"checks", &task.Checks},
+			{"writable paths", &task.WritablePaths}, {"resources", &task.Resources},
+			{"evidence pointers", &task.EvidencePointers},
+		} {
+			if raw := cell(field.name); raw != "" {
+				if err := decodeKickoffCell(raw, field.target); err != nil {
+					return fail("invalid " + field.name + " JSON cell")
+				}
+			}
+		}
+		for _, check := range task.Checks {
+			if strings.TrimSpace(check.Name) == "" || len(check.Command) == 0 || strings.TrimSpace(check.Command[0]) == "" {
+				return fail("incomplete check")
+			}
+		}
 		table.rows[task.ID] = index
 		table.tasks = append(table.tasks, task)
 		table.insert = index + 1
@@ -527,6 +550,57 @@ func kickoffState(value string) (core.TaskState, bool) {
 	return state, knownTaskState(state)
 }
 
+const maxKickoffCellBytes = 64 << 10
+
+func decodeKickoffCell(raw string, target any) error {
+	if len(raw) > maxKickoffCellBytes || raw == "null" {
+		return core.ErrLimit
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return core.ErrPath
+	}
+	return nil
+}
+
+func encodeKickoffCell(value any) (string, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	// JSON already escapes quotes, controls and backslashes. Escape the table
+	// delimiter as JSON too; Markdown escaping would change the decoded value.
+	cell := strings.ReplaceAll(string(raw), "|", `\u007c`)
+	if len(cell) > maxKickoffCellBytes {
+		return "", fmt.Errorf("%w: kickoff task JSON cell exceeds %d bytes", core.ErrLimit, maxKickoffCellBytes)
+	}
+	return cell, nil
+}
+
+func (table *kickoffTable) addColumn(label string) {
+	if _, present := table.headers[strings.ToLower(label)]; present {
+		return
+	}
+	table.width++
+	table.headers[strings.ToLower(label)] = table.width
+	for index := table.header; index < table.insert; index++ {
+		value := " "
+		if index == table.header {
+			value = " " + label + " "
+		} else if index == table.header+1 {
+			value = " --- "
+		}
+		cells := kickoffRow(table.lines[index])
+		last := len(cells) - 1
+		cells = append(cells[:last], append([]string{value}, cells[last:]...)...)
+		table.lines[index] = strings.Join(cells, "|")
+	}
+}
+
 func (t *tasksMD) writeTaskMutation(tasks []core.Task, revision uint64, created *core.Task, archived core.TaskID) error {
 	data, err := readBounded(t.path, t.limit())
 	if err != nil {
@@ -543,10 +617,27 @@ func (t *tasksMD) writeTaskMutation(tasks []core.Task, revision uint64, created 
 		return t.write(renderTasks(tasks))
 	}
 	if created != nil {
-		// This old table contract has no per-task command or ownership columns.
-		// Reject unrepresentable facts rather than silently throwing them away.
-		if len(created.Checks) > 0 || len(created.WritablePaths) > 0 || len(created.Resources) > 0 || len(created.EvidencePointers) > 1 || len(created.Criteria) > 1 || (len(created.Criteria) == 1 && created.Criteria[0] != created.Objective) {
-			return fmt.Errorf("%w: kickoff table cannot represent task checks, ownership, or separate criteria; approve a tracker format migration first", core.ErrSettings)
+		structured := map[string]string{}
+		for _, field := range []struct {
+			label string
+			count int
+			value any
+		}{
+			{"Criteria", len(created.Criteria), created.Criteria},
+			{"Checks", len(created.Checks), created.Checks},
+			{"Writable paths", len(created.WritablePaths), created.WritablePaths},
+			{"Resources", len(created.Resources), created.Resources},
+			{"Evidence pointers", len(created.EvidencePointers), created.EvidencePointers},
+		} {
+			if field.count == 0 {
+				continue
+			}
+			encoded, err := encodeKickoffCell(field.value)
+			if err != nil {
+				return err
+			}
+			table.addColumn(field.label)
+			structured[strings.ToLower(field.label)] = encoded
 		}
 		cells := make([]string, table.width+2)
 		for i := 1; i <= table.width; i++ {
@@ -573,8 +664,8 @@ func (t *tasksMD) writeTaskMutation(tasks []core.Task, revision uint64, created 
 		if created.Archived {
 			values["status"] = "archived"
 		}
-		if len(created.EvidencePointers) > 0 {
-			values["revision / evidence"] = created.EvidencePointers[0]
+		for key, value := range structured {
+			values[key] = value
 		}
 		for key, value := range values {
 			if err := set(key, value); err != nil {

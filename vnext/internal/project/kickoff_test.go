@@ -72,6 +72,28 @@ func TestLoadKickoffNormalizesApproved050WithoutWriting(t *testing.T) {
 	}
 }
 
+func TestLoadKickoffSupportsOnlyApprovedProducerVersions(t *testing.T) {
+	for _, test := range []struct {
+		version  string
+		accepted bool
+	}{
+		{"0.5.0", true}, {"0.5.1", true}, {"0.5.2", false}, {"0.6.0", false}, {"0.5.1-dev", false},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			root, value := kickoffFixture(t)
+			value["projectKickoff"].(map[string]any)["version"] = test.version
+			value["agentTeam"].(map[string]any)["testedVersion"] = "8.0.11"
+			got, err := LoadKickoff(root, writeKickoffFixture(t, root, value))
+			if (err == nil) != test.accepted {
+				t.Fatalf("producer %s accepted=%t: %v", test.version, err == nil, err)
+			}
+			if test.accepted && !reflect.DeepEqual(got.TaskIDs, []core.TaskID{"AT-001", "AT-002"}) {
+				t.Fatalf("lost approved tasks: %#v", got)
+			}
+		})
+	}
+}
+
 func TestLoadKickoffRejectsInvalidApprovedFacts(t *testing.T) {
 	for _, name := range []string{"status", "root", "branch", "revision", "approved-revision", "unsafe-path", "duplicate-task", "unknown-tracker", "external-action", "version"} {
 		t.Run(name, func(t *testing.T) {

@@ -45,7 +45,7 @@ func Run(ctx context.Context, args []string, deps core.Dependencies) int {
 		}
 		return 0
 	}
-	projectManagement := isProjectAction(action.Name) && deps.Management != nil && !(action.Name == "setup" && slices.Contains(action.Args, "--refuse-kickoff"))
+	projectManagement := isProjectAction(action.Name) && deps.Management != nil
 	if isManagement(action.Name) || projectManagement || isMutationCleanup(action) {
 		if deps.Management == nil {
 			return writeFailure(stdout, deps.Stderr, args, core.ErrTransition)
@@ -86,6 +86,9 @@ func Run(ctx context.Context, args []string, deps core.Dependencies) int {
 			return writeFailure(stdout, deps.Stderr, args, err)
 		}
 	}
+	if action.Name == "task add" || strings.HasPrefix(action.Name, "one-off ") {
+		return writeFailure(stdout, deps.Stderr, args, fmt.Errorf("%w: this action requires the native project handler", core.ErrTransition))
+	}
 
 	status := "accepted"
 	if deferred(action) {
@@ -112,7 +115,7 @@ func isManagement(name string) bool {
 }
 
 func isProjectAction(name string) bool {
-	return name == "setup" || name == "settings" || name == "start" || name == "status"
+	return name == "setup" || name == "settings" || name == "start" || name == "status" || name == "task add" || strings.HasPrefix(name, "one-off ") || name == "pause" || name == "stop" || name == "cancel" || name == "resume"
 }
 
 func isMutationCleanup(action Action) bool {
@@ -134,10 +137,7 @@ func phaseExit(err error) int {
 }
 
 func deferred(action Action) bool {
-	if action.Name == "start" || action.Name == "cleanup" || action.Name == "deploy" {
-		return true
-	}
-	return action.Name == "task add" && len(action.Args) >= 1 && action.Args[0] == "--execute"
+	return action.Name == "start" || action.Name == "cleanup" || action.Name == "deploy"
 }
 
 func writeFailure(stdout, stderr io.Writer, args []string, err error) int {
