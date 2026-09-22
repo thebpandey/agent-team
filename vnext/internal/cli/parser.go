@@ -57,7 +57,7 @@ func Parse(args []string) (Action, error) {
 	case "status":
 		actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true}, false)
 	case "start":
-		actionArgs, err = parseSelectors(args[1:], map[string]bool{"--run": true, "--task": true}, true)
+		actionArgs, err = parseStartArgs(args[1:])
 	case "task":
 		if len(args) < 3 || args[1] != "add" || (args[2] != "--queue" && args[2] != "--execute") {
 			return Action{}, core.ErrPhase
@@ -247,6 +247,47 @@ func parseSelectors(args []string, allowed map[string]bool, repeatTask bool) ([]
 		out = append(out, flag, value)
 	}
 	return out, nil
+}
+
+func parseStartArgs(args []string) ([]string, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	allowed := map[string]bool{"--action": true, "--team": true, "--packet-digest": true, "--host": true, "--identity": true, "--task": true, "--candidate": true, "--reviewer": true}
+	values, err := parseSelectors(args, allowed, false)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]string{}
+	for index := 0; index < len(values); index += 2 {
+		seen[values[index]] = values[index+1]
+	}
+	action := seen["--action"]
+	switch action {
+	case "ack":
+		for _, key := range []string{"--team", "--packet-digest", "--host", "--identity", "--task", "--candidate"} {
+			if seen[key] == "" {
+				return nil, core.ErrPhase
+			}
+		}
+	case "complete", "idle":
+		for _, key := range []string{"--team", "--packet-digest", "--host", "--identity", "--task", "--candidate"} {
+			if seen[key] == "" {
+				return nil, core.ErrPhase
+			}
+		}
+	case "clean":
+		if seen["--team"] == "" || seen["--reviewer"] == "" {
+			return nil, core.ErrPhase
+		}
+	case "next":
+		if seen["--team"] == "" {
+			return nil, core.ErrPhase
+		}
+	default:
+		return nil, core.ErrPhase
+	}
+	return values, nil
 }
 
 func parseScope(value string) ([]string, error) {

@@ -20,6 +20,13 @@ Show configured versus actually enforced model/effort. A saved preference or gen
 
 ## Run defaults
 
+The current native settings command edits only `parallel_teams`, `continuous`,
+`auto_deploy`, `deploy_batch_tasks`, `codex.developer.model`, and
+`codex.developer.effort`. Other saved host-profile fields are preserved without
+claiming they are editable or enforced. Codex model/effort is included in the
+next native dispatch request; it remains a preference until the actual host
+acknowledges the returned packet.
+
 | Setting | Built-in default | Meaning |
 | --- | --- | --- |
 | parallel_teams | 1 | Requested active development capacity; actual host slots and reviewer needs can reduce it |

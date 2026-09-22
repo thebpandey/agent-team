@@ -103,6 +103,27 @@ func TestAdmitDefaultRegisteredBindsPacketToManagerWorktree(t *testing.T) {
 	}
 }
 
+func TestAdmitDefaultRegisteredRejectsOwnedTaskBeforeCreatingWorktree(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{RecordEnvelope: core.RecordEnvelope{Schema: 1, Revision: 7}, ID: "TASK-1", Objective: "implement", State: core.Ready, WritablePaths: []string{"src"}}
+	firstManager := &recordingWorktree{path: filepath.Join(root, ".agent-team", "worktrees", "first")}
+	if _, err := AdmitDefaultRegistered(context.Background(), store.New(root, core.DefaultConfig().Storage), root, &fakeTracker{page: core.TrackerPage{TrackerRevision: 7, TotalNonArchived: 1, Tasks: []core.Task{task}}}, firstManager, "codex", "base"); err != nil {
+		t.Fatal(err)
+	}
+	secondManager := &recordingWorktree{path: filepath.Join(root, ".agent-team", "worktrees", "second")}
+	changed := task
+	changed.Revision = 8
+	if _, err := AdmitDefaultRegistered(context.Background(), store.New(root, core.DefaultConfig().Storage), root, &fakeTracker{page: core.TrackerPage{TrackerRevision: 8, TotalNonArchived: 1, Tasks: []core.Task{changed}}}, secondManager, "codex", "base"); err == nil {
+		t.Fatal("already owned task was admitted again")
+	}
+	if secondManager.called {
+		t.Fatal("already owned task created a worktree before rejection")
+	}
+}
+
 func TestFollowupRequiresFreshPacketAndSameHostAcknowledgement(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o700); err != nil {

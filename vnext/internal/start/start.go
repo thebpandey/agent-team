@@ -81,14 +81,25 @@ func AdmitDefaultRegistered(ctx context.Context, st *store.Store, project string
 	if err := validateWorktreeSpec(prepared, root, base); err != nil {
 		return Result{}, err
 	}
-	worktree, err := manager.Create(ctx, contracts.WorktreeSpec{Run: prepared.Run.ID, Team: prepared.Team.ID, Root: root, Base: base, WritablePaths: append([]string(nil), prepared.Batch.Paths...)})
-	if err != nil {
-		return Result{}, err
-	}
-	if worktree.Run != prepared.Run.ID || worktree.Team != prepared.Team.ID || worktree.Path == "" {
-		return Result{}, fmt.Errorf("%w: registered worktree identity", core.ErrRevision)
-	}
-	return admitPrepared(ctx, st, selected, prepared, owner, worktree.Path, base)
+	var result Result
+	err = withProjectLock(ctx, st, func() error {
+		if ownerRun, found, ownerErr := existingTaskOwner(st, prepared.Batch.Tasks[0]); ownerErr != nil {
+			return ownerErr
+		} else if found && ownerRun != prepared.Run.ID {
+			return fmt.Errorf("%w: task already admitted by %s", core.ErrRevision, ownerRun)
+		}
+		registered, createErr := manager.Create(ctx, contracts.WorktreeSpec{Run: prepared.Run.ID, Team: prepared.Team.ID, Root: root, Base: base, WritablePaths: append([]string(nil), prepared.Batch.Paths...)})
+		if createErr != nil {
+			return createErr
+		}
+		if registered.Run != prepared.Run.ID || registered.Team != prepared.Team.ID || registered.Path == "" {
+			return fmt.Errorf("%w: registered worktree identity", core.ErrRevision)
+		}
+		var admissionErr error
+		result, admissionErr = admitPreparedLocked(ctx, st, selected, prepared, owner, registered.Path, base)
+		return admissionErr
+	})
+	return result, err
 }
 
 func admitPrepared(ctx context.Context, st *store.Store, selected tracker.Tracker, prepared run.PreparedPlanAdmission, owner, worktree, base string) (Result, error) {

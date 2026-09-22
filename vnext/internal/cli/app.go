@@ -110,7 +110,7 @@ func isManagement(name string) bool {
 	return name == "install" || name == "update" || name == "rollback" || name == "uninstall" || name == "cutover"
 }
 
-func isProjectAction(name string) bool { return name == "settings" }
+func isProjectAction(name string) bool { return name == "settings" || name == "start" }
 
 func isMutationCleanup(action Action) bool {
 	return action.Name == "cleanup" && len(action.Args) > 0 && action.Args[0] == "--mutation-lock"

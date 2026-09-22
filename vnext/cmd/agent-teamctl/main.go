@@ -19,13 +19,18 @@ import (
 	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/cli"
+	"github.com/thebpandey/agent-team/vnext/internal/contracts"
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/install"
 	"github.com/thebpandey/agent-team/vnext/internal/lifecycle"
 	"github.com/thebpandey/agent-team/vnext/internal/migrate"
 	"github.com/thebpandey/agent-team/vnext/internal/project"
 	releasepkg "github.com/thebpandey/agent-team/vnext/internal/release"
+	"github.com/thebpandey/agent-team/vnext/internal/run"
+	"github.com/thebpandey/agent-team/vnext/internal/start"
 	"github.com/thebpandey/agent-team/vnext/internal/store"
+	"github.com/thebpandey/agent-team/vnext/internal/tracker"
+	"github.com/thebpandey/agent-team/vnext/internal/worktree"
 )
 
 func main() {
@@ -46,6 +51,9 @@ func main() {
 }
 
 func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "start" {
+		return runStart(ctx, args, stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "settings" {
 		action, err := cli.Parse(args)
 		if err != nil || action.Name != "settings" {
@@ -66,7 +74,7 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		if err != nil {
 			return managementError(args, stdout, stderr, err)
 		}
-		return managementResult(args, stdout, map[string]any{"ok": true, "action": "settings", "settings": settings})
+		return managementResult(args, stdout, map[string]any{"ok": true, "action": "settings", "settings": settings, "codex_developer": settings.CodexDeveloper})
 	}
 	if len(args) > 0 && args[0] == "cleanup" {
 		owner, err := recoverMutationLock(ctx, ".", args, store.NativeLiveness{})
@@ -189,6 +197,73 @@ func runManagement(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return managementError(args, stdout, stderr, err)
 	}
 	return managementResult(args, stdout, map[string]any{"ok": true, "action": action, "revision": outcome.Manifest.Revision, "retained": outcome.Retained})
+}
+
+func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	action, err := cli.Parse(args)
+	if err != nil || action.Name != "start" {
+		return managementError(args, stdout, stderr, core.ErrPhase)
+	}
+	root, err := filepath.Abs(".")
+	if err != nil {
+		return managementError(args, stdout, stderr, err)
+	}
+	st := store.New(root, core.DefaultConfig().Storage)
+	settings, err := project.NewSettingsService(st).Inspect(ctx)
+	if err != nil {
+		return managementError(args, stdout, stderr, err)
+	}
+	values := startValues(action.Args)
+	if len(action.Args) == 0 {
+		// The native command reserves work only. A Codex skill later performs the
+		// actual collaboration.spawn_agent call and acknowledges its exact handle.
+		manager := worktree.NewManager(root, root, st, tracker.NewCommandRunner())
+		result, err := start.AdmitDefaultRegistered(ctx, st, root, tracker.NewBeads(nil), manager, "codex", "HEAD")
+		if err != nil {
+			return managementError(args, stdout, stderr, err)
+		}
+		return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "host_dispatch_required": true, "packet": result.Packet, "packet_digest": result.PacketDigest, "packet_path": result.PacketPath, "run": result.Run.ID, "team": result.Team.ID, "profile": settings.CodexDeveloper, "already_admitted": result.AlreadyAdmitted})
+	}
+	teamID := core.TeamID(values["--team"])
+	var team any
+	current, currentErr := run.NewRepositories(st).Teams.Read(ctx, teamID)
+	if currentErr != nil {
+		return managementError(args, stdout, stderr, currentErr)
+	}
+	switch values["--action"] {
+	case "ack":
+		handle := startHandle(values, current.RunID)
+		team, err = start.Acknowledge(ctx, st, teamID, values["--packet-digest"], handle)
+	case "complete":
+		team, err = start.Complete(ctx, st, teamID, startHandle(values, current.RunID))
+	case "clean":
+		team, err = start.RecordIndependentClean(ctx, st, teamID, values["--reviewer"])
+	case "idle":
+		team, err = start.RecordIdle(ctx, st, teamID, startHandle(values, current.RunID))
+	case "next":
+		consumed, delta, waiting, nextErr := start.ConsumeForFollowup(ctx, st, tracker.NewBeads(nil), teamID)
+		if nextErr != nil {
+			err = nextErr
+		} else {
+			return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "consumed": consumed, "host_followup_required": true, "packet": delta.Packet, "packet_digest": delta.PacketDigest, "packet_path": delta.PacketPath, "retained_handle": delta.Retained, "team": waiting, "profile": settings.CodexDeveloper})
+		}
+	}
+	if err != nil {
+		return managementError(args, stdout, stderr, err)
+	}
+	return managementResult(args, stdout, map[string]any{"ok": true, "action": "start", "team": team, "profile": settings.CodexDeveloper})
+}
+
+func startValues(args []string) map[string]string {
+	values := make(map[string]string, len(args)/2)
+	for index := 0; index+1 < len(args); index += 2 {
+		values[args[index]] = args[index+1]
+	}
+	return values
+}
+
+func startHandle(values map[string]string, runID core.RunID) contracts.WorkerHandle {
+	return contracts.WorkerHandle{Host: values["--host"], Identity: values["--identity"], Run: runID, Team: core.TeamID(values["--team"]), Task: core.TaskID(values["--task"]), PacketDigest: values["--packet-digest"], CandidateRevision: values["--candidate"]}
 }
 
 func installEnvironment() map[string]string {

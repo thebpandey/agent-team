@@ -41,8 +41,8 @@ type Settings struct {
 // RoleProfile is the minimal saved Codex routing preference consumed by a
 // later native handoff. It does not claim the current host can enforce it.
 type RoleProfile struct {
-	Model  string
-	Effort string
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
 }
 
 // SettingsService exposes read-only inspection and receipt-bound updates.
