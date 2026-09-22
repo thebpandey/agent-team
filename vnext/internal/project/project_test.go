@@ -132,6 +132,10 @@ func TestSettingsServicePersistsReceiptBoundOverlayWithoutChangingSetupFiles(t *
 	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	beadsPath := filepath.Join(root, ".beads", "issues.json")
+	if err := os.WriteFile(beadsPath, []byte(`[{"id":"B-1"}]\n`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	setup := NewSetupService(store.New(root, core.DefaultConfig().Storage))
 	if _, err := setup.Initialize(context.Background(), SetupInput{Root: root, Mode: PlanMode, Artifacts: []ArtifactDecision{
 		{Path: ".beads", Mode: ExistingArtifact, Confirmation: Approved},
@@ -151,6 +155,10 @@ func TestSettingsServicePersistsReceiptBoundOverlayWithoutChangingSetupFiles(t *
 	}
 	receiptPath := filepath.Join(root, filepath.FromSlash(config.ReceiptPath))
 	receiptBefore, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beadsBefore, err := os.ReadFile(beadsPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,6 +199,14 @@ func TestSettingsServicePersistsReceiptBoundOverlayWithoutChangingSetupFiles(t *
 	if err != nil || !bytes.Contains(preserved, []byte(`"custom-kept"`)) {
 		t.Fatalf("unknown host choice was not preserved: %q, %v", preserved, err)
 	}
+	profiled, err := service.Update(context.Background(), map[string]string{"codex.developer.model": "gpt-6", "codex.developer.effort": "high"})
+	if err != nil || profiled.CodexDeveloper.Model != "gpt-6" || profiled.CodexDeveloper.Effort != "high" {
+		t.Fatalf("saved Codex profile = %#v, %v", profiled, err)
+	}
+	profileReloaded, err := service.Inspect(context.Background())
+	if err != nil || profileReloaded.CodexDeveloper != profiled.CodexDeveloper {
+		t.Fatalf("reloaded Codex profile = %#v, %v", profileReloaded, err)
+	}
 	if _, err := service.Update(context.Background(), map[string]string{"parallel_teams": "7"}); !errors.Is(err, core.ErrSettings) {
 		t.Fatalf("out-of-range update = %v", err)
 	}
@@ -199,8 +215,9 @@ func TestSettingsServicePersistsReceiptBoundOverlayWithoutChangingSetupFiles(t *
 	}
 	configAfter, _ := os.ReadFile(configPath)
 	receiptAfter, _ := os.ReadFile(receiptPath)
-	if !bytes.Equal(configBefore, configAfter) || !bytes.Equal(receiptBefore, receiptAfter) {
-		t.Fatal("settings changed immutable setup bytes")
+	beadsAfter, _ := os.ReadFile(beadsPath)
+	if !bytes.Equal(configBefore, configAfter) || !bytes.Equal(receiptBefore, receiptAfter) || !bytes.Equal(beadsBefore, beadsAfter) {
+		t.Fatal("settings changed protected setup or tracker bytes")
 	}
 }
 
@@ -209,7 +226,7 @@ func TestSettingsServiceAcceptsMigratedAuthorityProjectionWithoutConfig(t *testi
 	if err := os.MkdirAll(filepath.Join(root, ".agent-team", "v8"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	receipt := migrate.AuthorityReceipt{Schema: 1, Project: root, OperationID: "cutover", RequestDigest: "request", TargetRevision: strings.Repeat("a", 40), ApprovalID: "approval", ApprovalSHA256: strings.Repeat("b", 64)}
+	receipt := migrate.AuthorityReceipt{Schema: 1, Project: root, OperationID: "cutover", RequestDigest: "request", TargetRevision: strings.Repeat("a", 40), ApprovalID: "approval", ApprovalSHA256: strings.Repeat("b", 64), Tracker: migrate.TrackerAuthority{Fingerprint: strings.Repeat("c", 64), ParentID: "TASK-1", TaskIDs: []string{"TASK-1"}, TaskCount: 1}}
 	encoded, err := json.Marshal(receipt)
 	if err != nil {
 		t.Fatal(err)
@@ -239,6 +256,40 @@ func TestSettingsServiceAcceptsMigratedAuthorityProjectionWithoutConfig(t *testi
 	authorityAfter, _ := os.ReadFile(authorityPath)
 	if !bytes.Equal(setupBefore, setupAfter) || !bytes.Equal(authorityBefore, authorityAfter) {
 		t.Fatal("settings changed migrated authority bytes")
+	}
+}
+
+func TestSettingsServiceRejectsIncompleteMigratedAuthorityWithoutWriting(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".agent-team", "v8"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	receipt := migrate.AuthorityReceipt{Schema: 1, Project: root, OperationID: "cutover", RequestDigest: "request", TargetRevision: strings.Repeat("a", 40), ApprovalID: "approval", ApprovalSHA256: strings.Repeat("b", 64)}
+	encoded, _ := json.Marshal(receipt)
+	sum := sha256.Sum256(encoded)
+	receipt.ReceiptDigest = hex.EncodeToString(sum[:])
+	state := store.New(root, core.DefaultConfig().Storage)
+	if _, err := state.WriteJSON(".agent-team/v8/authority.json", receipt, core.DefaultConfig().Storage.CanonicalBytes); err != nil {
+		t.Fatal(err)
+	}
+	setup := map[string]any{"schema": 1, "authority": "v8", "project": root, "revision": receipt.TargetRevision, "tracker": map[string]any{"kind": "beads", "fingerprint": "", "parentId": ""}, "receiptPath": ".agent-team/v8/authority.json", "receiptDigest": receipt.ReceiptDigest}
+	if _, err := state.WriteJSON(".agent-team/setup.json", setup, core.DefaultConfig().Storage.CanonicalBytes); err != nil {
+		t.Fatal(err)
+	}
+	setupPath := filepath.Join(root, ".agent-team", "setup.json")
+	authorityPath := filepath.Join(root, ".agent-team", "v8", "authority.json")
+	setupBefore, _ := os.ReadFile(setupPath)
+	authorityBefore, _ := os.ReadFile(authorityPath)
+	if _, err := NewSettingsService(state).Update(context.Background(), map[string]string{"parallel_teams": "2"}); !errors.Is(err, core.ErrRevision) {
+		t.Fatalf("incomplete authority accepted: %v", err)
+	}
+	setupAfter, _ := os.ReadFile(setupPath)
+	authorityAfter, _ := os.ReadFile(authorityPath)
+	if !bytes.Equal(setupBefore, setupAfter) || !bytes.Equal(authorityBefore, authorityAfter) {
+		t.Fatal("rejected authority changed protected bytes")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agent-team", "v8", "settings.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected authority wrote settings: %v", err)
 	}
 }
 
