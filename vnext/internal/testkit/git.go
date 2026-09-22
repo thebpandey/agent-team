@@ -18,6 +18,9 @@ func GitRepo(t *testing.T) string {
 		}
 	}
 	run("init")
+	// Keep background maintenance from changing .git during tree snapshots.
+	run("config", "gc.auto", "0")
+	run("config", "maintenance.auto", "false")
 	run("config", "user.email", "test@example.invalid")
 	run("config", "user.name", "Agent-Team Test")
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("fixture\n"), 0o644); err != nil {
