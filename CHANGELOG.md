@@ -1,5 +1,9 @@
 # Changelog
 
+## 8.0.8 - 2026-09-21
+
+- Permit the closed legacy Beads authority during native v8 prepare and cutover. The existing `.beads` tree remains in place and unchanged; v8 writes separate authority and prepared-request artifacts.
+
 ## 8.0.7 - 2026-09-21
 
 - Make the latest-repository root `SKILL.md` a native v8.0.7 entrypoint, aligned with both installed native host skills.

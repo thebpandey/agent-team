@@ -24,8 +24,9 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 )
 
-func TestAuthorityPrepareWritesCanonicalDetachedArtifacts(t *testing.T) {
+func TestAuthorityPrepareCutoverRollbackPreservesLegacyBeadsTree(t *testing.T) {
 	project := authorityFixture(t)
+	beadsBefore := legacyBeadsTree(t, project)
 	request := readAuthorityRequestTest(t, authorityRequestFixture(t, project))
 	root := t.TempDir()
 	layout, err := install.ResolveLayout("linux", map[string]string{"HOME": filepath.Join(root, "home"), "XDG_DATA_HOME": filepath.Join(root, "data"), "CODEX_HOME": filepath.Join(root, "codex"), "CLAUDE_HOME": filepath.Join(root, "claude")})
@@ -91,6 +92,7 @@ func TestAuthorityPrepareWritesCanonicalDetachedArtifacts(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(project, authorityReceiptPath)); !os.IsNotExist(err) {
 		t.Fatal("prepare mutated authority")
 	}
+	assertTreeSnapshot(t, filepath.Join(project, ".beads"), beadsBefore)
 	payload, err := os.ReadFile(request.Prepare.PayloadPath)
 	if err != nil || digestBytes(payload) != result.ReceiptDigest {
 		t.Fatalf("payload: %v", err)
@@ -136,10 +138,25 @@ func TestAuthorityPrepareWritesCanonicalDetachedArtifacts(t *testing.T) {
 	if err != nil || cutover.Action != "cutover" {
 		t.Fatalf("prepared cutover = %#v, %v", cutover, err)
 	}
+	assertTreeSnapshot(t, filepath.Join(project, ".beads"), beadsBefore)
+	var canonicalSetup map[string]any
+	canonicalSetupRaw, err := os.ReadFile(filepath.Join(project, ".agent-team", "setup.json"))
+	if err != nil || json.Unmarshal(canonicalSetupRaw, &canonicalSetup) != nil {
+		t.Fatalf("read canonical setup: %v", err)
+	}
+	if tracker, _ := canonicalSetup["tracker"].(map[string]any); tracker["kind"] != "beads" {
+		t.Fatalf("canonical tracker = %#v, want beads", tracker)
+	}
 	receipt, err := AuthorityStatus(project)
 	if err != nil || len(receipt.HostInventories) != 2 {
 		t.Fatalf("authority status = %#v, %v", receipt, err)
 	}
+	rollback := readAuthorityRequestTest(t, request.Prepare.RequestPath)
+	rollback.Action, rollback.ExpectedReceiptDigest = "rollback", receipt.ReceiptDigest
+	if _, err := ExecuteAuthorityRequest(context.Background(), writeAuthorityJSON(t, project, "rollback.json", rollback)); err != nil {
+		t.Fatal(err)
+	}
+	assertTreeSnapshot(t, filepath.Join(project, ".beads"), beadsBefore)
 }
 
 func TestProjectEvidencePathRejectsRelativeEscape(t *testing.T) {
@@ -870,6 +887,89 @@ func resignAuthorityApprovalTest(t *testing.T, project string, request *Authorit
 	path := writeAuthorityJSON(t, project, "noncanonical-approval.json", approval)
 	request.Approval.Path = path
 	request.Approval.SHA256 = digestFileTest(t, path)
+}
+
+type treeEntry struct {
+	mode os.FileMode
+	data []byte
+}
+
+func legacyBeadsTree(t *testing.T, project string) map[string]treeEntry {
+	t.Helper()
+	root := filepath.Join(project, ".beads")
+	for name, data := range map[string][]byte{
+		"issues.jsonl":               []byte("{\"id\":\"atv-5sh\",\"status\":\"closed\"}\n"),
+		"metadata/config.json":       []byte("{\"backend\":\"dolt\"}\n"),
+		"metadata/identity.txt":      []byte("beads-home-preserved\n"),
+		"metadata/nested/marker.txt": []byte("do not rewrite\n"),
+	} {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setupPath := filepath.Join(project, ".agent-team", "setup.json")
+	var setup map[string]any
+	raw, err := os.ReadFile(setupPath)
+	if err != nil || json.Unmarshal(raw, &setup) != nil {
+		t.Fatalf("read legacy setup: %v", err)
+	}
+	setup["tracker"] = map[string]any{"kind": "beads", "path": ".beads"}
+	writeAuthorityJSON(t, filepath.Dir(setupPath), filepath.Base(setupPath), setup)
+	return treeSnapshot(t, root)
+}
+
+func treeSnapshot(t *testing.T, root string) map[string]treeEntry {
+	t.Helper()
+	entries := map[string]treeEntry{}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if relative == "." {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("Beads fixture contains symlink")
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		snapshot := treeEntry{mode: info.Mode().Perm()}
+		if !entry.IsDir() {
+			snapshot.data, err = os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+		}
+		entries[filepath.ToSlash(relative)] = snapshot
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func assertTreeSnapshot(t *testing.T, root string, want map[string]treeEntry) {
+	t.Helper()
+	got := treeSnapshot(t, root)
+	if len(got) != len(want) {
+		t.Fatalf("Beads tree entries = %d, want %d", len(got), len(want))
+	}
+	for path, expected := range want {
+		actual, found := got[path]
+		if !found || actual.mode != expected.mode || !bytes.Equal(actual.data, expected.data) {
+			t.Fatalf("Beads tree changed at %q: got %#v, want %#v", path, actual, expected)
+		}
+	}
 }
 
 func assertLegacyAuthorityUnchanged(t *testing.T, project string) {
