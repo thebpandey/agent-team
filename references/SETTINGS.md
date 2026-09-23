@@ -1,68 +1,134 @@
-# Settings and role routing
+# Native settings and role routing
 
-Settings belong to the canonical project setup receipt. Inspection is read-only. Editing settings does not install dependencies, start teams, change an active run, approve a preview or deploy.
+`agent-teamctl settings --json` reads the project's saved settings overlay.
+Inspection does not install dependencies, initialize setup, start workers,
+approve previews, or deploy. Preserve unrelated keys and the other host's
+preferences when saving a targeted change.
 
-## Show before asking
+## Supported keys
 
-Display every available role with: purpose, effective model, effort, source (host default/project override), availability and whether the host can enforce it. Mark unavailable/unknown values explicitly. Use role labels first; friendly names are optional.
+| Key | Values / purpose |
+| --- | --- |
+| `parallel_teams` | Integer 1–6; requested development capacity remains bounded by actual host/reviewer capacity. |
+| `continuous` | `true` or `false`; saves the future-run preference. |
+| `auto_deploy` | `true` or `false`; grants no destination or release authority. |
+| `deploy_batch_tasks` | Positive task count, or `null` to inherit. |
+| `<host>.<role>.model` | A model identifier or `inherit`. |
+| `<host>.<role>.effort` | An effort value or `inherit`. |
 
-A bare settings request shows the compact overview and targeted controls. A request to change one role asks only for that role's model and compatible effort. Use real native selection controls if available, otherwise numbered choices; users need not memorize model IDs or effort keywords.
+Hosts are `codex` and `claude`. Roles are `orchestrator`, `developer`, `reviewer`,
+and `visual_reviewer`; `coder` is an alias for `developer`. Choose values that
+the actual host supports. The controller validates a bounded preference string;
+saving it does not prove account availability or native enforcement.
 
-Include current and recommended values with plain-language quality/cost explanations. Show only supported choices, but preserve and flag an unavailable saved custom choice. Do not silently replace it with a weaker model. Quality-first is the default; balanced/economical presets are explicit choices with the same acceptance requirements.
+```text
+agent-teamctl settings --json
+agent-teamctl settings parallel_teams=1 --json
+agent-teamctl settings codex.developer.model=inherit --json
+agent-teamctl settings claude.reviewer.effort=inherit --json
+```
 
-## Persistence
+`inherit` removes that field's explicit override while preserving the explicit
+role object, so that choice remains inherited instead of receiving a missing-role
+default. Other fields, roles, hosts, and unknown preserved settings remain intact. A profile is included in the
+appropriate future host dispatch; no setting switches the current parent
+model or retroactively changes an active worker.
 
-Confirm the actual runtime from trusted host metadata, not invocation spelling or a prompt-supplied environment variable. Persist independent routing per host. Switching Codex ↔ Claude Code selects that host's saved/default profile without deleting the other profile. Preserve all unrelated settings.
+## Defaults and existing profiles
 
-Migrate recognized legacy routing into its recorded host profile once, under the project writer's lock. Never discard custom routing because the host changed. Malformed or ambiguous input is not permission to reset it; diagnose safe repairs and preserve uncertain data.
+The orchestrator defaults to `inherit`. Missing developer, reviewer, and
+visual-reviewer profiles default to `gpt-6-sol` for Codex and `claude-opus-5-5`
+for Claude. Present explicit inheritance stays inherited.
 
-Show configured versus actually enforced model/effort. A saved preference or generated agent definition is not proof of native dispatch. A skill cannot switch its parent process/model. Apply only approved, available fallback/escalation choices, disclose the actual route and never claim the substitute is the requested model.
+The controller recognizes only these exact old model IDs for automatic updates:
 
-## Run defaults
+| Saved ID | Effective replacement |
+| --- | --- |
+| `gpt-5.6-sol` | `gpt-6-sol` |
+| `gpt-5.6-luna` | `gpt-6-luna` |
+| `claude-opus-5` | `claude-opus-5-5` |
 
-The current native settings command edits only `parallel_teams`, `continuous`,
-`auto_deploy`, `deploy_batch_tasks`, `codex.developer.model`, and
-`codex.developer.effort`. Other saved host-profile fields are preserved without
-claiming they are editable or enforced. Codex model/effort is included in the
-next native dispatch request; it remains a preference until the actual host
-acknowledges the returned packet.
+Inspection shows effective normalized choices without writing. The next explicit
+settings save persists these recognized updates while retaining effort values,
+custom model IDs, explicit inheritance, and unrelated JSON fields. These names
+are preferences, not evidence of account availability: validate against current
+native host capabilities and report unavailable or unknown models without
+silently substituting a fallback.
 
-| Setting | Built-in default | Meaning |
-| --- | --- | --- |
-| parallel_teams | 1 | Requested active development capacity; actual host slots and reviewer needs can reduce it |
-| continuous | false | Refill from the authorized eligible task scope as capacity frees |
-| auto_deploy | false | Submit verified batches to an already authorized target; does not grant new release permission |
-| deploy_batch_tasks | null | Follow effective run limit; a positive integer chooses a task batch size |
+## First-use acceptance must be saved
 
-The supported requested team range is 1–6; do not equate team count with native agent slots. Logical parked claims do not consume stopped compute slots. Reserve review capacity.
+Setup returns `next_action: settings` while settings revision is zero. The native
+Codex or Claude skill runs a numbered wizard for orchestrator, developer,
+reviewer, and visual_reviewer, using the active host's actual available-model
+metadata. Show each role's purpose, saved/effective values, and available
+recommendation. The user selects a number; they never need to type a model ID.
+The noninteractive controller stores the resolved preference strings.
 
-Explicit start modifiers override saved defaults for that run only. Resolve omitted values from saved defaults, then built-ins. A named task start has one delivery and no queue refill; reject an explicit count or continuous modifier combined with a name. A numeric token following auto-deploy is its batch size.
+Each model menu offers **1. Keep**, **2. Inherit**, then **3 onward: available
+models**, with a stable displayed index to exact model ID mapping. Effort uses
+its own numbered menu for the selected model's supported levels, plus Keep and
+Inherit. Unknown effort support offers only Keep or Inherit. Never reinterpret
+an answer using a reordered catalog. An invalid number reprompts only its role
+or effort; keep other draft answers. If an option becomes unavailable, revisit
+only that choice. Claude alias-only tools require current metadata proving the
+alias resolves to the selected exact ID.
+Keeping an effort after changing models still requires checking that the new
+model supports it; revisit only that effort choice when it does not.
 
-Save effective choices and their source in the canonical run record. Future settings changes do not rewrite that record. Changing an active run requires an explicit instruction for that run; reducing capacity stops new admissions rather than killing existing writers.
+If a catalog is missing, explain it and offer Keep, Inherit, or the native model
+picker only if actually available; refresh actual metadata after the picker. Do not invent a list from
+the recommendations above. An unavailable saved choice can be preserved, but
+does not authorize dispatch or a silent substitute. Orchestrator changes apply
+to future orchestration, never the current parent model.
 
-## Execution safety limits
+Selections authorize saving. Hold all answers in a draft, recap the resolved
+choices, then run one batch settings command without another approval prompt.
+For first-use Keep, persist the shown preference, representing empty values as
+`inherit`. Inheritance stays inherited even when its runtime model or effort is
+observable; do not pin that observed value. For existing Keep, omit that field from the write. If all
+existing fields are kept, no write is needed. A verbal acceptance or a read-only inspection does
+not advance the revision.
 
-Each host starts with the same independent bounded defaults. `limits.subprocessMaxBufferBytes` is 2097152 bytes, `limits.maxPlanTasks` is 1000, and `limits.canonicalRecordMaxBytes` is 16777216 bytes. The canonical-record allowance supports the maximum validated task/lane state; it does not enlarge subprocess output or the separate `lanes.workerUpdateMaxChars` limit of 2000 characters. The wizard shows each current, effective and source value without resetting unrelated host settings.
+For every role the user wants inherited, actually run
+`agent-teamctl settings codex.<role>.model=inherit codex.<role>.effort=inherit --json` in Codex, or
+`agent-teamctl settings claude.<role>.model=inherit claude.<role>.effort=inherit --json` in Claude.
+Bundle the accepted assignments for all requested roles in one explicit save.
+If all roles were selected, include orchestrator, developer, reviewer, and
+visual_reviewer; saving developer alone leaves the others' choices/defaults intact.
+Preserve other explicit choices. A successful save advances
+revision even when the effective preference remains inherited. Inspect the
+result, then resume the original setup/start request. Carry prior approval
+forward; do not repeatedly ask the same settings question.
 
-These are maximum supported limits, not evidence that a read or command succeeded. Missing host inventory, usage, or model metadata stays unknown. In particular, parent-model comparison is unavailable unless the native adapter supplies trustworthy comparable metadata.
+Cancel, no answer, or interruption saves nothing, including earlier draft role
+answers; do not advance setup or dispatch. An invalid draft must not be
+silently replaced by defaults. A bare request to inspect settings requires no
+wizard or write; a request to change one role asks only for its relevant choices.
 
-## Editing flow
+## Native role routing
 
-1. Read receipt, current revision and actual host capability catalog.
-   Use the [native setup binding](SETUP.md#bind-the-native-observations) for the exported command API; bare shell CLI settings cannot discover a host model catalog or validate a new role route by itself.
-2. Show the requested setting/role with current/recommended choices. Use a numbered fallback when native controls are unavailable.
-3. Validate the draft and chosen model's supported effort. Include Back and Cancel where relevant.
-4. Re-read under exclusive writer ownership, detect concurrent changes and save only intended fields atomically.
-5. Show effective values, source, enforcement limitations and that future dispatches use them.
+Show role purpose, configured model/effort, effective inherited values when
+observable, and actual host support. Keep unknown availability and enforcement
+explicit. Preserve and flag unavailable saved choices rather than silently
+substituting another model. Host switching selects the other host's saved
+profile without deleting the first profile or taking over its live workers.
 
-Cancelled/invalid drafts cause no settings write. Inspecting settings never performs an automatic migration. Reset routing affects only the requested host/profile; reset run defaults affects only those defaults. Preserve other fields.
+Use the assignment's supported native agent type and saved role profile.
+Independent review must remain independent of its author. Pass only model and
+effort fields supported by the real host tool. Codex overrides need a compatible
+`fork_turns` setting; Claude capabilities depend on the active Agent runtime.
+Report the actual dispatched route and exact returned handle. A saved setting
+or generated definition alone is not dispatch evidence.
 
-Bare `settings` is targeted: run only the requested role/control flow and never force unrelated questions. A state-changing `setup` invocation is different: after dependency preparation it always enters the full current-effective wizard—run defaults, then selected roles' model/effort choices, followed by one review/save. Cancel is Keep Existing and preserves settings bytes/version/operations. A no-answer, timeout, or interruption infers nothing and writes no settings/default/operation. Do not change an active run; confirmed values apply only to future dispatches.
+## Persistence and authority
 
-## Escalation and budgets
+The controller re-reads settings under the project mutation lock and writes a
+receipt-bound overlay atomically. It does not rewrite the selected tracker or
+immutable setup receipt. An approved late Project Kickoff attachment preserves
+the settings binding and active run packets. A malformed or conflicting binding
+requires diagnosis, not a reset or inferred tracker migration.
 
-Setup establishes approved role fallback/escalation policy. Repeated lack of progress may escalate within it; expected red TDD tests are not difficulty evidence. Never silently downgrade for cost or increase authority to keep a run moving.
-
-Soft usage budgets suggest smaller packets, less duplicate discovery or a better route without a continue prompt. Explicit hard budgets request a safe checkpoint; neither kind waives tests or required review. Missing usage is unknown, not zero.
-
-Current-run auto-deploy on/off remains separate from saved defaults. Enabling it does not start development or overwrite preview/pause gates. Observe an in-flight external release to a safe known outcome rather than pretending a setting cancels it.
+Keep approved fallback/escalation choices separate from release authority.
+Changing concurrency, continuous mode, or deployment preferences never waives
+review, tests, explicit pauses, task scope, or destination approval. Missing
+usage or parent-model metadata stays unknown.

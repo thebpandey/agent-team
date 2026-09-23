@@ -74,6 +74,7 @@ type Run struct {
 	Objective             string         `json:"objective,omitempty"`
 	SpecRevision          string         `json:"specRevision,omitempty"`
 	TrackerKind           string         `json:"trackerKind"`
+	TrackerRef            string         `json:"trackerRef,omitempty"`
 	TrackerRevision       uint64         `json:"trackerRevision"`
 	TrackerSnapshotDigest string         `json:"trackerSnapshotDigest,omitempty"`
 	CanonicalRevision     string         `json:"canonicalRevision,omitempty"`
@@ -169,7 +170,11 @@ func PrepareSinglePlanAdmission(ctx context.Context, project string, selected tr
 		byID[task.ID] = task
 	}
 	var chosen core.Task
+	admissionScope, scoped := selected.(tracker.AutomaticAdmissionScope)
 	for _, task := range page.Tasks {
+		if scoped && !admissionScope.AllowsAutomaticAdmission(task.ID) {
+			continue
+		}
 		if task.Archived || task.State != core.Ready {
 			continue
 		}
@@ -190,7 +195,7 @@ func PrepareSinglePlanAdmission(ctx context.Context, project string, selected tr
 	}
 	paths, err := normalizePaths(chosen.WritablePaths)
 	if err != nil || len(paths) == 0 {
-		return PreparedPlanAdmission{}, core.ErrPath
+		return PreparedPlanAdmission{}, fmt.Errorf("%w: ready task %s needs approved writable paths in the tracker or Project Kickoff handoff", core.ErrPath, chosen.ID)
 	}
 	resources, err := normalizeResources(chosen.Resources)
 	if err != nil {
@@ -225,9 +230,8 @@ func CreatePlan(ctx context.Context, project string, selected tracker.Tracker) (
 		return Run{}, fmt.Errorf("%w: tracker lacks canonical authority metadata", core.ErrSettings)
 	}
 	metadata := authority.AuthorityMetadata()
-	ref, refErr := canonicalAuthorityRef(root, metadata.Kind, metadata.Ref)
-	expectedRef, expectedErr := canonicalTrackerRef(root, metadata.Kind)
-	if metadata.Kind != "tasks-md" && metadata.Kind != "beads" || refErr != nil || expectedErr != nil || ref != expectedRef {
+	ref, refErr := canonicalTrackerRef(root, metadata.Kind, metadata.Ref)
+	if metadata.Ref == "" || refErr != nil {
 		return Run{}, fmt.Errorf("%w: invalid tracker authority metadata", core.ErrSettings)
 	}
 	page, err := selected.Page(ctx, "", 1000)
@@ -258,6 +262,13 @@ func CreatePlan(ctx context.Context, project string, selected tracker.Tracker) (
 		TrackerSnapshotDigest: snapshotDigest,
 		State:                 core.Ready,
 		Tasks:                 refs,
+	}
+	// Preserve the wire format and identity of existing default-path manifests.
+	// A designated path must be durable: validation cannot reconstruct it from
+	// a later ambient tracker selection or from a different file at root.
+	defaultRef, defaultErr := canonicalTrackerRef(root, metadata.Kind, "")
+	if defaultErr != nil || ref != defaultRef {
+		r.TrackerRef = ref
 	}
 	r.SpecRevision = planSpecRevision(r.Root, metadata.Kind, ref, page.TrackerRevision, refs, snapshotDigest)
 	return finalizeRun(r)
@@ -585,7 +596,7 @@ func planSpecRevision(root, kind, ref string, trackerRevision uint64, tasks []co
 	return digest
 }
 
-func canonicalTrackerRef(root, kind string) (string, error) {
+func canonicalTrackerRef(root, kind, designated string) (string, error) {
 	leaf := "TASKS.md"
 	if kind == "beads" {
 		leaf = ".beads"
@@ -593,7 +604,25 @@ func canonicalTrackerRef(root, kind string) (string, error) {
 	if kind != "tasks-md" && kind != "beads" {
 		return "", fmt.Errorf("%w: unknown tracker kind", core.ErrSettings)
 	}
-	return canonicalAuthorityRef(root, kind, leaf)
+	if designated == "" {
+		designated = leaf
+	}
+	ref, err := canonicalAuthorityRef(root, kind, designated)
+	if err != nil {
+		return "", err
+	}
+	if kind == "beads" {
+		expected, err := canonicalAuthorityRef(root, kind, leaf)
+		if err != nil || expected != ref {
+			return "", fmt.Errorf("%w: noncanonical Beads authority", core.ErrSettings)
+		}
+	} else {
+		info, err := os.Stat(ref)
+		if err != nil || !info.Mode().IsRegular() {
+			return "", fmt.Errorf("%w: Markdown authority must be a regular file", core.ErrPath)
+		}
+	}
+	return ref, nil
 }
 
 func canonicalRoot(root string) (string, error) {
@@ -882,6 +911,7 @@ func manifestDigest(r Run) (string, error) {
 		Objective             string        `json:"objective,omitempty"`
 		SpecRevision          string        `json:"specRevision,omitempty"`
 		TrackerKind           string        `json:"trackerKind"`
+		TrackerRef            string        `json:"trackerRef,omitempty"`
 		TrackerRevision       uint64        `json:"trackerRevision"`
 		TrackerSnapshotDigest string        `json:"trackerSnapshotDigest,omitempty"`
 		TaskIDs               []core.TaskID `json:"taskIds,omitempty"`
@@ -890,7 +920,7 @@ func manifestDigest(r Run) (string, error) {
 			Revision uint64      `json:"revision"`
 		} `json:"taskRefs,omitempty"`
 		Tasks []core.Task `json:"tasks,omitempty"`
-	}{r.Schema, r.Root, strings.TrimSpace(r.Project), r.Mode, r.OneOffKind, strings.TrimSpace(r.Objective), r.SpecRevision, r.TrackerKind, r.TrackerRevision, r.TrackerSnapshotDigest, taskIDs, taskRefs, tasks}
+	}{r.Schema, r.Root, strings.TrimSpace(r.Project), r.Mode, r.OneOffKind, strings.TrimSpace(r.Objective), r.SpecRevision, r.TrackerKind, r.TrackerRef, r.TrackerRevision, r.TrackerSnapshotDigest, taskIDs, taskRefs, tasks}
 	raw, err := json.Marshal(wire)
 	if err != nil {
 		return "", fmt.Errorf("%w: canonical manifest: %v", core.ErrRevision, err)
@@ -1036,7 +1066,7 @@ func validateRun(r Run) error {
 	if r.Mode == "plan" && (r.TrackerKind != "tasks-md" && r.TrackerKind != "beads" || r.TrackerRevision == 0 || !validDigest(r.TrackerSnapshotDigest) || !validDigest(r.SpecRevision) || r.OneOffKind != "") {
 		return fmt.Errorf("%w: invalid plan tracker authority", core.ErrRevision)
 	}
-	if r.Mode == "one-off" && (r.TrackerKind != "none" || r.TrackerRevision != 0 || r.TrackerSnapshotDigest != "" || !validOneOffKind(r.OneOffKind) || strings.TrimSpace(r.Objective) == "") {
+	if r.Mode == "one-off" && (r.TrackerKind != "none" || r.TrackerRef != "" || r.TrackerRevision != 0 || r.TrackerSnapshotDigest != "" || !validOneOffKind(r.OneOffKind) || strings.TrimSpace(r.Objective) == "") {
 		return fmt.Errorf("%w: invalid one-off authority", core.ErrRevision)
 	}
 	if r.Mode == "one-off" {
@@ -1062,8 +1092,8 @@ func validateRun(r Run) error {
 				return fmt.Errorf("%w: plan task reference is not minimal", core.ErrRevision)
 			}
 		}
-		ref, err := canonicalTrackerRef(r.Root, r.TrackerKind)
-		if err != nil || r.SpecRevision != planSpecRevision(r.Root, r.TrackerKind, ref, r.TrackerRevision, r.Tasks, r.TrackerSnapshotDigest) {
+		ref, err := canonicalTrackerRef(r.Root, r.TrackerKind, r.TrackerRef)
+		if err != nil || (r.TrackerRef != "" && r.TrackerRef != ref) || r.SpecRevision != planSpecRevision(r.Root, r.TrackerKind, ref, r.TrackerRevision, r.Tasks, r.TrackerSnapshotDigest) {
 			return fmt.Errorf("%w: plan authority binding mismatch", core.ErrRevision)
 		}
 	}
@@ -1136,7 +1166,7 @@ func validateRepositoryRun(r Run) error {
 	if err := validateEnvelope(r.RecordEnvelope, r.ID); err != nil {
 		return err
 	}
-	if r.OneOffKind != "" || r.Objective != "" || r.SpecRevision != "" || r.TrackerKind != "" || r.TrackerRevision != 0 || r.TrackerSnapshotDigest != "" || r.CanonicalRevision != "" || r.State != "" || r.ManifestDigest != "" || len(r.Tasks) != 0 || len(r.Teams) != 0 {
+	if r.OneOffKind != "" || r.Objective != "" || r.SpecRevision != "" || r.TrackerKind != "" || r.TrackerRef != "" || r.TrackerRevision != 0 || r.TrackerSnapshotDigest != "" || r.CanonicalRevision != "" || r.State != "" || r.ManifestDigest != "" || len(r.Tasks) != 0 || len(r.Teams) != 0 {
 		return fmt.Errorf("%w: incomplete run manifest", core.ErrRevision)
 	}
 	return nil

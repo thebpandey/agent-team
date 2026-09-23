@@ -1,5 +1,21 @@
 # Changelog
 
+## 8.0.11 - candidate
+
+- Guide first use through explicit tracker selection, approved missing artifacts, one scoped dependency bundle, and saved role preferences for both Codex and Claude. Accepting inherited settings now has an explicit save step; setup and status report actionable next steps.
+- Reuse Project Kickoff 0.5.0 and 0.5.1 handoffs, prepare dependencies before unfinished planning, and attach an approved late handoff without replacing setup, tracker, settings, or active packet authority. Preserve refusal without continuing setup or dispatch.
+- Install discoverable top-level native skills for both hosts and transactionally migrate exact owned nested entrypoints, including prior manual moves. Keep update, rollback, uninstall, and interrupted recovery safe around unknown or edited files.
+- Dispatch through actual Codex collaboration and Claude Agent handles using the selected tracker and saved host profile. Cross-host replay observes the original worker and uncertain launches without duplicate dispatch; retained reuse still requires completion, independent CLEAN review, and observed idle state.
+- Prepare selected dependencies and their scoped prerequisites without external hooks, global PATH edits, or registry changes. Distinguish available executables, project preparation, required capabilities, and actual worker access.
+- Align native skills and public setup/settings guidance, preserve historical Node instructions as historical, and add regression coverage for first-use choices, lifecycle recovery, dispatch, and ownership boundaries.
+
+- Upgrade recognized Sol/Luna 5.6 and Opus 5 role selections to GPT-6-Sol, GPT-6-Luna, and Claude Opus 5.5. Show effective models during settings inspection, preserve explicit inheritance and custom choices, and leave running workers unchanged.
+- Fingerprint Beads metadata and logical snapshot evidence without walking the Dolt store; retain completed prerequisites without counting unrelated closed history against active task capacity.
+- Implement native task queue/execute, read-only audit/review one-offs, and scoped lifecycle controls with actual host observations. Report missing inputs and required dispatch honestly in both text and JSON.
+- Defer source analysis for empty projects, recover interrupted dependency preparation, publish complete executable bytes exclusively, and include the YAML dependency in executable-verified SBOM metadata.
+
+Publication is pending revision-bound platform, package, canary, rollback, provider, and readiness gates. Existing 8.0.10 downloads do not contain these changes.
+
 ## 8.0.10 - 2026-09-22
 
 - Make the public native `setup` command initialize the existing single Beads or Markdown tracker and write its immutable v8 config/receipt binding instead of returning an acceptance placeholder with no state change.

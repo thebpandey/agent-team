@@ -93,6 +93,9 @@ func AppendQueue(ctx context.Context, st *store.Store, selected tracker.Tracker,
 		}
 		tasks := make([]core.Task, len(taskIDs))
 		for index, id := range taskIDs {
+			if err := AdmissionAllowed(ctx, st, core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: manifest.ID}, Team: current.ID, Task: id}); err != nil {
+				return err
+			}
 			if seen[id] {
 				return core.ErrRevision
 			}
@@ -147,6 +150,9 @@ func ReserveRetainedHead(ctx context.Context, st *store.Store, selected tracker.
 		if err != nil {
 			return err
 		}
+		if err := AdmissionAllowed(ctx, st, core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: manifest.ID}, Team: team.ID, Task: team.Queue[0]}); err != nil {
+			return err
+		}
 		if team.IntentDigest != "" {
 			existing, path, err := readPacket(st, team.ID, team.IntentDigest)
 			if err != nil || existing.Packet.RunID != manifest.ID || existing.Packet.Team != team.ID || existing.Packet.Task != team.Queue[0] || existing.Packet.QueueFingerprint != team.QueueFingerprint {
@@ -167,8 +173,9 @@ func ReserveRetainedHead(ctx context.Context, st *store.Store, selected tracker.
 			RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: manifest.Project, RunID: manifest.ID, WrittenAt: manifest.WrittenAt, Revision: manifest.Revision},
 			SpecRevision:   manifest.SpecRevision, Task: task.ID, Team: team.ID, QueueFingerprint: team.QueueFingerprint,
 			Owner: prior.Packet.Owner, Worktree: prior.Packet.Worktree, Base: prior.Packet.Base,
-			Criteria: append([]string(nil), task.Criteria...), Scope: append([]string(nil), task.WritablePaths...), NextAction: "host_followup_required",
-		}
+			Objective: task.Objective, Criteria: task.Criteria, Scope: task.WritablePaths, Checks: task.Checks,
+			Resources: core.ResourceSnapshot{External: task.Resources}, NextAction: "host_followup_required",
+		}.Clone()
 		digest, err := knowledge.PacketDigest(packet)
 		if err != nil {
 			return err
@@ -213,6 +220,9 @@ func AdmitDefaultRegistered(ctx context.Context, st *store.Store, project string
 	}
 	var result Result
 	err = withProjectLock(ctx, st, func() error {
+		if err := AdmissionAllowed(ctx, st, core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: prepared.Run.ID}, Team: prepared.Team.ID, Task: prepared.Batch.Tasks[0]}); err != nil {
+			return err
+		}
 		if ownerRun, found, ownerErr := existingTaskOwner(st, prepared.Batch.Tasks[0]); ownerErr != nil {
 			return ownerErr
 		} else if found && ownerRun != prepared.Run.ID {
@@ -244,6 +254,12 @@ func admitPrepared(ctx context.Context, st *store.Store, selected tracker.Tracke
 
 func admitPreparedLocked(ctx context.Context, st *store.Store, selected tracker.Tracker, prepared run.PreparedPlanAdmission, owner, worktree, base string) (Result, error) {
 	if err := validateBoundary(st, prepared, worktree, base); err != nil {
+		return Result{}, err
+	}
+	if len(prepared.Batch.Tasks) == 0 {
+		return Result{}, core.ErrBatch
+	}
+	if err := AdmissionAllowed(ctx, st, core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: prepared.Run.ID}, Team: prepared.Team.ID, Task: prepared.Batch.Tasks[0]}); err != nil {
 		return Result{}, err
 	}
 	if ownerRun, found, err := existingTaskOwner(st, prepared.Batch.Tasks[0]); err != nil {
@@ -308,7 +324,10 @@ func admitPreparedLocked(ctx context.Context, st *store.Store, selected tracker.
 		if err != nil {
 			return Result{}, fmt.Errorf("%w: admitted packet unavailable", core.ErrRevision)
 		}
-		if existing.Packet.RunID != currentRun.ID || existing.Packet.Team != team.ID || existing.Packet.Task != team.Queue[0] || existing.Packet.Owner != owner || existing.Packet.Worktree != worktree || existing.Packet.Base != base {
+		// A foreground host switch observes the original native reservation; it
+		// does not authorize dispatch or transfer the packet's worker ownership.
+		sameOwner := existing.Packet.Owner == owner || (nativeHost(existing.Packet.Owner) && nativeHost(owner))
+		if existing.Packet.RunID != currentRun.ID || existing.Packet.Team != team.ID || existing.Packet.Task != team.Queue[0] || !sameOwner || existing.Packet.Worktree != worktree || existing.Packet.Base != base {
 			return Result{}, fmt.Errorf("%w: admitted packet differs", core.ErrRevision)
 		}
 		return Result{Run: currentRun, Team: team, Packet: existing.Packet, PacketDigest: existing.Digest, PacketPath: packetPath, AlreadyAdmitted: true}, nil
@@ -317,7 +336,13 @@ func admitPreparedLocked(ctx context.Context, st *store.Store, selected tracker.
 	if err != nil {
 		return Result{}, err
 	}
-	packet := core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: currentRun.Project, RunID: currentRun.ID, WrittenAt: currentRun.WrittenAt, Revision: currentRun.Revision}, SpecRevision: currentRun.SpecRevision, Task: task.ID, Team: team.ID, QueueFingerprint: team.QueueFingerprint, Owner: owner, Worktree: worktree, Base: base, Criteria: append([]string(nil), task.Criteria...), Scope: append([]string(nil), task.WritablePaths...), NextAction: "host_dispatch_required"}
+	packet := core.AssignmentPacket{
+		RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: currentRun.Project, RunID: currentRun.ID, WrittenAt: currentRun.WrittenAt, Revision: currentRun.Revision},
+		SpecRevision:   assignmentSpecRevision(currentRun), Task: task.ID, Team: team.ID, QueueFingerprint: team.QueueFingerprint,
+		Owner: owner, Worktree: worktree, Base: base,
+		Objective: task.Objective, Criteria: task.Criteria, Scope: task.WritablePaths, Checks: task.Checks,
+		Resources: core.ResourceSnapshot{External: task.Resources}, NextAction: "host_dispatch_required",
+	}.Clone()
 	digest, err := knowledge.PacketDigest(packet)
 	if err != nil {
 		return Result{}, err
@@ -336,6 +361,10 @@ func admitPreparedLocked(ctx context.Context, st *store.Store, selected tracker.
 	return Result{Run: currentRun, Team: team, Packet: packet, PacketDigest: digest, PacketPath: packetPath, HostDispatchRequired: true, AlreadyAdmitted: already}, nil
 }
 
+func nativeHost(owner string) bool {
+	return owner == "codex" || owner == "claude"
+}
+
 // Acknowledge records the exact native host handle for a reserved packet. It
 // accepts no substitute task, queue fingerprint, or candidate revision.
 func Acknowledge(ctx context.Context, st *store.Store, teamID core.TeamID, digest string, handle contracts.WorkerHandle) (run.TeamRecord, error) {
@@ -346,6 +375,9 @@ func Acknowledge(ctx context.Context, st *store.Store, teamID core.TeamID, diges
 	packet, _, err := readPacket(st, team.ID, digest)
 	if err != nil || packet.Digest != team.IntentDigest || packet.Packet.Task != team.Queue[0] || packet.Packet.Team != team.ID {
 		return run.TeamRecord{}, fmt.Errorf("%w: stored host packet", core.ErrRevision)
+	}
+	if nativeHost(packet.Packet.Owner) && handle.Host != packet.Packet.Owner {
+		return run.TeamRecord{}, fmt.Errorf("%w: reserved native host", core.ErrRevision)
 	}
 	if team.IntentDigest != digest || team.Handle.Identity != "" || len(team.Queue) == 0 || handle.Identity == "" || handle.Reviewer || handle.Run != team.RunID || handle.Team != team.ID || handle.Task != team.Queue[0] || handle.PacketDigest != digest || handle.CandidateRevision != packet.Packet.SpecRevision || (team.RetainedHandle.Identity != "" && (handle.Host != team.RetainedHandle.Host || handle.Identity != team.RetainedHandle.Identity)) {
 		return run.TeamRecord{}, fmt.Errorf("%w: host acknowledgement", core.ErrRevision)
@@ -447,6 +479,9 @@ func ConsumeForFollowup(ctx context.Context, st *store.Store, selected tracker.T
 		if err != nil {
 			return err
 		}
+		if err := AdmissionAllowed(ctx, st, core.AssignmentPacket{RecordEnvelope: core.RecordEnvelope{RunID: manifest.ID}, Team: team.ID, Task: team.Queue[1]}); err != nil {
+			return err
+		}
 		nextTask, err := selected.Get(ctx, team.Queue[1], manifest.TrackerRevision)
 		if err != nil || nextTask.ID != team.Queue[1] {
 			return fmt.Errorf("%w: queued follow-up task", core.ErrRevision)
@@ -461,10 +496,13 @@ func ConsumeForFollowup(ctx context.Context, st *store.Store, selected tracker.T
 			Owner:            prior.Packet.Owner,
 			Worktree:         prior.Packet.Worktree,
 			Base:             prior.Packet.Base,
-			Criteria:         append([]string(nil), nextTask.Criteria...),
-			Scope:            append([]string(nil), nextTask.WritablePaths...),
+			Objective:        nextTask.Objective,
+			Criteria:         nextTask.Criteria,
+			Scope:            nextTask.WritablePaths,
+			Checks:           nextTask.Checks,
+			Resources:        core.ResourceSnapshot{External: nextTask.Resources},
 			NextAction:       "host_followup_required",
-		}
+		}.Clone()
 		digest, err := knowledge.PacketDigest(packet)
 		if err != nil {
 			return err
@@ -543,6 +581,9 @@ func mutateTeamLocked(ctx context.Context, st *store.Store, runID core.RunID, te
 	next := currentTeam
 	if err := mutate(&next); err != nil {
 		return run.TeamRecord{}, err
+	}
+	if currentRun.Mode == "one-off" && len(next.Queue) == 0 {
+		next.Paths, next.Resources = nil, nil
 	}
 	slot := -1
 	for index := range currentRun.Teams {
@@ -721,6 +762,9 @@ func existingTaskOwner(st *store.Store, task core.TaskID) (core.RunID, bool, err
 func validateBoundary(st *store.Store, prepared run.PreparedPlanAdmission, worktree, base string) error {
 	if err := validateStoreProject(st, prepared.Run.Root); err != nil {
 		return err
+	}
+	if readOnlyOneOff(prepared.Run) {
+		return validateReadOnlyOneOffBoundary(prepared, worktree, base)
 	}
 	return validateWorktreeSpec(prepared, worktree, base)
 }

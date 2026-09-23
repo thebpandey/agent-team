@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"testing"
@@ -206,7 +207,7 @@ func TestLifecycleCLIReusesInstalledCustomHostHomesWithoutEnvironment(t *testing
 		t.Fatalf("rolled manifest=%+v err=%v", manifest, err)
 	}
 	for host, file := range old.Entrypoints {
-		got, err := os.ReadFile(filepath.Join(layout.SkillRoots[host], "agent-team-vnext", "SKILL.md"))
+		got, err := os.ReadFile(filepath.Join(layout.SkillRoots[host], "SKILL.md"))
 		want, _ := os.ReadFile(file.Path)
 		if err != nil || !bytes.Equal(got, want) {
 			t.Fatalf("%s entrypoint=%q err=%v", host, got, err)
@@ -518,4 +519,99 @@ func replaceTestBytes(t *testing.T, path string, old, replacement []byte) {
 		}
 	}
 	t.Fatal("test bytes not found")
+}
+
+func TestSetupCLIApproveKickoffBootstrapsFreshRepo(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	var out bytes.Buffer
+	if code := cli.Run(context.Background(), []string{"setup", "--approve-kickoff", "--json"}, core.Dependencies{Stdout: &out, Stderr: &out, Management: runManagement}); code != 0 {
+		t.Fatalf("code=%d output=%q", code, out.String())
+	}
+	for _, name := range []string{"TASKS.md", "DECISIONS.md", "AGENT_TEAM_RULES.md", filepath.Join(".agent-team", "config.json")} {
+		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
+			t.Fatalf("approved setup did not create %s: %v; output=%q", name, err, out.String())
+		}
+	}
+	var result struct {
+		OK      bool `json:"ok"`
+		Tracker struct {
+			Kind string `json:"kind"`
+		} `json:"tracker"`
+		Generated []string `json:"generated"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || !result.OK || result.Tracker.Kind != "tasks-md" || len(result.Generated) != 3 {
+		t.Fatalf("unexpected setup result: %q err=%v", out.String(), err)
+	}
+	if _, err := project.NewSettingsService(store.New(root, core.DefaultConfig().Storage)).Inspect(context.Background()); err != nil {
+		t.Fatalf("settings binding after fresh setup: %v", err)
+	}
+}
+
+func TestSetupCLIPrefersBeadsOverLegacyTasksMd(t *testing.T) {
+	root := testkit.GitRepo(t)
+	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "TASKS.md"), []byte("# legacy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	var out bytes.Buffer
+	if code := cli.Run(context.Background(), []string{"setup", "--approve-kickoff", "--json"}, core.Dependencies{Stdout: &out, Stderr: &out, Management: runManagement}); code != 0 {
+		t.Fatalf("code=%d output=%q", code, out.String())
+	}
+	var result struct {
+		Tracker struct {
+			Kind string `json:"kind"`
+		} `json:"tracker"`
+		Generated []string `json:"generated"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || result.Tracker.Kind != "beads" || len(result.Generated) != 2 {
+		t.Fatalf("beads must win over legacy TASKS.md: %q err=%v", out.String(), err)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(root, "TASKS.md")); string(raw) != "# legacy\n" {
+		t.Fatalf("legacy TASKS.md was rewritten: %q", raw)
+	}
+}
+
+func TestSetupCLIWithoutApprovalNamesMissingInputsAndWritesNothing(t *testing.T) {
+	root := testkit.GitRepo(t)
+	before := testkit.SnapshotTree(t, root)
+	t.Chdir(root)
+	var out bytes.Buffer
+	if code := cli.Run(context.Background(), []string{"setup", "--json"}, core.Dependencies{Stdout: &out, Stderr: &out, Management: runManagement}); code == 0 {
+		t.Fatalf("unapproved setup on an empty repo must fail: %q", out.String())
+	}
+	for _, want := range []string{"DECISIONS.md", "AGENT_TEAM_RULES.md", "--approve-kickoff"} {
+		if !bytes.Contains(out.Bytes(), []byte(want)) {
+			t.Fatalf("error must name %s: %q", want, out.String())
+		}
+	}
+	if after := testkit.SnapshotTree(t, root); !reflect.DeepEqual(before, after) {
+		t.Fatalf("refused setup wrote files: before=%v after=%v", before, after)
+	}
+}
+
+func TestSetupCLIApprovedButInvalidTrackerWritesNothing(t *testing.T) {
+	root := testkit.GitRepo(t)
+	if err := os.Mkdir(filepath.Join(root, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink inside an existing input is rejected by digestDirectory.
+	if err := os.Mkdir(filepath.Join(root, "DECISIONS.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "README.md"), filepath.Join(root, "DECISIONS.md", "link")); err != nil {
+		t.Fatal(err)
+	}
+	before := testkit.SnapshotTree(t, root)
+	t.Chdir(root)
+	var out bytes.Buffer
+	if code := cli.Run(context.Background(), []string{"setup", "--approve-kickoff", "--json"}, core.Dependencies{Stdout: &out, Stderr: &out, Management: runManagement}); code == 0 {
+		t.Fatalf("symlinked input must be rejected: %q", out.String())
+	}
+	if after := testkit.SnapshotTree(t, root); !reflect.DeepEqual(before, after) {
+		t.Fatalf("rejected approved setup wrote files: before=%v after=%v", before, after)
+	}
 }

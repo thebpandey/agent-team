@@ -8,9 +8,9 @@ A visual review checks the actual appearance and use of an app. A â€œtaste testâ
 
 For changes that affect visible UI or user interaction, assign this procedure to the existing independent reviewer. For substantial UI work, the orchestrator may create one dedicated visual tester with a separate, bounded task. It owns the visual findings; the code reviewer handles the remaining code review. Do not repeat the same review or create a panel.
 
-Use `gpt-5.6-terra` with `high` effort in Codex. Use `claude-opus-5` with `high` effort in Claude Code. The model must be able to inspect images. Do not use Luna, Sonnet, or Haiku for this Pro visual judgment role. Follow the selected host's actual model controls and access limits.
+Use the saved visual reviewer profile and verify that its actual host route can inspect images. Missing-role defaults are `gpt-6-sol` in Codex and `claude-opus-5-5` in Claude; `high` effort is a recommendation only when selected and supported. Preserve explicit choices and report insufficient image capability instead of silently selecting another model.
 
-The orchestrator never performs the visual review itself. In-loop UI review belongs to the assigned reviewer or visual tester above; the final post-completion visual check goes through the host's delegated verifier route (`gpt-5.6-sol` medium, with the Claude Code fallback to the `claude-opus-5` visual tester when the Codex route cannot inspect the screenshots or fails).
+The orchestrator delegates visual review. In-loop UI review belongs to the assigned reviewer or visual tester; the final post-completion visual check uses an independent supported reviewer with the saved profile. An unavailable route requires an approved fallback or an explicit blocker.
 
 Give the reviewer the app URL, source revision, changed screens, main user flow, agreed design guide, and test-data limits. Also supply the task IDs, evidence folder, tracker mode, and assigned CONTEXT.md path. Reviewers report findings; the assigned developer repairs product code.
 

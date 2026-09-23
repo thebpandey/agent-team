@@ -206,6 +206,32 @@ func TestWindowsDownloadInstructionsUseSeparateExtractionDirectory(t *testing.T)
 	}
 }
 
+func TestWindowsReleaseCanaryChecksDiscoverableOwnedSkillsForBothHosts(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", "..", ".."))
+	raw, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "vnext-release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(raw)
+	for _, required := range []string{
+		`@{ codex = $env:CODEX_HOME; claude = $env:CLAUDE_HOME }`,
+		`$skillPath = Join-Path $hostHome "skills/agent-team/SKILL.md"`,
+		`$installedSkill = Get-Content -Raw $skillPath`,
+		`$_.role -eq "skill-entrypoint" -and $_.host -eq $hostName`,
+		`$entrypoint.Count -ne 1`,
+		`Get-FileHash -Algorithm SHA256 $skillPath`,
+		`Test-Path -LiteralPath $nestedSkill`,
+		`Installed $hostName entrypoint remains nested`,
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Fatalf("Windows canary missing discoverable owned skill check %q", required)
+		}
+	}
+	if strings.Contains(workflow, `Get-Content -Raw (Join-Path $env:CODEX_HOME "skills/agent-team/agent-team-vnext/SKILL.md")`) {
+		t.Fatal("Windows canary still reads the retired nested discovery path")
+	}
+}
+
 func validateHostFrontmatter(t *testing.T, host, body string) {
 	t.Helper()
 	allowed := map[string]bool{

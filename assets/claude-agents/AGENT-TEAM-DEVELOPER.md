@@ -1,7 +1,7 @@
 ---
 name: agent-team-developer
 description: Implement assigned Terra-level Agent-Team development tasks.
-model: claude-opus-5
+model: claude-opus-5-5
 effort: high
 disallowedTools: Agent
 ---

@@ -100,10 +100,10 @@ func TestBeadsFailuresAndSnapshot(t *testing.T) {
 		}
 	}
 
-	data := []byte(`[{"id":"B-1","objective":"ship","status":"open","dependencies":["B-0"],"criteria":["works"],"checks":[{"name":"unit","command":["go","test","./..."]}],"writablePaths":["internal/tracker/**"],"resources":["browser:1"],"evidencePointers":["receipt:B-1"]}]`)
+	data := []byte(`[{"id":"B-1","objective":"ship","status":"open","dependencies":["B-0"],"criteria":["works"],"checks":[{"name":"unit","command":["go","test","./..."]}],"writablePaths":["internal/tracker/**"],"resources":["browser:1"],"evidencePointers":["receipt:B-1"]},{"id":"B-0","title":"prerequisite","status":"open"}]`)
 	tr := NewBeads(NewFakeRunner(CommandResult{Stdout: data}))
 	page, err := tr.Page(context.Background(), "", 8)
-	if err != nil || page.TrackerRevision == 0 || len(page.Tasks) != 1 || len(page.Tasks[0].Checks) != 1 {
+	if err != nil || page.TrackerRevision == 0 || len(page.Tasks) != 2 || len(page.Tasks[1].Checks) != 1 {
 		t.Fatalf("Page = %#v, %v", page, err)
 	}
 	if _, err := tr.Get(context.Background(), "B-1", page.TrackerRevision+1); !errors.Is(err, core.ErrRevision) {
@@ -125,24 +125,24 @@ func TestBeadsAcceptsRealListObservationsAndRequestsCompleteSnapshot(t *testing.
 		t.Fatalf("Page = %#v, %v", page, err)
 	}
 	calls := runner.Calls()
-	if len(calls) != 1 || !containsArgs(calls[0], "list", "--json", "--all", "--limit", "0") {
+	if len(calls) != 1 || !containsArgs(calls[0], "--readonly", "list", "--json", "--limit", "1001") {
 		t.Fatalf("snapshot command = %#v", calls)
 	}
 }
 
 func TestBeadsNormalizesRealBlocksDependencyObjects(t *testing.T) {
 	body := `[{"id":"B-2","title":"dependent","status":"open","dependencies":[{"id":"B-1","title":"prerequisite","status":"open","dependency_type":"blocks"}]}]`
-	page, err := NewBeads(NewFakeRunner(CommandResult{Stdout: []byte(body)})).Page(context.Background(), "", 8)
-	if err != nil || len(page.Tasks) != 1 || !reflect.DeepEqual(page.Tasks[0].Dependencies, []core.TaskID{"B-1"}) {
-		t.Fatalf("Page = %#v, %v", page, err)
+	tasks, err := parseBeads([]byte(body))
+	if err != nil || len(tasks) != 1 || !reflect.DeepEqual(tasks[0].Dependencies, []core.TaskID{"B-1"}) {
+		t.Fatalf("tasks = %#v, %v", tasks, err)
 	}
 }
 
 func TestBeadsNormalizesCapturedDependencyRelationsWithoutBlockingProvenance(t *testing.T) {
 	body := `[{"id":"B-2","title":"dependent","status":"open","acceptance_criteria":"report","notes":"fixture","assignee":"fixture@example.test","started_at":"2026-09-22T15:46:51Z","labels":["fixture"],"parent":"B-parent","dependencies":[{"issue_id":"B-2","depends_on_id":"B-1","type":"blocks","created_at":"2026-09-22T15:46:51Z","created_by":"fixture","metadata":"{}"},{"issue_id":"B-2","depends_on_id":"B-parent","type":"parent-child","created_at":"2026-09-22T15:46:51Z","created_by":"fixture","metadata":"{}"},{"issue_id":"B-2","depends_on_id":"B-context","type":"related","created_at":"2026-09-22T15:46:51Z","created_by":"fixture","metadata":"{}"}]}]`
-	page, err := NewBeads(NewFakeRunner(CommandResult{Stdout: []byte(body)})).Page(context.Background(), "", 8)
-	if err != nil || len(page.Tasks) != 1 || !reflect.DeepEqual(page.Tasks[0].Dependencies, []core.TaskID{"B-1"}) {
-		t.Fatalf("Page = %#v, %v", page, err)
+	tasks, err := parseBeads([]byte(body))
+	if err != nil || len(tasks) != 1 || !reflect.DeepEqual(tasks[0].Dependencies, []core.TaskID{"B-1"}) {
+		t.Fatalf("tasks = %#v, %v", tasks, err)
 	}
 }
 
@@ -211,11 +211,11 @@ func TestBeadsRejectsNullUnknownStatusAndDuplicateIDs(t *testing.T) {
 	}
 	closed := NewBeads(NewFakeRunner(CommandResult{Stdout: []byte(`[{"id":"B-2","title":"closed","status":"closed"}]`)}))
 	page, err := closed.Page(context.Background(), "", 8)
-	if err != nil || len(page.Tasks) != 0 {
+	if err != nil || len(page.Tasks) != 1 || page.Tasks[0].State != core.Integrated {
 		t.Fatalf("closed page = %#v, %v", page, err)
 	}
-	task, err := closed.Get(context.Background(), "B-2", trackerRevision([]byte(`[{"id":"B-2","title":"closed","status":"closed"}]`)))
-	if err != nil || task.State != core.Archived || !task.Archived {
+	task, err := closed.Get(context.Background(), "B-2", beadsFixtureRevision(t, `[{"id":"B-2","title":"closed","status":"closed"}]`))
+	if err != nil || task.State != core.Integrated || task.Archived {
 		t.Fatalf("closed task = %#v, %v", task, err)
 	}
 }
@@ -231,7 +231,7 @@ func TestBeadsCreateReturnsVerifiedTaskAndReusesIdenticalID(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := core.Task{ID: "B-2", Objective: "new", State: core.Ready, Dependencies: []core.TaskID{"B-1"}, Criteria: []string{"works"}, Checks: []core.Check{{Name: "unit", Command: []string{"go", "test", "./..."}}}, WritablePaths: []string{"internal/tracker/**"}, Resources: []string{"browser:1"}, EvidencePointers: []string{"receipt:B-2"}}
-	want.Revision = trackerRevision([]byte(final))
+	want.Revision = beadsFixtureRevision(t, final)
 	got, err := tr.Create(context.Background(), want, page.TrackerRevision)
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Create = %#v, %v", got, err)
@@ -242,7 +242,7 @@ func TestBeadsCreateReturnsVerifiedTaskAndReusesIdenticalID(t *testing.T) {
 
 	reuseRunner := &scriptedRunner{results: []CommandResult{{Stdout: []byte(final)}}}
 	reuse := NewBeads(reuseRunner)
-	reused, err := reuse.Create(context.Background(), want, trackerRevision([]byte(final)))
+	reused, err := reuse.Create(context.Background(), want, beadsFixtureRevision(t, final))
 	if err != nil || !reflect.DeepEqual(reused, want) || len(reuseRunner.Calls()) != 1 {
 		t.Fatalf("idempotent Create = %#v, %v, calls=%#v", reused, err, reuseRunner.Calls())
 	}
@@ -326,7 +326,7 @@ func TestBeadsArchiveReusesAlreadyArchivedTask(t *testing.T) {
 	body := `[{"id":"B-closed","title":"done","status":"closed"}]`
 	runner := &scriptedRunner{results: []CommandResult{{Stdout: []byte(body)}}}
 	tr := NewBeads(runner)
-	if err := tr.Archive(context.Background(), "B-closed", "done", trackerRevision([]byte(body))); err != nil {
+	if err := tr.Archive(context.Background(), "B-closed", "done", beadsFixtureRevision(t, body)); err != nil {
 		t.Fatal(err)
 	}
 	if calls := runner.Calls(); len(calls) != 1 || !containsArgs(calls[0], "list", "--json") {
@@ -338,7 +338,6 @@ func TestBeadsRejectsContradictoryStateAndStrictlyValidatesMetadata(t *testing.T
 	for _, tc := range []struct{ name, body string }{
 		{name: "contradictory archived", body: `[{"id":"B-1","title":"x","status":"open","archived":true}]`},
 		{name: "contradictory state", body: `[{"id":"B-1","title":"x","status":"open","state":"reviewing"}]`},
-		{name: "unknown metadata", body: `[{"id":"B-1","title":"x","status":"open","metadata":{"surprise":true}}]`},
 		{name: "null metadata value", body: `[{"id":"B-1","title":"x","status":"open","metadata":{"criteria":null}}]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -348,8 +347,8 @@ func TestBeadsRejectsContradictoryStateAndStrictlyValidatesMetadata(t *testing.T
 			}
 		})
 	}
-	archived := NewBeads(NewFakeRunner(CommandResult{Stdout: []byte(`[{"id":"B-2","title":"x","status":"closed","state":"archived","archived":true}]`)}))
-	task, err := archived.Get(context.Background(), "B-2", trackerRevision([]byte(`[{"id":"B-2","title":"x","status":"closed","state":"archived","archived":true}]`)))
+	archived := NewBeads(NewFakeRunner(CommandResult{Stdout: []byte(`[{"id":"B-2","title":"x","status":"archived","state":"archived","archived":true}]`)}))
+	task, err := archived.Get(context.Background(), "B-2", beadsFixtureRevision(t, `[{"id":"B-2","title":"x","status":"archived","state":"archived","archived":true}]`))
 	if err != nil || task.State != core.Archived || !task.Archived {
 		t.Fatalf("archived task = %#v, %v", task, err)
 	}

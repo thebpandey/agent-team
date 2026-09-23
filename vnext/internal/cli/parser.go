@@ -63,14 +63,8 @@ func Parse(args []string) (Action, error) {
 			return Action{}, core.ErrPhase
 		}
 		name = "task add"
-		actionArgs = []string{args[2]}
-		if len(args) > 3 {
-			objective := strings.TrimSpace(strings.Join(args[3:], " "))
-			if objective == "" {
-				return Action{}, core.ErrPhase
-			}
-			actionArgs = append(actionArgs, objective)
-		}
+		actionArgs, err = parseTaskRequest(args[3:])
+		actionArgs = append([]string{args[2]}, actionArgs...)
 	case "one-off":
 		if len(args) < 3 || (args[1] != "feature" && args[1] != "audit" && args[1] != "review") {
 			return Action{}, core.ErrPhase
@@ -82,19 +76,15 @@ func Parse(args []string) (Action, error) {
 			}
 			objectiveArgs = args[3:]
 		}
-		objective := strings.TrimSpace(strings.Join(objectiveArgs, " "))
-		if objective == "" {
-			return Action{}, core.ErrPhase
-		}
 		name = "one-off " + args[1]
-		actionArgs = []string{objective}
+		actionArgs, err = parseTaskRequest(objectiveArgs)
 	case "pause", "stop", "cancel", "resume":
 		if name == "pause" && len(args) == 3 && args[1] == "--scope" {
 			actionArgs, err = parseScope(args[2])
 		} else {
-			allowed := map[string]bool{"--run": true, "--team": true, "--task": true}
-			if name == "pause" || name == "stop" {
-				allowed["--project"] = true
+			allowed := map[string]bool{"--run": true, "--team": true, "--task": true, "--project": true}
+			for _, key := range []string{"--action", "--control-id", "--host", "--identity", "--packet-digest", "--candidate", "--observation"} {
+				allowed[key] = true
 			}
 			actionArgs, err = parseSelectors(args[1:], allowed, false)
 		}
@@ -128,6 +118,34 @@ func Parse(args []string) (Action, error) {
 	}
 
 	return Action{Name: name, Args: actionArgs, JSON: jsonOutput, ScopeRequired: name == "pause" || name == "stop" || name == "cancel" || name == "resume"}, nil
+}
+
+func parseTaskRequest(args []string) ([]string, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	if args[0] == "--from" {
+		values, err := parseSelectors(args, map[string]bool{"--from": true, "--host": true}, false)
+		if err != nil {
+			return nil, err
+		}
+		for i := 0; i < len(values); i += 2 {
+			if values[i] == "--host" && values[i+1] != "codex" && values[i+1] != "claude" {
+				return nil, core.ErrPhase
+			}
+		}
+		return values, nil
+	}
+	for _, value := range args {
+		if strings.HasPrefix(value, "--") {
+			return nil, core.ErrPhase
+		}
+	}
+	objective := strings.TrimSpace(strings.Join(args, " "))
+	if objective == "" {
+		return nil, core.ErrPhase
+	}
+	return []string{objective}, nil
 }
 
 func parseAbsoluteRequest(args []string) ([]string, error) {
@@ -187,6 +205,25 @@ func parseSetupArgs(args []string) ([]string, error) {
 	seenMode, seenApprove, seenRefuse := false, false, false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--host", "--tracker", "--kickoff", "--install":
+			flag := args[i]
+			if slices.Contains(out, flag) || i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" || strings.HasPrefix(args[i+1], "--") {
+				return nil, core.ErrPhase
+			}
+			value := strings.TrimSpace(args[i+1])
+			if flag == "--host" && value != "codex" && value != "claude" {
+				return nil, core.ErrPhase
+			}
+			if flag == "--tracker" && value != "beads" && value != "tasks-md" {
+				return nil, core.ErrPhase
+			}
+			out = append(out, flag, value)
+			i++
+		case "--approve", "--prepare-only":
+			if slices.Contains(out, args[i]) || seenRefuse {
+				return nil, core.ErrPhase
+			}
+			out = append(out, args[i])
 		case "--mode":
 			if seenMode || i+1 >= len(args) {
 				return nil, core.ErrPhase
@@ -205,7 +242,7 @@ func parseSetupArgs(args []string) ([]string, error) {
 			seenApprove = true
 			out = append(out, args[i])
 		case "--refuse-kickoff":
-			if seenRefuse || seenApprove {
+			if seenRefuse || seenApprove || slices.Contains(out, "--approve") {
 				return nil, core.ErrPhase
 			}
 			seenRefuse = true
@@ -253,8 +290,8 @@ func parseStartArgs(args []string) ([]string, error) {
 	if len(args) == 0 {
 		return nil, nil
 	}
-	if args[0] == "--run" {
-		return parseSelectors(args, map[string]bool{"--run": true, "--task": true}, true)
+	if slices.Contains(args, "--run") {
+		return parseSelectors(args, map[string]bool{"--run": true, "--task": true, "--host": true}, true)
 	}
 	allowed := map[string]bool{"--action": true, "--team": true, "--packet-digest": true, "--host": true, "--identity": true, "--task": true, "--candidate": true, "--reviewer": true}
 	values, err := parseSelectors(args, allowed, false)
@@ -266,6 +303,12 @@ func parseStartArgs(args []string) ([]string, error) {
 		seen[values[index]] = values[index+1]
 	}
 	action := seen["--action"]
+	if host := seen["--host"]; host != "" && host != "codex" && host != "claude" {
+		return nil, core.ErrPhase
+	}
+	if action == "" && len(seen) == 1 && seen["--host"] != "" {
+		return values, nil
+	}
 	switch action {
 	case "ack":
 		for _, key := range []string{"--team", "--packet-digest", "--host", "--identity", "--task", "--candidate"} {

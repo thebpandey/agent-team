@@ -11,13 +11,13 @@ When this Codex session continues a project last used by Claude Code or another 
 | Project/team orchestrator: planning, assignment, decisions, supervision, integration and release only | `gpt-6-astra` | high |
 | Standard developer; code reviewer | `gpt-5.6-terra` | medium or high |
 | Pro visual reviewer | `gpt-5.6-terra` | high |
-| Complex developer | `gpt-5.6-sol` | high; xhigh for a concrete need |
-| Routine developer | `gpt-5.6-luna` | low or medium |
-| Delegated verifier: pre-dispatch code searches/feature checks and post-completion final checks, reviews and verification | `gpt-5.6-sol` | medium |
+| Complex developer | `gpt-6-sol` | high; xhigh for a concrete need |
+| Routine developer | `gpt-6-luna` | low or medium |
+| Delegated verifier: pre-dispatch code searches/feature checks and post-completion final checks, reviews and verification | `gpt-6-sol` | medium |
 
-The orchestrator never performs code searches, feature checks, reviews, visual reviews or final verification itself; it dispatches a `gpt-5.6-sol` `medium` verifier agent for that work before dispatching a team and after a team reports completion. Verifier findings return to the owning developer for automatic repair, and the orchestrator integrates only the verifier-accepted revision.
+The orchestrator delegates code searches, feature checks, reviews, visual reviews and final verification through the saved reviewer/visual reviewer profile. `gpt-6-sol` at `medium` is a suggested verifier tier when the user selects it and the host supports it. Verifier findings return to the owning developer for automatic repair, and the orchestrator integrates only the verifier-accepted revision.
 
-These are quality-first routing defaults, not proof of account availability. Show actual parent and child model/effort from exposed controls; a skill cannot change its parent. Use the user's approved available routing/fallback, preserving quality and reporting configured versus enforceable settings. Do not stall unrelated work solely because metadata is unavailable or silently substitute a weaker model.
+These are optional tier recommendations; saved profiles and the current defaults in [settings](SETTINGS.md) govern native dispatch. Show actual parent and child model/effort from exposed controls; a skill cannot change its parent. Validate the selected model against actual native host metadata and report unknown/unavailable support without silently substituting a fallback.
 
 A standalone `~/.codex/agents/<name>.toml` agent profile proves only that Codex can discover and parse that role; it does not prove the native subagent backend makes the configured model available. For a custom provider, its `env_key` must also be present in the actual host process. Report configured provider, native model catalog availability, credential presence, and the result of a fresh spawn as separate facts. A native “model is not supported” result remains unavailable even when the provider's Responses API and local TOML are valid; do not silently substitute another model.
 

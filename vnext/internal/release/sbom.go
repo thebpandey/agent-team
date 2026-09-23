@@ -2,17 +2,25 @@ package release
 
 import (
 	"path/filepath"
+	"reflect"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 )
 
 type SBOMComponent struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Path    string `json:"path"`
-	SHA256  string `json:"sha256"`
-	Type    string `json:"type"`
-	BOMRef  string `json:"bom-ref"`
+	Name       string         `json:"name"`
+	Version    string         `json:"version,omitempty"`
+	Path       string         `json:"path,omitempty"`
+	SHA256     string         `json:"sha256,omitempty"`
+	Type       string         `json:"type"`
+	BOMRef     string         `json:"bom-ref"`
+	PURL       string         `json:"purl,omitempty"`
+	Properties []SBOMProperty `json:"properties,omitempty"`
+}
+
+type SBOMProperty struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 type SBOM struct {
@@ -32,22 +40,16 @@ func BuildSBOM(manifest Manifest) (SBOM, error) {
 		digest := manifest.Checksums[path]
 		sbom.Components = append(sbom.Components, SBOMComponent{Name: filepath.Base(path), Version: manifest.Version, Path: path, SHA256: digest, Type: "file", BOMRef: "sha256:" + digest})
 	}
+	for _, module := range manifest.GoModules {
+		sbom.Components = append(sbom.Components, moduleComponent(module))
+	}
 	return sbom, nil
 }
 
 func VerifySBOM(sbom SBOM, manifest Manifest) error {
-	if err := validateManifest(manifest); err != nil {
+	expected, err := BuildSBOM(manifest)
+	if err != nil || !reflect.DeepEqual(sbom, expected) {
 		return core.ErrRevision
-	}
-	if sbom.Format != "CycloneDX" || sbom.SpecVersion != "1.5" || sbom.Tool != "native" || sbom.Serial != "urn:agent-team:"+ManifestSHA256(manifest) || len(sbom.Components) != len(manifest.Files) {
-		return core.ErrRevision
-	}
-	for index, component := range sbom.Components {
-		path := manifest.Files[index]
-		digest := manifest.Checksums[path]
-		if component.Path != path || component.Name != filepath.Base(path) || component.Version != manifest.Version || component.SHA256 != digest || component.Type != "file" || component.BOMRef != "sha256:"+digest {
-			return core.ErrRevision
-		}
 	}
 	return nil
 }

@@ -8,15 +8,15 @@ When this Claude Code session continues a project last used by Codex or another 
 
 ## Role map
 
-These are workflow choices, not benchmark equivalence claims. Verified against Anthropic's model documentation on 2026-09-04.
+These are optional tier recommendations, subject to actual host support. Saved profiles and [settings](SETTINGS.md) defaults govern native dispatch; these suggestions do not switch the current parent.
 
 | Role | Anthropic model ID | Effort |
 | --- | --- | --- |
 | Project/team orchestrator: planning, assignment, decisions, supervision, integration and release only | `claude-fable-5-1` | high |
-| Complex developer: Sol-level work | `claude-opus-5` | xhigh |
-| Standard developer: Terra-level work | `claude-opus-5` | high |
-| Independent reviewer: Terra-level work | `claude-opus-5` | high |
-| Pro visual reviewer | `claude-opus-5` | high |
+| Complex developer: Sol-level work | `claude-opus-5-5` | xhigh |
+| Standard developer: Terra-level work | `claude-opus-5-5` | high |
+| Independent reviewer: Terra-level work | `claude-opus-5-5` | high |
+| Pro visual reviewer | `claude-opus-5-5` | high |
 | Routine developer: Luna-level work only | `claude-sonnet-5` | high |
 | Optional text assistant: simple rewrite/paraphrase only | `claude-haiku-4-5-20251001` | omit effort override |
 | Delegated verifier: pre-dispatch code searches/feature checks and post-completion final checks, reviews and verification | `gpt-5.6-sol` through the installed Codex plugin | medium; fallback `claude-opus-5` high |
@@ -41,8 +41,10 @@ Fable 5.1 needs Claude Code v2.1.255+. Confirm installed version and account/pro
 
 The orchestrator never performs code searches, feature checks, reviews, visual reviews or final verification itself, whether before dispatching a team or after a team reports completion. Delegate that work to the verifier route:
 
-1. Primary: `gpt-5.6-sol` at `medium` effort through the installed Codex plugin. Route every search, check and review through the companion runtime's `task` command, which is the only command that accepts explicit model and effort: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --model gpt-5.6-sol --effort medium "<packet>"` (foreground by default; `--background` plus `result` for long checks). Do not use the plugin's `review`/`adversarial-review` commands for this route; they cannot pin the model or effort. The `codex:codex-rescue` agent may forward a `task` with those explicit flags. Leave `--write` off; verifiers report, developers repair.
-2. Fallback: a `claude-opus-5` `high` agent (`agent-team-reviewer`, or `agent-team-visual-tester` for image inspection) when the Codex plugin is not installed, Codex is not authenticated, the model is unavailable, or the primary run fails. Record which route actually ran and why.
+1. Native route: use the saved Claude reviewer or visual reviewer profile through the actual Agent tool. The current missing-role default is `claude-opus-5-5`; validate availability instead of assuming the identifier is supported.
+2. Optional cross-host route: use an explicitly approved Codex plugin route such as `gpt-6-sol` at `medium` effort only when installed and supported. Keep it read-only, verify the actual returned route, and return findings to the owning developer. Plugin presence alone does not authorize substitution for the saved profile.
+
+If Agent accepts only aliases such as `opus`, resolve the saved full ID to an alias only when actual host model metadata proves it selects the same model. Otherwise report the affected blocker; never infer equivalence from the alias name or silently change models.
 
 Access is proven by an actual invocation, not by the plugin's presence. The plugin's own result-handling rule to stop and ask before fixing does not apply inside an Agent-Team run: findings return to the owning developer for automatic in-scope repair, and the orchestrator integrates only after the verifier accepts the repaired revision. Verifier output is evidence linked from the task packet, never pasted wholesale into the orchestrator context.
 

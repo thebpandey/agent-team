@@ -48,7 +48,17 @@ func Discover(ctx context.Context, root string) (Project, error) {
 	}
 	head, err := git(ctx, canonicalRoot, "rev-parse", "HEAD")
 	if err != nil {
-		return Project{}, err
+		// Setup is useful before a new project's first commit. Accept only an
+		// actual unborn branch; detached or corrupt repositories still reject.
+		branch, branchErr := git(ctx, canonicalRoot, "symbolic-ref", "-q", "HEAD")
+		if branchErr != nil {
+			return Project{}, err
+		}
+		probeErr := exec.CommandContext(ctx, "git", "-C", canonicalRoot, "show-ref", "--verify", "--quiet", branch).Run()
+		if exit, ok := probeErr.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+			return Project{}, err
+		}
+		head = ""
 	}
 	status, err := gitAllowEmpty(ctx, canonicalRoot, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {

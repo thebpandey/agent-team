@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
 	"github.com/thebpandey/agent-team/vnext/internal/migrate"
@@ -29,20 +30,77 @@ type RunDefaults struct {
 // Settings is the mutable, receipt-bound project overlay. It never replaces
 // the immutable setup config or receipt.
 type Settings struct {
-	Schema           int         `json:"schema"`
-	BaseConfigDigest string      `json:"baseConfigDigest"`
-	ReceiptPath      string      `json:"receiptPath"`
-	ReceiptDigest    string      `json:"receiptDigest"`
-	Revision         uint64      `json:"revision"`
-	Defaults         RunDefaults `json:"defaults"`
-	CodexDeveloper   RoleProfile `json:"-"`
+	Schema           int                    `json:"schema"`
+	BaseConfigDigest string                 `json:"baseConfigDigest"`
+	ReceiptPath      string                 `json:"receiptPath"`
+	ReceiptDigest    string                 `json:"receiptDigest"`
+	Revision         uint64                 `json:"revision"`
+	Defaults         RunDefaults            `json:"defaults"`
+	Hosts            map[string]HostProfile `json:"hosts"`
+	ModelUpdates     []RoleModelUpdate      `json:"modelUpdates,omitempty"`
+	CodexDeveloper   RoleProfile            `json:"-"`
 }
 
-// RoleProfile is the minimal saved Codex routing preference consumed by a
-// later native handoff. It does not claim the current host can enforce it.
+type RoleModelUpdate struct {
+	Host     string `json:"host"`
+	Role     string `json:"role"`
+	Previous string `json:"previous"`
+	Current  string `json:"current"`
+}
+
+// HostProfile keeps role preferences independent between native hosts.
+type HostProfile struct {
+	Roles map[string]RoleProfile `json:"roles"`
+}
+
+// RoleProfile contains saved preferences, not proof of host enforcement.
+// Empty values inherit the current host's model or effort without an override.
 type RoleProfile struct {
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
+}
+
+// Profile returns one host's preference; coder is an alias for developer.
+func (s Settings) Profile(host, role string) RoleProfile {
+	if role == "coder" {
+		role = "developer"
+	}
+	profile, exists := s.Hosts[host].Roles[role]
+	if !exists {
+		return defaultRoleProfile(host, role)
+	}
+	profile.Model = currentRoleModel(host, profile.Model)
+	return profile
+}
+
+func defaultRoleProfile(host, role string) RoleProfile {
+	if role == "orchestrator" || !knownRole(role) {
+		return RoleProfile{}
+	}
+	switch host {
+	case "codex":
+		return RoleProfile{Model: "gpt-6-sol"}
+	case "claude":
+		return RoleProfile{Model: "claude-opus-5-5"}
+	}
+	return RoleProfile{}
+}
+
+// Only former Agent-Team canonical recommendations move forward. Explicit
+// inherit, other families, dated pins, gateways, and unknown hosts stay intact.
+func currentRoleModel(host, model string) string {
+	if host == "codex" {
+		switch model {
+		case "gpt-5.6-sol":
+			return "gpt-6-sol"
+		case "gpt-5.6-luna":
+			return "gpt-6-luna"
+		}
+	}
+	if host == "claude" && model == "claude-opus-5" {
+		return "claude-opus-5-5"
+	}
+	return model
 }
 
 // SettingsService exposes read-only inspection and receipt-bound updates.
@@ -89,6 +147,11 @@ func (s *settingsService) Update(ctx context.Context, updates map[string]string)
 	if raw == nil {
 		raw = make(map[string]json.RawMessage)
 	}
+	// Persist effective defaults/migrations only with an explicit settings write.
+	// Inspect remains read-only, and nested extension fields are kept byte-safe.
+	if err := refreshRoleModels(raw); err != nil {
+		return Settings{}, err
+	}
 	if err := applySettingsUpdates(&record.Defaults, raw, updates); err != nil {
 		return Settings{}, err
 	}
@@ -115,11 +178,12 @@ func (s *settingsService) Update(ctx context.Context, updates map[string]string)
 		raw[key] = encoded
 	}
 	raw["defaults"] = encodedDefaults
-	profile, err := codexDeveloper(raw)
+	profiles, err := hostProfiles(raw)
 	if err != nil {
 		return Settings{}, err
 	}
-	record.CodexDeveloper = profile
+	record.Hosts = profiles
+	record.CodexDeveloper = record.Profile("codex", "developer")
 	if _, err := state.store.WriteJSON(settingsPath, raw, core.DefaultConfig().Storage.CanonicalBytes); err != nil {
 		return Settings{}, err
 	}
@@ -207,21 +271,34 @@ func (s settingsState) load(binding settingsBinding) (Settings, map[string]json.
 	var document map[string]json.RawMessage
 	err := s.store.ReadJSON(settingsPath, core.DefaultConfig().Storage.CanonicalBytes, &document)
 	if errors.Is(err, os.ErrNotExist) {
-		return Settings{Schema: 1, BaseConfigDigest: binding.baseConfigDigest, ReceiptPath: binding.receiptPath, ReceiptDigest: binding.receiptDigest, Defaults: defaultRunDefaults()}, nil, nil
+		profiles, _ := hostProfiles(nil)
+		record := Settings{Schema: 1, BaseConfigDigest: binding.baseConfigDigest, ReceiptPath: binding.receiptPath, ReceiptDigest: binding.receiptDigest, Defaults: defaultRunDefaults(), Hosts: profiles}
+		record.CodexDeveloper = record.Profile("codex", "developer")
+		return record, nil, nil
 	}
 	if err != nil {
 		return Settings{}, nil, err
 	}
-	encoded, marshalErr := json.Marshal(document)
+	// Decode binding fields separately from the extensible host documents. An
+	// unknown host may use a future shape that this version must preserve.
+	metadata := make(map[string]json.RawMessage, len(document))
+	for key, value := range document {
+		if key != "hosts" {
+			metadata[key] = value
+		}
+	}
+	encoded, marshalErr := json.Marshal(metadata)
 	var record Settings
 	if marshalErr != nil || json.Unmarshal(encoded, &record) != nil || record.Schema != 1 || record.Revision == 0 || record.BaseConfigDigest != binding.baseConfigDigest || record.ReceiptPath != binding.receiptPath || record.ReceiptDigest != binding.receiptDigest || !validRunDefaults(record.Defaults) {
 		return Settings{}, nil, fmt.Errorf("%w: settings overlay binding", core.ErrRevision)
 	}
-	profile, err := codexDeveloper(document)
+	profiles, err := hostProfiles(document)
 	if err != nil {
 		return Settings{}, nil, err
 	}
-	record.CodexDeveloper = profile
+	record.Hosts = profiles
+	record.CodexDeveloper = record.Profile("codex", "developer")
+	record.ModelUpdates = modelUpdates(document)
 	return record, document, nil
 }
 
@@ -232,6 +309,7 @@ func validRunDefaults(value RunDefaults) bool {
 }
 
 func applySettingsUpdates(defaults *RunDefaults, document map[string]json.RawMessage, updates map[string]string) error {
+	seenProfiles := map[string]bool{}
 	for key, value := range updates {
 		switch key {
 		case "parallel_teams":
@@ -260,15 +338,22 @@ func applySettingsUpdates(defaults *RunDefaults, document map[string]json.RawMes
 				return fmt.Errorf("%w: deploy_batch_tasks", core.ErrSettings)
 			}
 			defaults.DeployBatchTasks = &parsed
-		case "codex.developer.model", "codex.developer.effort":
+		default:
+			host, role, field, ok := profileSettingKey(key)
+			if !ok {
+				return fmt.Errorf("%w: unknown setting %s", core.ErrSettings, key)
+			}
+			canonical := host + "." + role + "." + field
+			if seenProfiles[canonical] {
+				return fmt.Errorf("%w: duplicate setting %s", core.ErrSettings, canonical)
+			}
+			seenProfiles[canonical] = true
 			if !validProfileValue(value) {
 				return fmt.Errorf("%w: %s", core.ErrSettings, key)
 			}
-			if err := setCodexDeveloper(document, key, value); err != nil {
+			if err := setRoleProfile(document, host, role, field, value); err != nil {
 				return err
 			}
-		default:
-			return fmt.Errorf("%w: unknown setting %s", core.ErrSettings, key)
 		}
 	}
 	return nil
@@ -286,69 +371,170 @@ func validProfileValue(value string) bool {
 	return true
 }
 
-func setCodexDeveloper(document map[string]json.RawMessage, key, value string) error {
-	hosts := map[string]any{}
-	if raw := document["hosts"]; len(raw) != 0 && json.Unmarshal(raw, &hosts) != nil {
-		return fmt.Errorf("%w: malformed host profiles", core.ErrRevision)
+func profileSettingKey(key string) (host, role, field string, ok bool) {
+	parts := strings.Split(key, ".")
+	if len(parts) != 3 {
+		return "", "", "", false
 	}
-	codex, ok := hosts["codex"].(map[string]any)
-	if !ok && hosts["codex"] != nil {
-		return fmt.Errorf("%w: malformed Codex profile", core.ErrRevision)
+	host, role, field = parts[0], parts[1], parts[2]
+	if role == "coder" {
+		role = "developer"
 	}
-	if codex == nil {
-		codex = map[string]any{}
+	return host, role, field, (host == "codex" || host == "claude") && knownRole(role) && (field == "model" || field == "effort")
+}
+
+func knownRole(role string) bool {
+	return role == "orchestrator" || role == "developer" || role == "reviewer" || role == "visual_reviewer"
+}
+
+// Missing objects are defaults; present non-objects must not be silently reset.
+func profileObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	value := map[string]json.RawMessage{}
+	if len(raw) == 0 {
+		return value, nil
 	}
-	roles, ok := codex["roles"].(map[string]any)
-	if !ok && codex["roles"] != nil {
-		return fmt.Errorf("%w: malformed Codex roles", core.ErrRevision)
+	if json.Unmarshal(raw, &value) != nil || value == nil {
+		return nil, fmt.Errorf("%w: malformed host profile object", core.ErrRevision)
 	}
-	if roles == nil {
-		roles = map[string]any{}
+	return value, nil
+}
+
+func setRoleProfile(document map[string]json.RawMessage, host, role, field, value string) error {
+	if field == "model" {
+		value = currentRoleModel(host, value)
 	}
-	developer, ok := roles["developer"].(map[string]any)
-	if !ok && roles["developer"] != nil {
-		return fmt.Errorf("%w: malformed Codex developer profile", core.ErrRevision)
-	}
-	if developer == nil {
-		developer = map[string]any{}
-	}
-	if key == "codex.developer.model" {
-		developer["model"] = value
-	} else {
-		developer["effort"] = value
-	}
-	roles["developer"], codex["roles"], hosts["codex"] = developer, roles, codex
-	encoded, err := json.Marshal(hosts)
+	hosts, err := profileObject(document["hosts"])
 	if err != nil {
 		return err
 	}
-	document["hosts"] = encoded
+	hostValue, err := profileObject(hosts[host])
+	if err != nil {
+		return err
+	}
+	roles, err := profileObject(hostValue["roles"])
+	if err != nil {
+		return err
+	}
+	profile, err := profileObject(roles[role])
+	if err != nil {
+		return err
+	}
+	if value == "inherit" {
+		delete(profile, field)
+	} else {
+		profile[field], _ = json.Marshal(value)
+	}
+	roles[role], _ = json.Marshal(profile)
+	hostValue["roles"], _ = json.Marshal(roles)
+	hosts[host], _ = json.Marshal(hostValue)
+	document["hosts"], err = json.Marshal(hosts)
+	return err
+}
+
+func hostProfiles(document map[string]json.RawMessage) (map[string]HostProfile, error) {
+	hosts, err := profileObject(document["hosts"])
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]HostProfile{}
+	for _, host := range []string{"codex", "claude"} {
+		hostValue, err := profileObject(hosts[host])
+		if err != nil {
+			return nil, err
+		}
+		roles, err := profileObject(hostValue["roles"])
+		if err != nil {
+			return nil, err
+		}
+		profiles := map[string]RoleProfile{}
+		for _, role := range []string{"orchestrator", "developer", "reviewer", "visual_reviewer"} {
+			fields, err := profileObject(roles[role])
+			if err != nil {
+				return nil, err
+			}
+			profile := RoleProfile{}
+			if _, exists := roles[role]; !exists {
+				profile = defaultRoleProfile(host, role)
+			}
+			for field, destination := range map[string]*string{"model": &profile.Model, "effort": &profile.Effort} {
+				raw, exists := fields[field]
+				if !exists {
+					continue
+				}
+				if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, destination) != nil || (*destination != "" && !validProfileValue(*destination)) {
+					return nil, fmt.Errorf("%w: malformed %s.%s.%s", core.ErrRevision, host, role, field)
+				}
+				if *destination == "inherit" {
+					*destination = ""
+				}
+			}
+			profile.Model = currentRoleModel(host, profile.Model)
+			profiles[role] = profile
+		}
+		result[host] = HostProfile{Roles: profiles}
+	}
+	return result, nil
+}
+
+func refreshRoleModels(document map[string]json.RawMessage) error {
+	hosts, err := profileObject(document["hosts"])
+	if err != nil {
+		return err
+	}
+	for _, host := range []string{"codex", "claude"} {
+		hostValue, err := profileObject(hosts[host])
+		if err != nil {
+			return err
+		}
+		roles, err := profileObject(hostValue["roles"])
+		if err != nil {
+			return err
+		}
+		for _, role := range []string{"orchestrator", "developer", "reviewer", "visual_reviewer"} {
+			fields, err := profileObject(roles[role])
+			if err != nil {
+				return err
+			}
+			if _, exists := roles[role]; !exists {
+				if model := defaultRoleProfile(host, role).Model; model != "" {
+					if err := setRoleProfile(document, host, role, "model", model); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+			var model string
+			if raw, exists := fields["model"]; exists {
+				if json.Unmarshal(raw, &model) != nil {
+					return core.ErrRevision
+				}
+				if current := currentRoleModel(host, model); current != model {
+					if err := setRoleProfile(document, host, role, "model", current); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
 	return nil
 }
 
-func codexDeveloper(document map[string]json.RawMessage) (RoleProfile, error) {
-	raw := document["hosts"]
-	if len(raw) == 0 {
-		return RoleProfile{}, nil
+// modelUpdates is called only after hostProfiles validates known shapes.
+func modelUpdates(document map[string]json.RawMessage) []RoleModelUpdate {
+	hosts, _ := profileObject(document["hosts"])
+	var updates []RoleModelUpdate
+	for _, host := range []string{"codex", "claude"} {
+		hostValue, _ := profileObject(hosts[host])
+		roles, _ := profileObject(hostValue["roles"])
+		for _, role := range []string{"orchestrator", "developer", "reviewer", "visual_reviewer"} {
+			fields, _ := profileObject(roles[role])
+			var previous string
+			if json.Unmarshal(fields["model"], &previous) == nil {
+				if current := currentRoleModel(host, previous); current != previous {
+					updates = append(updates, RoleModelUpdate{Host: host, Role: role, Previous: previous, Current: current})
+				}
+			}
+		}
 	}
-	var hosts map[string]json.RawMessage
-	if json.Unmarshal(raw, &hosts) != nil {
-		return RoleProfile{}, fmt.Errorf("%w: malformed host profiles", core.ErrRevision)
-	}
-	var codex struct {
-		Roles map[string]struct {
-			Model  string `json:"model"`
-			Effort string `json:"effort"`
-		} `json:"roles"`
-	}
-	if raw := hosts["codex"]; len(raw) == 0 {
-		return RoleProfile{}, nil
-	} else if json.Unmarshal(raw, &codex) != nil {
-		return RoleProfile{}, fmt.Errorf("%w: malformed Codex profile", core.ErrRevision)
-	}
-	profile := codex.Roles["developer"]
-	if (profile.Model != "" && !validProfileValue(profile.Model)) || (profile.Effort != "" && !validProfileValue(profile.Effort)) {
-		return RoleProfile{}, fmt.Errorf("%w: malformed Codex developer profile", core.ErrRevision)
-	}
-	return RoleProfile{Model: profile.Model, Effort: profile.Effort}, nil
+	return updates
 }

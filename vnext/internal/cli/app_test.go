@@ -219,7 +219,7 @@ func TestRunReportsCanonicalTextAndJSONOutcomes(t *testing.T) {
 		{"settings text", []string{"settings"}, 0, "settings accepted"},
 		{"status json", []string{"status", "--json"}, 0, `"action":"status"`},
 		{"start deferred", []string{"start"}, 2, "start deferred"},
-		{"execute deferred", []string{"task", "add", "--execute", "inspect feature"}, 2, "task add deferred"},
+		{"execute requires native handler", []string{"task", "add", "--execute", "inspect feature"}, 1, "requires the native project handler"},
 		{"invalid", []string{"gate"}, 2, "phase"},
 	}
 	for _, tc := range cases {
@@ -290,7 +290,6 @@ func TestDeferredJSONOutcomesRetainPhaseExit(t *testing.T) {
 		{"start", "--json"},
 		{"cleanup", "--team", "TEAM-1", "--json"},
 		{"deploy", "--json"},
-		{"task", "add", "--execute", "inspect feature", "--json"},
 		{"setup", "--refuse-kickoff", "--json"},
 		{"setup", "--mode", "plan", "--refuse-kickoff", "--json"},
 	} {

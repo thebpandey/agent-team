@@ -1,8 +1,8 @@
 # Agent-Team
 
-Created by [thebpandey](https://github.com/thebpandey). Agent-Team coordinates bounded development in Codex and Claude Code with isolated writers, independent review, verified integration, durable recovery, and explicit release authority.
+Created by [thebpandey](https://github.com/thebpandey). Agent-Team coordinates AI agents to build software from an approved plan, review the changes, and fix problems. You set the direction and approve important decisions; the team keeps tasks, progress, and focused working context together in Codex or Claude Code.
 
-The native version is **[v8.0.10](https://github.com/thebpandey/agent-team/releases/tag/v8.0.10)**. It publishes verified native downloads for Linux amd64 and Windows amd64; macOS source checks do not imply a published macOS binary. The historical Node package **v7.3.1** described in older sections is retained only for its historical runtime contract. The repository-root `SKILL.md` routes to this native release and is not the Node runtime. For release history, see the [changelog](CHANGELOG.md); for the compact operator walkthrough, see [Getting Started](GETTING_STARTED.md).
+The native version is **[v8.0.11](https://github.com/thebpandey/agent-team/blob/main/docs/releases/8.0.11-readiness.md)**, an **unpublished candidate** pending revision-bound release gates. The latest published native release remains [v8.0.10](https://github.com/thebpandey/agent-team/releases/tag/v8.0.10). The candidate targets verified Linux amd64 and Windows amd64 packages; macOS source checks do not imply a published macOS binary. The historical Node package **v7.3.1** described in older sections is retained only for its historical runtime contract. The repository-root `SKILL.md` routes to the native controller and is not the Node runtime. For release history, see the [changelog](CHANGELOG.md); for the compact operator walkthrough, see [Getting Started](GETTING_STARTED.md).
 
 ## vNext native transition
 
@@ -12,27 +12,40 @@ For that fallback only, an authorized Linux operator may run `sudo bash scripts/
 
 Install one checksum-verified native package and select the host explicitly: `agent-teamctl install --host codex|claude|both`. With no host variables, Codex uses `~/.agents` and Claude uses `~/.claude` on Windows, macOS, and Linux. Set `CODEX_HOME` or `CLAUDE_HOME` only on the first install for a custom location; the manifest preserves each resolved home for later update, rollback, and uninstall commands. A conflicting later override fails closed. Switching hosts is a foreground action and transfers no lease or worker identity. `rollback --version <version>` selects a unique release backup; add `--revision <commit>` when that version has multiple revisions. Rollback and `uninstall` touch only exact manifest-owned bytes and retain changed or unknown files.
 
-The public lifecycle is `setup`, `status`, `start`, `task add`, and `one-off`, plus scoped `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN is an internal independent-review loop, not a public `review` command. Beads is the live tracker after an approved cutover; a pre-cutover `TASKS.md` is legacy provenance only. `BLOCKERS.md` and `DECISIONS.md` are bounded human-readable projections, never competing task stores.
+The public lifecycle is `setup`, `status`, `start`, `task add`, and `one-off`, plus scoped `pause`, `stop`, `cancel`, and `resume`. FIX/CLEAN is an internal independent-review loop. Setup preserves the selected Beads or `TASKS.md` tracker; it does not require conversion to Beads. After an explicitly approved legacy cutover to Beads, the old `TASKS.md` remains provenance. `BLOCKERS.md` and `DECISIONS.md` are bounded human-readable projections, never competing task stores.
 
-Native v8.0.10 settings use `agent-teamctl settings --json` to inspect the saved overlay and `agent-teamctl settings parallel_teams=1 --json` to save a supported change. The overlay is bound to the existing setup receipt; it does not rewrite setup, legacy state, or Beads. See [supported settings](references/SETTINGS.md) for the bounded key and host-profile contract. Saving a preference does not change an active worker or prove that a host can enforce a model choice.
+Inspect saved preferences with `agent-teamctl settings --json`. The current source supports `codex` and `claude` profiles for `orchestrator`, `developer` (`coder` alias), `reviewer`, and `visual_reviewer`, each with `model` and `effort`. For example, `agent-teamctl settings claude.reviewer.model=inherit --json` saves one choice. `inherit` is accepted for model and effort. Preferences apply to future dispatch; saving them does not change the current parent model or prove that a host can enforce every choice. See [supported settings](references/SETTINGS.md).
 
-In Codex, `agent-teamctl start --json` admits at most one ready task by default and returns a packet requiring host dispatch. The installed Codex skill must call the actual host collaboration tool and acknowledge its returned identity before reporting a launch. Explicit bounded queues use the existing team queue, with no new task store. A retained team receives its next assignment only after completion, independent CLEAN review, and observed idle state. Reuse sends a fresh bounded packet to the same host handle, not the full previous context. A standalone terminal command does not itself launch Codex agents, and this release does not add a Claude team-dispatch bridge.
+The current source uses `agent-teamctl start --host codex|claude --json` to reserve a packet with the selected tracker and host profile. The installed skill calls Codex's actual collaboration tool or Claude's actual Agent tool and acknowledges its returned handle before reporting a launch. A terminal command alone does not launch workers. Retained reuse requires completion, independent CLEAN review, observed idle state, and the same host handle; Claude also requires its runtime's supported resume facility. A foreign live handle is observed without duplication. These source changes do not announce a new published release.
+
+<details>
+<summary>Advanced: migrating a historical v7 installation</summary>
+
+These instructions apply to old v7 installations. New projects use the setup flow above.
 
 Existing v7 projects and hosts use the explicit native transaction `agent-teamctl cutover --request /absolute/path.json`. Start with the read-only `prepare` request described in `GETTING_STARTED.md`; it emits an exclusive canonical unsigned payload and detached-signature request skeleton while inventorying the project, independently observed remote, evidence, staged native install, and both legacy hosts. The v7 state and operation receipts are writable integrity records, not an immutable authorization root, so project cutover accepts only a short-lived Ed25519 approval whose signer is pinned outside the project. The fixed trust store is `/etc/agent-team/cutover-trust.json` on Unix and `C:\ProgramData\Agent-Team\cutover-trust.json` on Windows; it must be owned and writable only by root, Local System, or Administrators, schema 1, and contain a key-ID-sorted `keys` array. Unknown Windows ACL entries or reparse points fail closed. There is no v7-receipt, project-local, unsigned, or request-pinned fallback. The signed record binds project, operation, exact revision and task scope, canonical review/test/readiness IDs, paths and SHA-256 digests, recovery, configured remote URL/refs, and exact host activation inventory. The transaction observes that remote independently before mutation and again before receipt publication. The first project pass remains held; `reconcile` and rollback must match the recorded approval and receipt digest. Host requests are `host-cutover`, `host-status`, or `host-rollback`; they accept either the exact schema-4 v7 install receipt or an explicit canonical project plus the SHA-256 of its fixed, matching signed authority receipt—never a caller-selected receipt path or inventory—and preserve a durable rollback receipt. Unknown, modified, cross-project, or ambiguous v7 files and handlers are retained and fail closed.
 
 A legacy project that already uses Beads keeps its selected `.beads` tree in place. Native prepare, cutover, and rollback add only separate v8 authority and prepared-request artifacts; they do not convert, delete, rewrite, or re-home Beads files.
 
-The dashboard is local-only and read-only. Capacity caps remain enforced. Optional Serena, Graphify, LeanCTX, browser, and visual tools have bounded native fallbacks; absence never widens authority. See the [honest v8 benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and the [v8.0.10 revision-bound release checks](https://github.com/thebpandey/agent-team/blob/main/docs/releases/8.0.10-readiness.md) before treating a candidate as published.
+</details>
 
-Linux amd64: download `agent-teamctl-8.0.10.zip`, `RELEASE.json`, `SBOM.cdx.json`, and `SHA256SUMS` from the release into one empty folder. Run `sha256sum -c SHA256SUMS`, extract `agent-teamctl-8.0.10.zip` into that folder, then run `./agent-teamctl install --host both --json`. Use `codex` or `claude` instead of `both` to install one host.
+The dashboard is local-only and read-only. Capacity caps remain enforced. Optional Serena, Graphify, LeanCTX, browser, and visual tools have bounded native fallbacks; absence never widens authority. See the [honest v8 benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and the [v8.0.11 revision-bound release checks](https://github.com/thebpandey/agent-team/blob/main/docs/releases/8.0.11-readiness.md) before treating a candidate as published.
 
-Windows amd64: download only `agent-teamctl-8.0.10-windows-amd64.zip` and its `.sha256` sidecar. In PowerShell, verify the sidecar with `Get-FileHash -Algorithm SHA256`, extract the ZIP once into a new subfolder, then run `.\agent-teamctl.exe install --host both --json` from that extracted folder. Use `codex` or `claude` instead of `both` to install one host. The extracted folder contains the executable, the strict canonical release files, and the inner archive.
+The following v8.0.11 assets and download commands apply **after publication**; their planned names do not establish that downloads are available. Until then, use only a locally verified candidate distribution for candidate testing.
+
+Linux amd64: download `agent-teamctl-8.0.11.zip`, `RELEASE.json`, `SBOM.cdx.json`, and `SHA256SUMS` from the verified release into one empty folder. Run `sha256sum -c SHA256SUMS`, extract `agent-teamctl-8.0.11.zip` into that folder, then run `./agent-teamctl install --host both --json`. Use `codex` or `claude` instead of `both` to install one host.
+
+Windows amd64: download only `agent-teamctl-8.0.11-windows-amd64.zip` and its `.sha256` sidecar. In PowerShell, verify the sidecar with `Get-FileHash -Algorithm SHA256`, extract the ZIP once into a new subfolder, then run `.\agent-teamctl.exe install --host both --json` from that extracted folder. Use `codex` or `claude` instead of `both` to install one host. The extracted folder contains the executable, the strict canonical release files, and the inner archive.
 
 If install or update reports a conflicting Codex Agent-Team skill, it has not changed the target installation. Move the reported whole root to a recoverable backup outside `~/.codex/skills` and `~/.agents/skills`, then retry. Do not merge files from an unknown root into the native installation.
 
 ![Agent-Team overview: one orchestrator coordinates bounded implementation, independent review, integration, and release.](assets/guide/agent-team-essence-16x9.webp)
 
 ## What Agent-Team does
+
+See the [8.0.11 architecture changes](docs/architecture-8.0.11.md) for host/tool
+boundaries, first-use preparation, durable dispatch and recovery, and release
+dependency provenance.
 
 Agent-Team keeps one project orchestrator responsible for scope, task admission, coordination, integration, and release. Developers work on bounded assignments in separate worktrees. Independent reviewers verify exact revisions. Ordinary in-scope failures return to the owning developer for repair; they do not become repeated permission prompts.
 
@@ -55,47 +68,44 @@ flowchart LR
 
 ### 1. Install the package
 
-Ask the active host to install the complete package from the official repository. Choose the actual host and scope explicitly; installing for both hosts is never inferred.
+Install a verified native package using the platform instructions above. Choose the active host explicitly; installing for both hosts is never inferred.
 
 ```text
-Install the historical Node package Agent-Team 7.3.1 from https://github.com/thebpandey/agent-team.
-Use the managed installer for this host and user scope unless I explicitly choose project scope.
-Inspect the source, license, existing installation, and affected hook configuration first.
-Preserve custom files, role definitions, hooks, MCP servers, and unrelated settings.
-Verify the installation receipt and tell me which reload or native trust step remains.
+Install the verified native Agent-Team package for this host.
+Preserve existing custom files and unrelated host settings.
+Verify the native install manifest and tell me whether the host needs a reload.
 ```
 
-| Scope | Codex | Claude Code |
+| Native user installation | Codex | Claude Code |
 | --- | --- | --- |
-| User | `~/.agents/skills/agent-team` | `~/.claude/skills/agent-team` |
-| Project | `.agents/skills/agent-team` | `.claude/skills/agent-team` |
+| Skill entrypoint | `~/.agents/skills/agent-team/SKILL.md` | `~/.claude/skills/agent-team/SKILL.md` |
 
-Project hooks use `.codex/hooks.json` or `.claude/settings.local.json`; user hooks use `~/.codex/hooks.json` or `~/.claude/settings.json`. Restart or reload the selected host after installation and review its native hook-trust UI. A skill cannot grant native trust to itself.
+Native setup and dispatch require no external hooks. Reload the selected host if its skill list is stale. The installer preserves shell configuration, MCP registrations, credentials, and unrelated settings. Historical Node hooks are not native startup requirements; an authorized legacy cutover handles their retirement separately.
+
+The binary need not be on PATH. The skill first uses `command -v agent-teamctl`, then the manifest's owned binary path. On Linux, the default is `~/.config/agent-team/bin/agent-teamctl`; `XDG_DATA_HOME` overrides the data directory, otherwise `XDG_CONFIG_HOME` overrides `~/.config`. On macOS use `~/Library/Application Support/agent-team`, and on Windows `%LOCALAPPDATA%\AgentTeam`. Each contains `install-manifest.json` and `bin`. Use the resolved absolute executable path in the commands below when necessary.
 
 ### 2. Run setup
 
-Invoke `$agent-team setup` in Codex or `/agent-team setup` in Claude Code. Setup:
+The following first-use flow describes the current source. Invoke `$agent-team setup` in Codex or `/agent-team setup` in Claude Code; a first `start` also guides setup before dispatch. The skill runs `agent-teamctl setup --host codex|claude --json`, inspects existing facts, and follows any `needs_input` / `next_action` response.
 
-1. resolves the canonical project and selected tracker;
-2. reuses an approved Project Kickoff handoff, an existing plan, or a bounded standalone task;
-3. prepares selected companion capabilities;
-4. reports installed, detected, functional, and fresh-worker observations separately;
-5. shows the current-effective settings wizard; and
-6. reports dispatch readiness without starting development.
+Setup offers numbered model and effort choices for each role from the active host's available options, with Keep and Inherit choices; no typed model IDs are required.
 
-Project Kickoff is optional. If you use it, install its current supported package from the [latest release discovery page](https://github.com/thebpandey/project-kickoff/releases/latest). Compatibility is an exact recorded handoff contract, not a guess based on version ordering.
+Choose `tasks-md` or `beads` only when the project has no unambiguous selected tracker. After consent, `setup --tracker tasks-md --approve --host codex --json` creates only missing governance/tracker files; substitute the selected tracker and host. Existing files and task identities are reused.
+
+Project Kickoff is optional. Setup discovers nested Project Kickoff 0.5.1 handoffs (0.5.0 remains supported) and reuses their facts without repeating the interview. Approve the discovered handoff with `setup --approve-kickoff --approve --host codex --json`, or identify one explicitly with `--kickoff <path>`. Without a handoff, approved setup can create a minimal scaffold.
+
+Find published Project Kickoff packages on its [latest release page](https://github.com/thebpandey/project-kickoff/releases/latest). The native integration described here remains the current source contract; a published package's version alone does not prove handoff compatibility.
+
+The skill asks once about selected missing dependencies. An approved bundle such as `setup --install beads,serena,graphify --approve --host codex --json` installs only those selections in project scope and resumes setup. Include Beads when it is the chosen tracker. Native v8 adds no external hooks. Review saved role preferences with `settings --json`; setup reports readiness before development begins.
 
 ### 3. Start work
 
 ```text
 $agent-team start
-$agent-team start 2
-$agent-team start 2 continuous
-$agent-team start 2 continuous auto-deploy 8
-$agent-team start email-preferences with-preview
+/agent-team start
 ```
 
-Use `/agent-team ...` for the same actions in Claude Code. A named start selects an already-defined tracker item. A full natural-language feature request may create one deduplicated canonical task only after scope and acceptance are sufficient.
+Use the invocation for your host. The skill completes first-use setup if needed, runs native start with the explicit host, and launches through the real host tool. It reports the actual task, worktree, and acknowledged handle. It cannot infer a launched worker from a reserved packet.
 
 ## Switch between Codex and Claude Code
 
@@ -106,32 +116,24 @@ $agent-team setup
 /agent-team setup
 ```
 
-Open the same Git checkout in the other native host or a new session and continue. Re-running setup is safe and preserves the tracker, task IDs, settings, active run, claims, checkpoints, pending operations, and evidence. No release command, request file, epoch migration, owner recovery, or prior-session cooperation is required. Recorded host/session/epoch fields are audit provenance only.
+Open the same Git checkout in the other host and inspect `status --json` and setup. Reuse the selected tracker, settings, and existing project facts. Switching the foreground session transfers no worker identity or ownership. A live worker from the other host remains occupied and is observed without spawning a duplicate; unknown liveness remains unknown. Model routing reports actual host constraints without silently rewriting saved preferences.
 
-The current session must still be genuine runtime metadata for Codex or Claude Code and must resolve to the same Git project. This prevents request JSON from impersonating a host; it is not a coordinator lock. Existing writers with unknown liveness remain occupied so a new session cannot create concurrent writes accidentally.
-
-`takeover` remains a compatibility alias for older instructions but performs no ownership transfer. Legacy owner history or a stale recovery journal does not block ordinary setup, task, run, checkpoint, integration, or release operations. Model routing is independent: if a requested model is unavailable, Agent-Team reports the actual host/account constraint without rewriting role choices.
-
-See [actions](references/ACTIONS.md), [project continuity](references/PROJECTS.md), [recovery](references/RECOVERY.md), and the [hook contract](references/HOOKS.md).
+The [actions](references/ACTIONS.md), [project continuity](references/PROJECTS.md), [recovery](references/RECOVERY.md), and [hook contract](references/HOOKS.md) also contain historical Node behavior; the installed native contract determines available commands.
 
 ## Commands
 
 | Action | Result |
 | --- | --- |
-| `help` | Show the current command card without setup or mutation. |
-| `setup` | Prepare capabilities, review settings, and report readiness. |
-| `takeover` | Compatibility alias: verify this native session is in the same project, then continue. |
-| `settings` | Show or change targeted future-run defaults. |
-| `start [N] [continuous]` | Admit existing eligible tasks within safe capacity. |
-| `start <name> [with-preview]` | Start one resolved tracker item. |
-| `auto-deploy [B or off]` | Change release batching for the active run only. |
-| `status [name-or-ID or all]` | Read recorded state without checks or mutation. |
-| `pause [name-or-ID or all]` | Checkpoint and hold selected work without discarding it. |
-| `resume [name-or-ID or all]` | Recover selected work from durable evidence. |
-| `pause and deploy` | Pause first, then release only eligible verified work. |
-| `approve <name-or-ID>` | Approve the exact submitted preview revision. |
+| `setup --host codex\|claude --json` | Inspect/reuse setup and identify the next missing input. |
+| `setup --tracker tasks-md\|beads --approve --host <host> --json` | Create approved missing project artifacts. |
+| `setup --install <names> --approve --host <host> --json` | Install approved project dependencies, then resume setup. |
+| `settings --json` | Show saved future-dispatch preferences. |
+| `settings <host>.<role>.<model\|effort>=<value> --json` | Save one supported role preference. |
+| `start --host codex\|claude --json` | Reserve a packet requiring actual host dispatch and acknowledgement. |
+| `start --run <run> --task <id> --json` | Append an eligible task to the bounded existing queue. |
+| `status --json` | Read real recorded state without setup, installation, or dispatch. |
 
-Settings persist for future runs. Explicit start modifiers affect the current run. Team count is development capacity, not raw agent slots; reviewer capacity and host limits may reduce concurrency. Deployment batch size counts completed top-level tasks, not commits or subtasks.
+Settings persist for future dispatch. Team count is development capacity, not raw agent slots; reviewer capacity and host limits may reduce concurrency. The worker contract also defines task and scoped lifecycle actions; consult the installed controller for their exact supported arguments.
 
 ## Readiness and bundled capabilities
 
@@ -144,7 +146,7 @@ A path or version string is not readiness. Setup records each stage independentl
 | Functional | A useful bounded operation passed. |
 | Available to worker | A fresh assigned worker used the actual scoped path successfully. |
 
-Serena and Microsoft Playwright CLI are selected defaults, not universal dispatch gates. Other selected defaults include ast-grep, Graphify, LeanCTX, focused Superpowers procedures, Ponytail, Impeccable, and React Best Practices where applicable. Beads is prepared only when it is the selected tracker. Context7 and the optional external graph remain opt-in. Only capabilities explicitly listed by the active plan in `requiredCapabilities` can block that plan.
+The first-use installer offers Beads, Serena, and Graphify as explicit selections. Beads is needed only for the selected Beads tracker. Other installed capabilities can be used when applicable; their presence is not implied by setup. Only capabilities explicitly required by the active plan can block that plan, and optional tools preserve bounded native fallbacks.
 
 Serena can pass its direct MCP symbol probe while a just-created worker still needs a host reload to inherit the tool; that observation is reported as `unknown`, not treated as global failure. Browser qualification runs the exact selected `playwright-cli`; a bare `import("playwright")` inside a Node REPL is a different adapter and does not qualify or disqualify the CLI. Graphify evidence is optional: deterministic writable-path overlap checks remain authoritative when no graph evidence exists.
 
