@@ -1,7 +1,9 @@
-# Native architecture: 8.0.11 candidate
+# Native architecture: 8.0.11
 
-This describes the current source, not a published release or an observed host
-session. Publication requires the [revision-bound release gates](releases/8.0.11-readiness.md).
+Version 8.0.11 was published on 2026-09-23. A subsequent actual managed
+update failed at its installation journal size limit; see the
+[8.0.12 repair](architecture-8.0.12.md). This architecture description does not
+establish installed success or an observed host session.
 The [first-use validation report](first-use-ux-validation.md) records its own
 tested revision and distinguishes fixtures from real tool execution.
 

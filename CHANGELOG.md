@@ -1,6 +1,15 @@
 # Changelog
 
-## 8.0.11 - candidate
+## 8.0.12 - candidate
+
+- Repair the schema-1 installation journal budget for real native executable sizes, retaining per-file and aggregate bounds, rollback, and exact ownership checks.
+- Add measured executable-size regression coverage and require a managed-update canary using the actual packaged artifact.
+- Preserve the 8.0.11 numbered role wizard, model preferences, setup, handoff, and native dispatch behavior.
+- Document supported optional LeanCTX controller allowlisting and output passthrough without disabling its security checks.
+
+Publication and managed-update verification are pending the [8.0.12 release gates](docs/releases/8.0.12-readiness.md).
+
+## 8.0.11 - 2026-09-23
 
 - Guide first use through explicit tracker selection, approved missing artifacts, one scoped dependency bundle, and saved role preferences for both Codex and Claude. Accepting inherited settings now has an explicit save step; setup and status report actionable next steps.
 - Reuse Project Kickoff 0.5.0 and 0.5.1 handoffs, prepare dependencies before unfinished planning, and attach an approved late handoff without replacing setup, tracker, settings, or active packet authority. Preserve refusal without continuing setup or dispatch.
@@ -14,7 +23,7 @@
 - Implement native task queue/execute, read-only audit/review one-offs, and scoped lifecycle controls with actual host observations. Report missing inputs and required dispatch honestly in both text and JSON.
 - Defer source analysis for empty projects, recover interrupted dependency preparation, publish complete executable bytes exclusively, and include the YAML dependency in executable-verified SBOM metadata.
 
-Publication is pending revision-bound platform, package, canary, rollback, provider, and readiness gates. Existing 8.0.10 downloads do not contain these changes.
+Published from `04c43852065615e63665373ef54b222b31a8be79` at `2026-09-23T12:16:42Z` after [release workflow 35858596510](https://github.com/thebpandey/agent-team/actions/runs/35858596510). A subsequent actual managed update failed with `revision: lifecycle journal budget exceeded` and did not complete. The immutable 8.0.11 assets remain historical; 8.0.12 is the repair candidate.
 
 ## 8.0.10 - 2026-09-22
 

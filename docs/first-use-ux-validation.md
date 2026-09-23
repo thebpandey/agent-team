@@ -1,11 +1,34 @@
-# First-use repair validation: 8.0.11 candidate
+# First-use repair validation: 8.0.11
+
+The [published release record](releases/8.0.11-readiness.md) links the final
+revision and platform workflow. The historical local results below retain
+their original scope; publication does not turn fixtures into live host tests. A later managed update
+failed with `revision: lifecycle journal budget exceeded`; the
+[8.0.12 candidate](releases/8.0.12-readiness.md) addresses that separate defect.
+
+## LeanCTX controller passthrough
+
+A separately authorized local LeanCTX repair used the supported
+`lean-ctx allow agent-teamctl` allowlist extension and preserved existing guard
+settings. `excluded_commands` includes `agent-teamctl` and the actual installed
+absolute binary path; the literal prefix matcher requires a simple command.
+`lean-ctx raw` supports unusual compound invocations without disabling security
+checks. These are optional local integration settings, not Agent-Team hooks.
+
+Observed checks preserved controller version/status output, invalid-command
+stdout/stderr and exit status, and a 23,023-byte JSON fixture. An unrelated
+disallowed command still returned 126 under test-only enforcement. Global
+warn/write settings were unchanged. Configuration was backed up before the
+local repair; this does not claim a change on other users' machines.
+
+## Original source validation
 
 Date: 2026-09-22. Agent-Team branch: `fix/first-use-ux`.
 Project Kickoff companion: `feat/agent-team-v8-handoff`, version 0.5.1,
 commit `f4df06104d0614b5a5a27853fbeffe49f69328f2`. Earlier smoke evidence below
 used companion commit `4c96f81`; it is not a new run of 0.5.1.
 
-This is the unpublished 8.0.11 source candidate, developed from v8.0.10. It includes Claude's
+The development checks below were recorded before the [8.0.11 release](https://github.com/thebpandey/agent-team/releases/tag/v8.0.11), from source developed on v8.0.10. They include Claude's
 `ef0d5db` fix as cherry-pick `da3f5a7`. The shared native controller/skill installation and `ai-training`
 were not modified during source validation. The separately authorized global Claude
 hook repair below changed only its six orphan hook handlers. Existing v8.0.10 downloads do not contain these repairs.

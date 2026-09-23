@@ -4,13 +4,28 @@ The Node-based Agent-Team 7.3.1 instructions below are legacy during the vNext t
 
 ## Native quick start
 
-The first-use workflow below describes the **8.0.11 unpublished candidate**. The latest published native version remains **8.0.10**; its existing downloads do not contain these repairs. Publication requires the [8.0.11 release gates](https://github.com/thebpandey/agent-team/blob/main/docs/releases/8.0.11-readiness.md). Use a controller built from the matching candidate source when exercising the expanded setup and Claude dispatch flow.
+The **8.0.12 unpublished candidate** repairs the managed-update journal limit while retaining native setup, numbered role choices, and Codex/Claude dispatch guidance. Published 8.0.11 failed an actual managed update with `revision: lifecycle journal budget exceeded`; that update did not complete. Wait for the [8.0.12 release gates](docs/releases/8.0.12-readiness.md) before upgrading an existing installation.
 
 Open your Git project and invoke `$agent-team setup` in Codex or `/agent-team setup` in Claude Code. You can also ask to `start`; the skill completes missing setup before dispatch. Existing tracker choices, task identities, governance, settings, and Project Kickoff facts are reused. Native v8 requires no external hooks.
 
 Setup offers numbered model and effort choices for each role from the active host's available options, with Keep and Inherit choices; no typed model IDs are required.
 
 The skill resolves `agent-teamctl` with `command -v` (`Get-Command` in PowerShell), then uses the owned binary path in `install-manifest.json`. The Linux default is `~/.config/agent-team/bin/agent-teamctl`; when set, `XDG_DATA_HOME` supplies the base instead, otherwise `XDG_CONFIG_HOME` replaces `~/.config`. macOS uses `~/Library/Application Support/agent-team`, and Windows uses `%LOCALAPPDATA%\AgentTeam` with `bin\agent-teamctl.exe`. The manifest is in that same data directory. Use the absolute binary path if it is absent from PATH; no shell edits are required.
+
+### If LeanCTX blocks the controller
+
+Native Agent-Team does not require LeanCTX hooks. If your separately installed
+LeanCTX shell guard rejects `agent-teamctl`, use its supported
+`lean-ctx allow agent-teamctl` command to extend `shell_allowlist_extra`.
+Keep the guard enabled and preserve unrelated settings.
+
+To preserve the controller's complete JSON output, add `agent-teamctl` and its
+resolved absolute installed path to LeanCTX's `excluded_commands`, retaining
+existing entries. Its matcher uses a literal command prefix: invoke the
+controller as a separate simple command with the tool's working directory set
+to the project. A compound `cd ... && ...` or quoted executable prefix does not
+match that exclusion. For unusual compound commands, `lean-ctx raw` provides
+supported output passthrough while retaining security checks.
 
 ### Inspect, approve missing pieces, and resume
 
@@ -62,20 +77,20 @@ External Ed25519 trust is not needed for normal v8 setup or for a migration back
 
 For that fallback, an authorized Linux operator can provision a new non-overwriting machine trust anchor with `sudo bash scripts/provision-cutover-trust.sh`. The script prints only the public key ID and paths; it never signs an approval or runs cutover.
 
-For v8.0.11, Linux amd64 users download `agent-teamctl-8.0.11.zip`, `RELEASE.json`, `SBOM.cdx.json`, and `SHA256SUMS` into one empty folder, run `sha256sum -c SHA256SUMS`, extract the archive there, then run `./agent-teamctl install --host both --json`. Windows amd64 users download the one `agent-teamctl-8.0.11-windows-amd64.zip` bundle and its `.sha256` sidecar, verify the sidecar with `Get-FileHash -Algorithm SHA256`, extract the bundle once, then run `.\agent-teamctl.exe install --host both --json` in PowerShell. Use `codex` or `claude` instead of `both` for one host. macOS has source verification but no published native bundle. By default Codex uses `~/.agents` and Claude uses `~/.claude` on Windows, macOS, and Linux. For a custom location, set `CODEX_HOME` or `CLAUDE_HOME` on that host's first install only; later lifecycle commands reuse the manifest-recorded home and reject a conflicting override. The installer does not mutate shell configuration, hooks, MCP registrations, credentials, or unrelated host settings. Use `rollback --version <version>` or `uninstall` for the reversible manifest-owned lifecycle.
+For v8.0.12, Linux amd64 users download `agent-teamctl-8.0.12.zip`, `RELEASE.json`, `SBOM.cdx.json`, and `SHA256SUMS` into one empty folder, run `sha256sum -c SHA256SUMS`, extract the archive there, then run `./agent-teamctl install --host both --json`. Windows amd64 users download the one `agent-teamctl-8.0.12-windows-amd64.zip` bundle and its `.sha256` sidecar, verify the sidecar with `Get-FileHash -Algorithm SHA256`, extract the bundle once, then run `.\agent-teamctl.exe install --host both --json` in PowerShell. Use `codex` or `claude` instead of `both` for one host. macOS has source verification but no published native bundle. By default Codex uses `~/.agents` and Claude uses `~/.claude` on Windows, macOS, and Linux. For a custom location, set `CODEX_HOME` or `CLAUDE_HOME` on that host's first install only; later lifecycle commands reuse the manifest-recorded home and reject a conflicting override. The installer does not mutate shell configuration, hooks, MCP registrations, credentials, or unrelated host settings. Use `rollback --version <version>` or `uninstall` for the reversible manifest-owned lifecycle.
 
 For an explicit task series after native admission, use `agent-teamctl start --run <returned-run> --task <task-id> --task <another-task-id> --json`. The existing team queue holds at most eight tasks. Each selected task must be ready in that run's unchanged tracker snapshot; retained workers are not rebound across runs or silently refreshed against changed tracker authority. The installed host skill handles acknowledgement, independent review, idle observation, and sequential follow-up. A final `next` consumes the last reviewed task and leaves the retained team idle; adding another eligible task can then request a fresh follow-up to the same handle.
 
-The v8.0.11 download instructions above and PowerShell example below apply **after publication**. Until then, these are planned asset names; candidate testing requires a locally verified distribution.
+After publication, use the complete checksum-verified v8.0.12 distribution. These asset names are prospective until the repair passes its release gates. For an existing native installation, run the **new distribution controller** with `update --version 8.0.12 --json` instead of `install`. The old installed controller cannot parse the new release metadata. Use an absolute path, for example `/absolute/verified-8.0.12/agent-teamctl update --version 8.0.12 --json`; afterward the skill resolves the installed binary through its manifest.
 
 In PowerShell, verify the Windows download before extraction:
 
 ```powershell
-$bundle = "agent-teamctl-8.0.11-windows-amd64.zip"
+$bundle = "agent-teamctl-8.0.12-windows-amd64.zip"
 $expected = (Get-Content -Raw "$bundle.sha256").Trim()
 $actual = "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $bundle).Hash.ToLowerInvariant(), $bundle
 if ($actual -cne $expected) { throw "Windows bundle checksum mismatch" }
-$distribution = "agent-teamctl-8.0.11-windows-amd64"
+$distribution = "agent-teamctl-8.0.12-windows-amd64"
 Expand-Archive -LiteralPath $bundle -DestinationPath $distribution
 & (Join-Path $distribution "agent-teamctl.exe") install --host both --json
 ```
@@ -90,7 +105,7 @@ Create a schema-1 request with `action: "prepare"`, the absolute project, operat
 
 Sign the payload bytes without editing them. With an Ed25519 private key held by the operator, OpenSSL 3 uses `openssl pkeyutl -sign -rawin -inkey operator-private.pem -in /absolute/unsigned-approval.json -out /absolute/unsigned-approval.sig`. The generated cutover request already references that raw signature file and key ID; base64-encoded signature files are also accepted. Run it unchanged with `agent-teamctl cutover --request /absolute/cutover.json`. A project request then uses `status`, an approval- and receipt-bound `reconcile`, or an exact `rollback`. A host `host-cutover` request may use the exact schema-4 legacy receipt, or the explicit canonical `project` plus `authorityReceiptSha256` for that project's fixed `.agent-team/v8/authority.json`; the latter is required for actual v7.3.1 hosts that have only `.agent-team-source.json`. No caller-supplied receipt path or inventory is accepted. Signed-inventory activation revalidates the receipt signature, project binding, every host byte, and only replaces top-level `SKILL.md`, removes its staged nested duplicate, and retires the signed handler spans. `host-status` and `host-rollback` retain the durable exact rollback path. Unknown, changed, symlinked, foreign, or cross-project files fail closed.
 
-Host switching stays in the foreground and transfers no lease. The dashboard is local-only, capacity caps still apply, and optional semantic, graph, compression, browser, and visual tools fall back to native Git/Go/file operations. Review the [v8 benchmark evidence](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and [v8.0.11 revision-bound release checks](https://github.com/thebpandey/agent-team/blob/main/docs/releases/8.0.11-readiness.md) before installation.
+Host switching stays in the foreground and transfers no lease. The dashboard is local-only, capacity caps still apply, and optional semantic, graph, compression, browser, and visual tools fall back to native Git/Go/file operations. Review the [v8 benchmark evidence](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and [v8.0.12 revision-bound release checks](https://github.com/thebpandey/agent-team/blob/main/docs/releases/8.0.12-readiness.md) before installation.
 
 These are prompts to paste into Codex or Claude Code—not Bash commands.
 
