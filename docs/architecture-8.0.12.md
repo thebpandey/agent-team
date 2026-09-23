@@ -33,3 +33,19 @@ from the final archive's actual executable bytes, with an inert content change,
 then verifies update, rollback, reupdate, idempotent retry and uninstall while
 preserving unrelated settings. That gate uses the archive supplied to publication
 so future executable growth cannot be hidden by tiny fixture binaries.
+
+## Verification boundary
+
+The repair was implemented and reviewed in parallel with version/docs and
+handoff compatibility work. Independent review checked that the 64 MiB
+allowance is limited to installer journals and that ordinary records retain
+their existing ceiling. Local regression and packaged-executable canary checks
+passed; [PR #11](https://github.com/thebpandey/agent-team/pull/11) then passed
+all 30 CI checks before merge.
+
+These results qualify the code changes, not a user's installation. The
+[release record](releases/8.0.12-readiness.md) tracks the exact release revision
+and the subsequent download, managed-update, and installed smoke evidence.
+That managed update completed at manifest revision 6 with all four owned hashes
+verified. Installed-controller setup and replay checks passed for both hosts;
+they do not establish a live Claude UI wizard run.

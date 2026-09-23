@@ -4,7 +4,7 @@ The Node-based Agent-Team 7.3.1 instructions below are legacy during the vNext t
 
 ## Native quick start
 
-The **8.0.12 unpublished candidate** repairs the managed-update journal limit while retaining native setup, numbered role choices, and Codex/Claude dispatch guidance. Published 8.0.11 failed an actual managed update with `revision: lifecycle journal budget exceeded`; that update did not complete. Wait for the [8.0.12 release gates](docs/releases/8.0.12-readiness.md) before upgrading an existing installation.
+Use the published [Agent-Team 8.0.12](https://github.com/thebpandey/agent-team/releases/tag/v8.0.12) package for this workflow. It repairs the 8.0.11 managed-update journal limit and retains native setup, numbered role choices, and Codex/Claude dispatch guidance. See the [release and installation record](docs/releases/8.0.12-readiness.md) for verification scope.
 
 Open your Git project and invoke `$agent-team setup` in Codex or `/agent-team setup` in Claude Code. You can also ask to `start`; the skill completes missing setup before dispatch. Existing tracker choices, task identities, governance, settings, and Project Kickoff facts are reused. Native v8 requires no external hooks.
 
@@ -81,7 +81,7 @@ For v8.0.12, Linux amd64 users download `agent-teamctl-8.0.12.zip`, `RELEASE.jso
 
 For an explicit task series after native admission, use `agent-teamctl start --run <returned-run> --task <task-id> --task <another-task-id> --json`. The existing team queue holds at most eight tasks. Each selected task must be ready in that run's unchanged tracker snapshot; retained workers are not rebound across runs or silently refreshed against changed tracker authority. The installed host skill handles acknowledgement, independent review, idle observation, and sequential follow-up. A final `next` consumes the last reviewed task and leaves the retained team idle; adding another eligible task can then request a fresh follow-up to the same handle.
 
-After publication, use the complete checksum-verified v8.0.12 distribution. These asset names are prospective until the repair passes its release gates. For an existing native installation, run the **new distribution controller** with `update --version 8.0.12 --json` instead of `install`. The old installed controller cannot parse the new release metadata. Use an absolute path, for example `/absolute/verified-8.0.12/agent-teamctl update --version 8.0.12 --json`; afterward the skill resolves the installed binary through its manifest.
+Use the complete checksum-verified [v8.0.12 distribution](https://github.com/thebpandey/agent-team/releases/tag/v8.0.12). For an existing native installation, run the **new distribution controller** with `update --version 8.0.12 --json` instead of `install`. The old installed controller cannot parse the new release metadata. Use an absolute path, for example `/absolute/verified-8.0.12/agent-teamctl update --version 8.0.12 --json`; afterward the skill resolves the installed binary through its manifest.
 
 In PowerShell, verify the Windows download before extraction:
 

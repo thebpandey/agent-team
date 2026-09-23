@@ -2,7 +2,7 @@
 
 Created by [thebpandey](https://github.com/thebpandey). Agent-Team coordinates AI agents to build software from an approved plan, review the changes, and fix problems. You set the direction and approve important decisions; the team keeps tasks, progress, and focused working context together in Codex or Claude Code.
 
-The native version is **[v8.0.12](https://github.com/thebpandey/agent-team/blob/main/docs/releases/8.0.12-readiness.md)**, an **unpublished candidate** repairing managed updates. [v8.0.11](https://github.com/thebpandey/agent-team/releases/tag/v8.0.11) was published on 2026-09-23, but an actual managed update failed with `revision: lifecycle journal budget exceeded`; it did not complete the update. Wait for the verified repair before upgrading an existing installation. Linux amd64 and Windows amd64 are package targets; macOS has source/runtime checks without a published binary. The historical Node package **v7.3.1** described in older sections is retained only for its historical runtime contract. The repository-root `SKILL.md` routes to the native controller and is not the Node runtime. For release history, see the [changelog](CHANGELOG.md); for the compact operator walkthrough, see [Getting Started](GETTING_STARTED.md).
+The native version is **[v8.0.12](https://github.com/thebpandey/agent-team/releases/tag/v8.0.12)** for Linux amd64 and Windows amd64. It repairs the managed-update journal limit found after the 8.0.11 release. The [release record](docs/releases/8.0.12-readiness.md) separates package checks from observed installation and smoke results. macOS has source/runtime checks without a published binary. The historical Node package **v7.3.1** described in older sections is retained only for its historical runtime contract. The repository-root `SKILL.md` routes to the native controller and is not the Node runtime. For release history, see the [changelog](CHANGELOG.md); for the compact operator walkthrough, see [Getting Started](GETTING_STARTED.md).
 
 ## vNext native transition
 
@@ -31,7 +31,7 @@ A legacy project that already uses Beads keeps its selected `.beads` tree in pla
 
 The dashboard is local-only and read-only. Capacity caps remain enforced. Optional Serena, Graphify, LeanCTX, browser, and visual tools have bounded native fallbacks; absence never widens authority. See the [honest v8 benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and the [v8.0.12 revision-bound release checks](https://github.com/thebpandey/agent-team/blob/main/docs/releases/8.0.12-readiness.md) for the release evidence and its scope.
 
-The following v8.0.12 assets and commands apply **after publication**. Until the managed-update repair passes its release gates, use only a locally verified candidate distribution for testing.
+Download the complete [v8.0.12 release](https://github.com/thebpandey/agent-team/releases/tag/v8.0.12) for your platform and verify its checksums before installation.
 
 Linux amd64: download `agent-teamctl-8.0.12.zip`, `RELEASE.json`, `SBOM.cdx.json`, and `SHA256SUMS` from the verified release into one empty folder. Run `sha256sum -c SHA256SUMS`, extract `agent-teamctl-8.0.12.zip` into that folder, then run `./agent-teamctl install --host both --json`. Use `codex` or `claude` instead of `both` to install one host.
 
@@ -86,7 +86,7 @@ The binary need not be on PATH. The skill first uses `command -v agent-teamctl`,
 
 ### 2. Run setup
 
-The following first-use flow is retained in the native v8.0.12 candidate. Invoke `$agent-team setup` in Codex or `/agent-team setup` in Claude Code; a first `start` also guides setup before dispatch. The skill runs `agent-teamctl setup --host codex|claude --json`, inspects existing facts, and follows any `needs_input` / `next_action` response.
+The following first-use flow applies to native v8.0.12. Invoke `$agent-team setup` in Codex or `/agent-team setup` in Claude Code; a first `start` also guides setup before dispatch. The skill runs `agent-teamctl setup --host codex|claude --json`, inspects existing facts, and follows any `needs_input` / `next_action` response.
 
 Setup offers numbered model and effort choices for each role from the active host's available options, with Keep and Inherit choices; no typed model IDs are required.
 
@@ -94,7 +94,7 @@ Choose `tasks-md` or `beads` only when the project has no unambiguous selected t
 
 Project Kickoff is optional. Setup discovers nested Project Kickoff 0.5.1 handoffs (0.5.0 remains supported) and reuses their facts without repeating the interview. Approve the discovered handoff with `setup --approve-kickoff --approve --host codex --json`, or identify one explicitly with `--kickoff <path>`. Without a handoff, approved setup can create a minimal scaffold.
 
-Find published Project Kickoff packages on its [latest release page](https://github.com/thebpandey/project-kickoff/releases/latest). Project Kickoff 0.5.1 targets the repaired native Agent-Team 8.0.12 setup; both must be verified and published before using that release pair. The installed controller still checks approvals, tracker selection, dependencies, and role settings before work starts.
+Find published Project Kickoff packages on its [latest release page](https://github.com/thebpandey/project-kickoff/releases/latest). Native Agent-Team 8.0.12 supports Project Kickoff 0.5.1 handoffs alongside 0.5.0. Use a verified published Kickoff package. The installed controller still checks approvals, tracker selection, dependencies, and role settings before work starts.
 
 The skill asks once about selected missing dependencies. An approved bundle such as `setup --install beads,serena,graphify --approve --host codex --json` installs only those selections in project scope and resumes setup. Include Beads when it is the chosen tracker. Native v8 adds no external hooks. Review saved role preferences with `settings --json`; setup reports readiness before development begins.
 

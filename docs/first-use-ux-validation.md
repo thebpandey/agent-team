@@ -1,10 +1,33 @@
-# First-use repair validation: 8.0.11
+# Native setup and managed-update validation
+
+## 8.0.12 repair checks
+
+[PR #11](https://github.com/thebpandey/agent-team/pull/11) passed all 30 CI
+checks and merged as `1ba08db17f38c82268d6da525dfeca05c008b5b3`. Local tests,
+the canary using packaged executable bytes, and independent review passed.
+The review covered measured executable sizes, per-file and aggregate rejection,
+ordinary record limits, rollback, retry, and preservation of unrelated settings.
+
+The [8.0.12 release record](releases/8.0.12-readiness.md) records the successful
+release workflow, verified download, and completed managed update to manifest
+revision 6. All four owned hashes matched, and both hosts had the top-level
+skill without a nested duplicate.
+
+The installed controller passed fresh TASKS.md setup, saved Sol/Luna and Opus
+model normalization, byte-preserving replay, and both-host empty-start routing.
+A 64 MiB fake Dolt store kept its Beads receipt stable and preserved leftover
+TASKS.md. Evidence: `/tmp/agent-team-installed-smoke.ygh5gbnr/evidence.json`.
+These controller checks do not claim a live Claude UI wizard test or universal
+model availability. The separately published Project Kickoff 0.5.1 archive was
+verified after download; all 34 installed files matched on both hosts.
+
+## 8.0.11 first-use evidence
 
 The [published release record](releases/8.0.11-readiness.md) links the final
 revision and platform workflow. The historical local results below retain
 their original scope; publication does not turn fixtures into live host tests. A later managed update
 failed with `revision: lifecycle journal budget exceeded`; the
-[8.0.12 candidate](releases/8.0.12-readiness.md) addresses that separate defect.
+[8.0.12 repair](releases/8.0.12-readiness.md) addresses that separate defect.
 
 ## LeanCTX controller passthrough
 
