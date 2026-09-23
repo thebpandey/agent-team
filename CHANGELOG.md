@@ -1,13 +1,13 @@
 # Changelog
 
-## 8.0.12 - candidate
+## 8.0.12 - 2026-09-23
 
 - Repair the schema-1 installation journal budget for real native executable sizes, retaining per-file and aggregate bounds, rollback, and exact ownership checks.
 - Add measured executable-size regression coverage and require a managed-update canary using the actual packaged artifact.
 - Preserve the 8.0.11 numbered role wizard, model preferences, setup, handoff, and native dispatch behavior.
 - Document supported optional LeanCTX controller allowlisting and output passthrough without disabling its security checks.
 
-Publication and managed-update verification are pending the [8.0.12 release gates](docs/releases/8.0.12-readiness.md).
+The [v8.0.12 release](https://github.com/thebpandey/agent-team/releases/tag/v8.0.12) repairs the update failure below. The [release record](docs/releases/8.0.12-readiness.md) records the exact revision, platform checks, and observed managed installation.
 
 ## 8.0.11 - 2026-09-23
 
@@ -23,7 +23,7 @@ Publication and managed-update verification are pending the [8.0.12 release gate
 - Implement native task queue/execute, read-only audit/review one-offs, and scoped lifecycle controls with actual host observations. Report missing inputs and required dispatch honestly in both text and JSON.
 - Defer source analysis for empty projects, recover interrupted dependency preparation, publish complete executable bytes exclusively, and include the YAML dependency in executable-verified SBOM metadata.
 
-Published from `04c43852065615e63665373ef54b222b31a8be79` at `2026-09-23T12:16:42Z` after [release workflow 35858596510](https://github.com/thebpandey/agent-team/actions/runs/35858596510). A subsequent actual managed update failed with `revision: lifecycle journal budget exceeded` and did not complete. The immutable 8.0.11 assets remain historical; 8.0.12 is the repair candidate.
+Published from `04c43852065615e63665373ef54b222b31a8be79` at `2026-09-23T12:16:42Z` after [release workflow 35858596510](https://github.com/thebpandey/agent-team/actions/runs/35858596510). A subsequent actual managed update failed with `revision: lifecycle journal budget exceeded` and did not complete. The immutable 8.0.11 assets remain historical; 8.0.12 supplies the managed-update repair.
 
 ## 8.0.10 - 2026-09-22
 
