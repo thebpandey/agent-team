@@ -194,6 +194,7 @@ func TestPackagedArchiveCanary(t *testing.T) {
 	if err := json.Unmarshal(identityRaw, &identity); err != nil || identity.Version != packageManifest.Version || identity.Revision != packageManifest.Commit {
 		t.Fatalf("packaged executable identity = %+v, %v", identity, err)
 	}
+	memberRoot := t.TempDir()
 	metadata := func(name string) install.ReleaseFile {
 		t.Helper()
 		for _, entry := range archive.File {
@@ -213,16 +214,46 @@ func TestPackagedArchiveCanary(t *testing.T) {
 			if digest != packageManifest.Checksums[name] {
 				t.Fatalf("manifest hash mismatch for %s", name)
 			}
-			return install.ReleaseFile{Path: archivePath, SHA256: digest, Bytes: int64(len(body))}
+			return writeCanaryFile(t, filepath.Join(memberRoot, filepath.FromSlash(name)), body)
 		}
 		t.Fatalf("archive member %s missing", name)
 		return install.ReleaseFile{}
 	}
 	layout, _, prior := canaryFixture(t)
+	// A tiny prior binary hides aggregate journal growth. Seed an inert prior
+	// payload at the actual published executable size, with different bytes so
+	// rollback must restore its content rather than only changing the manifest.
+	priorExecutable := append(append([]byte(nil), executable...), []byte("\nprior-release-fixture\n")...)
+	oldBinary := writeCanaryFile(t, layout.BinaryPath, priorExecutable)
+	for index := range prior.Files {
+		if prior.Files[index].Role == install.BinaryRole {
+			prior.Files[index].SHA256, prior.Files[index].Bytes = oldBinary.SHA256, oldBinary.Bytes
+		}
+	}
 	rel := install.Release{Version: packageManifest.Version, Revision: packageManifest.Commit, Binary: metadata("agent-teamctl"), Contract: metadata("WORKER-CONTRACT"), Entrypoints: map[install.Host]install.ReleaseFile{install.Codex: metadata("codex/SKILL.md"), install.Claude: metadata("claude/SKILL.md")}}
 	canary, err := release.RunInstallCanaryFromArchive(context.Background(), archivePath, layout, rel, prior, []install.Host{install.Codex, install.Claude})
 	if err != nil || canary.ArchivePath != archivePath || canary.ArchiveSHA256 == "" || !canary.RollbackVerified {
 		t.Fatal(canary, err)
+	}
+	if err := release.VerifyRollback(context.Background(), canary); err != nil {
+		t.Fatalf("final-artifact rollback evidence: %v", err)
+	}
+	reupdated, err := install.Update(context.Background(), layout, rel, canary.Manifest.Revision)
+	if err != nil || reupdated.Manifest.Version != rel.Version || reupdated.Manifest.ReleaseRevision != rel.Revision || len(reupdated.Retained) != 0 {
+		t.Fatalf("final-artifact reupdate: %+v err=%v", reupdated, err)
+	}
+	if raw, err := os.ReadFile(layout.BinaryPath); err != nil || !bytes.Equal(raw, executable) {
+		t.Fatalf("final-artifact reupdate binary differs: %v", err)
+	}
+	retried, err := install.Update(context.Background(), layout, rel, reupdated.Manifest.Revision)
+	if err != nil || !retried.Idempotent || retried.Manifest.Revision != reupdated.Manifest.Revision {
+		t.Fatalf("final-artifact retry: %+v err=%v", retried, err)
+	}
+	if retained, _, err := install.Uninstall(context.Background(), layout, retried.Manifest.Revision); err != nil || len(retained) != 0 {
+		t.Fatalf("final-artifact uninstall: retained=%v err=%v", retained, err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(layout.DataRoot, "unrelated-host-setting.json")); err != nil || string(raw) != "preserve-me" {
+		t.Fatalf("unrelated settings changed: %v", err)
 	}
 }
 

@@ -58,7 +58,7 @@ func verifyLegacyProjectAuthority(ctx context.Context, project, expectedReceiptS
 	if err != nil || canonical != project || !validSHA256(expectedReceiptSHA) {
 		return nil, core.ErrRevision
 	}
-	receiptRaw, _, err := store.New(project, core.StorageLimits{CanonicalBytes: installJournalLimit}).ReadFile(legacyAuthorityReceiptPath, installJournalLimit)
+	receiptRaw, _, err := store.New(project, core.StorageLimits{CanonicalBytes: installFileLimit}).ReadFile(legacyAuthorityReceiptPath, installFileLimit)
 	if err != nil || digestContent(receiptRaw) != expectedReceiptSHA {
 		return nil, core.ErrRevision
 	}
@@ -66,7 +66,7 @@ func verifyLegacyProjectAuthority(ctx context.Context, project, expectedReceiptS
 	if decodeStrictLegacyAuthority(receiptRaw, &receipt) != nil || receipt.Schema != 1 || receipt.Project != project || receipt.Authorization.Source == "" || receipt.ApprovalID == "" || !validSHA256(receipt.ApprovalSHA256) || receipt.ApprovalSignerKeyID == "" || len(receipt.HostInventories) == 0 {
 		return nil, core.ErrRevision
 	}
-	payloadIdentity, payload, err := stableLegacyIdentity(receipt.Authorization.Source, installJournalLimit)
+	payloadIdentity, payload, err := stableLegacyIdentity(receipt.Authorization.Source, installFileLimit)
 	if err != nil || payloadIdentity.SHA256 != receipt.ApprovalSHA256 {
 		return nil, core.ErrRevision
 	}

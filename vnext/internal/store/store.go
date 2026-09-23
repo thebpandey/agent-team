@@ -21,6 +21,7 @@ import (
 )
 
 const maxStorageBytes int64 = 32 << 20
+const maxInstallJournalBytes int64 = 64 << 20
 
 // ErrAlreadyExists marks a no-replace create whose canonical destination was
 // already published. It also wraps fs.ErrExist for callers using standard
@@ -29,8 +30,9 @@ var ErrAlreadyExists = fmt.Errorf("already exists: %w", errors.Join(fs.ErrExist,
 
 // Store is a root-relative, bounded persistence store.
 type Store struct {
-	Root   string
-	Limits core.StorageLimits
+	Root           string
+	Limits         core.StorageLimits
+	installJournal bool
 
 	mu      sync.Mutex
 	probe   func(*os.Root, string) (probeResult, error)
@@ -49,6 +51,13 @@ type AtomicResult struct {
 // New creates a Store rooted at root. Directories are created only by writes.
 func New(root string, limits core.StorageLimits) *Store {
 	return &Store{Root: root, Limits: limits}
+}
+
+// NewInstallJournal preserves the ordinary Store's atomic/rooted persistence
+// with a fixed 64 MiB ceiling for installer transaction journals only. Ordinary
+// records and individual installer files retain New's 32 MiB hard ceiling.
+func NewInstallJournal(root string) *Store {
+	return &Store{Root: root, Limits: core.StorageLimits{CanonicalBytes: maxInstallJournalBytes}, installJournal: true}
 }
 
 // ReadJSON decodes one bounded JSON document beneath the store root.
@@ -450,8 +459,12 @@ func (s *Store) write(relative string, maxBytes int64, encode func(io.Writer) er
 }
 
 func (s *Store) limit(requested int64) (int64, error) {
-	if requested <= 0 || requested > maxStorageBytes {
-		return 0, fmt.Errorf("%w: storage bound must be between 1 and %d", core.ErrLimit, maxStorageBytes)
+	hard := maxStorageBytes
+	if s.installJournal {
+		hard = maxInstallJournalBytes
+	}
+	if requested <= 0 || requested > hard {
+		return 0, fmt.Errorf("%w: storage bound must be between 1 and %d", core.ErrLimit, hard)
 	}
 	if s.Limits.CanonicalBytes > 0 && s.Limits.CanonicalBytes < requested {
 		return s.Limits.CanonicalBytes, nil
@@ -803,7 +816,7 @@ func (r *boundedReader) Read(data []byte) (int, error) {
 }
 
 func copyBounded(destination io.Writer, source io.Reader, limit int64) (int64, error) {
-	if limit <= 0 || limit > maxStorageBytes {
+	if limit <= 0 || limit > maxInstallJournalBytes {
 		return 0, errTooLarge
 	}
 	return io.Copy(destination, &boundedReader{reader: source, remaining: limit})
