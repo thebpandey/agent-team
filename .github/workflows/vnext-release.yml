@@ -213,7 +213,8 @@ jobs:
         working-directory: vnext
       - run: go test -json ./internal/deploy -run '^TestProviderVerification$' -count=1 > release-evidence/provider-test.json
         working-directory: vnext
-      - run: go test -json ./internal/release -run '^TestPackagedArchiveCanary$' -count=1 > release-evidence/installed-test.json
+      - name: Verify final archive upgrade, rollback, reupdate, retry and uninstall
+        run: go test -json ./internal/release -run '^TestPackagedArchiveCanary$' -count=1 > release-evidence/installed-test.json
         env:
           VNEXT_RELEASE_ARCHIVE: ${{ github.workspace }}/vnext/release-artifacts/agent-teamctl-${{ inputs.version }}.zip
           VNEXT_RELEASE_MANIFEST: ${{ github.workspace }}/vnext/release-artifacts/RELEASE.json

@@ -30,7 +30,7 @@ func InventoryLegacyHosts(layout Layout, hosts []Host) ([]LegacyHostInventory, e
 	if err != nil || len(hosts) == 0 {
 		return nil, core.ErrSettings
 	}
-	manifestIdentity, manifestRaw, err := stableLegacyIdentity(layout.ManifestPath, installJournalLimit)
+	manifestIdentity, manifestRaw, err := stableLegacyIdentity(layout.ManifestPath, installFileLimit)
 	if err != nil {
 		return nil, err
 	}

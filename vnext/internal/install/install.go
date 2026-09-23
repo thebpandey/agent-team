@@ -24,10 +24,13 @@ import (
 
 const (
 	installAttemptPath = ".agent-team/install-attempt.json"
-	// An update journals the old binary twice (target preimage and rollback
-	// backup) plus its replacement. Base64 expands the current 4.6 MiB release
-	// past 16 MiB; 32 MiB keeps that transaction bounded with room to grow.
-	installJournalLimit = 32 << 20
+	// Keep the existing individual-file read bound independent of the complete
+	// transaction. Updates journal the old binary twice (preimage and rollback
+	// backup), plus its replacement. Three 14 MiB payloads need 56 MiB after
+	// base64 encoding, before manifest and skill metadata. The aggregate bound
+	// remains enforced before mutation; final-artifact canaries check growth.
+	installFileLimit    = 32 << 20
+	installJournalLimit = 64 << 20
 )
 
 var installMutationHook func()
@@ -87,7 +90,7 @@ func (b *journalBudget) accountMetadata(journal lifecycleJournal) error {
 }
 
 func (b *journalBudget) reserve(size int64, field string) error {
-	if b == nil || !b.metadata || size < 0 || size > installJournalLimit {
+	if b == nil || !b.metadata || size < 0 || size > installFileLimit {
 		return errJournalBudget
 	}
 	if size == 0 {
@@ -196,7 +199,7 @@ func prepareMutation(layout Layout, path string, replacement []byte, mode fs.Fil
 	if ownedRoot(layout, path) == "" {
 		return lifecycleMutation{}, core.ErrPath
 	}
-	if len(replacement) > installJournalLimit || !postAbsent && mode.Perm() == 0 {
+	if len(replacement) > installFileLimit || !postAbsent && mode.Perm() == 0 {
 		return lifecycleMutation{}, core.ErrRevision
 	}
 	mutation := lifecycleMutation{Path: path, Replacement: replacement, PostMode: lifecycleMode(mode), PostAbsent: postAbsent, Exclusive: exclusive}
@@ -374,6 +377,9 @@ func validateLifecycleJournal(layout Layout, journal lifecycleJournal) error {
 		if ownedRoot(layout, mutation.Path) == "" {
 			return core.ErrPath
 		}
+		if len(mutation.Preimage) > installFileLimit || len(mutation.Replacement) > installFileLimit {
+			return core.ErrRevision
+		}
 		if mutation.Existed {
 			if !validSHA256(mutation.PreSHA256) || digestContent(mutation.Preimage) != mutation.PreSHA256 {
 				return core.ErrRevision
@@ -468,13 +474,13 @@ func verifyManifestFiles(manifest InstallManifest, retained []string) error {
 }
 
 func writeLifecycleJournal(layout Layout, journal lifecycleJournal) error {
-	_, err := store.New(layout.DataRoot, core.StorageLimits{CanonicalBytes: installJournalLimit}).WriteJSON(installAttemptPath, journal, installJournalLimit)
+	_, err := store.NewInstallJournal(layout.DataRoot).WriteJSON(installAttemptPath, journal, installJournalLimit)
 	return err
 }
 
 func readLifecycleJournal(layout Layout) (lifecycleJournal, error) {
 	var journal lifecycleJournal
-	err := store.New(layout.DataRoot, core.StorageLimits{CanonicalBytes: installJournalLimit}).ReadJSON(installAttemptPath, installJournalLimit, &journal)
+	err := store.NewInstallJournal(layout.DataRoot).ReadJSON(installAttemptPath, installJournalLimit, &journal)
 	return journal, err
 }
 
@@ -1474,7 +1480,7 @@ func openStableRegular(rootPath, path string) (*os.File, int64, error) {
 		stableReadHook(path)
 	}
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > installJournalLimit {
+	if err != nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > installFileLimit {
 		_ = file.Close()
 		return nil, 0, core.ErrPath
 	}
@@ -1547,5 +1553,5 @@ func removeOwnedPath(layout Layout, target, expectedDigest string) error {
 	if err != nil || relative == "." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return core.ErrPath
 	}
-	return store.New(root, core.StorageLimits{CanonicalBytes: installJournalLimit}).RemoveExact(filepath.ToSlash(relative), expectedDigest, installJournalLimit)
+	return store.New(root, core.StorageLimits{CanonicalBytes: installFileLimit}).RemoveExact(filepath.ToSlash(relative), expectedDigest, installFileLimit)
 }

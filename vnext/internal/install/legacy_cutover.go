@@ -324,7 +324,7 @@ func rollbackLegacyHosts(ctx context.Context, layout Layout, request LegacyHostC
 	preimages := make(map[string]*hostCutoverPreimage, len(receipt.Preimages))
 	for index := range receipt.Preimages {
 		preimage := &receipt.Preimages[index]
-		if preimages[preimage.Path] != nil || ownedRoot(layout, preimage.Path) == "" || int64(len(preimage.Bytes)) > installJournalLimit || digestContent(preimage.Bytes) != preimage.SHA256 {
+		if preimages[preimage.Path] != nil || ownedRoot(layout, preimage.Path) == "" || int64(len(preimage.Bytes)) > installFileLimit || digestContent(preimage.Bytes) != preimage.SHA256 {
 			return LegacyHostCutoverResult{}, core.ErrRevision
 		}
 		preimages[preimage.Path] = preimage
@@ -572,7 +572,7 @@ func verifyLegacyOwnership(layout Layout, receipt legacyInstallReceipt, hosts []
 			}
 			path := filepath.Join(installed.Target, filepath.FromSlash(relative))
 			info, statErr := os.Lstat(path)
-			if statErr != nil || !info.Mode().IsRegular() || info.Size() != file.Size || uint32(info.Mode().Perm()) != file.Mode || digestPathBounded(path, installJournalLimit) != file.SHA256 {
+			if statErr != nil || !info.Mode().IsRegular() || info.Size() != file.Size || uint32(info.Mode().Perm()) != file.Mode || digestPathBounded(path, installFileLimit) != file.SHA256 {
 				return fmt.Errorf("%w: legacy owned file changed: %s", core.ErrRevision, path)
 			}
 		}
@@ -667,7 +667,7 @@ func readHostCutoverReceipt(layout Layout) (hostCutoverReceipt, error) {
 	if err != nil {
 		return hostCutoverReceipt{}, err
 	}
-	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > installJournalLimit {
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > installFileLimit {
 		return hostCutoverReceipt{}, core.ErrPath
 	}
 	raw, err := readStableRegular(layout.DataRoot, path, info.Size(), nil, "")
@@ -689,7 +689,7 @@ func verifyHostCutoverState(receipt hostCutoverReceipt) error {
 			}
 			continue
 		}
-		if digestPathBounded(image.Path, installJournalLimit) != image.SHA256 {
+		if digestPathBounded(image.Path, installFileLimit) != image.SHA256 {
 			return core.ErrRevision
 		}
 	}
@@ -746,7 +746,7 @@ func lifecycleHostCutoverReceipt(layout Layout, manifest InstallManifest) (*host
 			postimages = append(postimages, image)
 			continue
 		}
-		if digestPathBounded(image.Path, installJournalLimit) == image.SHA256 {
+		if digestPathBounded(image.Path, installFileLimit) == image.SHA256 {
 			postimages = append(postimages, image)
 			continue
 		}
@@ -763,7 +763,7 @@ func lifecycleHostCutoverReceipt(layout Layout, manifest InstallManifest) (*host
 		relinquished[image.Path] = true
 	}
 	for _, image := range receipt.Retained {
-		if image.Absent || digestPathBounded(image.Path, installJournalLimit) != image.SHA256 {
+		if image.Absent || digestPathBounded(image.Path, installFileLimit) != image.SHA256 {
 			return nil, core.ErrRevision
 		}
 	}
