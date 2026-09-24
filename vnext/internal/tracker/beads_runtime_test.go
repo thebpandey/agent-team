@@ -151,3 +151,50 @@ func (r smokeActiveBeadsRunner) Run(ctx context.Context, name string, args ...st
 	}
 	return r.smokeBeadsRunner.Run(ctx, name, args...)
 }
+
+// bd 1.2.2 emits optional top-level keys (design, external_ref, mol_type,
+// spec_id) only for issues that set them; later bd versions will add more.
+// They carry no task authority, so the reader must ignore them, including
+// when null, while still rejecting a null or malformed authority field.
+func TestBeadsIgnoresUnknownObservationalTopLevelFields(t *testing.T) {
+	row := `{"id":"docs-378","title":"epic","status":"open","issue_type":"epic","priority":0,` +
+		`"design":"Design notes","external_ref":"TASK-001","mol_type":"swarm","spec_id":"spec-1",` +
+		`"future_field":{"nested":true},"future_null":null,"dependencies":[]}`
+	tasks, err := parseBeads([]byte("[" + row + "]"))
+	if err != nil || len(tasks) != 1 || tasks[0].ID != "docs-378" || tasks[0].Objective != "epic" || tasks[0].State != core.Ready {
+		t.Fatalf("bd 1.2.2 row must parse with authority intact: tasks=%+v err=%v", tasks, err)
+	}
+	for _, bad := range []string{
+		`{"id":"B-1","title":"task","status":null,"design":"x"}`,
+		`{"id":null,"title":"task","status":"open","spec_id":"s"}`,
+		`{"id":"B-1","title":"task","status":"open","dependencies":"not-a-list","external_ref":"r"}`,
+	} {
+		if _, err := parseBeads([]byte("[" + bad + "]")); err == nil {
+			t.Fatalf("unknown fields must not relax authority validation: %s", bad)
+		}
+	}
+}
+
+// bd 1.2.2 has ten relation types; only "blocks" gates readiness. Provenance
+// relations, including ones a future bd adds, must be ignored, while a null or
+// missing relation identity is still rejected.
+func TestBeadsIgnoresNonBlockingDependencyRelations(t *testing.T) {
+	deps := `[{"issue_id":"docs-e1vi.4","depends_on_id":"docs-e1vi","type":"parent-child","created_at":"2026-08-23T21:19:28Z","created_by":"thebpandey","metadata":"{}"},` +
+		`{"issue_id":"docs-e1vi.4","depends_on_id":"docs-x","type":"discovered-from","future_key":1},` +
+		`{"issue_id":"docs-e1vi.4","depends_on_id":"docs-y","type":"future-relation"},` +
+		`{"issue_id":"docs-e1vi.4","depends_on_id":"docs-b","type":"blocks"}]`
+	tasks, err := parseBeads([]byte(`[{"id":"docs-e1vi.4","title":"child","status":"open","dependencies":` + deps + `}]`))
+	if err != nil || len(tasks) != 1 || len(tasks[0].Dependencies) != 1 || tasks[0].Dependencies[0] != "docs-b" {
+		t.Fatalf("only the blocks relation is a dependency: tasks=%+v err=%v", tasks, err)
+	}
+	for _, bad := range []string{
+		`[{"issue_id":"a","depends_on_id":null,"type":"blocks"}]`,
+		`[{"issue_id":"a","depends_on_id":"b","type":null}]`,
+		`[{"issue_id":"a","depends_on_id":"b"}]`,
+		`[{"depends_on_id":"","type":"blocks"}]`,
+	} {
+		if _, err := parseBeads([]byte(`[{"id":"a","title":"t","status":"open","dependencies":` + bad + `}]`)); err == nil {
+			t.Fatalf("relation identity must stay strict: %s", bad)
+		}
+	}
+}

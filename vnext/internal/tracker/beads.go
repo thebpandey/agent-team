@@ -463,19 +463,18 @@ func parseBeads(data []byte) ([]core.Task, error) {
 		if err := json.Unmarshal(encoded, &fields); err != nil || fields == nil {
 			return nil, fmt.Errorf("%w: malformed Beads issue", core.ErrPath)
 		}
-		allowed := map[string]bool{
+		// Only authority-bearing fields are validated here. Every other top-level
+		// key is observational output of `bd list --json` (priority, labels, and
+		// optional keys such as design, external_ref, mol_type, spec_id, or ones a
+		// future bd adds) and is ignored, null or not, so the reader stays
+		// forward-compatible with newer bd releases.
+		authority := map[string]bool{
 			"id": true, "objective": true, "title": true, "description": true, "state": true, "status": true,
 			"dependencies": true, "dependency_ids": true, "criteria": true, "checks": true, "writablePaths": true,
 			"resources": true, "evidencePointers": true, "metadata": true, "archived": true,
-			// These are observational fields emitted by `bd list --json`; they do not
-			// carry task authority and are deliberately ignored after type validation.
-			"priority": true, "issue_type": true, "owner": true, "created_at": true, "created_by": true,
-			"updated_at": true, "dependency_count": true, "dependent_count": true, "comment_count": true,
-			"acceptance_criteria": true, "notes": true, "assignee": true, "started_at": true, "labels": true,
-			"parent": true, "closed_at": true, "close_reason": true, "revision": true, "defer_until": true, "due_at": true,
 		}
 		for key, value := range fields {
-			if !allowed[key] || (bytes.Equal(bytes.TrimSpace(value), []byte("null")) && !beadsObservationalField(key)) {
+			if authority[key] && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 				return nil, fmt.Errorf("%w: invalid Beads field %q", core.ErrPath, key)
 			}
 		}
@@ -597,14 +596,11 @@ func parseBeadsDependencies(value json.RawMessage) ([]core.TaskID, error) {
 		if err := json.Unmarshal(encoded, &fields); err != nil || fields == nil {
 			return nil, fmt.Errorf("%w: malformed Beads dependency", core.ErrPath)
 		}
-		allowed := map[string]bool{
-			"id": true, "objective": true, "title": true, "description": true, "state": true, "status": true,
-			"metadata": true, "priority": true, "issue_type": true, "owner": true, "created_at": true,
-			"created_by": true, "updated_at": true, "dependency_type": true, "issue_id": true,
-			"depends_on_id": true, "type": true,
-		}
+		// Only the relation identity carries authority; other keys (metadata,
+		// timestamps, or ones a future bd adds) are observational and ignored.
+		authority := map[string]bool{"id": true, "issue_id": true, "depends_on_id": true, "type": true, "dependency_type": true}
 		for key, field := range fields {
-			if !allowed[key] || bytes.Equal(bytes.TrimSpace(field), []byte("null")) {
+			if authority[key] && bytes.Equal(bytes.TrimSpace(field), []byte("null")) {
 				return nil, fmt.Errorf("%w: invalid Beads dependency field %q", core.ErrPath, key)
 			}
 		}
@@ -631,22 +627,15 @@ func parseBeadsDependencies(value json.RawMessage) ([]core.TaskID, error) {
 				return nil, fmt.Errorf("%w: invalid Beads blocking dependency", core.ErrPath)
 			}
 			result = append(result, id)
-		case "parent-child", "related":
-			// Provenance edges are not scheduling blockers.
+		case "":
+			return nil, fmt.Errorf("%w: Beads dependency relation has no type", core.ErrPath)
 		default:
-			return nil, fmt.Errorf("%w: unknown Beads dependency relation %q", core.ErrPath, kind)
+			// Every other relation (parent-child, related, discovered-from, tracks,
+			// until, caused-by, validates, relates-to, supersedes, or a future type)
+			// is provenance, not a scheduling blocker; only "blocks" gates readiness.
 		}
 	}
 	return result, nil
-}
-
-func beadsObservationalField(key string) bool {
-	switch key {
-	case "priority", "issue_type", "owner", "created_at", "created_by", "updated_at", "dependency_count", "dependent_count", "comment_count", "acceptance_criteria", "notes", "assignee", "started_at", "labels", "parent", "closed_at", "close_reason", "revision", "defer_until", "due_at":
-		return true
-	default:
-		return false
-	}
 }
 
 func beadsState(status string) (core.TaskState, bool, bool) {
