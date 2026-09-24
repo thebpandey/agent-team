@@ -2,7 +2,7 @@
 name: agent-team
 description: Use for Agent-Team setup, status, tasks, one-off work, or scoped lifecycle actions in Claude Code.
 metadata:
-  version: "8.0.13"
+  version: "8.0.14"
 ---
 
 # Agent-Team for Claude
