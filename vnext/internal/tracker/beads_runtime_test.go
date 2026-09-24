@@ -175,13 +175,11 @@ func TestBeadsIgnoresUnknownObservationalTopLevelFields(t *testing.T) {
 	}
 }
 
-// bd 1.2.2 has ten relation types; only "blocks" gates readiness. Provenance
-// relations, including ones a future bd adds, must be ignored, while a null or
-// missing relation identity is still rejected.
+// bd 1.2.2 has ten relation types; only "blocks" gates readiness. Supported
+// provenance relations must be ignored, while relation identity stays strict.
 func TestBeadsIgnoresNonBlockingDependencyRelations(t *testing.T) {
 	deps := `[{"issue_id":"docs-e1vi.4","depends_on_id":"docs-e1vi","type":"parent-child","created_at":"2026-08-23T21:19:28Z","created_by":"thebpandey","metadata":"{}"},` +
-		`{"issue_id":"docs-e1vi.4","depends_on_id":"docs-x","type":"discovered-from","future_key":1},` +
-		`{"issue_id":"docs-e1vi.4","depends_on_id":"docs-y","type":"future-relation"},` +
+		`{"issue_id":"docs-e1vi.4","depends_on_id":"docs-x","type":"discovered-from"},` +
 		`{"issue_id":"docs-e1vi.4","depends_on_id":"docs-b","type":"blocks"}]`
 	tasks, err := parseBeads([]byte(`[{"id":"docs-e1vi.4","title":"child","status":"open","dependencies":` + deps + `}]`))
 	if err != nil || len(tasks) != 1 || len(tasks[0].Dependencies) != 1 || tasks[0].Dependencies[0] != "docs-b" {
@@ -196,5 +194,18 @@ func TestBeadsIgnoresNonBlockingDependencyRelations(t *testing.T) {
 		if _, err := parseBeads([]byte(`[{"id":"a","title":"t","status":"open","dependencies":` + bad + `}]`)); err == nil {
 			t.Fatalf("relation identity must stay strict: %s", bad)
 		}
+	}
+}
+
+func TestBeadsRejectsUnknownDependencyRelationShape(t *testing.T) {
+	for name, bad := range map[string]string{
+		"type": `[{"issue_id":"a","depends_on_id":"b","type":"future-relation"}]`,
+		"key":  `[{"issue_id":"a","depends_on_id":"b","type":"related","future_key":1}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseBeads([]byte(`[{"id":"a","title":"t","status":"open","dependencies":` + bad + `}]`)); err == nil {
+				t.Fatalf("unknown relation shape must be rejected: %s", bad)
+			}
+		})
 	}
 }

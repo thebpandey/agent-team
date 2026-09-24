@@ -596,11 +596,14 @@ func parseBeadsDependencies(value json.RawMessage) ([]core.TaskID, error) {
 		if err := json.Unmarshal(encoded, &fields); err != nil || fields == nil {
 			return nil, fmt.Errorf("%w: malformed Beads dependency", core.ErrPath)
 		}
-		// Only the relation identity carries authority; other keys (metadata,
-		// timestamps, or ones a future bd adds) are observational and ignored.
-		authority := map[string]bool{"id": true, "issue_id": true, "depends_on_id": true, "type": true, "dependency_type": true}
+		allowed := map[string]bool{
+			"id": true, "objective": true, "title": true, "description": true, "state": true, "status": true,
+			"metadata": true, "priority": true, "issue_type": true, "owner": true, "created_at": true,
+			"created_by": true, "updated_at": true, "dependency_type": true, "issue_id": true,
+			"depends_on_id": true, "type": true,
+		}
 		for key, field := range fields {
-			if authority[key] && bytes.Equal(bytes.TrimSpace(field), []byte("null")) {
+			if !allowed[key] || bytes.Equal(bytes.TrimSpace(field), []byte("null")) {
 				return nil, fmt.Errorf("%w: invalid Beads dependency field %q", core.ErrPath, key)
 			}
 		}
@@ -627,12 +630,10 @@ func parseBeadsDependencies(value json.RawMessage) ([]core.TaskID, error) {
 				return nil, fmt.Errorf("%w: invalid Beads blocking dependency", core.ErrPath)
 			}
 			result = append(result, id)
-		case "":
-			return nil, fmt.Errorf("%w: Beads dependency relation has no type", core.ErrPath)
+		case "parent-child", "related", "discovered-from", "tracks", "until", "caused-by", "validates", "relates-to", "supersedes":
+			// Supported provenance edges are not scheduling blockers.
 		default:
-			// Every other relation (parent-child, related, discovered-from, tracks,
-			// until, caused-by, validates, relates-to, supersedes, or a future type)
-			// is provenance, not a scheduling blocker; only "blocks" gates readiness.
+			return nil, fmt.Errorf("%w: unknown Beads dependency relation %q", core.ErrPath, kind)
 		}
 	}
 	return result, nil
