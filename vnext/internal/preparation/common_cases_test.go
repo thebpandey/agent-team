@@ -199,6 +199,96 @@ func TestGraphFingerprintRecordsSymlinkWithoutFollowingExternalTarget(t *testing
 	}
 }
 
+func TestGraphSourceInventorySkipsLargeTrackedMediaForCodeOnlyExtraction(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package fixture\n")
+	large := filepath.Join(root, "asset.PNG")
+	file, err := os.Create(large)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(257 << 20); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{run: func(context.Context, invocation) (string, error) {
+		return "main.go\x00asset.PNG\x00", nil
+	}}
+	_, potentialCode, err := graphSourceInventory(context.Background(), root, "git", f)
+	if err != nil || !potentialCode {
+		t.Fatalf("inventory of code plus large skipped media: potentialCode=%v err=%v", potentialCode, err)
+	}
+}
+
+func TestGraphSourceInventoryStillCapsLargeTrackedCode(t *testing.T) {
+	root := t.TempDir()
+	large := filepath.Join(root, "large.go")
+	file, err := os.Create(large)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(257 << 20); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeRunner{run: func(context.Context, invocation) (string, error) {
+		return "large.go\x00", nil
+	}}
+	_, _, err = graphSourceInventory(context.Background(), root, "git", f)
+	if err == nil || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("large code file error = %v, want byte limit", err)
+	}
+}
+
+func TestGraphSourceDigestIgnoresSkippedMediaBytesButTracksCode(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package before\n")
+	writeFixture(t, root, "asset.PnG", "media before")
+	f := &fakeRunner{run: func(context.Context, invocation) (string, error) {
+		return "asset.PnG\x00main.go\x00", nil
+	}}
+	first, err := graphSourceDigest(context.Background(), root, "git", f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, root, "asset.PnG", "media after!")
+	second, err := graphSourceDigest(context.Background(), root, "git", f)
+	if err != nil || first != second {
+		t.Fatalf("media edit changed digest: %q %q err=%v", first, second, err)
+	}
+	writeFixture(t, root, "main.go", "package changed\n")
+	third, err := graphSourceDigest(context.Background(), root, "git", f)
+	if err != nil || third == second {
+		t.Fatalf("code edit did not change digest: %q %q err=%v", second, third, err)
+	}
+}
+
+func TestGraphSourceDigestIgnoresDeletedTrackedMedia(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "main.go", "package fixture\n")
+	writeFixture(t, root, "asset.png", "media bytes")
+	f := &fakeRunner{run: func(context.Context, invocation) (string, error) {
+		return "asset.png\x00main.go\x00", nil
+	}}
+	first, err := graphSourceDigest(context.Background(), root, "git", f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "asset.png")); err != nil {
+		t.Fatal(err)
+	}
+	second, err := graphSourceDigest(context.Background(), root, "git", f)
+	if err != nil || first != second {
+		t.Fatalf("deleting skipped media changed digest: %q %q err=%v", first, second, err)
+	}
+}
+
 func TestGraphFingerprintIncludesGitlinkAndCheckedOutSubmoduleSources(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "module/.git", "gitdir: ../.git/modules/module\n")

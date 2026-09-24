@@ -67,6 +67,9 @@ func graphSourceDigestAt(ctx context.Context, root, git string, run runner, dept
 		path := filepath.Join(root, clean)
 		info, err := os.Lstat(path)
 		if os.IsNotExist(err) {
+			if graphifyCodeOnlyExcluded(rel) {
+				continue
+			}
 			_, _ = fmt.Fprintf(hash, "missing %q\n", rel)
 			continue
 		}
@@ -109,6 +112,12 @@ func graphSourceDigestAt(ctx context.Context, root, git string, run runner, dept
 		if !info.Mode().IsRegular() {
 			return "", fmt.Errorf("Graphify source fingerprint requires regular files: %s", rel)
 		}
+		// Pinned Graphify 0.9.65 excludes these formats from code-only
+		// extraction. They do not affect the generated graph, so do not count
+		// their bytes or include them in the source digest.
+		if graphifyCodeOnlyExcluded(rel) {
+			continue
+		}
 		// Pinned Graphify 0.9.65 detect.py routes these extensions exclusively
 		// to document extraction, which --code-only skips. Be conservative:
 		// unknown files, extensionless scripts and package manifests still run
@@ -138,6 +147,17 @@ func graphSourceDigestAt(ctx context.Context, root, git string, run runner, dept
 		_, _ = fmt.Fprintf(hash, "file %q %x\n", rel, fileHash.Sum(nil))
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func graphifyCodeOnlyExcluded(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf",
+		".docx", ".xlsx", ".mp4", ".mov", ".webm", ".mkv", ".avi",
+		".m4v", ".mp3", ".wav", ".m4a", ".ogg":
+		return true
+	default:
+		return false
+	}
 }
 
 // Bind all output bytes and paths, including manifests, build configuration and
