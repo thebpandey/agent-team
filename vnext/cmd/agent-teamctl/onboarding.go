@@ -56,7 +56,7 @@ func runSetup(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		return managementResult(args, stdout, map[string]any{"ok": true, "action": "setup", "status": "validated", "mode": "one-off", "project": result.Project.TopLevel, "message": "Trackerless one-off preflight passed."})
 	}
-	options := project.SetupOptions{Root: root, Tracker: optionValue(action.Args, "--tracker"), Kickoff: optionValue(action.Args, "--kickoff"), Approved: slices.Contains(action.Args, "--approve"), ApproveKickoff: slices.Contains(action.Args, "--approve-kickoff")}
+	options := project.SetupOptions{Root: root, Tracker: optionValue(action.Args, "--tracker"), Kickoff: optionValue(action.Args, "--kickoff"), Approved: slices.Contains(action.Args, "--approve"), ApproveKickoff: slices.Contains(action.Args, "--approve-kickoff"), IgnoreKickoff: slices.Contains(action.Args, "--ignore-kickoff")}
 	var dependencies []preparation.Dependency
 	if names := optionValue(action.Args, "--install"); names != "" {
 		dependencies, err = installDependencies(ctx, root, strings.Split(names, ","), options.Approved)
@@ -186,6 +186,15 @@ func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if err != nil {
 		if _, configErr := os.Stat(filepath.Join(p.TopLevel, ".agent-team/config.json")); errors.Is(configErr, os.ErrNotExist) {
 			if _, authorityErr := os.Stat(filepath.Join(p.TopLevel, ".agent-team/v8/authority.json")); errors.Is(authorityErr, os.ErrNotExist) {
+				const candidate = ".project-kickoff/AGENT_TEAM_HANDOFF.json"
+				if _, handoffErr := os.Lstat(filepath.Join(p.TopLevel, filepath.FromSlash(candidate))); handoffErr == nil {
+					inspection := project.InspectKickoff(p.TopLevel, candidate)
+					if inspection.Reason != "" {
+						return managementResult(args, stdout, map[string]any{"ok": true, "action": "status", "status": "needs_input", "next_action": "resolve_kickoff", "project": p.TopLevel, "kickoff_resolution": inspection, "message": "Resolve or explicitly ignore the discovered Project Kickoff handoff before setup."})
+					}
+				} else if !errors.Is(handoffErr, os.ErrNotExist) {
+					return managementError(args, stdout, stderr, handoffErr)
+				}
 				return managementResult(args, stdout, map[string]any{"ok": true, "action": "status", "status": "setup_required", "next_action": "setup", "project": p.TopLevel})
 			}
 		}

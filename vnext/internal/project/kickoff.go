@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 )
 
 const kickoffMaxBytes = 250 << 10
+
+var acceptedKickoffVersions = []string{"0.5.0", "0.5.1"}
 
 var kickoffID = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
 var kickoffRevision = regexp.MustCompile(`^[a-f0-9]{40}([a-f0-9]{24})?$`)
@@ -60,6 +64,82 @@ type kickoff050 struct {
 	} `json:"plan"`
 }
 
+// KickoffInspection is a bounded, read-only explanation of an auto-discovered
+// handoff that cannot be attached without a foreground decision.
+type KickoffInspection struct {
+	Path             string   `json:"path"`
+	DetectedVersion  string   `json:"detected_version,omitempty"`
+	AcceptedVersions []string `json:"accepted_versions"`
+	HandoffRevision  string   `json:"handoff_revision,omitempty"`
+	ProjectRevision  string   `json:"project_revision,omitempty"`
+	Head             string   `json:"head,omitempty"`
+	Reason           string   `json:"reason"`
+}
+
+// InspectKickoff never writes state and never follows a handoff path outside
+// the selected Git root. A blank Reason means the handoff is loadable.
+func InspectKickoff(root, path string) KickoffInspection {
+	result, _, _ := inspectKickoff(root, path)
+	return result
+}
+
+func inspectKickoff(root, path string) (KickoffInspection, []byte, error) {
+	result := KickoffInspection{Path: filepath.ToSlash(path), AcceptedVersions: append([]string(nil), acceptedKickoffVersions...)}
+	canonical, err := CanonicalRoot(root)
+	if err != nil {
+		result.Reason = boundedKickoffReason(err)
+		return result, nil, err
+	}
+	if project, discoverErr := Discover(context.Background(), canonical); discoverErr == nil {
+		result.Head = project.Head
+	}
+	relative, _, err := inputPath(canonical, path)
+	if err != nil {
+		result.Reason = boundedKickoffReason(err)
+		return result, nil, err
+	}
+	result.Path = filepath.ToSlash(relative)
+	data, err := readBoundedContained(canonical, relative, kickoffMaxBytes)
+	if err != nil {
+		result.Reason = boundedKickoffReason(err)
+		return result, nil, err
+	}
+	facts, err := kickoffFactsFrom(data)
+	if err != nil {
+		result.Reason = boundedKickoffReason(fmt.Errorf("invalid Project Kickoff JSON: %v", err))
+		return result, data, nil
+	}
+	result.DetectedVersion = facts.Version
+	result.HandoffRevision = facts.HandoffRevision
+	result.ProjectRevision = facts.ProjectRevision
+	if !slices.Contains(acceptedKickoffVersions, result.DetectedVersion) {
+		result.Reason = boundedKickoffReason(fmt.Errorf("unsupported Project Kickoff version %q", result.DetectedVersion))
+		return result, data, nil
+	}
+	if _, err := decodeKickoffHandoff(canonical, data); err != nil {
+		result.Reason = boundedKickoffReason(err)
+	}
+	return result, data, nil
+}
+
+func boundedKickoffReason(err error) string {
+	const limit = 512
+	value := strings.TrimSpace(err.Error())
+	if len(value) > limit {
+		value = value[:limit]
+	}
+	return value
+}
+
+func boundedKickoffFact(value string) string {
+	const limit = 128
+	value = strings.TrimSpace(value)
+	if len(value) > limit {
+		value = value[:limit]
+	}
+	return value
+}
+
 // LoadKickoff reads approved handoff facts without writing project or runtime
 // state. The 0.5.0/0.5.1 envelope is a compatibility input, not a v7 runtime request.
 // Verification strings retain their shell semantics and are never executed here.
@@ -71,13 +151,78 @@ func LoadKickoff(root, path string) (core.KickoffHandoff, error) {
 	}
 	relative, _, err := inputPath(canonical, path)
 	if err != nil {
-		return result, err
+		return result, kickoffLoadError("", nil, "", err)
 	}
 	data, err := readBoundedContained(canonical, relative, kickoffMaxBytes)
 	if err != nil {
-		return result, err
+		return result, kickoffLoadError(filepath.ToSlash(relative), nil, "", err)
 	}
-	return decodeKickoffHandoff(canonical, data)
+	result, err = decodeKickoffHandoff(canonical, data)
+	if err == nil {
+		return result, nil
+	}
+	head := ""
+	if current, discoverErr := Discover(context.Background(), canonical); discoverErr == nil {
+		head = current.Head
+	}
+	return result, kickoffLoadError(filepath.ToSlash(relative), data, head, err)
+}
+
+func kickoffLoadError(path string, data []byte, head string, cause error) error {
+	facts, _ := kickoffFactsFrom(data)
+	kind, reason := sanitizedKickoffFailure(cause)
+	pathFact := ""
+	if path = boundedKickoffPath(path); path != "" {
+		pathFact = fmt.Sprintf(" path %q;", path)
+	}
+	return fmt.Errorf("%w: Project Kickoff;%s detected version %q; accepted versions %s; handoff revision %q; project revision %q; HEAD %q; reason: %s", kind, pathFact, facts.Version, strings.Join(acceptedKickoffVersions, ", "), facts.HandoffRevision, facts.ProjectRevision, head, reason)
+}
+
+func boundedKickoffPath(path string) string {
+	if len(path) > 240 {
+		return ""
+	}
+	for _, char := range path {
+		if char < 0x20 || char == 0x7f {
+			return ""
+		}
+	}
+	return path
+}
+
+func sanitizedKickoffFailure(cause error) (error, string) {
+	switch {
+	case errors.Is(cause, core.ErrRevision):
+		return core.ErrRevision, "project or revision mismatch"
+	case errors.Is(cause, core.ErrPath):
+		return core.ErrPath, "unsafe or inaccessible handoff path"
+	case errors.Is(cause, core.ErrLimit):
+		return core.ErrLimit, "handoff exceeds supported limits"
+	case errors.Is(cause, core.ErrSettings):
+		return core.ErrSettings, "unsupported, unapproved, or malformed handoff"
+	default:
+		return core.ErrSettings, "handoff could not be safely loaded"
+	}
+}
+
+type kickoffFacts struct {
+	Version, HandoffRevision, ProjectRevision string
+}
+
+func kickoffFactsFrom(data []byte) (kickoffFacts, error) {
+	var source struct {
+		ProjectKickoff struct {
+			Version          string `json:"version"`
+			ApprovedRevision string `json:"approvedRevision"`
+		} `json:"projectKickoff"`
+		Project struct {
+			Revision string `json:"revision"`
+		} `json:"project"`
+	}
+	if err := json.Unmarshal(data, &source); err != nil {
+		return kickoffFacts{}, err
+	}
+	return kickoffFacts{Version: boundedKickoffFact(source.ProjectKickoff.Version), HandoffRevision: boundedKickoffFact(source.ProjectKickoff.ApprovedRevision), ProjectRevision: boundedKickoffFact(source.Project.Revision)}, nil
 }
 
 // Setup passes the exact bytes it has already digest-checked, so a changed file
@@ -106,7 +251,7 @@ func decodeKickoffHandoff(canonical string, data []byte) (core.KickoffHandoff, e
 		if err := decodeKickoff(data, &source); err != nil {
 			return result, err
 		}
-		if source.SchemaVersion != 1 || source.Kind != "project-kickoff-agent-team-handoff" || source.Status != "approved" || (source.ProjectKickoff.Version != "0.5.0" && source.ProjectKickoff.Version != "0.5.1") || !kickoffID.MatchString(source.ProjectKickoff.ApprovalID) || !kickoffID.MatchString(source.Project.ID) || source.AgentTeam.InitializationSource != "existing" {
+		if source.SchemaVersion != 1 || source.Kind != "project-kickoff-agent-team-handoff" || source.Status != "approved" || !slices.Contains(acceptedKickoffVersions, source.ProjectKickoff.Version) || !kickoffID.MatchString(source.ProjectKickoff.ApprovalID) || !kickoffID.MatchString(source.Project.ID) || source.AgentTeam.InitializationSource != "existing" {
 			return result, fmt.Errorf("%w: unsupported or unapproved Project Kickoff handoff", core.ErrSettings)
 		}
 		if !filepath.IsAbs(source.Project.Root) || filepath.Clean(source.Project.Root) != canonical || source.Project.Revision != current.Head || source.Plan.Branch != source.Project.Branch || strings.TrimSpace(source.Plan.Scope) == "" {

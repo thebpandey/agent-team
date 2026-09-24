@@ -14,8 +14,8 @@ import (
 // SetupOptions contains decisions made by the foreground host's setup dialogue.
 // Inspection never assumes consent to create artifacts or install dependencies.
 type SetupOptions struct {
-	Root, Tracker, Kickoff   string
-	Approved, ApproveKickoff bool
+	Root, Tracker, Kickoff                  string
+	Approved, ApproveKickoff, IgnoreKickoff bool
 }
 
 type Onboarding struct {
@@ -102,10 +102,23 @@ func Onboard(ctx context.Context, options SetupOptions) (Onboarding, error) {
 	}
 	selected := core.TrackerConfig{Kind: options.Tracker}
 	kickoffPath := options.Kickoff
+	var ignoredKickoff *IgnoredKickoff
 	if kickoffPath == "" {
 		candidate := ".project-kickoff/AGENT_TEAM_HANDOFF.json"
 		if _, err := os.Lstat(filepath.Join(root, candidate)); err == nil {
-			kickoffPath = candidate
+			if options.IgnoreKickoff {
+				inspection, raw, readErr := inspectKickoff(root, candidate)
+				if readErr != nil {
+					return result, readErr
+				}
+				reason := inspection.Reason
+				if reason == "" {
+					reason = "explicitly ignored by setup"
+				}
+				ignoredKickoff = &IgnoredKickoff{Path: candidate, Digest: digestBytes(raw), DetectedVersion: inspection.DetectedVersion, Decision: "ignored", Reason: reason}
+			} else {
+				kickoffPath = candidate
+			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return result, err
 		}
@@ -196,7 +209,7 @@ func Onboard(ctx context.Context, options SetupOptions) (Onboarding, error) {
 	}
 	// Validate all destinations before the first mutation; exclusive creation
 	// makes retries preserve user edits and concurrent creations.
-	input := SetupInput{Root: root, Mode: PlanMode, Tracker: selected, Kickoff: kickoff}
+	input := SetupInput{Root: root, Mode: PlanMode, Tracker: selected, Kickoff: kickoff, IgnoredKickoff: ignoredKickoff}
 	for _, path := range paths {
 		mode := ExistingArtifact
 		for _, missing := range result.Missing {

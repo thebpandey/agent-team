@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -96,6 +99,173 @@ func TestStatusCLIDoesNotClaimUninitializedProjectAccepted(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, ".agent-team")); !os.IsNotExist(err) {
 		t.Fatal("status wrote project state")
+	}
+}
+
+func TestStatusCLIResolvesUnsupportedAutoDiscoveredKickoffReadOnly(t *testing.T) {
+	root := testkit.GitRepo(t)
+	handoffPath := filepath.Join(root, ".project-kickoff", "AGENT_TEAM_HANDOFF.json")
+	if err := os.MkdirAll(filepath.Dir(handoffPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"schemaVersion":1,"kind":"project-kickoff-agent-team-handoff","status":"approved","projectKickoff":{"version":"0.4.0","approvalId":"APR-old","approvedRevision":"1111111111111111111111111111111111111111"},"project":{"revision":"2222222222222222222222222222222222222222"}}`
+	if err := os.WriteFile(handoffPath, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before := testkit.SnapshotTree(t, root)
+	t.Chdir(root)
+
+	code, result := invokeOnboarding(t, "status")
+	if code != 0 || result["ok"] != true || result["status"] != "needs_input" || result["next_action"] != "resolve_kickoff" {
+		t.Fatalf("status: %d %+v", code, result)
+	}
+	facts, ok := result["kickoff_resolution"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing kickoff resolution facts: %+v", result)
+	}
+	if facts["path"] != ".project-kickoff/AGENT_TEAM_HANDOFF.json" || facts["detected_version"] != "0.4.0" || facts["handoff_revision"] != "1111111111111111111111111111111111111111" || facts["project_revision"] != "2222222222222222222222222222222222222222" {
+		t.Fatalf("kickoff facts: %+v", facts)
+	}
+	accepted, ok := facts["accepted_versions"].([]any)
+	if !ok || len(accepted) != 2 || accepted[0] != "0.5.0" || accepted[1] != "0.5.1" || facts["head"] == "" {
+		t.Fatalf("kickoff compatibility facts: %+v", facts)
+	}
+	reason, ok := facts["reason"].(string)
+	if !ok || !strings.Contains(reason, "unsupported") || len(reason) > 512 {
+		t.Fatalf("bounded reason: %#v", facts["reason"])
+	}
+	if after := testkit.SnapshotTree(t, root); !reflect.DeepEqual(before, after) {
+		t.Fatalf("status wrote project state: before=%v after=%v", before, after)
+	}
+}
+
+func TestStatusCLIResolvesStaleAutoDiscoveredKickoff(t *testing.T) {
+	root := testkit.GitRepo(t)
+	p, err := project.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchBytes, err := exec.Command("git", "-C", root, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := strings.TrimSpace(string(branchBytes))
+	stale := strings.Repeat("2", 40)
+	handoff := map[string]any{
+		"schemaVersion": 1, "kind": "project-kickoff-agent-team-handoff", "status": "approved",
+		"projectKickoff": map[string]any{"version": "0.5.1", "approvalId": "APR-stale", "approvedRevision": p.Head},
+		"agentTeam":      map[string]any{"initializationSource": "existing"},
+		"project":        map[string]any{"id": "project-1", "root": root, "branch": branch, "revision": stale},
+		"tracker":        map[string]any{"kind": "markdown", "path": "TASKS.md"},
+		"plan":           map[string]any{"scope": "stale handoff", "branch": branch},
+	}
+	body, _ := json.Marshal(handoff)
+	handoffPath := filepath.Join(root, ".project-kickoff", "AGENT_TEAM_HANDOFF.json")
+	if err := os.MkdirAll(filepath.Dir(handoffPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(handoffPath, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	code, result := invokeOnboarding(t, "status")
+	facts, _ := result["kickoff_resolution"].(map[string]any)
+	if code != 0 || result["status"] != "needs_input" || result["next_action"] != "resolve_kickoff" || facts["detected_version"] != "0.5.1" || facts["project_revision"] != stale || facts["head"] != p.Head || !strings.Contains(facts["reason"].(string), "revision mismatch") {
+		t.Fatalf("stale status: %d result=%+v facts=%+v", code, result, facts)
+	}
+}
+
+func TestSetupCLIIgnoresAutoDiscoveredKickoffAndBindsReceipt(t *testing.T) {
+	root := testkit.GitRepo(t)
+	handoffPath := filepath.Join(root, ".project-kickoff", "AGENT_TEAM_HANDOFF.json")
+	if err := os.MkdirAll(filepath.Dir(handoffPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"schemaVersion":1,"kind":"project-kickoff-agent-team-handoff","status":"approved","projectKickoff":{"version":"0.4.0","approvalId":"APR-old","approvedRevision":"1111111111111111111111111111111111111111"},"project":{"revision":"2222222222222222222222222222222222222222"}}`)
+	if err := os.WriteFile(handoffPath, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	code, result := invokeOnboarding(t, "setup", "--ignore-kickoff", "--tracker", "tasks-md", "--approve")
+	if code != 0 || result["ok"] != true || result["status"] != "initialized" {
+		t.Fatalf("setup: %d %+v", code, result)
+	}
+	if got, err := os.ReadFile(handoffPath); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("ignored handoff changed: %q err=%v", got, err)
+	}
+	configBytes, err := os.ReadFile(filepath.Join(root, ".agent-team", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		ReceiptPath string `json:"receiptPath"`
+	}
+	if err := json.Unmarshal(configBytes, &config); err != nil || config.ReceiptPath == "" {
+		t.Fatalf("config: %s err=%v", configBytes, err)
+	}
+	receiptBytes, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(config.ReceiptPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt struct {
+		Ignored struct {
+			Path            string `json:"path"`
+			Digest          string `json:"digest"`
+			DetectedVersion string `json:"detectedVersion"`
+			Decision        string `json:"decision"`
+			Reason          string `json:"reason"`
+		} `json:"ignoredKickoff"`
+	}
+	if err := json.Unmarshal(receiptBytes, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	wantDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(body))
+	if receipt.Ignored.Path != ".project-kickoff/AGENT_TEAM_HANDOFF.json" || receipt.Ignored.Digest != wantDigest || receipt.Ignored.DetectedVersion != "0.4.0" || receipt.Ignored.Decision != "ignored" || !strings.Contains(receipt.Ignored.Reason, "unsupported") {
+		t.Fatalf("ignored kickoff receipt: %+v", receipt.Ignored)
+	}
+}
+
+func TestSetupCLIExplicitKickoffErrorIncludesResolutionFacts(t *testing.T) {
+	root := testkit.GitRepo(t)
+	p, err := project.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchBytes, err := exec.Command("git", "-C", root, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := strings.TrimSpace(string(branchBytes))
+	handoffPath := filepath.Join(root, "incoming", "custom.json")
+	if err := os.MkdirAll(filepath.Dir(handoffPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	stale := strings.Repeat("2", 40)
+	handoff := map[string]any{
+		"schemaVersion": 1, "kind": "project-kickoff-agent-team-handoff", "status": "approved",
+		"projectKickoff": map[string]any{"version": "0.5.1", "approvalId": "APR-stale", "approvedRevision": p.Head},
+		"agentTeam":      map[string]any{"initializationSource": "existing"},
+		"project":        map[string]any{"id": "project-1", "root": root, "branch": branch, "revision": stale},
+		"tracker":        map[string]any{"kind": "markdown", "path": "TASKS.md"},
+		"plan":           map[string]any{"scope": "stale handoff", "branch": branch},
+	}
+	body, _ := json.Marshal(handoff)
+	if err := os.WriteFile(handoffPath, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	code, result := invokeOnboarding(t, "setup", "--kickoff", "incoming/custom.json")
+	message, _ := result["error"].(string)
+	if code == 0 || result["ok"] != false {
+		t.Fatalf("explicit unsupported kickoff accepted: %d %+v", code, result)
+	}
+	for _, want := range []string{"incoming/custom.json", "0.5.0", "0.5.1", p.Head, stale, "project or revision mismatch"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("explicit error missing %q: %q", want, message)
+		}
 	}
 }
 

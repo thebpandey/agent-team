@@ -167,3 +167,49 @@ func TestLoadKickoffBoundsAndContainsInput(t *testing.T) {
 		t.Fatal("accepted oversized handoff")
 	}
 }
+
+func TestLoadKickoffErrorDoesNotEchoNearLimitUnknownField(t *testing.T) {
+	root, value := kickoffFixture(t)
+	secret := "DO-NOT-ECHO-" + strings.Repeat("x", 200<<10)
+	value[secret] = true
+	path := writeKickoffFixture(t, root, value)
+
+	_, err := LoadKickoff(root, path)
+	if err == nil {
+		t.Fatal("handoff with unknown field was accepted")
+	}
+	message := err.Error()
+	if strings.Contains(message, "DO-NOT-ECHO-") {
+		t.Fatalf("error echoed untrusted field: length=%d", len(message))
+	}
+	if len(message) > 1024 {
+		t.Fatalf("error is not tightly bounded: length=%d", len(message))
+	}
+	for _, want := range []string{path, "0.5.0", "0.5.1"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("bounded error missing %q: %q", want, message)
+		}
+	}
+}
+
+func TestLoadKickoffErrorDoesNotEchoInvalidExplicitPath(t *testing.T) {
+	root, _ := kickoffFixture(t)
+	path := string(filepath.Separator) + "DO-NOT-ECHO-PATH-" + strings.Repeat("x", 32<<10)
+
+	_, err := LoadKickoff(root, path)
+	if err == nil {
+		t.Fatal("absolute escaping handoff path was accepted")
+	}
+	message := err.Error()
+	if strings.Contains(message, "DO-NOT-ECHO-PATH-") {
+		t.Fatalf("error echoed invalid explicit path: length=%d", len(message))
+	}
+	if len(message) > 1024 {
+		t.Fatalf("invalid-path error is not tightly bounded: length=%d", len(message))
+	}
+	for _, want := range []string{"0.5.0", "0.5.1", "unsafe or inaccessible handoff path"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("bounded error missing %q: %q", want, message)
+		}
+	}
+}

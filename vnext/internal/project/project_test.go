@@ -408,6 +408,40 @@ func TestSetupValidatesDecisionsAndPersistsIdempotently(t *testing.T) {
 	}
 }
 
+func TestSetupRejectsIgnoredKickoffReplacedAfterInspection(t *testing.T) {
+	root := testkit.GitRepo(t)
+	for name, contents := range map[string]string{"TASKS.md": "# Tasks\n", "DECISIONS.md": "# Decisions\n", "AGENT_TEAM_RULES.md": "# Rules\n"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const relative = ".project-kickoff/AGENT_TEAM_HANDOFF.json"
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte(`{"projectKickoff":{"version":"0.4.0"}}`)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inspection, inspected, err := inspectKickoff(root, relative)
+	if err != nil || len(inspected) == 0 || inspection.Reason == "" {
+		t.Fatalf("inspect ignored handoff: inspection=%+v bytes=%d err=%v", inspection, len(inspected), err)
+	}
+	input := planInput(root, nil)
+	input.IgnoredKickoff = &IgnoredKickoff{Path: relative, Digest: digestBytes(inspected), DetectedVersion: inspection.DetectedVersion, Decision: "ignored", Reason: inspection.Reason}
+	if err := os.WriteFile(path, []byte(`{"projectKickoff":{"version":"0.5.2"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewSetupService(store.New(root, core.DefaultConfig().Storage)).Initialize(context.Background(), input); !errors.Is(err, core.ErrSettings) {
+		t.Fatalf("replaced ignored handoff error = %v, want ErrSettings", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agent-team", "config.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replaced ignored handoff committed setup: %v", err)
+	}
+}
+
 func TestPlanMatrixAndOneOffPersistence(t *testing.T) {
 	root := testkit.GitRepo(t)
 	for name, contents := range map[string]string{"TASKS.md": "# Tasks\n", "DECISIONS.md": "# Decisions\n", "AGENT_TEAM_RULES.md": "# Rules\n"} {

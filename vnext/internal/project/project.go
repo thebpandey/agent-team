@@ -52,12 +52,21 @@ type KickoffDecision struct {
 	Confirmation Confirmation
 }
 
+type IgnoredKickoff struct {
+	Path            string `json:"path"`
+	Digest          string `json:"digest"`
+	DetectedVersion string `json:"detectedVersion,omitempty"`
+	Decision        string `json:"decision"`
+	Reason          string `json:"reason"`
+}
+
 type SetupInput struct {
-	Root      string
-	Mode      RunMode
-	Artifacts []ArtifactDecision
-	Kickoff   *KickoffDecision
-	Tracker   core.TrackerConfig
+	Root           string
+	Mode           RunMode
+	Artifacts      []ArtifactDecision
+	Kickoff        *KickoffDecision
+	IgnoredKickoff *IgnoredKickoff
+	Tracker        core.TrackerConfig
 }
 
 type SetupResult struct {

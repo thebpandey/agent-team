@@ -202,12 +202,12 @@ func parseExactPair(args []string, flag string, allowed map[string]bool) ([]stri
 
 func parseSetupArgs(args []string) ([]string, error) {
 	var out []string
-	seenMode, seenApprove, seenRefuse := false, false, false
+	seenMode, seenApprove, seenRefuse, seenIgnore := false, false, false, false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--host", "--tracker", "--kickoff", "--install":
 			flag := args[i]
-			if slices.Contains(out, flag) || i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" || strings.HasPrefix(args[i+1], "--") {
+			if slices.Contains(out, flag) || (flag == "--kickoff" && seenIgnore) || i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" || strings.HasPrefix(args[i+1], "--") {
 				return nil, core.ErrPhase
 			}
 			value := strings.TrimSpace(args[i+1])
@@ -236,16 +236,22 @@ func parseSetupArgs(args []string) ([]string, error) {
 			out = append(out, "--mode", mode)
 			i++
 		case "--approve-kickoff":
-			if seenApprove || seenRefuse {
+			if seenApprove || seenRefuse || seenIgnore {
 				return nil, core.ErrPhase
 			}
 			seenApprove = true
 			out = append(out, args[i])
 		case "--refuse-kickoff":
-			if seenRefuse || seenApprove || slices.Contains(out, "--approve") {
+			if seenRefuse || seenApprove || seenIgnore || slices.Contains(out, "--approve") {
 				return nil, core.ErrPhase
 			}
 			seenRefuse = true
+			out = append(out, args[i])
+		case "--ignore-kickoff":
+			if seenIgnore || seenApprove || seenRefuse || slices.Contains(out, "--kickoff") {
+				return nil, core.ErrPhase
+			}
+			seenIgnore = true
 			out = append(out, args[i])
 		default:
 			return nil, core.ErrPhase

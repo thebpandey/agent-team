@@ -271,6 +271,23 @@ func TestCanonicalRejectsMalformedArguments(t *testing.T) {
 	}
 }
 
+func TestSetupIgnoreKickoffIsBooleanAndMutuallyExclusive(t *testing.T) {
+	got, err := cli.Parse([]string{"setup", "--ignore-kickoff", "--tracker", "tasks-md", "--approve"})
+	if err != nil || !equalStrings(got.Args, []string{"--ignore-kickoff", "--tracker", "tasks-md", "--approve"}) {
+		t.Fatalf("ignore kickoff parse: got=%+v err=%v", got, err)
+	}
+	for _, args := range [][]string{
+		{"setup", "--ignore-kickoff", "--kickoff", "handoff.json"},
+		{"setup", "--ignore-kickoff", "--approve-kickoff"},
+		{"setup", "--ignore-kickoff", "--refuse-kickoff"},
+		{"setup", "--ignore-kickoff", "--ignore-kickoff"},
+	} {
+		if _, err := cli.Parse(args); !errors.Is(err, core.ErrPhase) {
+			t.Fatalf("conflicting args=%v accepted: %v", args, err)
+		}
+	}
+}
+
 func TestMutationLockCleanupUsesManagementBoundary(t *testing.T) {
 	var out bytes.Buffer
 	called := false

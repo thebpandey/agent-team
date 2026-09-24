@@ -33,6 +33,7 @@ type setupReceipt struct {
 	InputDigest     string              `json:"inputDigest"`
 	ArtifactDigests map[string]string   `json:"artifactDigests"`
 	Handoff         core.KickoffHandoff `json:"handoff"`
+	IgnoredKickoff  *IgnoredKickoff     `json:"ignoredKickoff,omitempty"`
 	ConfigDigest    string              `json:"configDigest"`
 }
 
@@ -152,6 +153,20 @@ func ValidateSetup(ctx context.Context, input SetupInput) (SetupResult, error) {
 				return SetupResult{}, fmt.Errorf("%w: kickoff tracker differs from selected tracker", core.ErrSettings)
 			}
 			result.Config.Tracker = core.TrackerConfig{Kind: handoff.TrackerKind, Path: handoff.TrackerRef}
+		}
+	}
+	if input.IgnoredKickoff != nil {
+		ignored := input.IgnoredKickoff
+		relative, _, err := inputPath(project.TopLevel, ignored.Path)
+		if err != nil || !validDigest(ignored.Digest) || ignored.Decision != "ignored" || strings.TrimSpace(ignored.Reason) == "" || len(ignored.Reason) > 512 {
+			return SetupResult{}, fmt.Errorf("%w: malformed ignored Project Kickoff decision", core.ErrSettings)
+		}
+		contents, err := readBoundedContained(project.TopLevel, relative, kickoffMaxBytes)
+		if err != nil {
+			return SetupResult{}, fmt.Errorf("%w: ignored Project Kickoff handoff is unavailable", core.ErrSettings)
+		}
+		if digestBytes(contents) != ignored.Digest {
+			return SetupResult{}, fmt.Errorf("%w: ignored Project Kickoff digest mismatch", core.ErrSettings)
 		}
 	}
 	return result, nil
@@ -277,7 +292,7 @@ func (s *setupService) Initialize(ctx context.Context, input SetupInput) (SetupR
 		}
 		receiptFile := ".agent-team/receipts/setup-" + strings.TrimPrefix(inputDigest, "sha256:") + ".json"
 		record := configFrom(result.Config, result.Project.TopLevel, 1)
-		receipt := setupReceipt{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: result.Project.TopLevel, WrittenAt: record.WrittenAt, Revision: 1}, InputDigest: inputDigest, ArtifactDigests: result.ArtifactDigests, Handoff: result.Handoff}
+		receipt := setupReceipt{RecordEnvelope: core.RecordEnvelope{Schema: 1, Project: result.Project.TopLevel, WrittenAt: record.WrittenAt, Revision: 1}, InputDigest: inputDigest, ArtifactDigests: result.ArtifactDigests, Handoff: result.Handoff, IgnoredKickoff: input.IgnoredKickoff}
 		record.ReceiptPath = receiptFile
 		record.ReceiptDigest = digestReceiptBinding(receipt)
 		receipt.ConfigDigest = digestRecord(record)
@@ -588,8 +603,9 @@ func setupDigest(result SetupResult, input SetupInput) (string, error) {
 		Artifacts       []ArtifactDecision
 		ArtifactDigests map[string]string
 		Handoff         core.KickoffHandoff
+		IgnoredKickoff  *IgnoredKickoff
 		Config          core.Config
-	}{input.Mode, artifacts, result.ArtifactDigests, result.Handoff, result.Config}
+	}{input.Mode, artifacts, result.ArtifactDigests, result.Handoff, input.IgnoredKickoff, result.Config}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
