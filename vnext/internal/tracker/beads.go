@@ -596,40 +596,52 @@ func parseBeadsDependencies(value json.RawMessage) ([]core.TaskID, error) {
 		if err := json.Unmarshal(encoded, &fields); err != nil || fields == nil {
 			return nil, fmt.Errorf("%w: malformed Beads dependency", core.ErrPath)
 		}
-		allowed := map[string]bool{
-			"id": true, "objective": true, "title": true, "description": true, "state": true, "status": true,
-			"metadata": true, "priority": true, "issue_type": true, "owner": true, "created_at": true,
-			"created_by": true, "updated_at": true, "dependency_type": true, "issue_id": true,
-			"depends_on_id": true, "type": true,
+		_, hasIssueID := fields["issue_id"]
+		_, hasDependsOnID := fields["depends_on_id"]
+		_, hasType := fields["type"]
+		_, hasID := fields["id"]
+		_, hasDependencyType := fields["dependency_type"]
+		direct := hasIssueID || hasDependsOnID || hasType
+		expanded := hasID || hasDependencyType
+		if direct && expanded {
+			return nil, fmt.Errorf("%w: ambiguous Beads dependency relation", core.ErrPath)
 		}
-		for key, field := range fields {
-			if !allowed[key] || bytes.Equal(bytes.TrimSpace(field), []byte("null")) {
-				return nil, fmt.Errorf("%w: invalid Beads dependency field %q", core.ErrPath, key)
+		var relationID core.TaskID
+		var kind string
+		if direct {
+			allowed := map[string]bool{
+				"issue_id": true, "depends_on_id": true, "type": true,
+				"created_at": true, "created_by": true, "metadata": true,
 			}
-		}
-		var relation struct {
-			ID          core.TaskID `json:"id"`
-			DependsOnID core.TaskID `json:"depends_on_id"`
-			Type        string      `json:"type"`
-			LegacyType  string      `json:"dependency_type"`
-		}
-		if err := json.Unmarshal(encoded, &relation); err != nil {
+			for key, field := range fields {
+				if !allowed[key] || bytes.Equal(bytes.TrimSpace(field), []byte("null")) {
+					return nil, fmt.Errorf("%w: invalid Beads dependency field %q", core.ErrPath, key)
+				}
+			}
+			var relation struct {
+				IssueID     core.TaskID `json:"issue_id"`
+				DependsOnID core.TaskID `json:"depends_on_id"`
+				Type        string      `json:"type"`
+			}
+			if err := json.Unmarshal(encoded, &relation); err != nil || relation.IssueID == "" || relation.DependsOnID == "" || relation.Type == "" {
+				return nil, fmt.Errorf("%w: malformed Beads dependency relation", core.ErrPath)
+			}
+			relationID, kind = relation.DependsOnID, relation.Type
+		} else if expanded {
+			var relation struct {
+				ID   core.TaskID `json:"id"`
+				Type string      `json:"dependency_type"`
+			}
+			if err := json.Unmarshal(encoded, &relation); err != nil || relation.ID == "" || relation.Type == "" {
+				return nil, fmt.Errorf("%w: malformed Beads dependency projection", core.ErrPath)
+			}
+			relationID, kind = relation.ID, relation.Type
+		} else {
 			return nil, fmt.Errorf("%w: malformed Beads dependency relation", core.ErrPath)
-		}
-		kind := relation.Type
-		if kind == "" {
-			kind = relation.LegacyType
 		}
 		switch kind {
 		case "blocks":
-			id := relation.ID
-			if relation.DependsOnID != "" {
-				id = relation.DependsOnID
-			}
-			if id == "" {
-				return nil, fmt.Errorf("%w: invalid Beads blocking dependency", core.ErrPath)
-			}
-			result = append(result, id)
+			result = append(result, relationID)
 		case "parent-child", "related", "discovered-from", "tracks", "until", "caused-by", "validates", "relates-to", "supersedes":
 			// Supported provenance edges are not scheduling blockers.
 		default:

@@ -186,14 +186,50 @@ func TestBeadsIgnoresNonBlockingDependencyRelations(t *testing.T) {
 		t.Fatalf("only the blocks relation is a dependency: tasks=%+v err=%v", tasks, err)
 	}
 	for _, bad := range []string{
+		`[{"issue_id":null,"depends_on_id":"b","type":"blocks"}]`,
 		`[{"issue_id":"a","depends_on_id":null,"type":"blocks"}]`,
 		`[{"issue_id":"a","depends_on_id":"b","type":null}]`,
 		`[{"issue_id":"a","depends_on_id":"b"}]`,
+		`[{"depends_on_id":"b","type":"blocks"}]`,
+		`[{"issue_id":"a","type":"parent-child"}]`,
+		`[{"issue_id":"","depends_on_id":"b","type":"blocks"}]`,
 		`[{"depends_on_id":"","type":"blocks"}]`,
 	} {
 		if _, err := parseBeads([]byte(`[{"id":"a","title":"t","status":"open","dependencies":` + bad + `}]`)); err == nil {
 			t.Fatalf("relation identity must stay strict: %s", bad)
 		}
+	}
+}
+
+func TestBeadsParsesExpandedDependencyIssueProjections(t *testing.T) {
+	deps := `[{"acceptance_criteria":null,"assignee":null,"close_reason":"done","closed_at":"2026-09-22T19:53:30Z",` +
+		`"created_at":"2026-09-22T18:00:00Z","created_by":"thebpandey","dependency_type":"blocks",` +
+		`"description":"required first","design":null,"id":"docs-prerequisite","issue_type":"task","labels":["release"],` +
+		`"notes":null,"owner":"team","priority":1,"spec_id":null,"started_at":null,"status":"closed",` +
+		`"title":"prerequisite","updated_at":"2026-09-22T19:53:30Z","future_field":null},` +
+		`{"id":"docs-parent","dependency_type":"parent-child","acceptance_criteria":"observational"}]`
+	tasks, err := parseBeads([]byte(`[{"id":"docs-child","title":"child","status":"open","dependencies":` + deps + `}]`))
+	if err != nil || len(tasks) != 1 || len(tasks[0].Dependencies) != 1 || tasks[0].Dependencies[0] != "docs-prerequisite" {
+		t.Fatalf("expanded blocks projection must supply the prerequisite ID: tasks=%+v err=%v", tasks, err)
+	}
+}
+
+func TestBeadsRejectsAmbiguousOrMalformedExpandedDependencies(t *testing.T) {
+	for name, bad := range map[string]string{
+		"mixed issue identity":    `[{"id":"b","dependency_type":"blocks","issue_id":"a"}]`,
+		"mixed target identity":   `[{"id":"b","dependency_type":"blocks","depends_on_id":"b"}]`,
+		"mixed relation type":     `[{"id":"b","dependency_type":"blocks","type":"blocks"}]`,
+		"null id":                 `[{"id":null,"dependency_type":"blocks"}]`,
+		"empty id":                `[{"id":"","dependency_type":"blocks"}]`,
+		"null dependency type":    `[{"id":"b","dependency_type":null}]`,
+		"empty dependency type":   `[{"id":"b","dependency_type":""}]`,
+		"unknown dependency type": `[{"id":"b","dependency_type":"future-relation"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseBeads([]byte(`[{"id":"a","title":"t","status":"open","dependencies":` + bad + `}]`)); err == nil {
+				t.Fatalf("ambiguous or malformed expanded relation must be rejected: %s", bad)
+			}
+		})
 	}
 }
 
