@@ -2,7 +2,7 @@
 
 Created by [thebpandey](https://github.com/thebpandey). Agent-Team coordinates AI agents to build software from an approved plan, review the changes, and fix problems. You set the direction and approve important decisions; the team keeps tasks, progress, and focused working context together in Codex or Claude Code.
 
-The native version is **[v8.0.14](docs/releases/8.0.14-readiness.md)**, an **unpublished candidate** handling bd 1.2.2 expanded dependency issue projections while keeping relation identity and types strict. [v8.0.13](https://github.com/thebpandey/agent-team/releases/tag/v8.0.13) remains the published release until the candidate passes its revision-bound release workflow. Linux amd64 and Windows amd64 are package targets; macOS has source/runtime checks without a published binary. The historical Node package **v7.3.1** described in older sections is retained only for its historical runtime contract. The repository-root `SKILL.md` routes to the native controller and is not the Node runtime. For release history, see the [changelog](CHANGELOG.md); for the compact operator walkthrough, see [Getting Started](GETTING_STARTED.md).
+The native version is **[v8.0.14](https://github.com/thebpandey/agent-team/releases/tag/v8.0.14)** for Linux amd64 and Windows amd64. It handles bd 1.2.2 expanded dependency issue projections while keeping relation identity and types strict. The [release record](docs/releases/8.0.14-readiness.md) records the successful workflow, managed Linux update, and read-only acceptance against a real bd 1.2.2 project. macOS has source/runtime checks without a published binary. The historical Node package **v7.3.1** described in older sections is retained only for its historical runtime contract. The repository-root `SKILL.md` routes to the native controller and is not the Node runtime. For release history, see the [changelog](CHANGELOG.md); for the compact operator walkthrough, see [Getting Started](GETTING_STARTED.md).
 
 ## vNext native transition
 
@@ -29,13 +29,13 @@ A legacy project that already uses Beads keeps its selected `.beads` tree in pla
 
 </details>
 
-The dashboard is local-only and read-only. Capacity caps remain enforced. Optional Serena, Graphify, LeanCTX, browser, and visual tools have bounded native fallbacks; absence never widens authority. See the [honest v8 benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and the [v8.0.14 release readiness record](docs/releases/8.0.14-readiness.md) for the candidate gates and evidence scope.
+The dashboard is local-only and read-only. Capacity caps remain enforced. Optional Serena, Graphify, LeanCTX, browser, and visual tools have bounded native fallbacks; absence never widens authority. See the [honest v8 benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and the [v8.0.14 release readiness record](docs/releases/8.0.14-readiness.md) for the release evidence and its scope.
 
-The prospective v8.0.14 downloads become usable only after verification and publication. Until then, use the complete [v8.0.13 release](https://github.com/thebpandey/agent-team/releases/tag/v8.0.13) and verify its checksums before installation.
+Download the complete [v8.0.14 release](https://github.com/thebpandey/agent-team/releases/tag/v8.0.14) for your platform and verify its checksums before installation.
 
-Linux amd64: after publication, download `agent-teamctl-8.0.14.zip`, `RELEASE.json`, `SBOM.cdx.json`, and `SHA256SUMS` from the verified release into one empty folder. Run `sha256sum -c SHA256SUMS`, extract `agent-teamctl-8.0.14.zip` into that folder, then run `./agent-teamctl install --host both --json`. Use `codex` or `claude` instead of `both` to install one host.
+Linux amd64: download `agent-teamctl-8.0.14.zip`, `RELEASE.json`, `SBOM.cdx.json`, and `SHA256SUMS` from the verified release into one empty folder. Run `sha256sum -c SHA256SUMS`, extract `agent-teamctl-8.0.14.zip` into that folder, then run `./agent-teamctl install --host both --json`. Use `codex` or `claude` instead of `both` to install one host.
 
-Windows amd64: after publication, download only `agent-teamctl-8.0.14-windows-amd64.zip` and its `.sha256` sidecar. In PowerShell, verify the sidecar with `Get-FileHash -Algorithm SHA256`, extract the ZIP once into a new subfolder, then run `.\agent-teamctl.exe install --host both --json` from that extracted folder. Use `codex` or `claude` instead of `both` to install one host. The extracted folder contains the executable, the strict canonical release files, and the inner archive.
+Windows amd64: download only `agent-teamctl-8.0.14-windows-amd64.zip` and its `.sha256` sidecar. In PowerShell, verify the sidecar with `Get-FileHash -Algorithm SHA256`, extract the ZIP once into a new subfolder, then run `.\agent-teamctl.exe install --host both --json` from that extracted folder. Use `codex` or `claude` instead of `both` to install one host. The extracted folder contains the executable, the strict canonical release files, and the inner archive.
 
 If install or update reports a conflicting Codex Agent-Team skill, it has not changed the target installation. Move the reported whole root to a recoverable backup outside `~/.codex/skills` and `~/.agents/skills`, then retry. Do not merge files from an unknown root into the native installation.
 
@@ -86,7 +86,7 @@ The binary need not be on PATH. The skill first uses `command -v agent-teamctl`,
 
 ### 2. Run setup
 
-The following first-use flow applies to native v8.0.14 after publication. Invoke `$agent-team setup` in Codex or `/agent-team setup` in Claude Code; a first `start` also guides setup before dispatch. The skill runs `agent-teamctl setup --host codex|claude --json`, inspects existing facts, and follows any `needs_input` / `next_action` response.
+The following first-use flow applies to native v8.0.14. Invoke `$agent-team setup` in Codex or `/agent-team setup` in Claude Code; a first `start` also guides setup before dispatch. The skill runs `agent-teamctl setup --host codex|claude --json`, inspects existing facts, and follows any `needs_input` / `next_action` response.
 
 Setup offers numbered model and effort choices for each role from the active host's available options, with Keep and Inherit choices; no typed model IDs are required.
 
