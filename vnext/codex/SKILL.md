@@ -2,7 +2,7 @@
 name: agent-team
 description: Use for Agent-Team setup, status, tasks, one-off work, or scoped lifecycle actions in Codex.
 metadata:
-  version: "8.0.12"
+  version: "8.0.13"
 ---
 
 # Agent-Team for Codex

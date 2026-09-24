@@ -1,5 +1,13 @@
 # Changelog
 
+## 8.0.13 - 2026-09-24
+
+- Accept observational fields from newer Beads output while keeping known dependency relation identities strict and rejecting unknown relation shapes.
+- Report stale or incompatible Project Kickoff handoffs with bounded resolution facts and allow an explicit `--ignore-kickoff` setup decision without silently replacing the handoff.
+- Keep Graphify code-only fingerprints aligned with extraction by excluding supported media formats from both the digest and source-byte budget.
+
+Version 8.0.13 is an unpublished candidate. Revision-bound package, canary, rollback, provider, and readiness evidence remains pending; see the [release readiness record](docs/releases/8.0.13-readiness.md).
+
 ## 8.0.12 - 2026-09-23
 
 - Repair the schema-1 installation journal budget for real native executable sizes, retaining per-file and aggregate bounds, rollback, and exact ownership checks.
