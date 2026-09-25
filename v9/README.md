@@ -57,4 +57,4 @@ After accepted integration and normal Beads closure, v9 may refresh `.agent-team
 
 ## Evidence
 
-Run installer and cutover canaries only with disposable fixtures. `v9/tests/CANARIES.md` records the defined cases and distinguishes fixture checks from live-host observations. Linux tests do not establish Windows or Claude success; do not infer native canary results from source inspection.
+Run installer and cutover canaries only with disposable fixtures. The [canary reference](https://github.com/thebpandey/agent-team/blob/main/v9/tests/CANARIES.md) records the defined cases and distinguishes fixture checks from live-host observations. Linux tests do not establish Windows or Claude success; do not infer native canary results from source inspection.
