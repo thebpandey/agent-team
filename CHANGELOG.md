@@ -7,7 +7,7 @@
 - Validate writable paths before handoff binding or task creation; supported forms are exact relative paths and a final `/**`.
 - Accept Project Kickoff 0.5.2 while retaining 0.5.0/0.5.1. Real bd 1.2.2 fixtures cover import and Claude-host reservation with multi-parent, all-row and explicit-subset handoffs.
 
-Release publication is pending; see the [release readiness record](docs/releases/8.0.15-readiness.md).
+Published in [v8.0.15](https://github.com/thebpandey/agent-team/releases/tag/v8.0.15); see the [release record](docs/releases/8.0.15-readiness.md).
 
 ## 8.0.14 - 2026-09-24
 

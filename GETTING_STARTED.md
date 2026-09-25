@@ -4,7 +4,7 @@ The Node-based Agent-Team 7.3.1 instructions below are legacy during the vNext t
 
 ## Native quick start
 
-Agent-Team 8.0.15 is a release candidate repairing Project Kickoff task admission and large setup responses. After publication, use the complete [8.0.15 package](https://github.com/thebpandey/agent-team/releases/tag/v8.0.15). The [release readiness record](docs/releases/8.0.15-readiness.md) distinguishes fixture acceptance from publication and installation.
+Agent-Team 8.0.15 repairs Project Kickoff task admission and large setup responses. Use the complete [8.0.15 package](https://github.com/thebpandey/agent-team/releases/tag/v8.0.15). The [release record](docs/releases/8.0.15-readiness.md) distinguishes fixture acceptance from publication and installation.
 
 Open your Git project and invoke `$agent-team setup` in Codex or `/agent-team setup` in Claude Code. You can also ask to `start`; the skill completes missing setup before dispatch. Existing tracker choices, task identities, governance, settings, and Project Kickoff facts are reused. Native v8 requires no external hooks.
 

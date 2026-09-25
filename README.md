@@ -2,7 +2,7 @@
 
 Created by [thebpandey](https://github.com/thebpandey). Agent-Team coordinates AI agents to build software from an approved plan, review the changes, and fix problems. You set the direction and approve important decisions; the team keeps tasks, progress, and focused working context together in Codex or Claude Code.
 
-The native version is **[v8.0.15](docs/releases/8.0.15-readiness.md)**, an unpublished candidate. It repairs Project Kickoff task admission, bounds large setup responses, and rejects unsupported writable-path globs before persistence. It accepts Project Kickoff 0.5.2 handoffs and retains 0.5.0/0.5.1 support. See the [release record](docs/releases/8.0.15-readiness.md) for evidence and publication status. Linux amd64 and Windows amd64 have native packages; macOS has source/runtime checks without a published binary. The historical Node package **v7.3.1** remains documented for migration. The repository-root `SKILL.md` routes to the native controller. See the [changelog](CHANGELOG.md) and [Getting Started](GETTING_STARTED.md).
+The native version is **[v8.0.15](https://github.com/thebpandey/agent-team/releases/tag/v8.0.15)**. It repairs Project Kickoff task admission, bounds large setup responses, and rejects unsupported writable-path globs before persistence. It accepts Project Kickoff 0.5.2 handoffs and retains 0.5.0/0.5.1 support. See the [release record](docs/releases/8.0.15-readiness.md) for evidence and installation status. Linux amd64 and Windows amd64 have native packages; macOS has source/runtime checks without a published binary. The historical Node package **v7.3.1** remains documented for migration. The repository-root `SKILL.md` routes to the native controller. See the [changelog](CHANGELOG.md) and [Getting Started](GETTING_STARTED.md).
 
 ## vNext native transition
 
@@ -31,7 +31,7 @@ A legacy project that already uses Beads keeps its selected `.beads` tree in pla
 
 The dashboard is local-only and read-only. Capacity caps remain enforced. Optional Serena, Graphify, LeanCTX, browser, and visual tools have bounded native fallbacks; absence never widens authority. See the [honest v8 benchmark report](https://github.com/thebpandey/agent-team/blob/main/docs/benchmarks/vnext-optional-8.0.0.md) and the [v8.0.15 release readiness record](docs/releases/8.0.15-readiness.md) for the release evidence and its scope.
 
-After publication, download the complete [v8.0.15 release](https://github.com/thebpandey/agent-team/releases/tag/v8.0.15) for your platform and verify its checksums before installation. Until then, v8.0.14 remains the published release.
+Download the complete [v8.0.15 release](https://github.com/thebpandey/agent-team/releases/tag/v8.0.15) for your platform and verify its checksums before installation.
 
 Linux amd64: download `agent-teamctl-8.0.15.zip`, `RELEASE.json`, `SBOM.cdx.json`, and `SHA256SUMS` from the verified release into one empty folder. Run `sha256sum -c SHA256SUMS`, extract `agent-teamctl-8.0.15.zip` into that folder, then run `./agent-teamctl install --host both --json`. Use `codex` or `claude` instead of `both` to install one host.
 
