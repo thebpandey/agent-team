@@ -25,7 +25,9 @@ Use the project directory as the command working directory.
 | Read candidates | `bd ready --limit 20 --json` | Read-only; pass no more than 20 rows onward. |
 | Initialize an approved project | `bd init --skip-hooks --skip-agents --non-interactive --init-if-missing` | Only after the explicit first-run approval. |
 | Claim the active selected task | `bd update ID --claim` | Reserved for the later native-dispatch loop; claim only the next task actually starting. |
+| Return a guaranteed no-launch task | `bd update ID --status open --assignee ''` | Orchestrator only; clear the stale claim, then attach the actual rejection and retry condition in a Beads comment. |
 | Park repeated unresolved review work | `bd update ID --status blocked` | Orchestrator only; add the matching evidence/next-action comment below and leave unrelated ready work alone. |
+| Park a temporary NO-GO | `bd update ID --status blocked` | Orchestrator only; retain its actual handle and claim. Restore `in_progress` only after the same observable handle is observed beginning work; never infer CLEAN or closure. |
 | Record a task-local blocker | `bd comments add ID "<revision, observed result, reconciliation action>"` | Orchestrator only; use for repeated unresolved findings, uncertain host/review, or failed integration. |
 | Close integrated CLEAN work | `bd close ID --reason "CLEAN <reviewed revision>; integrated <revision>"` | Orchestrator only, after valid exact-revision CLEAN, scope/check revalidation, integration, and integration commit. Never use `--force` to bypass a failed gate. |
 
@@ -54,7 +56,7 @@ Pending approval: none
 Next action: inspect original host handle; continue unrelated bd ready work
 ```
 
-On resume, inspect Beads and Git before dispatching. The breadcrumb cannot establish that a historic handle still exists; retain uncertainty until the active host actually observes it.
+On resume, inspect Beads and Git before dispatching. The breadcrumb cannot establish that a historic handle still exists; retain uncertainty until the active host actually observes it. A temporary NO-GO remains blocked even when that handle is observable; restore `in_progress` only after its same-handle follow-up actually begins work.
 
 ## Review, blocker, cleanup, and deployment evidence
 

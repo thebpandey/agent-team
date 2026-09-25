@@ -74,11 +74,11 @@ Use [native host routing](references/HOSTS.md) for host operations and [the work
 
 ### Launch uncertainty and temporary holds
 
-Keep active-session observation separate from cross-session uncertainty. An explicit native rejection that expressly guarantees no worker was created returns the just-claimed issue to open with `bd update ID --status open` and an evidence comment containing the actual rejection and retry condition. It creates no handle, completion, or replacement worker.
+Keep active-session observation separate from cross-session uncertainty. An explicit native rejection that expressly guarantees no worker was created returns the just-claimed issue to open and clears its stale claim with `bd update ID --status open --assignee ''`, then adds an evidence comment containing the actual rejection and retry condition. It creates no handle, completion, or replacement worker.
 
 A timeout, lost response, missing identity, possible launch, or ambiguous delivery blocks only that issue with a Beads comment naming the evidence and next observation. Do not claim, relaunch, or fabricate a worker for it until the original host observation permits a specific action. A later session has no proof of an earlier handle: inspect Beads and Git, preserve the uncertainty, and never reconstruct an identity from a task name or start a substitute worker. Independent ready issues may proceed.
 
-When a host gives a temporary NO-GO and the original live handle is actually observable, retain the claim and send the returned delta only to that same handle through the host's native follow-up operation. Record the observed handle and response. If that handle cannot be observed, keep only this issue blocked; do not turn the NO-GO into a new launch.
+When a host gives a temporary NO-GO, block only that Beads issue while retaining its actual handle and claim. If the original live handle is actually observable, send the returned delta only to that same handle through the host's native follow-up operation and record the response. Restore `in_progress` only after the blocker resolves and that same handle is observed actually beginning work. Never infer `CLEAN` or close the issue from a NO-GO or follow-up. If the handle cannot be observed, keep only this issue blocked; do not turn the NO-GO into a new launch.
 
 ### Pause and resume
 

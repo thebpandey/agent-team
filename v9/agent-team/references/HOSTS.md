@@ -28,10 +28,10 @@ Do not rename a Claude Agent/session identity as a Codex task path or pretend th
 
 ## Launch outcomes
 
-An explicit host rejection that guarantees no worker was created leaves no handle and no fictitious completion. Return only that claimed task to open with the actual rejection and retry condition in a Beads comment. A timeout, missing response, or any possible launch is uncertain: retain the evidence, block only that task with its next observation, and continue other ready lanes. Never infer a clean result, a stopped worker, or no launch from missing session data.
+An explicit host rejection that guarantees no worker was created leaves no handle and no fictitious completion. Return only that claimed task to open and clear its stale assignee with `bd update ID --status open --assignee ''`, then record the actual rejection and retry condition in a Beads comment. A timeout, missing response, or any possible launch is uncertain: retain the evidence, block only that task with its next observation, and continue other ready lanes. Never infer a clean result, a stopped worker, or no launch from missing session data.
 
 ## Temporary NO-GO and session controls
 
-A temporary host NO-GO does not free its claim. Only when the active session can observe the original returned handle may the orchestrator send the native follow-up to that same handle; record the actual response. If no handle is observable, retain a task-local block and do not replace the worker.
+A temporary host NO-GO blocks only its affected Beads task and does not free its actual handle or claim. Only when the active session can observe the original returned handle may the orchestrator send the native follow-up to that same handle; record the actual response. Restore `in_progress` only once the blocker resolves and that same handle visibly begins work. A NO-GO or follow-up never infers CLEAN or closure. If no handle is observable, retain a task-local block and do not replace the worker.
 
 For pause, stop new assignments and request checkpoint/stop only through each observable host identity. Record `paused` only when the host visibly reports it. For resume, inspect Beads and Git first; use native resume only for an existing observed identity. A historic task name, `.agent-team/SESSION.md`, or absent `list_agents` result is not an identity and cannot authorize a substitute launch.
