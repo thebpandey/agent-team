@@ -62,7 +62,7 @@ For `start` in an initialized project, read one bounded page only:
 bd ready --limit 20 --json
 ```
 
-Give the orchestrator at most those 20 task rows and choose only disjoint work. Never load or paste a full tracker dump. A later native-dispatch revision claims the selected next task, one at a time, with `bd update ID --claim`; do not claim speculative or later tasks in this draft.
+Give the orchestrator at most those 20 task rows and choose only disjoint work. Never load or paste a full tracker dump. Native dispatch claims the selected next task, one at a time, with `bd update ID --claim`; do not claim speculative or later tasks.
 
 ## Native team dispatch
 
