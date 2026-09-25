@@ -66,7 +66,7 @@ On refusal, cancellation, or no answer, leave both source and Beads unchanged. A
 
 For an approved Markdown import, convert task rows to a temporary `tasks-import.jsonl`. A `TASKS.md` ID is source provenance, not a presumed Beads ID: omit `id`, put `TASKS.md#task-id` in `external_ref`, use a stable `source_system` such as `agent-team/tasks-md`, and retain the source ID in metadata. Preserve title/objective, acceptance criteria, and status in the Beads export-compatible schema. Reject before mutation any duplicate source ID, missing title, unmapped status, or dependency that is absent, malformed, or cannot be represented as a Beads dependency. Find existing imports by exact provenance (for example `bd list --metadata-field agent_team_source_id=task-id --json`, then verify its `external_ref` and `source_system`); omit those rows from the import candidate. This makes re-import idempotent and protects newer native Beads edits; never use `--allow-stale` for this flow.
 
-Run the following dry run, then compare its proposed IDs, count, and dependencies to the source before showing that result to the user:
+Run the following dry run, then compare its source provenance and candidate row count to the source. Display the source-dependency mapping plan before showing that result to the user:
 
 ```sh
 bd import --dry-run --json tasks-import.jsonl
