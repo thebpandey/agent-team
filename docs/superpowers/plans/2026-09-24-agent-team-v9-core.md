@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Use a new `v9/` source tree; do not reuse v8 controller or v7 hook code.
-- Beads is the only live task tracker; `TASKS.md` and Project Kickoff are one-time inputs.
+- Beads is the only live task tracker; `TASKS.md` and Project Kickoff are optional one-time inputs.
 - Team lists contain at most four ordered tasks, claimed one at a time; one-off work uses at most two parallel teams.
 - Default to Ponytail's smallest-working-change discipline. Do not probe, install, or invoke LeanCTX.
 - Serena, Graphify, Playwright/browser, Impeccable, UI-styling, and UI-UX-Pro-Max are optional, task-triggered aids, never admission gates.
