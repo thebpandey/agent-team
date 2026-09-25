@@ -50,7 +50,11 @@ One platform-neutral versioned skill package contains a short shared workflow an
 
 On first host setup, offer actual available model/effort choices and recommendations for orchestration, development, review, and visual work; save preferences once with optional project overrides. A setting is a preference, not a promise that the host will honor an unavailable model. The orchestrator may downgrade a particular task to a cheaper capable model and records material exceptions.
 
+Project Kickoff is entirely optional: Agent-Team setup, one-off work, and release cannot require it or its handoff. When a user chooses to supply an approved Project Kickoff handoff, a v9-targeting route preserves its ID-only task list and existing branch/authority safety checks. If its tracker is Beads, Agent-Team verifies and adopts those IDs without importing or duplicating tasks. If the selected tracker is `TASKS.md`, Agent-Team offers a one-time, approved Beads import; Markdown does not remain a parallel live tracker. The separate Project Kickoff v9 route must not call the retired `agent-teamctl` setup/settings contract, require an optional accelerator, or claim runtime compatibility before a cross-project canary passes. Existing Project Kickoff v8 handoffs retain their own unchanged route during cutover.
+
 Ponytail's simplest-working-change discipline is part of the default developer and reviewer contract; invoke the installed Ponytail skill when available. It is not an external runtime requirement. LeanCTX is absent from the replacement's installation, probes, prompts, and dispatch. Existing separate LeanCTX installations are left untouched. Serena, Graphify, Playwright/browser, Impeccable, UI-styling, and UI-UX-Pro-Max are optional task-triggered aids. Their absence cannot block ordinary work. Visual work uses the appropriate available design skills; browser verification uses Playwright when the task needs it. Existing host skill instructions, including using-superpowers when installed, are respected but not bundled as Agent-Team dependencies. No accelerator bundle is selected by default.
+
+`i-have-adhd` may be installed and invoked by the user as a presentation preference. Agent-Team neither bundles nor auto-enables it, and never requires it in worker or reviewer briefs.
 
 ## v8 cutover and release gates
 

@@ -145,6 +145,8 @@ Honor installed host skill instructions such as using-superpowers when they appl
 - [ ] **Step 4: Implement non-blocking dashboard.** A lowest-cost available agent updates the offline HTML snapshot from Beads status after a successful integration, using the packaged template. The README in the distribution plan names its local path. Dashboard failure is reported but cannot change Beads task closure.
 - [ ] **Step 5: Verify GREEN and commit.** Re-import is idempotent; 1,000 Beads tasks remain on disk while only a bounded ready page enters the model prompt; all four canaries pass. Commit with `feat(v9): add optional imports and status snapshot` after independent review.
 
+Agent-Team must pass its standalone Beads and one-off canaries with Project Kickoff absent. For the separately tracked, optional Project Kickoff bridge (`atv-uns.11`), run a cross-project interoperability canary after this task: a v9-targeted handoff with Beads task IDs is adopted without duplicate import; a Markdown handoff is offered for explicit one-time import; missing optional aids do not block either path. This bridge does not gate Agent-Team's standalone release. Preserve the current v8 Project Kickoff route, and do not describe the bridge as runtime-qualified or replace the installed Project Kickoff 0.5.2 before its canary is observed.
+
 ## Core acceptance handoff
 
 Task 5 completion is not release approval. Run `v9/tests/CANARIES.md` on actual Codex and Claude sessions, record host/tool versions and observable results, and hand any failed scenario back to its owning task. The distribution plan packages only this reviewed core and does not claim an OS/host combination verified without its live canary.

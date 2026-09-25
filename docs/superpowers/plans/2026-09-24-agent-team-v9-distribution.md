@@ -18,6 +18,7 @@
 - Do not run v8 managed uninstall after v9 is installed. Quiescent cutover may run the supported v8 `agent-teamctl uninstall --json` **before** v9 installation; it must not touch project Beads, Git, or `.agent-team` data.
 - Preserve user-owned dirty files and all uncertain active work. Exact old Agent-Team hook references may be removed only after a backup; unrelated hooks remain.
 - A release is stable only for OS/host combinations with an actual native canary. Do not infer Windows or Claude success from Linux unit tests.
+- Project Kickoff is optional. Agent-Team's standalone Beads setup, one-off work, install, and release must pass without Project Kickoff present. The separate v9 bridge (`atv-uns.11`) may proceed in parallel, but it is not an Agent-Team release dependency. Keep the existing v8 Project Kickoff route and installed copy intact until the bridge's own interoperability canary passes.
 
 ## File map and interfaces
 
@@ -115,6 +116,7 @@ Forbidden archive paths: hooks/, agent-teamctl, vnext/, .beads/, .agent-team/
 **Interfaces:** Consumes completed core, package and canaries. Produces a truthful v9.0.0 GitHub Release and Pages/README update only for verified behavior; no code is changed in this task.
 
 - [ ] **Step 1: Run actual native canaries.** On Codex and Claude, verify worker launch, four-task refill, one-off two-team limit, true independent review, remediation, integration, blocker lane continuation, explicit rejection, ambiguous result isolation, NO-GO follow-up, pause/resume, and quiescent host switch. Test Windows and Linux separately and record unavailable combinations as unverified, not passed.
+- [ ] **Standalone gate and optional compatibility report.** Verify install, Beads first run, and one-off work without Project Kickoff installed. Separately report whether the Project Kickoff v9 bridge has passed its cross-project handoff canary and v8 regression; an unverified bridge limits the interoperability claim, not Agent-Team's standalone release.
 - [ ] **Step 2: Run the scale/resource canary.** In a disposable real Beads 1.2.2 project with 1,000 tasks, verify a bounded ready query and no prompt dump; observe the two-server cap and dashboard snapshot after integration. Keep the fixture outside user projects.
 - [ ] **Step 3: Verify the downloaded candidate archive.** Check its published SHA-256, install it on the claimed platforms, run status/one-off and backup/rollback smoke, and record exact release revision and output in `9.0.0-readiness.md`. A failure returns to its owning core/distribution task; do not label it CLEAN by changing docs.
 - [ ] **Step 4: Publish only after gates pass.** Tag the exact candidate revision, publish the one archive/checksum set, then update README, changelog, and Pages with the release link, install guide, dashboard location, supported hosts, and limitations. Verify the public page displays the actual published version.
