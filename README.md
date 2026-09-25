@@ -4,7 +4,7 @@ Agent-Team v9 is a portable skill for active Codex and Claude sessions. It coord
 
 ## Release status
 
-v9 is a release candidate; no public v9 bundle is published yet. Native host canaries remain a release gate, so installer CI is not proof of host acceptance. No native host acceptance is claimed. These install steps apply once an approved, checksum-verified bundle is available; see [canary status](v9/tests/CANARIES.md).
+v9 is a release candidate; no public v9 bundle is published yet. Linux Codex and Claude status canaries passed after local installation, but native worker dispatch remains a release gate; installer CI alone is not host acceptance. These install steps apply once an approved, checksum-verified bundle is available; see [release readiness](docs/releases/9.0.0-readiness.md) and [canary status](v9/tests/CANARIES.md).
 
 ## Install
 
