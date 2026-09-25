@@ -17,6 +17,8 @@ Do not make a project ready through optional tooling. Beads and Git are the only
 
 This Task 1 draft does not dispatch native workers or claim that it can. Host-specific dispatch is added by a later revision; do not invent a shell-worker substitute.
 
+Fixture checks can validate Beads command semantics, but cannot activate this uninstalled draft in a live host session. Treat live Codex/Claude invocation as a deferred core-acceptance canary, not as evidence from this Task 1 fixture.
+
 ## Inspect the project
 
 First confirm that the requested directory is a Git worktree:

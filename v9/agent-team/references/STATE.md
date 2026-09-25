@@ -28,7 +28,7 @@ If Beads is absent during `status`, say so and stop. If it is absent during `set
 
 ## First-run mutation budget
 
-The approved Task 1 mutation is the `bd init` command above and files created by Beads itself. Do not create any other project file, including `.agent-team/`, settings, ledgers, hooks, a dashboard snapshot, or a task-import artifact. Optional-tool availability never changes this budget or Beads readiness.
+The approved Task 1 mutation is the `bd init` command above and Beads-created files or Beads-owned additions to an existing `.gitignore`. Do not create any other project file, including `.agent-team/`, settings, ledgers, hooks, a dashboard snapshot, or a task-import artifact. Optional-tool availability never changes this budget or Beads readiness.
 
 ## Records used by later revisions
 
