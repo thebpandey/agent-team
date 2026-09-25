@@ -1,46 +1,51 @@
 # Agent-Team
 
-Agent-Team v9 is a portable skill for active Codex and Claude sessions. It coordinates bounded work using Beads for task state and Git for revisions. It installs no controller, daemon, runtime binary, or hooks; workers do not persist across host sessions.
+Agent-Team v9 is a Beads and Git skill for coordinating bounded work in an active Codex or Claude session.
 
-## Release status
+After installing, open a Git project and ask `$agent-team status` then `$agent-team start` in Codex, or `/agent-team status` then `/agent-team start` in Claude.
 
-v9 is a release candidate; no public v9 bundle is published yet. A Linux Codex worker/reviewer canary passed after LeanCTX removal, and Claude status passed; Claude worker dispatch and Windows native-host behavior are not yet verified. Installer CI alone is not host acceptance. These install steps apply once an approved, checksum-verified bundle is available; see [release readiness](docs/releases/9.0.0-readiness.md) and [canary status](v9/tests/CANARIES.md).
+## Install v9.0.0
 
-## Install
+Choose the ZIP for your operating system and download its matching `.sha256` file from the [v9.0.0 release](https://github.com/thebpandey/agent-team/releases/tag/v9.0.0). Each ZIP contains the same skill and only the matching installer; `any` means it has no CPU-specific executable.
 
-Download `agent-team-skill-9.0.0.zip` and its `SHA256SUMS` from the approved release. Verify the checksum before extracting. The portable bundle contains the same skill for both hosts.
+| Operating system | ZIP | Checksum |
+| --- | --- | --- |
+| Linux | [agent-team-skill-9.0.0-linux-any.zip](https://github.com/thebpandey/agent-team/releases/download/v9.0.0/agent-team-skill-9.0.0-linux-any.zip) | [SHA-256](https://github.com/thebpandey/agent-team/releases/download/v9.0.0/agent-team-skill-9.0.0-linux-any.zip.sha256) |
+| macOS | [agent-team-skill-9.0.0-macos-any.zip](https://github.com/thebpandey/agent-team/releases/download/v9.0.0/agent-team-skill-9.0.0-macos-any.zip) | [SHA-256](https://github.com/thebpandey/agent-team/releases/download/v9.0.0/agent-team-skill-9.0.0-macos-any.zip.sha256) |
+| Windows | [agent-team-skill-9.0.0-windows-any.zip](https://github.com/thebpandey/agent-team/releases/download/v9.0.0/agent-team-skill-9.0.0-windows-any.zip) | [SHA-256](https://github.com/thebpandey/agent-team/releases/download/v9.0.0/agent-team-skill-9.0.0-windows-any.zip.sha256) |
+
+On Linux, verify and install the extracted bundle:
 
 ```sh
-sha256sum -c SHA256SUMS
-unzip agent-team-skill-9.0.0.zip -d agent-team-v9
-cd agent-team-v9
-./install.sh codex   # or claude or both
+sha256sum -c agent-team-skill-9.0.0-linux-any.zip.sha256
+unzip agent-team-skill-9.0.0-linux-any.zip
+./install.sh both  # or codex or claude
 ```
 
-On Windows PowerShell, compare `Get-FileHash .\agent-team-skill-9.0.0.zip -Algorithm SHA256` with its entry in `SHA256SUMS`, then extract and run:
+On macOS, verify with `shasum -a 256 -c agent-team-skill-9.0.0-macos-any.zip.sha256`, extract that ZIP, then run `./install.sh both` from the extracted folder (or use `codex` or `claude`).
+
+On Windows, verify the ZIP against the digest in its `.sha256` file, extract it, then run in PowerShell:
 
 ```powershell
-Expand-Archive .\agent-team-skill-9.0.0.zip .\agent-team-v9
+$expected = (Get-Content .\agent-team-skill-9.0.0-windows-any.zip.sha256).Split()[0]
+if ((Get-FileHash .\agent-team-skill-9.0.0-windows-any.zip -Algorithm SHA256).Hash -ne $expected) { throw "Checksum mismatch" }
+Expand-Archive .\agent-team-skill-9.0.0-windows-any.zip .\agent-team-v9
 Set-Location .\agent-team-v9
-.\install.ps1 -TargetHost codex   # or claude or both
+.\install.ps1 -TargetHost both  # or codex or claude
 ```
 
-Defaults are `~/.agents/skills/agent-team` for Codex and `~/.claude/skills/agent-team` for Claude. Custom homes are supported. The installer prints the installed root and any recoverable backup. See [the v9 install guide](v9/README.md) and [v8 cutover and rollback guide](v9/CUTOVER.md).
+The default skill locations are `~/.agents/skills/agent-team` for Codex and `~/.claude/skills/agent-team` for Claude. See the [v9 install guide](v9/README.md) and [v8 cutover guide](v9/CUTOVER.md) before replacing an existing install.
 
 ## First use
 
-Open a Git project and ask `$agent-team status` in Codex or `/agent-team status` in Claude. Status never initializes Beads or creates Agent-Team task/project state; Beads may perform internal housekeeping on first read. If `.beads` is absent, ask for `setup`; it requests explicit approval before running `bd init --skip-hooks --skip-agents --non-interactive --init-if-missing`. Declining leaves the project unchanged.
+In a Git project, ask `$agent-team status` in Codex or `/agent-team status` in Claude. If Beads is not initialized, ask for `setup`; it requests your approval before initializing Beads. Then use `$agent-team start` or `/agent-team start` to choose ready work. A one-off request can also become a bounded Beads task.
 
-After Beads is ready, use `$agent-team start` in Codex or `/agent-team start` in Claude for ready work, or request a bounded one-off directly. For example: “Use Agent-Team for a one-off audit of the login flow; report findings without changing files.” One-off work becomes a Beads task and follows the same review and integration rules.
+Project Kickoff is optional. Use it only when you want help planning a project or explicitly adopting a handoff; an ordinary Git-and-Beads project is ready without it. See the separate [Project Kickoff v0.6.0 release](https://github.com/thebpandey/project-kickoff/releases/tag/v0.6.0).
 
-An ordinary Git-and-Beads project needs no Project Kickoff, `TASKS.md`, or optional tools. Import a Project Kickoff handoff or task list only when you ask for that one-time adoption. v9 uses Ponytail by default: prefer the smallest complete change. At first use, choose only model and effort options the host actually offers; unavailable or undecided roles remain `inherit`, and choices can be overridden per task.
+Use `pause` to stop new assignments and ask observable workers to checkpoint. On a later `resume`, Agent-Team inspects Beads and Git and preserves dirty or uncertain work. Work does not persist as a running team after the host session ends. After accepted integration and Beads closure, the `.agent-team/dashboard/index.html` file can be refreshed as a local status snapshot; it is not a service or task authority.
 
-Serena, Graphify, Playwright, and visual aids are optional and task-triggered. Use them only when they help that task; native tools remain the fallback. Agent-Team does not probe, install, or invoke LeanCTX.
+The Linux Codex worker/reviewer canary passed. Claude status was observed; Claude worker dispatch has not been verified. Windows and macOS worker canaries have not been run. Installer checks are not host worker acceptance.
 
-Ask `$agent-team pause` in Codex or `/agent-team pause` in Claude to stop new assignments and request observable workers to checkpoint and stop. Use `$agent-team resume` or `/agent-team resume` to inspect Beads and Git and preserve dirty or uncertain work; v9 does not promise cross-session worker recovery.
+## Historical releases
 
-After accepted integration and Beads closure, `.agent-team/dashboard/index.html` may be refreshed as a local static snapshot. It is not a service or task authority; refresh errors do not change accepted work.
-
-## Legacy releases
-
-The latest published release remains [v8.0.15](https://github.com/thebpandey/agent-team/releases/tag/v8.0.15); see its [readiness record](docs/releases/8.0.15-readiness.md) and [recovery guide](references/RECOVERY.md). For a v8-to-v9 transition, follow [CUTOVER.md](v9/CUTOVER.md) and do not run v8 uninstall after v9 is installed. [v7.3.1](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1) is the historical Node hook package.
+[v8.0.15](https://github.com/thebpandey/agent-team/releases/tag/v8.0.15) is the previous controller release; use its [readiness record](docs/releases/8.0.15-readiness.md) and [recovery guide](references/RECOVERY.md) for historical context. For a v8-to-v9 transition, follow [CUTOVER.md](v9/CUTOVER.md). [v7.3.1](https://github.com/thebpandey/agent-team/releases/tag/v7.3.1) is the historical Node hook package.
