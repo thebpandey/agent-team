@@ -32,6 +32,7 @@ jobs:
     if: inputs.platform == 'windows'
     runs-on: windows-latest
     steps:
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - shell: pwsh
         run: ./v9/tests/install_windows.ps1
