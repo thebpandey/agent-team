@@ -1,5 +1,11 @@
 # Changelog
 
+## [9.0.0] - 2026-09-25
+
+- Replace the v8 controller distribution with a skill-first Agent-Team package: one reviewed shared skill tree and a platform-matched installer.
+- Produce Linux, Windows, and macOS `any` archives with exact allowlists and SHA-256 sidecars; each platform lane packages independently.
+- Package and installer checks verify archive contents and disposable installs only. Linux Codex worker/reviewer observation is separate; Claude dispatch and Windows/macOS native-host behavior remain unverified until live canaries pass.
+
 ## 8.0.15 - 2026-09-24
 
 - Normalize tracker authority consistently during task preparation and admission, fixing Project Kickoff handoffs that setup accepted but start rejected.

@@ -1,112 +1,60 @@
 name: v9 release candidate
 
 on:
-  push:
-    branches:
-      - v9/candidate
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to package
+        required: true
+        type: choice
+        options: [linux, windows, macos]
 
-# This workflow produces a candidate artifact only. Publishing, tagging, and
-# any write permission remain a separate, explicitly approved release action.
 permissions:
   contents: read
 
 jobs:
-  unix-installer:
-    name: Unix installer
+  linux:
+    if: inputs.platform == 'linux'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: bash v9/tests/install_unix.sh
+      - run: python v9/tests/package_release.py linux release-candidate/linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v9-linux-${{ github.sha }}
+          path: |
+            release-candidate/linux/agent-team-skill-9.0.0-linux-any.zip
+            release-candidate/linux/agent-team-skill-9.0.0-linux-any.zip.sha256
+          if-no-files-found: error
 
-  windows-installer:
-    name: Windows installer
+  windows:
+    if: inputs.platform == 'windows'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - shell: pwsh
         run: ./v9/tests/install_windows.ps1
-
-  beads-fixture:
-    name: Verified Beads 1.2.2 fixture
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download and exercise the pinned Beads CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          fixture=$(mktemp -d)
-          cd "$fixture"
-          curl --fail --location --silent --show-error --output beads.tar.gz \
-            https://github.com/gastownhall/beads/releases/download/v1.2.2/beads_1.2.2_linux_amd64.tar.gz
-          printf '%s  %s\n' \
-            8140098a51d3b81d5548d1c5e6db1a2d9930e5d141efe2a4bff7d079c4d321e8 \
-            beads.tar.gz | sha256sum -c -
-          tar -xzf beads.tar.gz
-          git init -q
-          git config user.email fixture@example.invalid
-          git config user.name fixture
-          ./bd init --skip-hooks --skip-agents --non-interactive --init-if-missing
-          ./bd --readonly status --json > status.json
-          ./bd ready --limit 20 --json > ready.json
-          test -s status.json
-          test -s ready.json
-
-  package:
-    name: Portable archive and checksum
-    needs:
-      - unix-installer
-      - windows-installer
-      - beads-fixture
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Verify portable source boundaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -d v9
-          test ! -L v9
-          test -d v9/agent-team
-          test ! -L v9/agent-team
-          for path in install.sh install.ps1 CUTOVER.md README.md; do
-            test -f "v9/$path"
-            test ! -L "v9/$path"
-          done
-          test -f v9/agent-team/SKILL.md
-          if find v9/agent-team -mindepth 1 \( -type l -o -name '.*' -o -name .beads -o -name .agent-team -o -name hooks -o -name 'agent-teamctl*' \) -print -quit | grep -q .; then
-            echo 'v9 skill tree includes a symlink, hidden/state entry, v8 hook, or controller path' >&2
-            exit 1
-          fi
-      - name: Build, inspect, and checksum the portable archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release-candidate
-          archive_name=agent-team-skill-9.0.0.zip
-          archive=release-candidate/$archive_name
-          (
-            cd v9
-            zip -X -q -r "../$archive" agent-team install.sh install.ps1 CUTOVER.md README.md
-          )
-          (
-            cd release-candidate
-            sha256sum "$archive_name" > SHA256SUMS
-            sha256sum -c SHA256SUMS
-          )
-          unzip -Z1 "$archive" | LC_ALL=C sort > release-candidate/archive-paths.txt
-          while IFS= read -r path; do
-            case "$path" in
-              .*|*/.*|hooks/|hooks/*|*/hooks/|*/hooks/*|agent-teamctl*|*/agent-teamctl*|vnext/|vnext/*|.beads/|.beads/*|*/.beads|*/.beads/*|.agent-team/|.agent-team/*|*/.agent-team|*/.agent-team/*)
-                echo "forbidden archive path: $path" >&2; exit 1 ;;
-            esac
-            case "$path" in
-              agent-team/|agent-team/*|install.sh|install.ps1|CUTOVER.md|README.md) ;;
-              *) echo "unexpected archive path: $path" >&2; exit 1 ;;
-            esac
-          done < release-candidate/archive-paths.txt
+      - run: python v9/tests/package_release.py windows release-candidate/windows
       - uses: actions/upload-artifact@v4
         with:
-          name: v9-release-candidate-${{ github.sha }}
-          path: release-candidate/
+          name: v9-windows-${{ github.sha }}
+          path: |
+            release-candidate/windows/agent-team-skill-9.0.0-windows-any.zip
+            release-candidate/windows/agent-team-skill-9.0.0-windows-any.zip.sha256
+          if-no-files-found: error
+
+  macos:
+    if: inputs.platform == 'macos'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash v9/tests/install_unix.sh
+      - run: python v9/tests/package_release.py macos release-candidate/macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v9-macos-${{ github.sha }}
+          path: |
+            release-candidate/macos/agent-team-skill-9.0.0-macos-any.zip
+            release-candidate/macos/agent-team-skill-9.0.0-macos-any.zip.sha256
           if-no-files-found: error

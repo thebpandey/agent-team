@@ -4,19 +4,42 @@ Agent-Team v9 is a host skill for active Codex or Claude sessions. Beads holds l
 
 ## Install
 
-Unpack the package and run one installer for the intended host. Existing skill roots are moved to recoverable sibling backups; the installer prints each installed root and backup path.
+Choose the archive for the computer that will run the installer. `any` means the archive contains no CPU-specific executable.
+
+| Computer | Download | Verify and install |
+| --- | --- | --- |
+| Linux | `agent-team-skill-9.0.0-linux-any.zip` and its `.sha256` sidecar | `install.sh` |
+| macOS | `agent-team-skill-9.0.0-macos-any.zip` and its `.sha256` sidecar | `install.sh` |
+| Windows | `agent-team-skill-9.0.0-windows-any.zip` and its `.sha256` sidecar | `install.ps1` |
+
+On Linux or macOS, verify the sidecar, extract the exact archive into an empty directory, and run its one installer:
 
 ```sh
-./install.sh codex       # Linux, macOS, or other POSIX shell
+sha256sum -c agent-team-skill-9.0.0-linux-any.zip.sha256
+# On macOS, use: shasum -a 256 -c agent-team-skill-9.0.0-macos-any.zip.sha256
+mkdir agent-team-v9
+unzip agent-team-skill-9.0.0-linux-any.zip -d agent-team-v9
+cd agent-team-v9
+./install.sh codex
 ./install.sh claude
-./install.sh both        # only when both are intended
 ```
 
+Use the macOS archive filename in all three commands when installing on macOS. Run only the installer for the downloaded archive; do not mix installers between archives.
+
+On Windows PowerShell, compare the archive hash with the first field of its sidecar, extract it, and run its one installer:
+
 ```powershell
+Set-Location $env:USERPROFILE\Downloads
+$archive = 'agent-team-skill-9.0.0-windows-any.zip'
+$expected = (Get-Content "$archive.sha256").Split()[0]
+if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'SHA-256 mismatch' }
+Expand-Archive $archive -DestinationPath agent-team-v9
+Set-Location agent-team-v9
 .\install.ps1 -TargetHost codex   # Windows PowerShell
 .\install.ps1 -TargetHost claude
-.\install.ps1 -TargetHost both
 ```
+
+Run `both` only when both hosts are intended. Existing skill roots are moved to recoverable sibling backups; the installer prints each installed root and backup path.
 
 Default skill roots are `~/.agents/skills/agent-team` for Codex and `~/.claude/skills/agent-team` for Claude. Existing `CODEX_HOME` or `CLAUDE_HOME` values are honored. Set a custom home with `--codex-home PATH` / `--claude-home PATH` on POSIX, or `-CodexHome PATH` / `-ClaudeHome PATH` in PowerShell. Keep the printed backup until the install is verified. See [CUTOVER.md](CUTOVER.md) before replacing a v8 installation.
 
