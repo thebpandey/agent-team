@@ -1,5 +1,11 @@
 # v9 core canaries
 
+## Distribution cutover evidence
+
+The cutover canary is defined for disposable projects only. Its active/uncertain-worker case must refuse before changing the fixture. Its idle case records Beads and Git hashes before and after host replacement, confirms the selected v9 skill, and reads `bd --readonly status --json`. Never run this canary against a live user project or host skill root.
+
+Evidence status for this documentation revision: no cutover canary was run. Linux/POSIX fixture results must be recorded only from an actual disposable run. Windows installer source review is static evidence; native PowerShell test Bead `atv-uns.7` remains open, so Windows test success is unverified. No Claude live-host result is claimed. No native Windows, Linux, or Claude cutover pass is asserted here.
+
 Run these in disposable Git projects only. They are fixture behavior checks, not text-grep tests. Record the date, host, `bd version`, command output, exit code, and content-aware before/after file inventory with each run. The evidence below was captured with Beads `1.2.2 (6c124203e)` on 2026-09-25.
 
 ## RED fixture: Task 1 could not form a native team
