@@ -52,7 +52,7 @@ status: bd status --json; report only, with no setup writes
 start: bd ready --limit 20 --json; select disjoint work
 missing .beads: request approval; only then bd init --skip-hooks --skip-agents --non-interactive --init-if-missing
 ```
-- [ ] **Step 4: Run both canaries.** Expected: status does not mutate; approved first run creates only Beads/minimum agreed files; no optional tool failure gates readiness; a ready project reports at most 20 task rows to the orchestrator.
+- [ ] **Step 4: Run the fixture portions of both canaries.** Use the installed managed v8 executable by its verified path, not `PATH` alone. Compare full before/after file content (including an existing `.gitignore`) so status cannot mutate silently and `bd init` preserves prior content while creating only its own files. Verify the bounded `bd ready` response contains at most 20 rows. A live v9 Skill invocation is deferred until a native host can load the draft; record that as unverified here and run it at the core acceptance handoff, never substitute command/text searches for that host canary.
 - [ ] **Step 5: Commit** only the three files with `feat(v9): add Beads-first skill entrypoint` after independent review.
 
 ### Task 2: Native team dispatch and default Ponytail contract
