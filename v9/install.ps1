@@ -110,12 +110,12 @@ function Copy-AndVerifyTree {
 
 function Install-Skill {
     param(
-        [Parameter(Mandatory = $true)][string]$Host,
-        [Parameter(Mandatory = $true)][string]$Home,
+        [Parameter(Mandatory = $true)][string]$SkillHost,
+        [Parameter(Mandatory = $true)][string]$SkillHome,
         [Parameter(Mandatory = $true)][string]$SourceRoot
     )
 
-    $targetRoot = Join-Path $Home 'skills/agent-team'
+    $targetRoot = Join-Path $SkillHome 'skills/agent-team'
     Assert-NoReparsePath $targetRoot
     $targetItem = Get-ExistingItem $targetRoot
     if ($null -ne $targetItem -and -not $targetItem.PSIsContainer) {
@@ -146,7 +146,7 @@ function Install-Skill {
             }
             if ($null -ne $backupRoot -and $null -ne (Get-ExistingItem $backupRoot)) {
                 Move-Item -LiteralPath $backupRoot -Destination $targetRoot
-                Write-Output "Restored $Host skill: $targetRoot"
+                Write-Output "Restored ${SkillHost} skill: $targetRoot"
             }
         }
         catch {
@@ -155,12 +155,12 @@ function Install-Skill {
         throw $failure
     }
 
-    Write-Output "Installed $Host skill: $targetRoot"
+    Write-Output "Installed ${SkillHost} skill: $targetRoot"
     if ($null -ne $backupRoot) {
-        Write-Output "Backup for $Host: $backupRoot"
+        Write-Output "Backup for ${SkillHost}: $backupRoot"
     }
     else {
-        Write-Output "Backup for $Host: none"
+        Write-Output "Backup for ${SkillHost}: none"
     }
 }
 
@@ -173,8 +173,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'SKILL.md') -PathType Le
 }
 
 if ($TargetHost -eq 'codex' -or $TargetHost -eq 'both') {
-    Install-Skill -Host 'codex' -Home (Resolve-Home -ExplicitHome $CodexHome -EnvironmentName 'CODEX_HOME' -DefaultLeaf '.agents') -SourceRoot $sourceRoot
+    Install-Skill -SkillHost 'codex' -SkillHome (Resolve-Home -ExplicitHome $CodexHome -EnvironmentName 'CODEX_HOME' -DefaultLeaf '.agents') -SourceRoot $sourceRoot
 }
 if ($TargetHost -eq 'claude' -or $TargetHost -eq 'both') {
-    Install-Skill -Host 'claude' -Home (Resolve-Home -ExplicitHome $ClaudeHome -EnvironmentName 'CLAUDE_HOME' -DefaultLeaf '.claude') -SourceRoot $sourceRoot
+    Install-Skill -SkillHost 'claude' -SkillHome (Resolve-Home -ExplicitHome $ClaudeHome -EnvironmentName 'CLAUDE_HOME' -DefaultLeaf '.claude') -SourceRoot $sourceRoot
 }
