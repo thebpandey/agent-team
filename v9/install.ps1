@@ -10,6 +10,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function ConvertTo-AbsoluteHome {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if (-not [System.IO.Path]::IsPathRooted($Path) -or $Path -match '^[A-Za-z]:[^\\/]' -or $Path -match '^[\\/][^\\/]') {
+        throw "$Name must be an absolute path."
+    }
+
+    return [System.IO.Path]::GetFullPath($Path)
+}
+
 function Resolve-Home {
     param(
         [string]$ExplicitHome,
@@ -18,12 +31,12 @@ function Resolve-Home {
     )
 
     if (-not [string]::IsNullOrWhiteSpace($ExplicitHome)) {
-        return [System.IO.Path]::GetFullPath($ExplicitHome)
+        return ConvertTo-AbsoluteHome -Path $ExplicitHome -Name 'CodexHome or ClaudeHome'
     }
 
     $configuredHome = [System.Environment]::GetEnvironmentVariable($EnvironmentName)
     if (-not [string]::IsNullOrWhiteSpace($configuredHome)) {
-        return [System.IO.Path]::GetFullPath($configuredHome)
+        return ConvertTo-AbsoluteHome -Path $configuredHome -Name $EnvironmentName
     }
 
     $userProfile = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::UserProfile)

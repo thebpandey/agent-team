@@ -56,6 +56,41 @@ try {
     $codexHome = Join-Path $testRoot 'codex'
     $claudeHome = Join-Path $testRoot 'claude'
 
+    New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+    Push-Location -LiteralPath $testRoot
+    try {
+        $relativeHome = 'relative-home'
+        $null = Invoke-InstallerFailure -Arguments @{ TargetHost = 'codex'; CodexHome = $relativeHome }
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'relative-home/skills/agent-team'))) 'relative CodexHome created a skill tree'
+
+        $previousCodexHome = $env:CODEX_HOME
+        $previousClaudeHome = $env:CLAUDE_HOME
+        try {
+            $env:CODEX_HOME = 'relative-codex-env-home'
+            $env:CLAUDE_HOME = 'relative-claude-env-home'
+            $null = Invoke-InstallerFailure -Arguments @{ TargetHost = 'both' }
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'relative-codex-env-home/skills/agent-team'))) 'relative CODEX_HOME created a skill tree'
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'relative-claude-env-home/skills/agent-team'))) 'relative CLAUDE_HOME created a skill tree'
+        }
+        finally {
+            if ($null -eq $previousCodexHome) {
+                Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:CODEX_HOME = $previousCodexHome
+            }
+            if ($null -eq $previousClaudeHome) {
+                Remove-Item Env:CLAUDE_HOME -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:CLAUDE_HOME = $previousClaudeHome
+            }
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
     & $installer -TargetHost codex -CodexHome $codexHome
     $codexRoot = Join-Path $codexHome 'skills/agent-team'
     Assert-True (Test-Path -LiteralPath (Join-Path $codexRoot 'SKILL.md') -PathType Leaf) 'Codex skill missing'
