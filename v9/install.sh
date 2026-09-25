@@ -94,10 +94,12 @@ next_sibling() {
 }
 
 current_home() {
-  [ -n "${HOME:-}" ] && {
-    printf '%s\n' "$HOME"
-    return
-  }
+  case ${HOME:-} in
+    /*) [ -d "$HOME" ] && {
+      printf '%s\n' "$HOME"
+      return
+    } ;;
+  esac
 
   user_id=$(id -u 2>/dev/null) || return 1
   user_home=

@@ -59,6 +59,17 @@ output=$(env -u HOME -u CODEX_HOME -u CLAUDE_HOME MOCK_PASSWD_HOME="$passwd_home
 assert_file "$passwd_target/SKILL.md"
 assert_output_line "$output" "installed: $passwd_target"
 
+# A relative HOME is not a home directory. Fall through to the passwd fixture
+# instead of creating relative/.agents below the caller's working directory.
+relative_cwd="$test_root/relative-cwd"
+relative_passwd_home="$test_root/relative-passwd-home"
+mkdir "$relative_cwd" "$relative_passwd_home"
+relative_target="$relative_passwd_home/.agents/skills/agent-team"
+output=$(cd "$relative_cwd" && HOME=relative CODEX_HOME= CLAUDE_HOME= MOCK_PASSWD_HOME="$relative_passwd_home" PATH="$passwd_bin:$PATH" bash "$installer" codex)
+assert_file "$relative_target/SKILL.md"
+assert_output_line "$output" "installed: $relative_target"
+test ! -e "$relative_cwd/relative" || fail 'relative HOME created a caller-relative install'
+
 # Calling the installer through a symlink must still find the packaged payload.
 link_dir="$test_root/link-bin"
 mkdir "$link_dir"
