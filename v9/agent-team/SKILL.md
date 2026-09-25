@@ -72,6 +72,20 @@ Prepare a distinct Git worktree for each active task, pass bounded task context 
 
 Use [native host routing](references/HOSTS.md) for host operations and [the worker contract](references/WORKER_RULES.md) for assignment limits.
 
+### Launch uncertainty and temporary holds
+
+Keep active-session observation separate from cross-session uncertainty. An explicit native rejection that expressly guarantees no worker was created returns the just-claimed issue to open with `bd update ID --status open` and an evidence comment containing the actual rejection and retry condition. It creates no handle, completion, or replacement worker.
+
+A timeout, lost response, missing identity, possible launch, or ambiguous delivery blocks only that issue with a Beads comment naming the evidence and next observation. Do not claim, relaunch, or fabricate a worker for it until the original host observation permits a specific action. A later session has no proof of an earlier handle: inspect Beads and Git, preserve the uncertainty, and never reconstruct an identity from a task name or start a substitute worker. Independent ready issues may proceed.
+
+When a host gives a temporary NO-GO and the original live handle is actually observable, retain the claim and send the returned delta only to that same handle through the host's native follow-up operation. Record the observed handle and response. If that handle cannot be observed, keep only this issue blocked; do not turn the NO-GO into a new launch.
+
+### Pause and resume
+
+On pause, the orchestrator stops new claims and assignments, asks every observable active worker to checkpoint and stop through its native host operation, and records only the resulting observation. An unsupported or unobservable control is task-local uncertainty, not a fabricated acknowledgement. Write the short session breadcrumb described in [STATE.md](references/STATE.md); it is not a worker registry or task authority.
+
+On resume, first inspect Beads and Git for every recorded active task/worktree. Preserve dirty or uncertain work and reconcile original observable handles before any dispatch. Never silently overwrite, reassign, or relaunch it. Resume only an existing assignment when the native host actually confirms that capability; otherwise retain the task-local block and continue unrelated ready work.
+
 ## Review, remediation, and integration
 
 Before any integration, the developer supplies the task's full candidate revision and observed acceptance/test evidence. Dispatch a real independent reviewer: the reviewer must be a non-author native handle/identity and must inspect the actual candidate diff, task acceptance criteria, and the supplied evidence. A reviewer reports only this revision-bound form:
@@ -98,3 +112,5 @@ Deployment is opt-in: run it only after the project records an explicit complete
 ## State and honest reporting
 
 Use [STATE.md](references/STATE.md) for Beads commands, review/blocker records, and the ownership of optional project records. Preserve existing project data. State what was observed, which command ran, whether a write was approved, and any Beads error. Never claim native dispatch, review, integration, deployment, or cross-session persistence unless that capability was actually implemented and observed in the active host session.
+
+At status and integration milestones, raise every unresolved `BLOCKERS.md` entry to the orchestrator. `BLOCKERS.md` contains questions only, not host uncertainty or task state: each entry has `ID`, `Task`, `Question`, `Recommendation`, `Impact`, and `Next prompt`. Before removing a resolved blocker, append its resolution to `DECISIONS.md` with a new stable `D-` ID, date, scope, decision, rationale, and supersession. Keep prior `D-` entries unchanged. Reuse existing `M-` IDs when referring to known mistakes; append rather than rewrite any mistake entry.

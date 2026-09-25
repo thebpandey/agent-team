@@ -6,10 +6,10 @@
 | --- | --- | --- |
 | Tasks, dependencies, acceptance, and task status | Beads | Read a bounded ready page; do not mirror it. |
 | Source and integrated revisions | Git | Inspect the current worktree; do not create a worktree or commit on first run. |
-| Decisions | `DECISIONS.md`, when present | Read only relevant IDs; Task 1 does not create it. |
-| Confirmed mistakes | `MISTAKES.md`, when present | Read only relevant IDs; Task 1 does not create it. |
-| Unresolved questions | `BLOCKERS.md`, when present | Read only relevant entries; Task 1 does not create it. |
-| Session handoff | `.agent-team/SESSION.md`, when present | A future active-session revision maintains it; Task 1 does not create it. |
+| Decisions | `DECISIONS.md`, when present | Read relevant stable `D-` IDs; append resolutions without rewriting earlier entries. |
+| Confirmed mistakes | `MISTAKES.md`, when present | Reuse relevant stable `M-` IDs; never rewrite earlier entries. |
+| Unresolved questions | `BLOCKERS.md`, when present | Read only unresolved entries; raise them at status and integration milestones. |
+| Session handoff | `.agent-team/SESSION.md`, when present | An active orchestrator refreshes this short breadcrumb; it is never task or worker authority. |
 | Project Kickoff handoff | Optional one-time input, when present | It may inform Beads import; it never gates setup, dispatch, review, or integration. |
 | Deployment batch authorization | Project decision/approval record, when present | Later orchestration requires an explicit command, approval, completed-task scope, and verification rule. |
 
@@ -37,7 +37,24 @@ The approved Task 1 mutation is the `bd init` command above and Beads-created fi
 
 ## Records used by later revisions
 
-When they exist, keep records narrow: decisions carry stable IDs, date, scope, decision, rationale, and supersession; mistakes carry stable IDs, failure mode, cause, remedy, and evidence; blockers contain unresolved questions only. Record a resolution in `DECISIONS.md` before removing a resolved blocker. A future session checkpoint is a breadcrumb, not worker or task authority; Beads and Git remain authoritative.
+When they exist, keep records narrow: decisions carry stable `D-` IDs, date, scope, decision, rationale, and supersession; mistakes carry stable `M-` IDs, failure mode, cause, remedy, and evidence; blockers contain unresolved questions only. A blocker entry is exactly `ID`, `Task`, `Question`, `Recommendation`, `Impact`, and `Next prompt`. Raise unresolved entries at status and integration milestones. Record a resolution in `DECISIONS.md` before removing a resolved blocker; append new entries and never rewrite an earlier `D-` or `M-` entry. A session checkpoint is a breadcrumb, not worker or task authority; Beads and Git remain authoritative.
+
+## Session breadcrumb
+
+On an explicit pause, write or refresh `.agent-team/SESSION.md` as a short operational pointer, not a transcript or duplicate task definition. Include host and time; active Beads IDs; each worktree, branch, revision, and uncommitted-work summary; evidence pointers; last observed native handles and uncertainty; pending operations or approvals; unresolved blockers; and the next action. For example:
+
+```markdown
+# Agent-Team session handoff
+Host: codex; time: 2026-09-25T12:00:00-05:00
+Beads task: atv-demo-1 (blocked; native handle uncertain)
+Worktree: .worktrees/atv-demo-1; branch: work/atv-demo-1
+Git: uncommitted src/example.go; inspect before any reassignment
+Evidence: Beads comment on atv-demo-1; test output in worktree
+Pending approval: none
+Next action: inspect original host handle; continue unrelated bd ready work
+```
+
+On resume, inspect Beads and Git before dispatching. The breadcrumb cannot establish that a historic handle still exists; retain uncertainty until the active host actually observes it.
 
 ## Review, blocker, cleanup, and deployment evidence
 

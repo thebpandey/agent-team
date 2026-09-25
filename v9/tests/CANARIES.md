@@ -35,6 +35,24 @@ Run this against the pre-Task-3 draft in a disposable initialized-Beads Git repo
 
 The expected RED observation is that the Task 2 draft has no required revision-bound non-author `FIX`/`CLEAN` report, no required same-worktree remediation and re-review, and no integration/closure gate. Record that absence as the defect; do not fabricate a review or close either task to make the fixture appear complete. Also record whether the independent lane is able to proceed while `review-blocked` remains incomplete. This is a live-host fixture: a documentation search or a shell substitute does not run it.
 
+## RED fixture: Task 4 has no bounded recovery or ledger protocol
+
+This is a draft-gap fixture, intentionally unexecuted. In a disposable initialized-Beads Git repository with a live host that has loaded the pre-Task-4 v9 draft, simulate: an explicit no-worker spawn rejection; an ambiguous timeout after dispatch; a temporary NO-GO from an observable retained handle; an explicit graceful pause; and a later same-host session with dirty work.
+
+Record that the pre-Task-4 draft has no complete recovery and ledger protocol: it does not require confirmed no-launch requeue evidence, task-local ambiguous blocking without replacement, same-handle NO-GO follow-up, a bounded pause/resume breadcrumb, or resolution movement from `BLOCKERS.md` to stable `DECISIONS.md` entries.
+
+## GREEN acceptance fixture: bounded recovery, pause, and ledgers
+
+Run only in a disposable initialized-Beads Git repository with a real live host loaded with the complete v9 draft. This canary is defined here and has not been run by this change.
+
+1. Claim `no-launch`, cause an explicit native rejection that guarantees no worker was created, and retain the host response. Require `no-launch` returned to open with the response and retry condition in its Beads comment; require no handle, completion, or replacement worker.
+2. Claim `ambiguous`, induce a timeout or lost response after a possible launch, and start independent `ready`. Require only `ambiguous` blocked with evidence and next observation; through a later same-host session, require `ready` can proceed while `ambiguous` is neither relaunched nor assigned a fabricated identity.
+3. Give an observable retained handle a temporary NO-GO, then a returned follow-up delta. Require the same native handle receives that follow-up. If it is not observable, require the task stays blocked and no substitute worker starts.
+4. Pause with an observable active worker and dirty worktree. Require no new claim or assignment, a native checkpoint/stop request, and a short `.agent-team/SESSION.md` containing host/time, active Beads IDs, worktree/branch/revision plus dirty summary, evidence, last handles/uncertainty, pending operations/approvals, blockers, and next action. Require no transcript or duplicate task definition.
+5. Resume in a later same-host session. Require Beads and Git inspection before dispatch, preservation of dirty work, and no silent overwrite, reassignment, or relaunch. Resolve one user question: require its `BLOCKERS.md` entry has `ID`, task, question, recommendation, impact, and next prompt; at a status or integration milestone it is raised; its resolution is appended under a new stable `D-` ID in `DECISIONS.md` before removal from `BLOCKERS.md`. Require earlier `D-` and referenced `M-` entries unchanged.
+
+Record host/tool versions, exact Beads transitions/comments, actual returned identities and control observations, Git/worktree state, ledger diffs, and command results. A fixture that cannot observe a live native handle records `not run` or `blocked`; it must not claim these outcomes.
+
 ## GREEN acceptance fixture: independent review and safe integration
 
 Run this only in a disposable initialized-Beads Git repository with a live host that has loaded the complete v9 draft. Create `review-blocked` and `independent-clean` with disjoint worktrees and committed acceptance commands. Make the first command fail deliberately; make the second pass. Record every native developer and reviewer handle/identity, Beads ID, candidate revision, command output, reviewer report, integration commit, worktree/branch state, and Beads transition. Never substitute a shell worker or a made-up review report.
