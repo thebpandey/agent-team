@@ -4,7 +4,7 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repoRoot = Split-Path -Parent $PSScriptRoot
 $installer = Join-Path $repoRoot 'install.ps1'
 $testRoot = Join-Path $env:TEMP ([guid]::NewGuid().ToString('N'))
 
