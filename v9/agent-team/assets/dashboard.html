@@ -14,9 +14,9 @@
       h1, h2, p { margin: 0; }
       h1 { font-size: 1.5rem; letter-spacing: -.02em; }
       h2 { font-size: 1rem; }
-      .eyebrow, .timestamp, dt { color: #59636f; font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; }
+      .timestamp, dt { color: #59636f; font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; }
       .timestamp { text-align: right; }
-      .notice { margin: 1.5rem 0; padding: .9rem 1rem; border-left: .25rem solid #50789d; background: #eaf2f8; color: #213f58; }
+      .notice { margin: 1.5rem 0; padding: .9rem 1rem; border: 1px solid #bdd2e1; border-radius: .5rem; background: #eaf2f8; color: #213f58; }
       .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; margin: 1.5rem 0; }
       .metric, .panel { border: 1px solid #d8dee6; border-radius: .5rem; background: #fff; }
       .metric { padding: 1rem; }
@@ -30,14 +30,13 @@
       .status { display: inline-block; border-radius: 999px; padding: .15rem .5rem; background: #eaf2f8; color: #285575; font-size: .8rem; font-weight: 600; }
       footer { margin-top: 1.25rem; color: #59636f; font-size: .85rem; }
       @media (max-width: 38rem) { .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .timestamp { text-align: left; } table th:nth-child(3), table td:nth-child(3) { display: none; } }
-      @media (prefers-color-scheme: dark) { :root { background: #12161b; color: #e7edf4; } .metric, .panel { background: #1a2028; border-color: #35404c; } header { border-color: #35404c; } .notice { background: #152b3b; color: #d6eaf8; } .eyebrow, .timestamp, dt, .empty, footer, th { color: #aeb9c5; } th, td { border-color: #2d3742; } .status { background: #153247; color: #bde6ff; } }
+      @media (prefers-color-scheme: dark) { :root { background: #12161b; color: #e7edf4; } .metric, .panel { background: #1a2028; border-color: #35404c; } header { border-color: #35404c; } .notice { border-color: #31516a; background: #152b3b; color: #d6eaf8; } .timestamp, dt, .empty, footer, th { color: #aeb9c5; } th, td { border-color: #2d3742; } .status { background: #153247; color: #bde6ff; } }
     </style>
   </head>
   <body>
     <main>
       <header>
         <div>
-          <p class="eyebrow">Agent-Team · offline snapshot</p>
           <h1>Project status</h1>
         </div>
         <p class="timestamp">Not refreshed yet<br>Source: Beads</p>
@@ -57,7 +56,7 @@
         <p class="empty">No bounded ready page has been written to this snapshot.</p>
         <table hidden>
           <thead><tr><th scope="col">Task</th><th scope="col">Title</th><th scope="col">Priority</th><th scope="col">Status</th></tr></thead>
-          <tbody><!-- Refresh writes at most 20 ready Beads rows here. --></tbody>
+          <tbody><!-- For 1–20 rows, refresh writes Beads rows here and removes `hidden`. --></tbody>
         </table>
       </section>
 

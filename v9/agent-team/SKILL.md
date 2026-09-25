@@ -98,7 +98,7 @@ Give the orchestrator at most those 20 task rows and choose only disjoint work. 
 
 ## Offline dashboard snapshot
 
-After an accepted integration and its normal Beads closure, ask a lowest-cost model actually available on the host to refresh `.agent-team/dashboard/index.html` from `assets/dashboard.html`. It is a local, static status snapshot, not a service or task authority. Obtain aggregate status data without forwarding issue rows to a model, and include at most the normal 20-row `bd ready --limit 20 --json` page in the refresh context even when Beads holds 1,000 or more tasks. Mark the snapshot time and source. If refresh fails, report that task-local dashboard error; never reopen, block, or alter the accepted Beads issue.
+After an accepted integration and its normal Beads closure, ask a lowest-cost model actually available on the host to refresh `.agent-team/dashboard/index.html` from `assets/dashboard.html`. It is a local, static status snapshot, not a service or task authority. Obtain aggregate status data without forwarding issue rows to a model, and include at most the normal 20-row `bd ready --limit 20 --json` page in the refresh context even when Beads holds 1,000 or more tasks. Mark the snapshot time and source. For 1–20 ready rows, populate the table body, unhide the table, and hide the empty copy; for none, keep the table hidden and show the empty copy. If refresh fails, report that task-local dashboard error; never reopen, block, or alter the accepted Beads issue.
 
 ## Native team dispatch
 
