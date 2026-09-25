@@ -2,6 +2,8 @@
 
 Agent-Team v9 is a Beads and Git skill for coordinating bounded work in an active Codex or Claude session.
 
+Choose your OS bundle from the [v9.0.0 release](https://github.com/thebpandey/agent-team/releases/tag/v9.0.0), verify its matching SHA-256 sidecar, and run the included installer. Project Kickoff v0.6.0 is optional.
+
 After installing, open a Git project and ask `$agent-team status` then `$agent-team start` in Codex, or `/agent-team status` then `/agent-team start` in Claude.
 
 ## Install v9.0.0
