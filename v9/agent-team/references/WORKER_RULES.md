@@ -34,6 +34,19 @@ REFERENCES: <relevant MISTAKES/DECISIONS IDs, or none>
 
 The report does not substitute for independent review or integration. Include remaining uncertainty in `BLOCKERS`; do not describe a task as complete if acceptance evidence is missing.
 
-## Reviewer boundary
+## Reviewer boundary and report
 
-An independent non-author reviewer may inspect the assigned diff, task acceptance criteria, and relevant test evidence, but may not edit as the author, self-approve, integrate, deploy, close the task, or alter another team's work. The separate review procedure defines review evidence and any verdict; this worker contract does not let a reviewer bypass it.
+An independent reviewer is a native handle/identity distinct from the candidate revision's author. The reviewer must inspect the actual candidate diff, task acceptance criteria, and relevant developer evidence before reporting; a distinct name, an empty findings field, or a successful command alone is not a review.
+
+The reviewer may not edit as the author, self-approve, integrate, commit integration work, deploy, close the task, or alter another team's work. It reports only observed facts in this form:
+
+```text
+TASK: <Beads ID>
+REVISION: <full candidate Git revision>
+REVIEWER: <independent native handle or identity>
+CHECKS: <command — PASS|FAIL|not run, with relevant observed result>
+FINDINGS: <specific findings, or none>
+VERDICT: FIX|CLEAN
+```
+
+Use `FIX` for any finding, missing evidence, unrun required check, ambiguous identity, or revision mismatch. `CLEAN` is permitted only after inspecting the exact diff and observed evidence for the exact revision; it does not authorize integration or Beads closure. After `FIX`, the developer repairs the same task worktree and reports a new tested revision for another independent review.

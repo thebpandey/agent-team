@@ -29,6 +29,26 @@ Pass only when all observed facts below are recorded:
 
 Record host and tool versions, task IDs, returned handles/identities (redact sensitive data), worktree paths, all Beads transitions, the status-request transcript/result, and whether the fixture passed. A timeout, lost response, missing handle, or ambiguous launch is a task-local uncertain result, not GREEN. This acceptance fixture is defined but unexecuted here: its live Codex run belongs to the root orchestrator, and Claude requires an actual Claude session.
 
+## RED fixture: Task 2 has no review-remediation loop
+
+Run this against the pre-Task-3 draft in a disposable initialized-Beads Git repository. Create two independent tasks with disjoint worktrees: `review-blocked`, whose committed acceptance command deliberately exits nonzero, and `independent-clean`, whose committed acceptance command exits zero. Dispatch both through a live host. Give `review-blocked` to a developer, capture its candidate revision and failing acceptance result, then request a review. Continue `independent-clean` through its own developer/reviewer path.
+
+The expected RED observation is that the Task 2 draft has no required revision-bound non-author `FIX`/`CLEAN` report, no required same-worktree remediation and re-review, and no integration/closure gate. Record that absence as the defect; do not fabricate a review or close either task to make the fixture appear complete. Also record whether the independent lane is able to proceed while `review-blocked` remains incomplete. This is a live-host fixture: a documentation search or a shell substitute does not run it.
+
+## GREEN acceptance fixture: independent review and safe integration
+
+Run this only in a disposable initialized-Beads Git repository with a live host that has loaded the complete v9 draft. Create `review-blocked` and `independent-clean` with disjoint worktrees and committed acceptance commands. Make the first command fail deliberately; make the second pass. Record every native developer and reviewer handle/identity, Beads ID, candidate revision, command output, reviewer report, integration commit, worktree/branch state, and Beads transition. Never substitute a shell worker or a made-up review report.
+
+Pass only if all observed facts below are recorded:
+
+- `review-blocked` receives a real non-author report for its exact candidate revision with all six required fields and `VERDICT: FIX`; its failing acceptance result is a finding, it is not integrated or closed, and repeated unresolved work is marked blocked with a Beads comment containing the revision and next reconciliation action.
+- `independent-clean` continues despite that block. Its reviewer actually inspects its diff and evidence, reports its exact candidate revision and `CLEAN`, and is not its author. The orchestrator rechecks scope/relevant checks, integrates and commits that exact revision, then runs `bd close ID --reason ...`; capture the close reason.
+- Repair `review-blocked` in the same worktree, produce a new revision, and obtain another real non-author review for that new revision. Only after its exact-revision `CLEAN`, orchestrator revalidation, integration, and integration commit may it close.
+- After each successful integration, clean merged task worktrees and branches are removed without force. A dirty, unmerged, unknown, or failed task worktree/branch remains and is reported.
+- No deployment runs without a project-recorded explicit completed-task batch command, approval, and verification rule. When all three are recorded, run only that command and retain its output/result. At most two on-demand dev servers run for this project; record their task ownership and do not share either with another project.
+
+This live-host acceptance fixture is defined but unexecuted in this Task 3 worktree. Do not call it GREEN from these Markdown edits, a fixture setup, or a documentation check; a root orchestrator must run and retain the actual host evidence.
+
 ## RED baseline: installed v8 has extra admission gates
 
 Create two throwaway Git repositories: `no-beads` with no `.beads`, and `empty-beads` initialized only with `bd init --skip-hooks --skip-agents --non-interactive --init-if-missing`. In both, commit a pre-existing `.gitignore` containing `# user-owned ignore rule` and `*.local`; never run this against a user project.
