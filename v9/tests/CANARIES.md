@@ -30,14 +30,14 @@ exit 1; content-aware before/after diff=0
 
 The inventory hashes every regular file outside `.git` as `sha256 path`; both status/setup comparisons were byte-identical. In `empty-beads`, the pre-existing `.gitignore` bytes remained as a prefix after the deliberate Beads initialization, followed only by Beads' documented stanza. The v8 baseline is therefore real: no-Beads needs tracker choice/approval and v8 additionally asks for project records and offers its controller/bundle path. No v9 package was installed under `/home/server/.agents/skills` at capture time.
 
-## GREEN canary A: inspection does not mutate
+## GREEN canary A: inspection is authority-read-only
 
 1. Make `no-beads`, run `git init`, add and commit the pre-existing `.gitignore` fixture, then capture a content-aware inventory: regular-file path plus SHA-256, excluding `.git/`.
 2. Request v9 `status` in that project. It must report missing Beads without running `bd init`; recapture the inventory and require it to match exactly.
-3. In `empty-beads`, complete the approved first-run sequence (`bd init` then `bd status --json`) before taking the inspection snapshot. The first status may create Beads/Dolt's empty `.beads/embeddeddolt/<project>/.dolt/temptf/dolt_embedded_metrics`; it is a Beads-owned artifact within the approved first-run mutation budget. Run `bd status --json` again. Require exit 0, valid JSON, and an identical content-aware inventory before and after the repeated status.
+3. In `empty-beads`, snapshot immediately after `bd init`; the first inspection command must be `bd --readonly status --json`. Require exit 0 and valid JSON. Compare the full content-aware inventory: the only allowed new path is exactly `.beads/embeddeddolt/<project>/.dolt/temptf/dolt_embedded_metrics`, an empty Beads/Dolt housekeeping file. Require Git state unchanged across inspection and no changed task/database content; then repeat `bd --readonly status --json` and require an identical inventory.
 4. Confirm no optional tool is installed, configured, or required by either status result.
 
-Pass only if both inspections are write-free. A missing `.beads` directory is a status result, not approval to initialize it.
+Pass only if both inspections are read-only at the Agent-Team/project/task-authority boundary: no Agent-Team file, task/database mutation, or Git change; the listed cold-open metrics artifact is the sole bounded Beads-owned housekeeping exception. A missing `.beads` directory is a status result, not approval to initialize it.
 
 ## GREEN canary B: approved first run is Beads-only and selection is bounded
 
@@ -48,7 +48,7 @@ Pass only if both inspections are write-free. A missing `.beads` directory is a 
    bd init --skip-hooks --skip-agents --non-interactive --init-if-missing
    ```
 
-3. Run `bd status --json`; require exit 0 and valid JSON. Compare the complete content-aware inventory with the pre-approval snapshot. With Beads 1.2.2, only `.beads/` (including the first-status Beads/Dolt metrics artifact above) and the Beads-owned append to the existing root `.gitignore` are allowed; the original `.gitignore` content must remain byte-for-byte as its prefix. Its new stanza begins `# Beads / Dolt files (added by bd init)`. No other project file or content change is allowed: in particular, no `.agent-team/`, `TASKS.md`, ledger, hook, setting, dashboard, or optional-tool file. Snapshot again and repeat `bd status --json`; that inspection must be byte-stable.
+3. Run `bd --readonly status --json`; require exit 0 and valid JSON. Compare the complete content-aware inventory with the pre-approval snapshot. With Beads 1.2.2, only `.beads/` (including exactly the cold-open Beads/Dolt metrics artifact above) and the Beads-owned append to the existing root `.gitignore` are allowed; the original `.gitignore` content must remain byte-for-byte as its prefix. Its new stanza begins `# Beads / Dolt files (added by bd init)`. Require Git state unchanged across inspection and no task/database mutation. No other project file or content change is allowed: in particular, no `.agent-team/`, `TASKS.md`, ledger, hook, setting, dashboard, or optional-tool file. Snapshot again and repeat `bd --readonly status --json`; that inspection must be byte-stable.
 4. Create 21 independent ready Beads issues in this disposable project. Run:
 
    ```sh
@@ -71,4 +71,4 @@ The Task 1 author ran `bd version` and observed:
 bd version 1.2.2 (6c124203e: HEAD@6c124203e771)
 ```
 
-In the disposable no-Beads project, `bd status --json` exited 1 with `Error: no beads database found` and a `bd init` hint; its content-aware inventory did not change. In the initialized empty project, the first `bd status --json` returned a JSON object and created only Beads/Dolt's empty internal metrics file; a repeated status left the full inventory unchanged. Twenty-one independently created ready issues yielded 20 JSON rows from `bd ready --limit 20 --json`. The approved first-run sequence created Beads state and appended its marked stanza to the pre-existing root `.gitignore`; it preserved the original ignore-rule bytes and made no other project mutation. Re-run the two fixture canaries and the deferred live-host canary before calling a v9 release candidate verified.
+In the disposable no-Beads project, `bd --readonly status --json` exited 1 with `Error: no beads database found` and a `bd init` hint; its content-aware inventory did not change. In the initialized empty project, the first `bd --readonly status --json` returned a JSON object and created only the exact empty Beads/Dolt internal metrics path; a repeated readonly status left the full inventory unchanged. Twenty-one independently created ready issues yielded 20 JSON rows from `bd ready --limit 20 --json`. The approved first-run sequence created Beads state and appended its marked stanza to the pre-existing root `.gitignore`; it preserved the original ignore-rule bytes, task/database contents, and Git state. Re-run the two fixture canaries and the deferred live-host canary before calling a v9 release candidate verified.

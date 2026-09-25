@@ -27,17 +27,17 @@ First confirm that the requested directory is a Git worktree:
 git rev-parse --is-inside-work-tree
 ```
 
-Then inspect Beads without changing it.
+Then inspect Beads at the Agent-Team/project/task-authority boundary: make no Agent-Team write, task or database mutation, or Git change.
 
 ### `status`
 
 If `.beads` is present, run exactly:
 
 ```sh
-bd status --json
+bd --readonly status --json
 ```
 
-Report its result without writes. If `.beads` is absent, report that Beads has not been initialized and that no change was made; do not run `bd init` and do not turn the status request into setup.
+Report its result without an Agent-Team write, task/database mutation, or Git change. On its first open of an initialized Beads 1.2.2 project, Beads/Dolt may create only `.beads/embeddeddolt/<project>/.dolt/temptf/dolt_embedded_metrics`; report it as bounded Beads-owned housekeeping, not project setup. If `.beads` is absent, report that Beads has not been initialized and that no change was made; do not run `bd init` and do not turn the status request into setup.
 
 ### First run: `setup` or `start`
 
@@ -49,7 +49,7 @@ On refusal, cancellation, or no answer, make no write and report that the projec
 
 ```sh
 bd init --skip-hooks --skip-agents --non-interactive --init-if-missing
-bd status --json
+bd --readonly status --json
 ```
 
 Do not create `TASKS.md`, ledgers, settings, checkpoints, hooks, or optional-tool state as part of first run. See [project records](references/STATE.md) only to interpret records that already exist.

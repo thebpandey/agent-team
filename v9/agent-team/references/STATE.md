@@ -19,7 +19,7 @@ Use the project directory as the command working directory.
 
 | Intent | Command | Write rule |
 | --- | --- | --- |
-| Inspect readiness/status | `bd status --json` | Read-only; never initialize as a side effect. |
+| Inspect readiness/status | `bd --readonly status --json` | No Agent-Team write, task/database mutation, or Git change; a cold Beads 1.2.2 open may create only `.beads/embeddeddolt/<project>/.dolt/temptf/dolt_embedded_metrics`. |
 | Read candidates | `bd ready --limit 20 --json` | Read-only; pass no more than 20 rows onward. |
 | Initialize an approved project | `bd init --skip-hooks --skip-agents --non-interactive --init-if-missing` | Only after the explicit first-run approval. |
 | Claim the active selected task | `bd update ID --claim` | Reserved for the later native-dispatch loop; claim only the next task actually starting. |
@@ -28,7 +28,7 @@ If Beads is absent during `status`, say so and stop. If it is absent during `set
 
 ## First-run mutation budget
 
-The approved Task 1 mutation is the `bd init` command above and Beads-created files or Beads-owned additions to an existing `.gitignore`. Do not create any other project file, including `.agent-team/`, settings, ledgers, hooks, a dashboard snapshot, or a task-import artifact. Optional-tool availability never changes this budget or Beads readiness.
+The approved Task 1 mutation is the `bd init` command above and Beads-created files or Beads-owned additions to an existing `.gitignore`. A cold readonly status may additionally create only its exact Beads/Dolt metrics path listed above; it does not authorize an Agent-Team file, a task/database mutation, a Git change, or any other project file. Optional-tool availability never changes this budget or Beads readiness.
 
 ## Records used by later revisions
 
