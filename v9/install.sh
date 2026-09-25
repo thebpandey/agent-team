@@ -11,7 +11,25 @@ die() {
   return 1
 }
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+script_path=$0
+case $script_path in
+  /*) ;;
+  *) script_path=$(CDPATH= cd -- "$(dirname -- "$script_path")" && pwd)/$(basename -- "$script_path") || exit 1 ;;
+esac
+link_count=0
+while [ -L "$script_path" ]; do
+  link_count=$((link_count + 1))
+  [ "$link_count" -le 40 ] || {
+    printf 'install: too many symlink redirects\n' >&2
+    exit 1
+  }
+  link_target=$(readlink "$script_path") || exit 1
+  case $link_target in
+    /*) script_path=$link_target ;;
+    *) script_path=$(CDPATH= cd -- "$(dirname -- "$script_path")" && pwd)/$link_target || exit 1 ;;
+  esac
+done
+script_dir=$(CDPATH= cd -- "$(dirname -- "$script_path")" && pwd) || exit 1
 source_root=$script_dir/agent-team
 [ -d "$source_root" ] || {
   printf 'install: packaged agent-team directory is missing\n' >&2
@@ -26,18 +44,8 @@ case $host in
   *) usage ;;
 esac
 
-if [ -n "${CODEX_HOME:-}" ]; then
-  codex_home=$CODEX_HOME
-else
-  : "${HOME:?install: HOME is required when CODEX_HOME is unset}"
-  codex_home=$HOME/.agents
-fi
-if [ -n "${CLAUDE_HOME:-}" ]; then
-  claude_home=$CLAUDE_HOME
-else
-  : "${HOME:?install: HOME is required when CLAUDE_HOME is unset}"
-  claude_home=$HOME/.claude
-fi
+codex_home=${CODEX_HOME:-}
+claude_home=${CLAUDE_HOME:-}
 
 while [ "$#" -gt 0 ]; do
   case $1 in
@@ -85,6 +93,20 @@ next_sibling() {
   printf '%s\n' "$candidate"
 }
 
+resolve_home() {
+  configured=$1
+  suffix=$2
+  host_home=$3
+  if [ -n "$configured" ]; then
+    printf '%s\n' "$configured"
+  elif [ -n "${HOME:-}" ]; then
+    printf '%s/%s\n' "$HOME" "$suffix"
+  else
+    printf 'install: HOME is required when %s is unset\n' "$host_home" >&2
+    return 1
+  fi
+}
+
 restore() {
   staged=$1
   backup=$2
@@ -96,6 +118,9 @@ restore() {
       printf 'install: failed to restore %s from %s\n' "$target" "$backup" >&2
       return 1
     }
+    printf 'install: failed to install %s; restored prior root from %s\n' "$target" "$backup" >&2
+  else
+    printf 'install: failed to install %s\n' "$target" >&2
   fi
 }
 
@@ -133,9 +158,17 @@ install_one() {
 }
 
 case $host in
-  codex) install_one "$codex_home/skills/agent-team" ;;
-  claude) install_one "$claude_home/skills/agent-team" ;;
+  codex)
+    codex_home=$(resolve_home "$codex_home" .agents CODEX_HOME) || exit 1
+    install_one "$codex_home/skills/agent-team"
+    ;;
+  claude)
+    claude_home=$(resolve_home "$claude_home" .claude CLAUDE_HOME) || exit 1
+    install_one "$claude_home/skills/agent-team"
+    ;;
   both)
+    codex_home=$(resolve_home "$codex_home" .agents CODEX_HOME) || exit 1
+    claude_home=$(resolve_home "$claude_home" .claude CLAUDE_HOME) || exit 1
     install_one "$codex_home/skills/agent-team" &&
       install_one "$claude_home/skills/agent-team"
     ;;

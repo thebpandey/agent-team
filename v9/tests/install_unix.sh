@@ -26,6 +26,10 @@ assert_output_line() {
   printf '%s\n' "$1" | grep -Fqx "$2" || fail "missing output line: $2"
 }
 
+assert_output_contains() {
+  grep -Fq "$2" "$1" || fail "missing output text: $2"
+}
+
 # A new explicit Codex home must receive the packaged skill and report its root.
 codex_home="$test_root/new-codex"
 output=$(bash "$installer" codex --codex-home "$codex_home")
@@ -33,6 +37,21 @@ codex_target="$codex_home/skills/agent-team"
 assert_file "$codex_target/SKILL.md"
 assert_same "$source_root/SKILL.md" "$codex_target/SKILL.md"
 assert_output_line "$output" "installed: $codex_target"
+
+# Explicit targets must not require HOME or either host's environment default.
+unset_home_target="$test_root/unset-home-codex/skills/agent-team"
+output=$(env -u HOME -u CODEX_HOME -u CLAUDE_HOME bash "$installer" codex --codex-home "$test_root/unset-home-codex")
+assert_file "$unset_home_target/SKILL.md"
+assert_output_line "$output" "installed: $unset_home_target"
+
+# Calling the installer through a symlink must still find the packaged payload.
+link_dir="$test_root/link-bin"
+mkdir "$link_dir"
+ln -s "$installer" "$link_dir/agent-team-install"
+link_target="$test_root/link-codex/skills/agent-team"
+output=$(bash "$link_dir/agent-team-install" codex --codex-home "$test_root/link-codex")
+assert_file "$link_target/SKILL.md"
+assert_output_line "$output" "installed: $link_target"
 
 # both must install separately into both supplied disposable homes.
 both_codex="$test_root/both-codex"
@@ -74,5 +93,30 @@ fi
 assert_file "$rollback_target/user-only.bin"
 assert_same "$rollback_target/user-only.bin" <(printf 'keep these bytes\n')
 test ! -e "$rollback_target/references" || fail 'partial new root remained after rollback'
+
+# In both mode, a Claude-only copy failure leaves the completed Codex target
+# alone, restores Claude's prior root, and identifies that restored target.
+both_rollback_codex="$test_root/both-rollback-codex"
+both_rollback_claude="$test_root/both-rollback-claude"
+both_rollback_target="$both_rollback_claude/skills/agent-team"
+mkdir -p "$both_rollback_target"
+printf 'Claude bytes to restore\n' > "$both_rollback_target/user-only.bin"
+cat > "$fake_bin/cp" <<'EOF'
+#!/bin/sh
+/bin/cp "$@" || exit $?
+for arg do last=$arg; done
+case $last in
+  "$FAIL_COPY_TARGET".install.*) rm -f "$last/SKILL.md" ;;
+esac
+EOF
+chmod +x "$fake_bin/cp"
+both_failure="$test_root/both-failure.out"
+if FAIL_COPY_TARGET="$both_rollback_target" PATH="$fake_bin:$PATH" bash "$installer" both --codex-home "$both_rollback_codex" --claude-home "$both_rollback_claude" >"$both_failure" 2>&1; then
+  fail 'Claude-only failed copy unexpectedly succeeded'
+fi
+assert_file "$both_rollback_codex/skills/agent-team/SKILL.md"
+assert_file "$both_rollback_target/user-only.bin"
+assert_same "$both_rollback_target/user-only.bin" <(printf 'Claude bytes to restore\n')
+assert_output_contains "$both_failure" "install: failed to install $both_rollback_target; restored prior root from "
 
 printf 'PASS: Unix installer\n'
