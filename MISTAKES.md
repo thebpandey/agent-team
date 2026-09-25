@@ -227,3 +227,13 @@ Mistake: Setup reported readiness while admission compared canonical batch paths
 Cause: Producer validation, import, and admission were tested separately. Readiness was treated as evidence that the next user action worked.
 Correction: Reuse the same authority normalization at preparation and admission, validate path grammar before persistence, summarize setup output, and align the producer checker with native task-subset support.
 Prevention: Qualify a compatible release pair by importing its handoff and admitting actual work with real tracker output. Cover multi-parent trackers, blocked and closed rows, all-row and explicit-subset handoffs, and bounded large responses. Follow the reported error to its exact guard before adding fields or relaxing validation; preserve existing approvals and never fabricate tracker revisions.
+
+## M-019: Bind dashboard data to its target project
+
+Status: Active
+Scope: Agent-Team v9 post-integration dashboard refresh
+Source: Beads atv-uns.12, disposable after-LeanCTX canary, 2026-09-25.
+Mistake: A dashboard written in a one-issue fixture displayed three ready tasks and 70 total issues from the separate Agent-Team repository.
+Cause: The refresher ran Beads commands without setting their working directory to the dashboard's target project.
+Correction: Re-run aggregate status and the bounded ready page in the exact fixture root; replace the incorrect snapshot. The integrated task and its Beads closure remain unchanged.
+Prevention: Before writing a dashboard, bind every Beads read to the target Git project root and verify the returned issue IDs/source belong to that project. Wrong-project data is a dashboard error, never a reason to reopen accepted work.
