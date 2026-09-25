@@ -91,7 +91,7 @@ On `FIX`, the developer remediates in the same task worktree, produces a new tes
 
 Only the orchestrator may accept a valid `CLEAN`. It rechecks that the reported task, reviewer, revision, write scope, and relevant checks match the candidate; integrates that revision in the main worktree; commits the integration; then closes the exact issue with `bd close ID --reason ...` naming the CLEAN review and integrated revision. If any check or integration step fails, retain the task and evidence without closure. The orchestrator may make a tiny surgical main-worktree fix only when it documents why that exception is necessary and obtains separate independent review of the resulting revision.
 
-After a successful integration, remove a task worktree and branch only when its worktree is clean and its branch is merged into the integrated revision. Preserve and report dirty, unmerged, unknown, or failed worktrees and branches; do not force-remove them.
+After a successful integration, remove a task worktree and branch only when its worktree is clean and either its branch is merged into the integrated revision or recorded verification proves its exact task scope is patch-equivalent to that exact integrated revision (for example, an approved cherry-pick). Preserve and report dirty, unverified, unmerged, unknown, or failed worktrees and branches; do not force-remove them.
 
 Deployment is opt-in: run it only after the project records an explicit completed-task batch command, approval, and verification rule. Do not discover or invent a deployment command. Keep at most two on-demand dev servers per project, never share one across projects, and record their task/project ownership; a server limit or failure is task-local and does not halt independent lanes.
 
