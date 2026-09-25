@@ -63,6 +63,8 @@ Older `vnext/` and root `references/` material documents historical releases onl
 
 ### Task 2: Build independently checked platform bundles (`atv-uns.14`)
 
+**Execution amendment (2026-09-25):** The first Windows artifact passed its own checksum but checkout had converted all eight members to CRLF, so none matched the reviewed Git blobs. The Windows lane now disables `core.autocrlf` before checkout. Final Linux, Windows, and macOS downloads each passed exact eight-member byte comparison at tag `v9.0.0`. See `docs/releases/9.0.0-readiness.md` and M-020.
+
 **Files:** Create `v9/tests/package_release.py`, `v9/tests/test_package_release.py`; modify `.github/workflows/v9-release.yml`, `v9/README.md`, `CHANGELOG.md`.
 
 **Interfaces:** `python v9/tests/package_release.py linux release-candidate/linux` writes `agent-team-skill-9.0.0-linux-any.zip` and `agent-team-skill-9.0.0-linux-any.zip.sha256`; substituting `windows` or `macos` changes those two filenames accordingly. It takes no project or host-home path and has no runtime role after packaging.
@@ -182,6 +184,8 @@ permissions:
 - [ ] **Step 5: Update `docs/releases/9.0.0-readiness.md` with the exact commit, CI run URLs, downloaded asset hashes, package/member/install results, and native-host limits.** Commit and push that evidence record separately after publication.
 
 ### Task 4: Update public words and existing diagram, then verify Pages
+
+**Execution amendment (2026-09-25):** Content review rejected new HTML elements despite unchanged CSS. The final page preserved its original tag sequence as well as CSS, artwork, section order, and SVG geometry; only existing text, links, and labels changed. See M-022.
 
 **Files:** Modify `README.md`, `index.html` only. Root orchestrator owns final copy integration; a Luna worker may make content-only edits and a separate reviewer checks factual links.
 

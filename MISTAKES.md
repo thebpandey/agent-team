@@ -237,3 +237,33 @@ Mistake: A dashboard written in a one-issue fixture displayed three ready tasks 
 Cause: The refresher ran Beads commands without setting their working directory to the dashboard's target project.
 Correction: Re-run aggregate status and the bounded ready page in the exact fixture root; replace the incorrect snapshot. The integrated task and its Beads closure remain unchanged.
 Prevention: Before writing a dashboard, bind every Beads read to the target Git project root and verify the returned issue IDs/source belong to that project. Wrong-project data is a dashboard error, never a reason to reopen accepted work.
+
+## M-020: Compare release ZIP bytes with tagged Git blobs on every OS
+
+Status: Active
+Scope: Agent-Team v9 cross-platform skill packaging
+Source: First Windows v9.0.0 candidate at `d701cb8`, 2026-09-25
+Mistake: The Windows ZIP passed checksum, CRC, allowlist, and installer CI, but none of its eight files byte-matched the reviewed Git blobs; checkout had converted LF to CRLF.
+Cause: Source tests and a self-consistent archive checksum did not establish that every OS packaged the same canonical source bytes.
+Correction: Disable Windows `core.autocrlf` before checkout. At `9e6c4b2`, downloaded Linux, Windows, and macOS bundles each matched all eight tagged blobs.
+Prevention: For every OS release asset, download it, check its sidecar and exact members, then byte-compare each member with the release tag. Do this once at the final shared revision, not just against the runner worktree.
+
+## M-021: Audit the whole required skill-reference chain when changing defaults
+
+Status: Active
+Scope: Project Kickoff 0.6.0 → Agent-Team v9 handoff
+Source: Independent reviews of the initial 0.6.0 default, 2026-09-25
+Mistake: The top-level skill and setup route selected v9, while required artifact/host/model references and generated templates still prescribed v8 controller setup, receipts, role settings, and optional-aid probes.
+Cause: A top-level fresh-agent scenario read the main route but not every required reference and produced artifact.
+Correction: Align the active reference chain and generated templates with optional, Beads-ID-only v9 adoption; label v8 instructions historical. A later full-chain fresh-agent check found and removed the last generic optional-aid inventory gate.
+Prevention: When changing a skill default, trace every required linked instruction and output template with a fresh agent before release. Keep historical behavior explicitly scoped and check the full chain, not just the entrypoint.
+
+## M-022: Content-only Pages edits must preserve the element structure
+
+Status: Active
+Scope: Agent-Team v9 GitHub Pages content refresh
+Source: Independent content review at `4e42a7b`, 2026-09-25
+Mistake: A copy update kept CSS and artwork unchanged but added links, line breaks, and a paragraph, exceeding the approved content-only design boundary.
+Cause: Style-file equality was treated as sufficient proof of layout preservation.
+Correction: Move the new explanation into existing text nodes and repurpose existing links. The final page kept the original 385-token HTML tag sequence, CSS bytes, artwork, section order, and SVG geometry.
+Prevention: For a frozen-page content update, compare DOM tag sequence and attributes as well as CSS/artwork/diagram geometry; make new words fit the existing structure.

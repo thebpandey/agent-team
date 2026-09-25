@@ -37,7 +37,9 @@ All paths below are relative to `/home/server/dev/skills/project-kickoff` unless
 
 ### Task 1: Make the v9 handoff the current new-project route
 
-**Files:** Modify `SKILL.md`, `references/setup.md`, `references/handoff.md`, `assets/templates/AGENT_TEAM_SKILL_FIRST_HANDOFF.json`, `scripts/check_agent_team_handoff.py`, `tests/test_agent_team_handoff.py`, `tests/test_package_manifest.py`, `README.md`, `CHANGELOG.md`. Do not modify the historical v8 template.
+**Files:** Modify `SKILL.md`, `references/setup.md`, `references/handoff.md`, `references/artifacts.md`, `references/hosts.md`, `references/model-effort.md`, `assets/templates/AGENT_TEAM_SKILL_FIRST_HANDOFF.json`, `assets/templates/AGENTS.md`, `assets/templates/CONTEXT.md`, `assets/templates/TASKS.md`, `assets/templates/README.md`, `scripts/check_agent_team_handoff.py`, `tests/test_agent_team_handoff.py`, `tests/test_package_manifest.py`, `README.md`, `CHANGELOG.md`. Do not modify the historical v8 template.
+
+**Execution amendment (2026-09-25):** Independent review found that the newly selected default still passed through required v8 controller references and generated artifacts. The additional files above were brought into Task 1 ownership and changed surgically. Fresh-agent checks covered the complete required route, including the generic optional-aid inventory in setup. The accepted source is tagged `v0.6.0`; the real-Beads adoption, archive, local install, and Pages evidence is in the Project Kickoff repository at `docs/release-0.6.0-evidence.md`.
 
 **Interfaces:** A new handoff uses `projectKickoff.version: "0.6.0"`, `agentTeam.mode: "skill-first"`, `agentTeam.testedVersion: "9.0.0"`, `tracker.kind: "beads"`, and `plan.tasks` as existing Beads IDs. The checker continues to reject unknown pairs, invalid scope, unsafe paths, missing IDs, and external actions.
 
