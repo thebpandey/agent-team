@@ -33,16 +33,18 @@ Use the project directory as the command working directory.
 | Record a task-local blocker | `bd comments add ID "<revision, observed result, reconciliation action>"` | Orchestrator only; use for repeated unresolved findings, uncertain host/review, or failed integration. |
 | Close integrated CLEAN work | `bd close ID --reason "CLEAN <reviewed revision>; integrated <revision>"` | Orchestrator only, after valid exact-revision CLEAN, scope/check revalidation, integration, and integration commit. Never use `--force` to bypass a failed gate. |
 | Verify a Beads-selected handoff ID | `bd show ID --json` | Read-only; verify each supplied ID before adopting that existing database. |
-| Preview an approved Markdown migration | `bd import --dry-run --json tasks-import.jsonl` | Temporary export-compatible JSONL only; compare proposed IDs/count/dependencies to source before a second approval. |
-| Import an approved Markdown migration | `bd import --json tasks-import.jsonl` | One-time source adoption. Omit all existing IDs and never pass `--allow-stale`, preserving newer Beads edits. |
+| Preview an approved Markdown migration | `bd import --dry-run --json tasks-import.jsonl` | Temporary export-compatible JSONL with no assumed source/native ID equivalence; compare proposed count and source dependency plan before a second approval. |
+| Import an approved Markdown migration | `bd import --json tasks-import.jsonl` | One-time source adoption using provenance, then map source dependencies to generated native IDs. Never pass `--allow-stale` or rewrite a reimported issue. |
 
 If Beads is absent during `status`, say so and stop. If it is absent during `setup` or `start`, ask once for initialization approval. A declined, cancelled, or unanswered approval leaves the project unchanged.
 
 ## One-time imports and settings
 
-Ask before reading a handoff or `TASKS.md` for migration, and again after the dry-run comparison before the real import. For a Project Kickoff handoff with Beads selected, `plan.tasks` is an ID list: every ID must pass `bd show ID --json`; no JSONL is produced. For Markdown rows, create a temporary export-compatible JSONL with stable IDs, title/objective, acceptance criteria, status, dependency objects, and a source pointer. Reject unrepresentable dependencies before any Beads write. Preserve non-task run history in the original, read-only source.
+Ask before reading a handoff or `TASKS.md` for migration, and again after the dry-run comparison before the real import. For a Project Kickoff handoff with Beads selected, `plan.tasks` is an ID list: every ID must pass `bd show ID --json`; no JSONL is produced. For Markdown rows, create a temporary export-compatible JSONL with no `id` field, title/objective, acceptance criteria, status, `external_ref: TASKS.md#<source-id>`, a stable `source_system`, and metadata carrying the source ID. Reject unrepresentable dependencies before any Beads write. Preserve non-task run history in the original, read-only source.
 
-Beads 1.2.2 imports are upserts and protect a local issue when its `updated_at` is newer, but this workflow additionally omits every existing ID from its candidate. Do not use `--allow-stale`; do not overwrite or duplicate an existing issue. After the actual import, retain source-pointer evidence and discard the temporary candidate. The original Markdown file may be archived as provenance only at the user's request; neither original nor archive becomes live state.
+Beads 1.2.2 generates native IDs for rows without `id`. Look up each source row by its metadata provenance, verify the matching `external_ref` and `source_system`, and map source dependency edges through the resulting native IDs with `bd dep add`. On re-import, omit all matched source rows and their dependency edges: do not update a native issue, overwrite a newer Beads edit, or duplicate an edge. Do not use `--allow-stale`. After the actual import, retain source-pointer evidence and discard the temporary candidate. The original Markdown file may be archived as provenance only at the user's request; neither original nor archive becomes live state.
+
+A bounded one-off audit request itself authorizes creation of exactly one Beads task. Ask again only if the requested audit scope materially changes; no handoff, Markdown source, or optional aid is required.
 
 On an explicit preference save, `.agent-team/SETTINGS.md` starts with these values (and only actual host model/effort choices replace `inherit`):
 

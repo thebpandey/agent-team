@@ -140,10 +140,10 @@ In the disposable no-Beads project, `bd --readonly status --json` exited 1 with 
 
 ## RED fixture: Task 5 import and optional paths are not yet proved
 
-This is a disposable Beads 1.2.2 fixture, not a live-host claim. It must start from an initialized Git-and-Beads project and an actual `TASKS.md` task row containing a stable ID, title/objective, acceptance, status, valid dependency IDs, and a source pointer. Convert only the task rows into export-compatible `tasks-import.jsonl`; retain non-task source history unchanged. Require these RED observations from a pre-Task-5 draft:
+This is a disposable Beads 1.2.2 fixture, not a live-host claim. It must start from an initialized Git-and-Beads project and an actual `TASKS.md` task row containing a source ID, title/objective, acceptance, status, valid dependency IDs, and a source pointer. Convert only the task rows into export-compatible `tasks-import.jsonl`; retain non-task source history unchanged. Require these RED observations from a pre-Task-5 draft:
 
-- A second import can duplicate a stable task ID or rewrite a newer local Beads edit.
-- A one-off audit cannot become one explicitly approved Beads task without a handoff.
+- A second import can duplicate a source task because it mistakes a source ID for a Beads ID, or rewrite a newer local Beads edit.
+- A bounded one-off audit cannot become exactly one Beads task without a redundant approval or a handoff.
 - Absence of Serena, Graphify, Playwright, or visual tooling blocks an ordinary code task.
 - A local dashboard refresh error reopens or changes already accepted work.
 
@@ -151,17 +151,17 @@ This is a disposable Beads 1.2.2 fixture, not a live-host claim. It must start f
 
 Run only in a disposable initialized Beads 1.2.2 Git repository. This proves CLI/data behavior and documented skill routing; it does not prove native host dispatch, available model metadata, or an installed optional aid.
 
-1. Build a temporary `tasks-import.jsonl` from a Markdown task fixture using Beads' exported issue schema. Preserve source ID, title/objective, acceptance criteria, status, dependencies, and `TASKS.md#<id>` pointer. Before mutation, reject a fixture whose dependency has no corresponding source row or has no Beads representation. Run:
+1. Build a temporary `tasks-import.jsonl` from a Markdown fixture with non-Beads source IDs such as `legacy-a` and `legacy-b`; `legacy-b` depends on `legacy-a`. Create no `id` field from either source ID. Instead preserve each source ID in Beads-supported provenance: `external_ref: "TASKS.md#legacy-a"`, a stable `source_system`, and metadata if useful. Preserve title/objective, acceptance criteria, and status. Before mutation, reject a fixture whose dependency has no corresponding source row or has no Beads representation. Run:
 
    ```sh
    bd import --dry-run --json tasks-import.jsonl
    ```
 
-   Compare proposed IDs, count, and dependency edges to the source. Only after a separate approval run `bd import --json tasks-import.jsonl`; then run it again. Require the stable ID exactly once.
+   Compare proposed IDs and count to the source. Only after a separate approval run `bd import --json tasks-import.jsonl`. Look up the generated native Beads IDs with `bd list --metadata-field agent_team_source_id=<source-id> --json`, verifying each matching `external_ref` and `source_system`; map `legacy-b -> legacy-a` through those native IDs and add/verify that native dependency with `bd dep add`. On re-import, find both source rows by provenance and omit them and their dependency edge from the candidate. Require exactly one native issue per source ID, no issue whose native ID is `legacy-a` or `legacy-b`, and the mapped dependency exactly once.
 
 2. Update the imported issue locally, retaining a strictly newer `updated_at`, then re-run the original JSONL import without `--allow-stale`. Require `stale_skipped_ids` to name that ID and the newer local fields to remain unchanged. The migration flow must also omit existing IDs before it invokes import, so the CLI guard is defense in depth rather than permission to update.
 
-3. With no optional aids installed, request one ordinary code task and require it to remain ready/dispatchable through native search/edit fallback. Request a one-off audit and, after explicit approval, require exactly one Beads task. Neither path may inspect, require, or wait for Project Kickoff or a handoff.
+3. With no optional aids installed, request one ordinary code task and require it to remain ready/dispatchable through native search/edit fallback. Make a bounded one-off audit request and require it to create exactly one Beads task without another approval prompt. Neither path may inspect, require, or wait for Project Kickoff or a handoff.
 
 4. Put 1,000 issues in Beads, obtain aggregate status without supplying issue rows to a model, and run `bd ready --limit 20 --json`. Require the refresh context to contain no more than those 20 ready rows. After an accepted integration and its normal closure, force the local `.agent-team/dashboard/index.html` refresh to fail; require the already closed Beads task to remain closed and report the dashboard error separately.
 
@@ -169,4 +169,4 @@ Pass only if all four checks hold. Record `bd version`, dry-run/import JSON resu
 
 ## Actual Beads 1.2.2 Task 5 fixture observation
 
-Observed in a disposable initialized fixture on `bd version 1.2.2 (6c124203e: HEAD@6c124203e771)`: `bd import --dry-run --json tasks-import.jsonl` accepted an export-schema JSONL and reported a dry run; `bd import --json tasks-import.jsonl` kept the stable issue count at one on re-import. After a local `bd update` produced a newer `updated_at`, importing the original JSONL reported that ID in `stale_skipped_ids` and retained the local edit. A bulk import left 1,070 issues on disk and `bd ready --limit 20 --json` returned 20 rows. This is CLI evidence only: it does not prove what a model receives, and the GREEN fixture and every live-host assertion above remain unrun.
+Observed in a disposable initialized fixture on `bd version 1.2.2 (6c124203e: HEAD@6c124203e771)`: `bd import --dry-run --json tasks-import.jsonl` accepted an export-schema JSONL and reported a dry run; `bd import --json tasks-import.jsonl` kept the stable issue count at one on re-import. After a local `bd update` produced a newer `updated_at`, importing the original JSONL reported that ID in `stale_skipped_ids` and retained the local edit. A second provenance fixture imported `legacy-a` and `legacy-b` without `id`, generated nonmatching native IDs, preserved `external_ref`, `source_system`, and source-ID metadata, located one native issue per source ID through `bd list --metadata-field`, and added the mapped native dependency with `bd dep add`. A bulk import left 1,070 issues on disk and `bd ready --limit 20 --json` returned 20 rows. This is CLI evidence only: it does not prove what a model receives, and the GREEN fixture and every live-host assertion above remain unrun.
