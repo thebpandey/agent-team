@@ -29,7 +29,7 @@ Defaults are `~/.agents/skills/agent-team` for Codex and `~/.claude/skills/agent
 
 ## First use
 
-Open a Git project and ask `$agent-team status` in Codex or `/agent-team status` in Claude. Status reads existing Beads state without setup or writes. If `.beads` is absent, ask for `setup`; it requests explicit approval before running `bd init --skip-hooks --skip-agents --non-interactive --init-if-missing`. Declining leaves the project unchanged.
+Open a Git project and ask `$agent-team status` in Codex or `/agent-team status` in Claude. Status never initializes Beads or creates Agent-Team task/project state; Beads may perform internal housekeeping on first read. If `.beads` is absent, ask for `setup`; it requests explicit approval before running `bd init --skip-hooks --skip-agents --non-interactive --init-if-missing`. Declining leaves the project unchanged.
 
 After Beads is ready, use `$agent-team start` in Codex or `/agent-team start` in Claude for ready work, or request a bounded one-off directly. For example: “Use Agent-Team for a one-off audit of the login flow; report findings without changing files.” One-off work becomes a Beads task and follows the same review and integration rules.
 
