@@ -93,16 +93,41 @@ next_sibling() {
   printf '%s\n' "$candidate"
 }
 
+current_home() {
+  [ -n "${HOME:-}" ] && {
+    printf '%s\n' "$HOME"
+    return
+  }
+
+  user_id=$(id -u 2>/dev/null) || return 1
+  user_home=
+  if command -v getent >/dev/null 2>&1; then
+    user_home=$(getent passwd "$user_id" 2>/dev/null | awk -F: 'NR == 1 { print $6; exit }')
+  fi
+  if [ -z "$user_home" ] && [ -r /etc/passwd ]; then
+    user_home=$(awk -F: -v user_id="$user_id" '$3 == user_id { print $6; exit }' /etc/passwd)
+  fi
+  if [ -z "$user_home" ] && command -v dscl >/dev/null 2>&1; then
+    user_name=$(id -un 2>/dev/null) || return 1
+    user_home=$(dscl . -read "/Users/$user_name" NFSHomeDirectory 2>/dev/null |
+      awk '$1 == "NFSHomeDirectory:" { print $2; exit }')
+  fi
+  case $user_home in
+    /*) [ -d "$user_home" ] && printf '%s\n' "$user_home" ;;
+    *) return 1 ;;
+  esac
+}
+
 resolve_home() {
   configured=$1
   suffix=$2
   host_home=$3
   if [ -n "$configured" ]; then
     printf '%s\n' "$configured"
-  elif [ -n "${HOME:-}" ]; then
-    printf '%s/%s\n' "$HOME" "$suffix"
+  elif user_home=$(current_home); then
+    printf '%s/%s\n' "$user_home" "$suffix"
   else
-    printf 'install: HOME is required when %s is unset\n' "$host_home" >&2
+    printf 'install: unable to resolve the current-user home for %s\n' "$host_home" >&2
     return 1
   fi
 }

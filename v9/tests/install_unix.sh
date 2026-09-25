@@ -44,6 +44,21 @@ output=$(env -u HOME -u CODEX_HOME -u CLAUDE_HOME bash "$installer" codex --code
 assert_file "$unset_home_target/SKILL.md"
 assert_output_line "$output" "installed: $unset_home_target"
 
+# With no environment home, a passwd lookup supplies the current user's home.
+# The mocked lookup points only at this disposable fixture, never a real home.
+passwd_bin="$test_root/passwd-bin"
+passwd_home="$test_root/passwd-home"
+mkdir "$passwd_bin" "$passwd_home"
+cat > "$passwd_bin/getent" <<'EOF'
+#!/bin/sh
+printf 'fixture:x:1000:1000:Fixture:%s:/bin/sh\n' "$MOCK_PASSWD_HOME"
+EOF
+chmod +x "$passwd_bin/getent"
+passwd_target="$passwd_home/.agents/skills/agent-team"
+output=$(env -u HOME -u CODEX_HOME -u CLAUDE_HOME MOCK_PASSWD_HOME="$passwd_home" PATH="$passwd_bin:$PATH" bash "$installer" codex)
+assert_file "$passwd_target/SKILL.md"
+assert_output_line "$output" "installed: $passwd_target"
+
 # Calling the installer through a symlink must still find the packaged payload.
 link_dir="$test_root/link-bin"
 mkdir "$link_dir"
