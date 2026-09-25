@@ -1,1 +1,1 @@
-{"version":"8.0.14","status":"candidate","specRevision":"vnext-8.0.0","legacy":"v7.3.1","benchmark":"docs/benchmarks/vnext-optional-8.0.0.md","limitations":["release requires revision-bound canary, rollback, provider, and readiness evidence"]}
+{"version":"8.0.15","status":"candidate","specRevision":"vnext-8.0.0","legacy":"v7.3.1","benchmark":"docs/benchmarks/vnext-optional-8.0.0.md","limitations":["release requires revision-bound canary, rollback, provider, and readiness evidence"]}

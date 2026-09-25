@@ -1,1 +1,1 @@
-{"schema":1,"version":"8.0.14","actions":["setup","status","start","task add","one-off","pause","stop","cancel","resume"]}
+{"schema":1,"version":"8.0.15","actions":["setup","status","start","task add","one-off","pause","stop","cancel","resume"]}

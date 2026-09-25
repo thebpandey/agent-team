@@ -217,3 +217,13 @@ Mistake: A developer reported the focused CLI suite as passing, but the committe
 Cause: The reported result did not establish a successful final command exit for the exact committed source.
 Correction: The owner reproduced the two selector failures with exit 1 and required compatibility repair before integration.
 Prevention: Record the tested SHA, full command, and final exit status. Partial output, a passing subset, or results from earlier working-tree content cannot support an exact-SHA pass claim.
+
+## M-018: Qualify producer handoffs through task admission
+
+Status: Active
+Scope: Project Kickoff import, tracker authority, and public setup responses
+Source: Beads atv-8ip, Project Kickoff 0.5.1 admission failure on Agent-Team 8.0.14.
+Mistake: Setup reported readiness while admission compared canonical batch paths with raw tracker paths; the producer checker also required all tracker rows and accepted unsupported globs. Large successful imports could report an output-limit failure.
+Cause: Producer validation, import, and admission were tested separately. Readiness was treated as evidence that the next user action worked.
+Correction: Reuse the same authority normalization at preparation and admission, validate path grammar before persistence, summarize setup output, and align the producer checker with native task-subset support.
+Prevention: Qualify a compatible release pair by importing its handoff and admitting actual work with real tracker output. Cover multi-parent trackers, blocked and closed rows, all-row and explicit-subset handoffs, and bounded large responses. Follow the reported error to its exact guard before adding fields or relaxing validation; preserve existing approvals and never fabricate tracker revisions.
