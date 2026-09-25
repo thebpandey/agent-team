@@ -16,7 +16,7 @@ function ConvertTo-AbsoluteHome {
         [Parameter(Mandatory = $true)][string]$Name
     )
 
-    if (-not [System.IO.Path]::IsPathRooted($Path) -or $Path -match '^[A-Za-z]:[^\\/]' -or $Path -match '^[\\/][^\\/]') {
+    if (-not [System.IO.Path]::IsPathRooted($Path) -or $Path -match '^[A-Za-z]:(?:$|[^\\/])' -or $Path -match '^[\\/](?:$|[^\\/])') {
         throw "$Name must be an absolute path."
     }
 

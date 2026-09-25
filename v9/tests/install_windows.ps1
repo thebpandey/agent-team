@@ -63,14 +63,30 @@ try {
         $null = Invoke-InstallerFailure -Arguments @{ TargetHost = 'codex'; CodexHome = $relativeHome }
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'relative-home/skills/agent-team'))) 'relative CodexHome created a skill tree'
 
+        if ([System.IO.Path]::GetPathRoot($testRoot) -eq 'C:\') {
+            $null = Invoke-InstallerFailure -Arguments @{ TargetHost = 'codex'; CodexHome = 'C:foo' }
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'foo/skills/agent-team'))) 'drive-relative CodexHome created a skill tree'
+            $null = Invoke-InstallerFailure -Arguments @{ TargetHost = 'codex'; CodexHome = 'C:' }
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'skills/agent-team'))) 'bare drive CodexHome created a skill tree'
+        }
+
         $previousCodexHome = $env:CODEX_HOME
         $previousClaudeHome = $env:CLAUDE_HOME
         try {
             $env:CODEX_HOME = 'relative-codex-env-home'
             $env:CLAUDE_HOME = 'relative-claude-env-home'
-            $null = Invoke-InstallerFailure -Arguments @{ TargetHost = 'both' }
+            $null = Invoke-InstallerFailure -Arguments @{ TargetHost = 'codex' }
+            $null = Invoke-InstallerFailure -Arguments @{ TargetHost = 'claude' }
             Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'relative-codex-env-home/skills/agent-team'))) 'relative CODEX_HOME created a skill tree'
             Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'relative-claude-env-home/skills/agent-team'))) 'relative CLAUDE_HOME created a skill tree'
+            if ([System.IO.Path]::GetPathRoot($testRoot) -eq 'C:\') {
+                $env:CODEX_HOME = 'C:foo'
+                $env:CLAUDE_HOME = 'C:'
+                $null = Invoke-InstallerFailure -Arguments @{ TargetHost = 'codex' }
+                $null = Invoke-InstallerFailure -Arguments @{ TargetHost = 'claude' }
+                Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'foo/skills/agent-team'))) 'drive-relative CODEX_HOME created a skill tree'
+                Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'skills/agent-team'))) 'bare drive CLAUDE_HOME created a skill tree'
+            }
         }
         finally {
             if ($null -eq $previousCodexHome) {
