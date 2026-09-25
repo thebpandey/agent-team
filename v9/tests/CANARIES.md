@@ -2,9 +2,11 @@
 
 ## Distribution cutover evidence
 
-The cutover canary is defined for disposable projects only. Its active/uncertain-worker case must refuse before changing the fixture. Its idle case records Beads and Git hashes before and after host replacement, confirms the selected v9 skill, and reads `bd --readonly status --json`. Never run this canary against a live user project or host skill root.
+The cutover canary is defined for disposable projects only. Read the v8 manifest and model every host/path it lists; current v8 uninstall is global and has no host selector. Its active/uncertain-worker case must stop before any cutover mutation when any listed host has uncertain work. Its idle case backs up every listed skill root and shared manifest-owned file, verifies preservation of unowned project state, uninstalls once, installs v9 for all intended hosts, checks the selected skill roots, and reads `bd --readonly status --json`. Never run this canary against a live user project or host skill root.
 
-Evidence status for this documentation revision: no cutover canary was run. Linux/POSIX fixture results must be recorded only from an actual disposable run. Windows installer source review is static evidence; native PowerShell test Bead `atv-uns.7` remains open, so Windows test success is unverified. No Claude live-host result is claimed. No native Windows, Linux, or Claude cutover pass is asserted here.
+If a verified v8 package and real managed uninstaller are unavailable, a disposable manual install/rollback smoke may exercise dual-host v9 installation and project-state preservation only. Label it partial/manual: do not call it a v8 managed-uninstall cutover pass.
+
+Evidence status: candidate CI passed the POSIX and PowerShell installer checks; this is installer fixture evidence only, not a v8 managed-uninstall or live-host cutover result. Native PowerShell test Bead `atv-uns.7` remains open pending orchestrator reconciliation. No Claude live-host result is claimed. No Windows, Linux, or Claude v8 cutover pass is asserted here.
 
 Run these in disposable Git projects only. They are fixture behavior checks, not text-grep tests. Record the date, host, `bd version`, command output, exit code, and content-aware before/after file inventory with each run. The evidence below was captured with Beads `1.2.2 (6c124203e)` on 2026-09-25.
 
