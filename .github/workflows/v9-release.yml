@@ -1,0 +1,77 @@
+name: v9 release candidate
+
+on:
+  push:
+    branches:
+      - v9/candidate
+  workflow_dispatch:
+
+# This workflow produces a candidate artifact only. Publishing, tagging, and
+# any write permission remain a separate, explicitly approved release action.
+permissions:
+  contents: read
+
+jobs:
+  unix-installer:
+    name: Unix installer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash v9/tests/install_unix.sh
+
+  windows-installer:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: ./v9/tests/install_windows.ps1
+
+  package:
+    name: Portable archive and checksum
+    needs:
+      - unix-installer
+      - windows-installer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify portable source boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in agent-team install.sh install.ps1 CUTOVER.md README.md; do
+            test -e "v9/$path"
+          done
+          test -f v9/agent-team/SKILL.md
+          if find v9/agent-team \( -type d -name hooks -o -type f -name 'agent-teamctl*' \) -print -quit | grep -q .; then
+            echo 'v9 skill tree includes a forbidden v8 hook or controller path' >&2
+            exit 1
+          fi
+      - name: Build, inspect, and checksum the portable archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-candidate
+          archive=release-candidate/agent-team-skill-9.0.0.zip
+          (
+            cd v9
+            zip -X -q -r "../$archive" agent-team install.sh install.ps1 CUTOVER.md README.md
+          )
+          sha256sum "$archive" > release-candidate/SHA256SUMS
+          (cd release-candidate && sha256sum -c SHA256SUMS)
+          unzip -Z1 "$archive" | LC_ALL=C sort > release-candidate/archive-paths.txt
+          while IFS= read -r path; do
+            case "$path" in
+              agent-team/|agent-team/*|install.sh|install.ps1|CUTOVER.md|README.md) ;;
+              *) echo "unexpected archive path: $path" >&2; exit 1 ;;
+            esac
+            case "$path" in
+              hooks/|hooks/*|*/hooks/|*/hooks/*|agent-teamctl*|*/agent-teamctl*|vnext/|vnext/*|.beads/|.beads/*|.agent-team/|.agent-team/*)
+                echo "forbidden archive path: $path" >&2; exit 1 ;;
+            esac
+          done < release-candidate/archive-paths.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v9-release-candidate-${{ github.sha }}
+          path: release-candidate/
+          if-no-files-found: error
