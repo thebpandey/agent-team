@@ -140,11 +140,7 @@ func PrepareQueueAdmission(manifest Run, team TeamRecord, tasks []core.Task) (Ad
 		rawPaths = append(rawPaths, task.WritablePaths...)
 		rawResources = append(rawResources, task.Resources...)
 	}
-	paths, err := normalizePaths(rawPaths)
-	if err != nil {
-		return AdmissionBatch{}, nil, err
-	}
-	resources, err := normalizeResources(rawResources)
+	paths, resources, err := NormalizeAuthority(rawPaths, rawResources)
 	if err != nil {
 		return AdmissionBatch{}, nil, err
 	}
@@ -193,13 +189,9 @@ func PrepareSinglePlanAdmission(ctx context.Context, project string, selected tr
 	if chosen.ID == "" {
 		return PreparedPlanAdmission{}, core.ErrPhase
 	}
-	paths, err := normalizePaths(chosen.WritablePaths)
+	paths, resources, err := NormalizeAuthority(chosen.WritablePaths, chosen.Resources)
 	if err != nil || len(paths) == 0 {
 		return PreparedPlanAdmission{}, fmt.Errorf("%w: ready task %s needs approved writable paths in the tracker or Project Kickoff handoff", core.ErrPath, chosen.ID)
-	}
-	resources, err := normalizeResources(chosen.Resources)
-	if err != nil {
-		return PreparedPlanAdmission{}, core.ErrPath
 	}
 	plan.Teams = []TeamRecord{{State: core.Idle}}
 	plan, err = finalizeRun(plan)
@@ -700,10 +692,10 @@ func normalizeTask(task core.Task) (core.Task, error) {
 		return core.Task{}, err
 	}
 	if task.WritablePaths, err = normalizePaths(task.WritablePaths); err != nil {
-		return core.Task{}, err
+		return core.Task{}, fmt.Errorf("task %q writable paths: %w", task.ID, err)
 	}
 	if task.Resources, err = normalizeResources(task.Resources); err != nil {
-		return core.Task{}, err
+		return core.Task{}, fmt.Errorf("task %q resources: %w", task.ID, err)
 	}
 	if task.EvidencePointers, err = normalizeStrings(task.EvidencePointers, "evidence pointer"); err != nil {
 		return core.Task{}, err
@@ -808,13 +800,28 @@ func normalizePaths(values []string) ([]string, error) {
 	return out, nil
 }
 
+// NormalizeAuthority returns the canonical writable paths and resources used
+// by run preparation and the final admission check.
+func NormalizeAuthority(paths, resources []string) ([]string, []string, error) {
+	normalizedPaths, err := normalizePaths(paths)
+	if err != nil {
+		return nil, nil, err
+	}
+	normalizedResources, err := normalizeResources(resources)
+	if err != nil {
+		return nil, nil, err
+	}
+	return normalizedPaths, normalizedResources, nil
+}
+
 func normalizePath(value string) (string, error) {
+	original := value
 	value = strings.ReplaceAll(value, "\\", "/")
 	if strings.TrimSpace(value) != value {
-		return "", fmt.Errorf("%w: unsafe writable path", core.ErrPath)
+		return "", invalidWritablePath(original)
 	}
 	if value == "" || !utf8.ValidString(value) || len(value) > 4096 || strings.HasPrefix(value, "/") || strings.ContainsRune(value, 0) || (len(value) > 1 && value[1] == ':') {
-		return "", fmt.Errorf("%w: unsafe writable path", core.ErrPath)
+		return "", invalidWritablePath(original)
 	}
 	glob := strings.HasSuffix(value, "/**")
 	base := value
@@ -823,17 +830,21 @@ func normalizePath(value string) (string, error) {
 	}
 	clean := path.Clean(base)
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "//") {
-		return "", fmt.Errorf("%w: unsafe writable path %q", core.ErrPath, value)
+		return "", invalidWritablePath(original)
 	}
 	for _, part := range strings.Split(clean, "/") {
 		if !safePathSegment(part) {
-			return "", fmt.Errorf("%w: unsafe writable path %q", core.ErrPath, value)
+			return "", invalidWritablePath(original)
 		}
 	}
 	if glob {
 		return strings.ToLower(clean) + "/**", nil
 	}
 	return strings.ToLower(clean), nil
+}
+
+func invalidWritablePath(value string) error {
+	return fmt.Errorf("%w: unsafe writable path %q; supported forms are an exact relative path or directory/**", core.ErrPath, value)
 }
 
 func safePathSegment(part string) bool {

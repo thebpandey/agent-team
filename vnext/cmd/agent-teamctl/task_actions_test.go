@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
@@ -13,6 +14,28 @@ import (
 	"github.com/thebpandey/agent-team/vnext/internal/store"
 	"github.com/thebpandey/agent-team/vnext/internal/testkit"
 )
+
+func TestTaskAddRejectsUnsupportedWritableGlobBeforeCreation(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	if code, result := invokeOnboarding(t, "setup", "--tracker", "tasks-md", "--approve"); code != 0 {
+		t.Fatalf("setup=%+v", result)
+	}
+	task := core.Task{ID: "bad-glob", Objective: "Invalid authority", Criteria: []string{"done"}, Checks: []core.Check{{Name: "test", Command: []string{"true"}}}, WritablePaths: []string{"packages/*/result.txt"}}
+	code, result := invokeOnboarding(t, "task", "add", "--queue", "--from", writeTaskRequest(t, task))
+	message, _ := result["error"].(string)
+	if code == 0 || !strings.Contains(message, `task "bad-glob"`) || !strings.Contains(message, `packages/*/result.txt`) || !strings.Contains(message, "exact relative path or directory/**") {
+		t.Fatalf("invalid path diagnostic: code=%d result=%+v", code, result)
+	}
+	selected, _, err := projectTracker(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := selected.Page(context.Background(), "", 1000)
+	if err != nil || len(page.Tasks) != 0 {
+		t.Fatalf("invalid task was persisted: %+v err=%v", page, err)
+	}
+}
 
 func writeTaskRequest(t *testing.T, task core.Task) string {
 	t.Helper()

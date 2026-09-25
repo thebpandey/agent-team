@@ -15,11 +15,12 @@ import (
 	"time"
 
 	"github.com/thebpandey/agent-team/vnext/internal/core"
+	"github.com/thebpandey/agent-team/vnext/internal/run"
 )
 
 const kickoffMaxBytes = 250 << 10
 
-var acceptedKickoffVersions = []string{"0.5.0", "0.5.1"}
+var acceptedKickoffVersions = []string{"0.5.0", "0.5.1", "0.5.2"}
 
 var kickoffID = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
 var kickoffRevision = regexp.MustCompile(`^[a-f0-9]{40}([a-f0-9]{24})?$`)
@@ -75,6 +76,8 @@ type KickoffInspection struct {
 	Head             string   `json:"head,omitempty"`
 	Reason           string   `json:"reason"`
 }
+
+type kickoffAuthorityError struct{ error }
 
 // InspectKickoff never writes state and never follows a handoff path outside
 // the selected Git root. A blank Reason means the handoff is loadable.
@@ -191,6 +194,10 @@ func boundedKickoffPath(path string) string {
 }
 
 func sanitizedKickoffFailure(cause error) (error, string) {
+	var authorityErr *kickoffAuthorityError
+	if errors.As(cause, &authorityErr) {
+		return core.ErrPath, boundedKickoffReason(authorityErr)
+	}
 	switch {
 	case errors.Is(cause, core.ErrRevision):
 		return core.ErrRevision, "project or revision mismatch"
@@ -285,6 +292,10 @@ func decodeKickoffHandoff(canonical string, data []byte) (core.KickoffHandoff, e
 		}
 	} else if err := decodeKickoff(data, &result); err != nil {
 		return result, err
+	}
+	result.WritablePaths, result.Resources, err = run.NormalizeAuthority(result.WritablePaths, result.Resources)
+	if err != nil {
+		return core.KickoffHandoff{}, &kickoffAuthorityError{fmt.Errorf("kickoff authority: %w", err)}
 	}
 	if err := validateLoadedKickoff(ctx, current, result, nested); err != nil {
 		return core.KickoffHandoff{}, err

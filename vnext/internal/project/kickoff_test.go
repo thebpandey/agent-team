@@ -77,7 +77,7 @@ func TestLoadKickoffSupportsOnlyApprovedProducerVersions(t *testing.T) {
 		version  string
 		accepted bool
 	}{
-		{"0.5.0", true}, {"0.5.1", true}, {"0.5.2", false}, {"0.6.0", false}, {"0.5.1-dev", false},
+		{"0.5.0", true}, {"0.5.1", true}, {"0.5.2", true}, {"0.6.0", false}, {"0.5.1-dev", false},
 	} {
 		t.Run(test.version, func(t *testing.T) {
 			root, value := kickoffFixture(t)
@@ -91,6 +91,15 @@ func TestLoadKickoffSupportsOnlyApprovedProducerVersions(t *testing.T) {
 				t.Fatalf("lost approved tasks: %#v", got)
 			}
 		})
+	}
+}
+
+func TestLoadKickoffRejectsUnsupportedWritableGlobWithFieldAndGrammar(t *testing.T) {
+	root, value := kickoffFixture(t)
+	value["plan"].(map[string]any)["authority"].(map[string]any)["ownedPaths"] = []string{"packages/*/result.txt"}
+	_, err := LoadKickoff(root, writeKickoffFixture(t, root, value))
+	if err == nil || !strings.Contains(err.Error(), "kickoff authority") || !strings.Contains(err.Error(), "packages/*/result.txt") || !strings.Contains(err.Error(), "exact relative path or directory/**") {
+		t.Fatalf("invalid path diagnostic: %v", err)
 	}
 }
 

@@ -139,6 +139,20 @@ func runSetup(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	raw, _ := json.Marshal(result)
 	output := map[string]any{}
 	_ = json.Unmarshal(raw, &output)
+	if result.Handoff != nil {
+		delete(output, "handoff")
+		output["handoff_summary"] = map[string]any{
+			"approved_plan_revision": result.Handoff.ApprovedPlanRevision,
+			"tracker_kind":           result.Handoff.TrackerKind,
+			"tracker_ref":            result.Handoff.TrackerRef,
+			"task_count":             len(result.Handoff.TaskIDs),
+			"acceptance_count":       len(result.Handoff.Acceptance),
+			"check_count":            len(result.Handoff.Checks),
+			"writable_path_count":    len(result.Handoff.WritablePaths),
+			"resource_count":         len(result.Handoff.Resources),
+			"capability_count":       len(result.Handoff.Capabilities),
+		}
+	}
 	output["ok"], output["action"], output["mode"] = true, "setup", "plan"
 	if dependencies != nil {
 		output["dependencies"] = dependencies

@@ -36,6 +36,10 @@ func runTaskAction(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		return managementError(args, stdout, stderr, err)
 	}
+	task.WritablePaths, task.Resources, err = run.NormalizeAuthority(task.WritablePaths, task.Resources)
+	if err != nil {
+		return managementError(args, stdout, stderr, fmt.Errorf("task %q: %w", task.ID, err))
+	}
 	kind := run.OneOffKind(strings.TrimPrefix(action.Name, "one-off "))
 	readOnly := kind == run.Audit || kind == run.Review
 	missing := taskDetails(task, readOnly)

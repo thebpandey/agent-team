@@ -211,6 +211,10 @@ func AppendAdmission(ctx context.Context, st *store.Store, tr tracker.Tracker, r
 		return AdmissionOutcome{}, err
 	}
 	paths, resources := taskAuthority(selected)
+	paths, resources, err = run.NormalizeAuthority(paths, resources)
+	if err != nil {
+		return AdmissionOutcome{}, err
+	}
 	if !reflect.DeepEqual(paths, batch.Paths) || !reflect.DeepEqual(resources, batch.Resources) {
 		return AdmissionOutcome{}, fmt.Errorf("%w: admission scope is not tracker-derived", core.ErrRevision)
 	}

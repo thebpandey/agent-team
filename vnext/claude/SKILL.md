@@ -173,7 +173,8 @@ and continue observation, never claim recovered execution.
 
 Use approved task facts in one JSON object: `id` (optional), `objective`, `criteria` array, `checks` array of
 `{name, command: [program, ...args]}`, and `writablePaths` array. Missing facts are `needs_input`, never permission to
-invent scope.
+invent scope. Each writable path is either one exact repository-relative path or a directory ending in `/**`; embedded
+wildcards such as `src/*.ts` or `src/prefix*` are rejected before the task is saved.
 
 ```text
 agent-teamctl task add --queue --from <task.json> --host claude --json

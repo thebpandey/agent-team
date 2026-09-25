@@ -127,7 +127,7 @@ func TestStatusCLIResolvesUnsupportedAutoDiscoveredKickoffReadOnly(t *testing.T)
 		t.Fatalf("kickoff facts: %+v", facts)
 	}
 	accepted, ok := facts["accepted_versions"].([]any)
-	if !ok || len(accepted) != 2 || accepted[0] != "0.5.0" || accepted[1] != "0.5.1" || facts["head"] == "" {
+	if !ok || len(accepted) != 3 || accepted[0] != "0.5.0" || accepted[1] != "0.5.1" || accepted[2] != "0.5.2" || facts["head"] == "" {
 		t.Fatalf("kickoff compatibility facts: %+v", facts)
 	}
 	reason, ok := facts["reason"].(string)
@@ -377,6 +377,194 @@ func TestKickoffCLIStartsDesignatedMarkdownFromSubdirectory(t *testing.T) {
 	}
 	if checks, ok := packet["checks"].([]any); !ok || len(checks) != 1 {
 		t.Fatalf("missing checks: %+v", packet)
+	}
+}
+
+func TestKickoffCLIStartsMultiParentBeadsFromLiveSnapshot(t *testing.T) {
+	all := []string{"fixture-e1", "fixture-e2", "fixture-a", "fixture-d1", "fixture-b", "fixture-d2", "fixture-closed"}
+	for _, test := range []struct {
+		name, version string
+		ids           []string
+	}{{"all_rows_051", "0.5.1", all}, {"explicit_ready_subset_052", "0.5.2", []string{"fixture-a", "fixture-b"}}} {
+		t.Run(test.name, func(t *testing.T) {
+			runKickoffMultiParentBeads(t, test.version, test.ids)
+		})
+	}
+}
+
+func runKickoffMultiParentBeads(t *testing.T, producerVersion string, ids []string) {
+	bd, err := exec.LookPath("bd")
+	if err != nil {
+		t.Skip("requires bd 1.2.2")
+	}
+	version, err := exec.Command(bd, "--version").Output()
+	if err != nil || !strings.Contains(string(version), "1.2.2") {
+		t.Skipf("requires bd 1.2.2, got %q (%v)", strings.TrimSpace(string(version)), err)
+	}
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	runBD := func(args ...string) {
+		t.Helper()
+		command := exec.Command(bd, args...)
+		command.Dir = root
+		command.Env = append(os.Environ(), "BD_NON_INTERACTIVE=1")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("bd %v: %v\n%s", args, err, output)
+		}
+	}
+	runBD("init", "--non-interactive", "--skip-agents", "--skip-hooks", "--prefix", "fixture")
+	metadata := `{"criteria":["done"],"checks":[{"name":"test","command":["true"]}]}`
+	for _, epic := range []string{"fixture-e1", "fixture-e2"} {
+		runBD("create", "--id", epic, "--title", epic, "--type", "epic")
+	}
+	for _, row := range []struct{ id, parent, kind string }{
+		{"fixture-a", "fixture-e1", "task"},
+		{"fixture-d1", "fixture-e1", "decision"},
+		{"fixture-b", "fixture-e2", "task"},
+		{"fixture-d2", "fixture-e2", "decision"},
+	} {
+		args := []string{"create", "--id", row.id, "--title", row.id, "--type", row.kind}
+		if row.kind == "task" {
+			args = append(args, "--metadata", metadata)
+		}
+		runBD(args...)
+		runBD("update", row.id, "--parent", row.parent)
+		if row.kind == "decision" {
+			runBD("update", row.id, "--status", "blocked")
+		}
+	}
+	runBD("create", "--id", "fixture-closed", "--title", "closed unrelated", "--type", "task")
+	runBD("close", "fixture-closed")
+	p, err := project.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchBytes, err := exec.Command("git", "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := make([]map[string]string, len(ids))
+	for i, id := range ids {
+		tasks[i] = map[string]string{"id": id}
+	}
+	testedVersion := "8.0.14"
+	if producerVersion == "0.5.2" {
+		testedVersion = "8.0.15"
+	}
+	handoff := map[string]any{
+		"schemaVersion": 1, "kind": "project-kickoff-agent-team-handoff", "status": "approved",
+		"projectKickoff": map[string]any{"version": producerVersion, "approvalId": "APR-8014", "approvedRevision": p.Head},
+		"agentTeam":      map[string]any{"testedVersion": testedVersion, "initializationSource": "existing"},
+		"project":        map[string]any{"id": "fixture", "root": root, "branch": strings.TrimSpace(string(branchBytes)), "revision": p.Head},
+		"tracker":        map[string]any{"kind": "beads", "executable": bd},
+		"plan": map[string]any{"scope": "two approved epics", "branch": strings.TrimSpace(string(branchBytes)), "acceptance": []string{"done"}, "verification": []string{"true"},
+			"authority": map[string]any{"ownedPaths": []string{"Packages/Feature/**"}, "externalActions": []string{}}, "tasks": tasks},
+	}
+	raw, _ := json.Marshal(handoff)
+	if err := os.WriteFile(filepath.Join(root, "kickoff.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code, result := invokeOnboarding(t, "setup", "--kickoff", "kickoff.json", "--approve-kickoff", "--approve", "--host", "claude"); code != 0 || result["next_action"] != "settings" {
+		t.Fatalf("setup: %d %+v", code, result)
+	}
+	if code, result := invokeOnboarding(t, "settings", "claude.developer.model=inherit", "claude.reviewer.model=inherit"); code != 0 {
+		t.Fatalf("settings: %d %+v", code, result)
+	}
+	code, result := invokeOnboarding(t, "start", "--host", "claude")
+	if code != 0 || result["host_dispatch_required"] != true {
+		t.Fatalf("start: %d %+v", code, result)
+	}
+	packet := result["packet"].(map[string]any)
+	if packet["task"] != "fixture-a" || !reflect.DeepEqual(packet["scope"], []any{"packages/feature/**"}) {
+		t.Fatalf("packet did not preserve the approved eligible scope: %+v", packet)
+	}
+}
+
+func TestSetupCLILargeKickoffReturnsBoundedSummary(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	p, err := project.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchBytes, err := exec.Command("git", "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := strings.TrimSpace(string(branchBytes))
+	var taskRows []map[string]string
+	var ownedPaths []string
+	var acceptance []string
+	for i := 0; i < 92; i++ {
+		taskRows = append(taskRows, map[string]string{"id": fmt.Sprintf("TASK-%03d", i)})
+	}
+	for i := 0; i < 59; i++ {
+		ownedPaths = append(ownedPaths, fmt.Sprintf("packages/feature-%03d/**", i))
+	}
+	for i := 0; i < 30; i++ {
+		acceptance = append(acceptance, fmt.Sprintf("criterion-%02d %s", i, strings.Repeat("approved ", 30)))
+	}
+	handoff := map[string]any{
+		"schemaVersion": 1, "kind": "project-kickoff-agent-team-handoff", "status": "approved",
+		"projectKickoff": map[string]any{"version": "0.5.1", "approvalId": "APR-LARGE", "approvedRevision": p.Head},
+		"agentTeam":      map[string]any{"testedVersion": "8.0.14", "initializationSource": "existing"},
+		"project":        map[string]any{"id": "large", "root": root, "branch": branch, "revision": p.Head},
+		"tracker":        map[string]any{"kind": "markdown", "path": "TASKS.md"},
+		"plan": map[string]any{"scope": strings.Repeat("bounded scope ", 80), "branch": branch, "acceptance": acceptance, "verification": []string{"true"},
+			"authority": map[string]any{"ownedPaths": ownedPaths, "externalActions": []string{}}, "tasks": taskRows},
+	}
+	raw, _ := json.Marshal(handoff)
+	if len(raw) <= core.DefaultOutputLimit {
+		t.Fatalf("fixture must exceed the management output limit: %d", len(raw))
+	}
+	if err := os.WriteFile(filepath.Join(root, "kickoff.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, result := invokeOnboarding(t, "setup", "--kickoff", "kickoff.json", "--approve-kickoff", "--approve")
+	if code != 0 || result["ok"] != true {
+		t.Fatalf("large setup hid successful import: %d %+v", code, result)
+	}
+	if _, found := result["handoff"]; found {
+		t.Fatalf("setup echoed full handoff: %+v", result["handoff"])
+	}
+	summary, ok := result["handoff_summary"].(map[string]any)
+	if !ok || summary["task_count"] != float64(92) || summary["writable_path_count"] != float64(59) {
+		t.Fatalf("missing bounded handoff summary: %+v", result)
+	}
+}
+
+func TestSetupCLIRejectsUnsupportedKickoffGlobBeforeBinding(t *testing.T) {
+	root := testkit.GitRepo(t)
+	t.Chdir(root)
+	p, err := project.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchBytes, err := exec.Command("git", "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := strings.TrimSpace(string(branchBytes))
+	handoff := map[string]any{
+		"schemaVersion": 1, "kind": "project-kickoff-agent-team-handoff", "status": "approved",
+		"projectKickoff": map[string]any{"version": "0.5.2", "approvalId": "APR-BAD-PATH", "approvedRevision": p.Head},
+		"agentTeam":      map[string]any{"testedVersion": "8.0.15", "initializationSource": "existing"},
+		"project":        map[string]any{"id": "bad-path", "root": root, "branch": branch, "revision": p.Head},
+		"tracker":        map[string]any{"kind": "markdown", "path": "TASKS.md"},
+		"plan": map[string]any{"scope": "invalid authority", "branch": branch, "acceptance": []string{"done"}, "verification": []string{"true"},
+			"authority": map[string]any{"ownedPaths": []string{"packages/*/result.txt"}, "externalActions": []string{}}, "tasks": []map[string]string{{"id": "TASK-1"}}},
+	}
+	raw, _ := json.Marshal(handoff)
+	if err := os.WriteFile(filepath.Join(root, "kickoff.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, result := invokeOnboarding(t, "setup", "--kickoff", "kickoff.json", "--approve-kickoff", "--approve")
+	message, _ := result["error"].(string)
+	if code == 0 || !strings.Contains(message, "packages/*/result.txt") || !strings.Contains(message, "exact relative path or directory/**") {
+		t.Fatalf("invalid kickoff diagnostic: code=%d result=%+v", code, result)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".agent-team/v8/kickoff.json")); !os.IsNotExist(err) {
+		t.Fatalf("invalid kickoff was bound: %v", err)
 	}
 }
 
