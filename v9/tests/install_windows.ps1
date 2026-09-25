@@ -19,20 +19,27 @@ function Assert-True {
     }
 }
 
+function Get-TreeEntries {
+    param([Parameter(Mandatory = $true)][string]$Root)
+
+    $rootPath = (Get-Item -LiteralPath $Root -Force).FullName
+    Get-ChildItem -LiteralPath $rootPath -File -Recurse -Force | ForEach-Object {
+        $relative = [System.IO.Path]::GetRelativePath($rootPath, $_.FullName)
+        if ([System.IO.Path]::IsPathRooted($relative) -or $relative -eq '..' -or $relative.StartsWith("..$([System.IO.Path]::DirectorySeparatorChar)") -or $relative.StartsWith("..$([System.IO.Path]::AltDirectorySeparatorChar)")) {
+            throw "File falls outside comparison root: $($_.FullName)"
+        }
+        "$relative`t$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+    } | Sort-Object
+}
+
 function Assert-SameTree {
     param(
         [Parameter(Mandatory = $true)][string]$ExpectedRoot,
         [Parameter(Mandatory = $true)][string]$ActualRoot
     )
 
-    $expected = @(Get-ChildItem -LiteralPath $ExpectedRoot -File -Recurse -Force | ForEach-Object {
-        $relative = $_.FullName.Substring($ExpectedRoot.Length).TrimStart([char[]]'\\/')
-        "$relative`t$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
-    } | Sort-Object)
-    $actual = @(Get-ChildItem -LiteralPath $ActualRoot -File -Recurse -Force | ForEach-Object {
-        $relative = $_.FullName.Substring($ActualRoot.Length).TrimStart([char[]]'\\/')
-        "$relative`t$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
-    } | Sort-Object)
+    $expected = @(Get-TreeEntries $ExpectedRoot)
+    $actual = @(Get-TreeEntries $ActualRoot)
 
     $difference = Compare-Object -ReferenceObject $expected -DifferenceObject $actual
     Assert-True ($null -eq $difference) "installed tree differs from source: $($difference | Out-String)"
@@ -111,6 +118,7 @@ try {
     $codexRoot = Join-Path $codexHome 'skills/agent-team'
     Assert-True (Test-Path -LiteralPath (Join-Path $codexRoot 'SKILL.md') -PathType Leaf) 'Codex skill missing'
     Assert-SameTree -ExpectedRoot $sourceRoot -ActualRoot $codexRoot
+    Assert-SameTree -ExpectedRoot (Join-Path $sourceRoot '.') -ActualRoot $codexRoot
 
     & $installer -TargetHost both -CodexHome (Join-Path $testRoot 'both-codex') -ClaudeHome $claudeHome
     Assert-SameTree -ExpectedRoot $sourceRoot -ActualRoot (Join-Path $testRoot 'both-codex/skills/agent-team')
