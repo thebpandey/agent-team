@@ -10,7 +10,7 @@ Inspect the target host and project first. Preserve `.beads`, Git history and wo
 
 ## Back up and install
 
-Defaults are `~/.agents/skills/agent-team` for Codex and `~/.claude/skills/agent-team` for Claude; use the actual configured homes when set. Before any v8 uninstall, establish a complete, verified recovery route for every manifest-listed entrypoint and shared binary, contract, and manifest: back up each exact path and record hashes, or retain a checksum-verified v8 package and its reinstall procedure. If any path is unknown or either route is incomplete, stop before uninstall. Keep recovery material until v9 is verified. The v9 installer also backs up an existing target skill root and prints its path.
+Defaults are `~/.agents/skills/agent-team` for Codex and `~/.claude/skills/agent-team` for Claude; use the actual configured homes when set. Before any v8 uninstall, back up every manifest-listed entrypoint, shared binary, contract, and the manifest itself, including modified or retained files. Record each exact path and SHA-256. If any path is unknown or lacks an exact-byte backup, stop before uninstall; a package is not a substitute for recovering locally modified bytes. Keep the backups until v9 is verified. The v9 installer also backs up an existing target skill root and prints its path.
 
 On Linux or macOS, copy only the exact root that will be replaced:
 
@@ -56,8 +56,8 @@ Open the selected host on a Git project and ask `$agent-team status` (Codex) or 
 
 ## Rollback
 
-If v9 installation fails after v8 uninstall, restore the complete v8 installation across every host and path in the manifest using the verified route: restore each exact backed-up entrypoint and shared file, including the manifest, or reinstall from the checksum-verified v8 package using its retained procedure. Do not run v8 uninstall again. If a v9 installer reports a backup path, retain and inspect it before manual recovery.
+If v9 installation fails after v8 uninstall, restore the complete v8 installation across every host and path in the manifest from the exact-byte backups. Do not run v8 uninstall again or overwrite a path whose original bytes cannot be verified. If any path cannot be restored exactly, stop and preserve the remaining copies for reconciliation. If a v9 installer reports a backup path, retain and inspect it before manual recovery.
 
-If v9 installed but fails verification, remove only the exact v9 `skills/agent-team` roots installed in this cutover, then restore the complete old installation across every manifest-listed host and path using the same verified route. On Windows use `Remove-Item -LiteralPath` and `Copy-Item -LiteralPath`; on Unix use `rm -r --` and `cp -a` with explicit paths. Never target a host home, `skills/`, or another parent directory. Preserve the v9 roots and installer output until recovery is confirmed. Do not run v8 uninstall after installing v9.
+If v9 installed but fails verification, remove only the exact v9 `skills/agent-team` roots installed in this cutover, then restore the complete old installation across every manifest-listed host and path from the exact-byte backups. On Windows use `Remove-Item -LiteralPath` and `Copy-Item -LiteralPath`; on Unix use `rm -r --` and `cp -a` with explicit paths. Never target a host home, `skills/`, or another parent directory. Preserve the v9 roots and installer output until recovery is confirmed. Do not run v8 uninstall after installing v9.
 
 Rollback restores the complete v8 installation across all hosts and paths listed in the original manifest. It must not alter project Beads, Git, `.agent-team` data, Project Kickoff, or unrelated hooks. If any target is ambiguous or contains unexpected data, stop and preserve both copies.
