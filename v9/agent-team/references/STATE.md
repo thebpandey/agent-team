@@ -10,10 +10,12 @@
 | Confirmed mistakes | `MISTAKES.md`, when present | Reuse relevant stable `M-` IDs; never rewrite earlier entries. |
 | Unresolved questions | `BLOCKERS.md`, when present | Read only unresolved entries; raise them at status and integration milestones. |
 | Session handoff | `.agent-team/SESSION.md`, when present | An active orchestrator refreshes this short breadcrumb; it is never task or worker authority. |
-| Project Kickoff handoff | Optional one-time input, when present | It may inform Beads import; it never gates setup, dispatch, review, or integration. |
+| Project Kickoff handoff | Optional one-time input, when explicitly supplied | A Beads-selected handoff is verified by ID and adopted; a `TASKS.md`-selected handoff may be explicitly imported once. It never gates setup, dispatch, review, or integration. |
+| `.agent-team/SETTINGS.md` | Explicit user preferences only | Host-role model/effort preferences and limits; never tasks, task status, or readiness. |
+| `.agent-team/dashboard/index.html` | Non-authoritative local snapshot | Best-effort post-integration display generated from Beads; never a tracker or closure gate. |
 | Deployment batch authorization | Project decision/approval record, when present | Later orchestration requires an explicit command, approval, completed-task scope, and verification rule. |
 
-`TASKS.md` and Project Kickoff handoffs are one-time inputs to Beads, not live trackers. Do not import either during Task 1 first run.
+`TASKS.md` and Project Kickoff handoffs are optional one-time inputs to Beads, not live trackers. Do not inspect, require, or wait for them on ordinary setup, status, or one-off work; do not import either during first run.
 
 ## Beads operations
 
@@ -30,8 +32,39 @@ Use the project directory as the command working directory.
 | Park a temporary NO-GO | `bd update ID --status blocked` | Orchestrator only; retain its actual handle and claim. Restore `in_progress` only after the same observable handle is observed beginning work; never infer CLEAN or closure. |
 | Record a task-local blocker | `bd comments add ID "<revision, observed result, reconciliation action>"` | Orchestrator only; use for repeated unresolved findings, uncertain host/review, or failed integration. |
 | Close integrated CLEAN work | `bd close ID --reason "CLEAN <reviewed revision>; integrated <revision>"` | Orchestrator only, after valid exact-revision CLEAN, scope/check revalidation, integration, and integration commit. Never use `--force` to bypass a failed gate. |
+| Verify a Beads-selected handoff ID | `bd show ID --json` | Read-only; verify each supplied ID before adopting that existing database. |
+| Preview an approved Markdown migration | `bd import --dry-run --json tasks-import.jsonl` | Temporary export-compatible JSONL only; compare proposed IDs/count/dependencies to source before a second approval. |
+| Import an approved Markdown migration | `bd import --json tasks-import.jsonl` | One-time source adoption. Omit all existing IDs and never pass `--allow-stale`, preserving newer Beads edits. |
 
 If Beads is absent during `status`, say so and stop. If it is absent during `setup` or `start`, ask once for initialization approval. A declined, cancelled, or unanswered approval leaves the project unchanged.
+
+## One-time imports and settings
+
+Ask before reading a handoff or `TASKS.md` for migration, and again after the dry-run comparison before the real import. For a Project Kickoff handoff with Beads selected, `plan.tasks` is an ID list: every ID must pass `bd show ID --json`; no JSONL is produced. For Markdown rows, create a temporary export-compatible JSONL with stable IDs, title/objective, acceptance criteria, status, dependency objects, and a source pointer. Reject unrepresentable dependencies before any Beads write. Preserve non-task run history in the original, read-only source.
+
+Beads 1.2.2 imports are upserts and protect a local issue when its `updated_at` is newer, but this workflow additionally omits every existing ID from its candidate. Do not use `--allow-stale`; do not overwrite or duplicate an existing issue. After the actual import, retain source-pointer evidence and discard the temporary candidate. The original Markdown file may be archived as provenance only at the user's request; neither original nor archive becomes live state.
+
+On an explicit preference save, `.agent-team/SETTINGS.md` starts with these values (and only actual host model/effort choices replace `inherit`):
+
+```md
+# Agent-Team settings
+
+max_teams: 2
+dev_server_limit: 2
+deployment: disabled until an approved completed-task batch command, approval, and verification rule are recorded
+
+host: <actual host>
+orchestrator: inherit
+developer: inherit
+reviewer: inherit
+visual: inherit
+```
+
+Enumerate models and effort values from the active host metadata, never from a presumed catalog. Preferences can be overridden later per role or with a cheaper available per-task route. The file neither stores tasks nor changes task readiness.
+
+## Dashboard snapshot
+
+The packaged `assets/dashboard.html` is copied to `.agent-team/dashboard/index.html` only after accepted integration has already closed the relevant Beads issue. Generate its aggregate status values from Beads without passing task rows to a model; its ready list is the same `bd ready --limit 20 --json` page, so 1,000 on-disk issues do not enter prompt context. A failure to copy or refresh the snapshot is reported separately and has no effect on integration evidence or Beads closure.
 
 ## First-run mutation budget
 

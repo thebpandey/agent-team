@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Agent-Team status snapshot</title>
+    <style>
+      :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #f6f7f9; color: #17202a; }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+      header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; align-items: end; border-bottom: 1px solid #d8dee6; padding-bottom: 1.25rem; }
+      h1, h2, p { margin: 0; }
+      h1 { font-size: 1.5rem; letter-spacing: -.02em; }
+      h2 { font-size: 1rem; }
+      .eyebrow, .timestamp, dt { color: #59636f; font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; }
+      .timestamp { text-align: right; }
+      .notice { margin: 1.5rem 0; padding: .9rem 1rem; border-left: .25rem solid #50789d; background: #eaf2f8; color: #213f58; }
+      .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; margin: 1.5rem 0; }
+      .metric, .panel { border: 1px solid #d8dee6; border-radius: .5rem; background: #fff; }
+      .metric { padding: 1rem; }
+      .metric dd { margin: .35rem 0 0; font-size: 1.5rem; font-weight: 650; }
+      .panel { padding: 1rem; }
+      .panel + .panel { margin-top: 1rem; }
+      .empty { color: #59636f; padding: .5rem 0 0; }
+      table { width: 100%; border-collapse: collapse; margin-top: .75rem; font-size: .92rem; }
+      th, td { padding: .7rem .35rem; text-align: left; border-top: 1px solid #e5e9ee; }
+      th { color: #59636f; font-size: .75rem; letter-spacing: .05em; text-transform: uppercase; }
+      .status { display: inline-block; border-radius: 999px; padding: .15rem .5rem; background: #eaf2f8; color: #285575; font-size: .8rem; font-weight: 600; }
+      footer { margin-top: 1.25rem; color: #59636f; font-size: .85rem; }
+      @media (max-width: 38rem) { .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .timestamp { text-align: left; } table th:nth-child(3), table td:nth-child(3) { display: none; } }
+      @media (prefers-color-scheme: dark) { :root { background: #12161b; color: #e7edf4; } .metric, .panel { background: #1a2028; border-color: #35404c; } header { border-color: #35404c; } .notice { background: #152b3b; color: #d6eaf8; } .eyebrow, .timestamp, dt, .empty, footer, th { color: #aeb9c5; } th, td { border-color: #2d3742; } .status { background: #153247; color: #bde6ff; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">Agent-Team · offline snapshot</p>
+          <h1>Project status</h1>
+        </div>
+        <p class="timestamp">Not refreshed yet<br>Source: Beads</p>
+      </header>
+
+      <p class="notice" role="status">This local file is a read-only status snapshot. Beads remains the task authority.</p>
+
+      <section class="metrics" aria-label="Task summary">
+        <dl class="metric"><dt>Ready</dt><dd>—</dd></dl>
+        <dl class="metric"><dt>In progress</dt><dd>—</dd></dl>
+        <dl class="metric"><dt>Blocked</dt><dd>—</dd></dl>
+        <dl class="metric"><dt>Closed</dt><dd>—</dd></dl>
+      </section>
+
+      <section class="panel" aria-labelledby="ready-heading">
+        <h2 id="ready-heading">Ready now</h2>
+        <p class="empty">No bounded ready page has been written to this snapshot.</p>
+        <table hidden>
+          <thead><tr><th scope="col">Task</th><th scope="col">Title</th><th scope="col">Priority</th><th scope="col">Status</th></tr></thead>
+          <tbody><!-- Refresh writes at most 20 ready Beads rows here. --></tbody>
+        </table>
+      </section>
+
+      <section class="panel" aria-labelledby="notes-heading">
+        <h2 id="notes-heading">Refresh note</h2>
+        <p class="empty">A successful integration may refresh this file. A refresh failure never changes task acceptance or closure.</p>
+      </section>
+
+      <footer>Generated locally from Beads aggregate status and one bounded ready page (20 tasks maximum).</footer>
+    </main>
+  </body>
+</html>

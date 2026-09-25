@@ -54,6 +54,38 @@ bd --readonly status --json
 
 Do not create `TASKS.md`, ledgers, settings, checkpoints, hooks, or optional-tool state as part of first run. See [project records](references/STATE.md) only to interpret records that already exist.
 
+## Optional one-time import and preferences
+
+An ordinary Git-and-Beads project is complete without Project Kickoff, a handoff, or `TASKS.md`. Do not look for, require, or wait for any of them during setup, one-off execution, status, or ready-work selection. Beads is the sole live task tracker.
+
+Only when the user explicitly asks to adopt an approved Project Kickoff handoff or a `TASKS.md` task list, ask before any import:
+
+> Import these task rows into Beads once? I will first create a temporary JSONL candidate, run Beads' dry run, show the proposed IDs/count/dependencies, and make no database change unless you approve the real import.
+
+On refusal, cancellation, or no answer, leave both source and Beads unchanged. A Project Kickoff handoff whose selected tracker is Beads contains `plan.tasks` IDs, not task records: verify every ID with `bd show ID --json`, confirm that it belongs to this database, and adopt it without conversion or import. A handoff selecting `TASKS.md`, or a plain `TASKS.md` supplied for migration, is an opt-in one-time source only. Read its actual task rows; retain run history and other non-task text in the original read-only file rather than converting it.
+
+For an approved Markdown import, convert task rows to a temporary `tasks-import.jsonl`. Preserve each stable source ID, title/objective, acceptance criteria, status, dependency edges, and a source pointer (for example `TASKS.md#task-id`) in the Beads export-compatible schema. Reject before mutation any duplicate ID, missing title, unmapped status, or dependency that is absent, malformed, or cannot be represented as a Beads dependency. Existing IDs are not candidates for update: inspect them with `bd show ID --json`, compare their preserved source pointer, and omit them from the import candidate. This makes repeated import idempotent and protects newer Beads edits; never use `--allow-stale` for this flow.
+
+Run the following dry run, then compare its proposed IDs, count, and dependencies to the source before showing that result to the user:
+
+```sh
+bd import --dry-run --json tasks-import.jsonl
+```
+
+After a separate affirmative approval of that displayed result, run:
+
+```sh
+bd import --json tasks-import.jsonl
+```
+
+Record the source pointer on each imported task, archive the original only as immutable provenance when the user asks, and delete the temporary JSONL after the result is recorded. Do not retain it as a second tracker. A one-off audit likewise becomes exactly one explicitly approved Beads task; do not require an import source or an optional aid first.
+
+Offer model and effort preferences once per active host for orchestrator, developer, reviewer, and visual work. Enumerate only models and effort levels actually exposed by that host; a missing role or model remains `inherit`, not a claim that it exists. On explicit save, create or update the small preference-only `.agent-team/SETTINGS.md` with `max_teams: 2`, `dev_server_limit: 2`, deployment disabled until a completed-task batch command, approval, and verification rule are recorded, and `inherit` for each host role not chosen. A user may later override a role or choose a cheaper available model/effort for one task. This file is never task state, an import source, or a readiness condition.
+
+## Optional task aids
+
+Use an installed aid only where it has a specific benefit: Serena for relevant code navigation or editing, Graphify for a graph question, Playwright for browser verification, and installed visual skills for visual work. First use the native search, edit, browser, or task-specific fallback when an aid is unavailable; report only a concrete verification gap when no fallback exists. Never install, probe, bundle, or make an optional aid an admission gate. Honor host-provided skill instructions when applicable without treating them as Agent-Team dependencies.
+
 ### Ready work
 
 For `start` in an initialized project, read one bounded page only:
@@ -63,6 +95,10 @@ bd ready --limit 20 --json
 ```
 
 Give the orchestrator at most those 20 task rows and choose only disjoint work. Never load or paste a full tracker dump. Native dispatch claims the selected next task, one at a time, with `bd update ID --claim`; do not claim speculative or later tasks.
+
+## Offline dashboard snapshot
+
+After an accepted integration and its normal Beads closure, ask a lowest-cost model actually available on the host to refresh `.agent-team/dashboard/index.html` from `assets/dashboard.html`. It is a local, static status snapshot, not a service or task authority. Obtain aggregate status data without forwarding issue rows to a model, and include at most the normal 20-row `bd ready --limit 20 --json` page in the refresh context even when Beads holds 1,000 or more tasks. Mark the snapshot time and source. If refresh fails, report that task-local dashboard error; never reopen, block, or alter the accepted Beads issue.
 
 ## Native team dispatch
 
