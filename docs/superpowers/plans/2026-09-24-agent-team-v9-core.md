@@ -41,18 +41,18 @@ The installed skill is the exact `v9/agent-team/` tree. `SKILL.md` names only th
 
 **Files:** Create `v9/agent-team/SKILL.md`, `v9/agent-team/references/STATE.md`, `v9/tests/CANARIES.md`.
 
-**Interfaces:** Consumes `bd status --json`, `bd ready --limit 20 --json`, `bd update ID --claim`, and `bd init --skip-hooks --skip-agents --non-interactive --init-if-missing`. Produces a skill that either reports Beads readiness or asks for one explicit first-run approval; it never creates `.beads` on an inspection-only request.
+**Interfaces:** Consumes `bd --readonly status --json`, `bd ready --limit 20 --json`, `bd update ID --claim`, and `bd init --skip-hooks --skip-agents --non-interactive --init-if-missing`. Produces a skill that either reports Beads readiness or asks for one explicit first-run approval; it never creates `.beads` on an inspection-only request.
 
 - [ ] **Step 1: Record a failing baseline.** In `v9/tests/CANARIES.md`, specify two disposable Git projects: one with no `.beads`, one with an initialized empty `.beads`. Invoke the installed 8.x skill's setup/status behavior in each and record the actual extra setup gates as the baseline, without changing either user's real project.
 - [ ] **Step 2: Verify the baseline gap.** The no-Beads project must not become ready without approval; the 8.x flow still offers its optional bundle. Record tool output and confirm no v9 package exists yet.
-- [ ] **Step 3: Write the minimal v9 entrypoint.** Set skill metadata version `9.0.0`. Its first-run branch is exactly: inspect Git/Beads → if Beads absent, ask once → only after approval run the initialization command above → verify `bd status --json`. For ready projects, read `bd ready --limit 20 --json`, not a full tracker dump. Status is read-only. Route host-specific calls to `references/HOSTS.md` and project records to `references/STATE.md`.
+- [ ] **Step 3: Write the minimal v9 entrypoint.** Set skill metadata version `9.0.0`. Its first-run branch is exactly: inspect Git/Beads → if Beads absent, ask once → only after approval run the initialization command above → verify `bd --readonly status --json`. For ready projects, read `bd ready --limit 20 --json`, not a full tracker dump. Status must not change tasks, Git, or Agent-Team records; Beads' own first-call Dolt metrics artifact is a documented exception. Task 2 adds host-specific routing; Task 1 routes project records to `references/STATE.md` without linking the not-yet-created `HOSTS.md`.
 
 ```text
-status: bd status --json; report only, with no setup writes
+status: bd --readonly status --json; report only, with no Agent-Team/setup/task writes
 start: bd ready --limit 20 --json; select disjoint work
 missing .beads: request approval; only then bd init --skip-hooks --skip-agents --non-interactive --init-if-missing
 ```
-- [ ] **Step 4: Run the fixture portions of both canaries.** Use the installed managed v8 executable by its verified path, not `PATH` alone. Compare full before/after file content (including an existing `.gitignore`) so status cannot mutate silently and `bd init` preserves prior content while creating only its own files. Verify the bounded `bd ready` response contains at most 20 rows. A live v9 Skill invocation is deferred until a native host can load the draft; record that as unverified here and run it at the core acceptance handoff, never substitute command/text searches for that host canary.
+- [ ] **Step 4: Run the fixture portions of both canaries.** Use the installed managed v8 executable by its verified path, not `PATH` alone. Compare full before/after file content (including an existing `.gitignore`); inspection may create only the observed Beads-owned Dolt metrics artifact, while no task, Git, Agent-Team, or other project file changes. `bd init` preserves prior content while creating only its own files. Verify the bounded `bd ready` response contains at most 20 rows. A live v9 Skill invocation is deferred until a native host can load the draft; record that as unverified here and run it at the core acceptance handoff, never substitute command/text searches for that host canary.
 - [ ] **Step 5: Commit** only the three files with `feat(v9): add Beads-first skill entrypoint` after independent review.
 
 ### Task 2: Native team dispatch and default Ponytail contract
