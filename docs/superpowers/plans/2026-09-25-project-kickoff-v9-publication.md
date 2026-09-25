@@ -31,7 +31,7 @@ All paths below are relative to `/home/server/dev/skills/project-kickoff` unless
 | `assets/templates/AGENT_TEAM_HANDOFF.json` | Unchanged historical v8 template. |
 | `scripts/check_agent_team_handoff.py` | Recognize the `0.6.0/9.0.0` pair without dropping historical safety checks. |
 | `tests/test_agent_team_handoff.py`, `tests/test_package_manifest.py` | Default/version and package contract regression. |
-| `tests/test_agent_team_v9_handoff.py` | Disposable cross-repository Beads ID adoption canary. |
+| Disposable Git/Beads fixture | One actual host-agent handoff adoption check; it leaves no product test file. |
 | `README.md`, `CHANGELOG.md` | Versioned install/archive instructions and history. |
 | `index.html` | Content-only public Pages explanation after release. |
 
@@ -41,7 +41,8 @@ All paths below are relative to `/home/server/dev/skills/project-kickoff` unless
 
 **Interfaces:** A new handoff uses `projectKickoff.version: "0.6.0"`, `agentTeam.mode: "skill-first"`, `agentTeam.testedVersion: "9.0.0"`, `tracker.kind: "beads"`, and `plan.tasks` as existing Beads IDs. The checker continues to reject unknown pairs, invalid scope, unsafe paths, missing IDs, and external actions.
 
-- [ ] **Step 1: Change the focused tests first.** Make `test_skill_first_handoff_is_schema_valid_but_not_runtime_qualified` build a `0.6.0/9.0.0` handoff; assert the template matches that pair and the checker still reports `schema-valid-unverified`/`runtimeVerified: false` until broader native execution is observed. Change `test_package_manifest.py` so `HANDOFF_TEMPLATE` points to the v9 template and the v9 template is no longer excluded from package files. Let the tag-comparison test skip only when the exact `v0.6.0` tag does not yet exist, then run it after tagging.
+- [ ] **Step 1: Observe the baseline (RED) with a fresh Luna agent.** Give it only the current Project Kickoff `SKILL.md` path and this read-only scenario: “A user finishes a new approved Beads plan and wants to hand it to Agent-Team. Which default template and setup route do you follow? Do not execute it.” Record the present v8/controller answer; this is a process-skill behavior test, not a source-grep assertion.
+- [ ] **Step 2: Change the focused checker/package tests.** Make `test_skill_first_handoff_is_schema_valid_but_not_runtime_qualified` build a `0.6.0/9.0.0` handoff; assert the template matches that pair and the checker still reports `schema-valid-unverified`/`runtimeVerified: false` until broader native execution is observed. Change `test_package_manifest.py` so `HANDOFF_TEMPLATE` points to the v9 template and the v9 template is no longer excluded from package files. Let the tag-comparison test skip only when the exact `v0.6.0` tag does not yet exist, then run it after tagging.
 
 ```python
 HANDOFF_TEMPLATE = PACKAGE / "assets/templates/AGENT_TEAM_SKILL_FIRST_HANDOFF.json"
@@ -50,8 +51,8 @@ UNRELEASED_SOURCE_FILES = set()
 # skip if it is absent before publication, and require equality when it exists.
 ```
 
-- [ ] **Step 2: Run `python3 -m unittest discover -s tests -p test_agent_team_handoff.py -v` and `python3 -m unittest discover -s tests -p test_package_manifest.py -v`; expect version/default assertions to fail before implementation.**
-- [ ] **Step 3: Make the narrow version/default change.** Set `SKILL.md` metadata and v9 template producer version to `0.6.0`; set `CHECKER_VERSION = "0.6.0"`; add `("0.6.0", "9.0.0")` to `SUPPORTED_PAIRS` without deleting historical pairs or changing `RUNTIME_VERIFIED_PAIRS`. Route new handoffs through `AGENT_TEAM_SKILL_FIRST_HANDOFF.json` in `SKILL.md` and `references/setup.md`. Label v8 setup instructions historical; do not call its controller from the v9 route. Keep `references/handoff.md` aligned with Beads ID-only adoption and Markdown one-time import.
+- [ ] **Step 3: Run `python3 -m unittest discover -s tests -p test_agent_team_handoff.py -v` and `python3 -m unittest discover -s tests -p test_package_manifest.py -v`; expect version/default assertions to fail before implementation.**
+- [ ] **Step 4: Make the narrow version/default change.** Set `SKILL.md` metadata and v9 template producer version to `0.6.0`; set `CHECKER_VERSION = "0.6.0"`; add `("0.6.0", "9.0.0")` to `SUPPORTED_PAIRS` without deleting historical pairs or changing `RUNTIME_VERIFIED_PAIRS`. Route new handoffs through `AGENT_TEAM_SKILL_FIRST_HANDOFF.json` in `SKILL.md` and `references/setup.md`. Label v8 setup instructions historical; do not call its controller from the v9 route. Keep `references/handoff.md` aligned with Beads ID-only adoption and Markdown one-time import.
 
 ```python
 CHECKER_VERSION = "0.6.0"
@@ -60,81 +61,20 @@ CHECKER_VERSION = "0.6.0"
 # Do not change RUNTIME_VERIFIED_PAIRS; this canary does not prove worker dispatch.
 ```
 
-- [ ] **Step 4: Update `README.md` to version `0.6.0`, add the v9 template to both exact install allowlists and the archive tree, pin clone examples to `v0.6.0`, and move v8 detail out of the first-use path.** Add `## [0.6.0] - 2026-09-25` to `CHANGELOG.md` with the optional v9 handoff and evidence limit. Keep the license and optional project-hook behavior unchanged.
-- [ ] **Step 5: Re-run the two focused test files and `git diff --check`; expect PASS except the explicitly skipped pre-release tag assertion.** A non-author reviewer checks that the current path is v9, v8 remains historical, no optional aid is a gate, and the checker keeps its existing safety rejections. Remediate until CLEAN.
+- [ ] **Step 5: Update `README.md` to version `0.6.0`, add the v9 template to both exact install allowlists and the archive tree, pin clone examples to `v0.6.0`, and move v8 detail out of the first-use path.** Add `## [0.6.0] - 2026-09-25` to `CHANGELOG.md` with the optional v9 handoff and evidence limit. Keep the license and optional project-hook behavior unchanged.
+- [ ] **Step 6: Repeat the baseline scenario (GREEN) with a different fresh Luna agent reading the amended Project Kickoff skill.** It must choose the v9 skill-first template, selected Beads IDs, no controller/setup call, and no automatic Agent-Team start. Re-run the two focused test files and `git diff --check`; expect PASS except the explicitly skipped pre-release tag assertion. A non-author reviewer checks that the current path is v9, v8 remains historical, no optional aid is a gate, and the checker keeps its existing safety rejections. Remediate until CLEAN.
 
 ### Task 2: Verify real Beads adoption and publish the Project Kickoff package
 
-**Files:** Create `tests/test_agent_team_v9_handoff.py`; no product code outside Task 1. Git tag/release, ZIP, and checksum are outputs. Root orchestrator handles release after independent CLEAN.
+**Files:** No product-code changes outside Task 1. A Luna agent creates a disposable fixture and reports observed handoff behavior. Git tag/release, ZIP, and checksum are outputs. Root orchestrator handles release after independent CLEAN.
 
-**Interfaces:** The test uses `AGENT_TEAM_9_SOURCE=/home/server/dev/skills/agent-team` and a real Beads 1.2.2 executable. It validates a new 0.6.0 handoff, reads every selected ID from the same disposable Beads database, and confirms no task was imported or claimed. This qualifies handoff adoption only, not native worker dispatch.
+**Interfaces:** The canary uses the reviewed `/home/server/dev/skills/agent-team/v9/agent-team/SKILL.md` and a real Beads 1.2.2 executable. It validates a new 0.6.0 handoff, observes a fresh native agent read every selected ID from the same disposable Beads database, and confirms no task was imported or claimed. This qualifies handoff adoption only, not native worker dispatch.
 
 **Dependency:** Agent-Team Task 3 must have published `v9.0.0` before the Project Kickoff `v0.6.0` release is announced.
 
-- [ ] **Step 1: Write a disposable canary.** Use `tempfile.TemporaryDirectory`, `git init -b main`, `bd init --skip-hooks --skip-agents --non-interactive`, and `bd create --id fixture-a --title A --type task` plus `bd create --id fixture-b --title B --type task`. Fill the v9 template's approved fields with the fixture root, branch revision, those IDs, and empty `externalActions`. Run `scripts/check_agent_team_handoff.py --handoff` on the created `.project-kickoff/AGENT_TEAM_HANDOFF.json`. Read the Agent-Team source instruction from `$AGENT_TEAM_9_SOURCE/v9/agent-team/SKILL.md`; run its `bd show ID --json` read for each selected ID and assert each returned ID matches. Compare the Beads issue-ID set before and after; no v8 controller is invoked.
-
-```python
-import json
-import os
-from pathlib import Path
-import shutil
-import subprocess
-import tempfile
-import unittest
-
-PACKAGE = Path(__file__).resolve().parents[1]
-AGENT_TEAM = Path(os.environ.get("AGENT_TEAM_9_SOURCE", ""))
-BD = os.environ.get("BD_122_EXECUTABLE") or shutil.which("bd")
-
-@unittest.skipUnless(os.environ.get("AGENT_TEAM_9_SOURCE") and BD,
-                     "requires Agent-Team v9 source and Beads")
-class AgentTeamV9HandoffTest(unittest.TestCase):
-    def test_approved_ids_are_adopted_from_real_beads_without_import(self):
-        self.assertIn("1.2.2", subprocess.check_output([BD, "--version"], text=True))
-        skill = (AGENT_TEAM / "v9/agent-team/SKILL.md").read_text()
-        self.assertIn("bd show ID --json", skill)
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "project"
-            root.mkdir()
-            def run(*command):
-                return subprocess.check_output(command, cwd=root, text=True)
-            run("git", "init", "-q", "-b", "main")
-            run("git", "config", "user.name", "Fixture")
-            run("git", "config", "user.email", "fixture@example.test")
-            (root / "README.md").write_text("fixture\n")
-            run("git", "add", "README.md")
-            run("git", "commit", "-qm", "fixture")
-            revision = run("git", "rev-parse", "HEAD").strip()
-            run(BD, "init", "--skip-hooks", "--skip-agents", "--non-interactive", "--prefix", "fixture")
-            for issue_id in ("fixture-a", "fixture-b"):
-                run(BD, "create", "--id", issue_id, "--title", issue_id, "--type", "task")
-            def issue_ids():
-                return {row["id"] for row in json.loads(run(BD, "list", "--json"))}
-            before = issue_ids()
-            handoff = json.loads((PACKAGE / "assets/templates/AGENT_TEAM_SKILL_FIRST_HANDOFF.json").read_text())
-            handoff["projectKickoff"].update(version="0.6.0", approvalId="APR-001",
-                                             approvedRevision=revision)
-            handoff["project"].update(id="fixture", root=str(root), branch="main", revision=revision)
-            handoff["tracker"] = {"kind": "beads", "executable": str(Path(BD).resolve())}
-            handoff["plan"].update(scope="Adopt two tasks", acceptance=["IDs exist"],
-                                   verification=["bd show fixture-a --json"], branch="main",
-                                   tasks=[{"id": "fixture-a"}, {"id": "fixture-b"}])
-            handoff["plan"]["authority"] = {"ownedPaths": ["README.md"], "externalActions": []}
-            handoff_dir = root / ".project-kickoff"
-            handoff_dir.mkdir()
-            handoff_path = handoff_dir / "AGENT_TEAM_HANDOFF.json"
-            handoff_path.write_text(json.dumps(handoff))
-            result = json.loads(run("python3", str(PACKAGE / "scripts/check_agent_team_handoff.py"),
-                                    "--handoff", str(handoff_path)))
-            self.assertEqual(result["status"], "passed")
-            for issue_id in ("fixture-a", "fixture-b"):
-                rows = json.loads(run(BD, "show", issue_id, "--json"))
-                self.assertEqual(rows[0]["id"], issue_id)
-            self.assertEqual(issue_ids(), before)
-```
-
-- [ ] **Step 2: Run the canary with real Beads 1.2.2 and reviewed Agent-Team v9 source.** Use `AGENT_TEAM_9_SOURCE=/home/server/dev/skills/agent-team python3 -m unittest discover -s tests -p test_agent_team_v9_handoff.py -v`; require PASS and record the exact revisions/Beads version. Do not call this a Windows, macOS, Claude, or native worker canary.
-- [ ] **Step 3: Integrate CLEAN Task 1 and canary code; run the package and handoff tests, then tag the reviewed Project Kickoff commit `v0.6.0`.** Re-run `test_package_manifest.py` after the tag so its previously skipped tag comparison actually runs and passes. Push the reviewed commit/tag only after this check.
+- [ ] **Step 1: Have a Luna agent create the one disposable real-Beads fixture.** Use `mktemp -d`, `git init -b main`, a committed `README.md`, `bd init --skip-hooks --skip-agents --non-interactive --prefix fixture`, and two real tasks `fixture-a` and `fixture-b`. Fill `AGENT_TEAM_SKILL_FIRST_HANDOFF.json` with the fixture's absolute root, actual main revision, `projectKickoff.version: "0.6.0"`, `approvalId: "APR-001"`, those two task IDs, empty `externalActions`, and the actual `bd` executable. Run `scripts/check_agent_team_handoff.py --handoff` on the fixture handoff and record its JSON verdict. This setup is the only test write and is outside both product repositories.
+- [ ] **Step 2: Dispatch a fresh Luna agent in the active Codex host with only the reviewed Agent-Team v9 skill path, the approved handoff path, and this read-only request:** “Adopt this handoff's selected Beads IDs for inspection only. Show each ID from this fixture's Beads database; do not claim, import, or start work.” Require observed `bd show` reads for exactly `fixture-a` and `fixture-b`, and compare the real Beads ID/status set before and after. Record source revisions, Beads version, native agent handle, commands, and results. A controller call or a changed task fails the canary. Do not claim Windows, macOS, Claude, or worker-dispatch acceptance from it.
+- [ ] **Step 3: Integrate CLEAN Task 1 and the observed canary evidence; run the package and handoff tests, then tag the reviewed Project Kickoff commit `v0.6.0`.** Re-run `test_package_manifest.py` after the tag so its previously skipped tag comparison actually runs and passes. Push the reviewed commit/tag only after this check. Remove the exact disposable fixture only after its evidence is recorded and no agent is using it.
 - [ ] **Step 4: Build the single platform-neutral ZIP from the tag's exact package allowlist, create `SHA256SUMS`, verify the archive member list against that allowlist, and download/check the published asset once.** In the Project Kickoff repository, run the commands below after the `v0.6.0` tag exists. Publish both files with `gh release create v0.6.0` in `thebpandey/project-kickoff`. Its notes must say the Beads handoff was tested and native worker dispatch was not part of this canary. Do not include development tests, Pages assets, or hidden project state in the ZIP.
 
 ```sh

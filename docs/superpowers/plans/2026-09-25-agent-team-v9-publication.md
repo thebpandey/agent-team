@@ -26,7 +26,6 @@
 | File | Responsibility |
 | --- | --- |
 | `SKILL.md` | Repository-root discovery route to the current v9 skill, never v8 runtime authority. |
-| `v9/tests/test_root_entrypoint.py` | Regression check for that route and its no-controller boundary. |
 | `v9/tests/package_release.py` | CI-only, exact-file, platform-specific ZIP and SHA-256 sidecar builder. |
 | `v9/tests/test_package_release.py` | Three-platform archive member/checksum regression. |
 | `.github/workflows/v9-release.yml` | Independently dispatched Linux, Windows, or macOS test/package/artifact run. |
@@ -36,31 +35,12 @@
 
 ### Task 1: Make repository-root discovery route to v9 (`atv-uns.13`)
 
-**Files:** Modify `SKILL.md`; create `v9/tests/test_root_entrypoint.py`.
+**Files:** Modify `SKILL.md` only. The acceptance test is a fresh agent's read-only routing behavior, not a source-text assertion.
 
 **Interfaces:** Root `SKILL.md` is a repository entrypoint; the installed skill remains `v9/agent-team/SKILL.md` and resolves its own relative references. No new command or runtime API.
 
-- [ ] **Step 1: Add a failing source-contract check.** In `v9/tests/test_root_entrypoint.py`, assert that root frontmatter contains `version: "9.0.0"`, root text directs readers to `v9/agent-team/SKILL.md`, root text does not contain `agent-teamctl` or `LeanCTX`, and the packaged skill frontmatter also contains `version: "9.0.0"`.
-
-```python
-from pathlib import Path
-import unittest
-
-ROOT = Path(__file__).resolve().parents[2]
-
-class RootEntrypointTest(unittest.TestCase):
-    def test_root_routes_to_packaged_v9_without_v8_runtime(self):
-        root = (ROOT / "SKILL.md").read_text()
-        packaged = (ROOT / "v9/agent-team/SKILL.md").read_text()
-        self.assertIn('version: "9.0.0"', root)
-        self.assertIn("v9/agent-team/SKILL.md", root)
-        self.assertNotIn("agent-teamctl", root)
-        self.assertNotIn("LeanCTX", root)
-        self.assertIn('version: "9.0.0"', packaged)
-```
-
-- [ ] **Step 2: Confirm it fails on the current v8 root.** Run `python3 -m unittest discover -s v9/tests -p test_root_entrypoint.py -v`; expect the version assertion to fail.
-- [ ] **Step 3: Replace root `SKILL.md` with a short v9 pointer, not a copy of the full skill.** Keep valid `name`, `description`, and `metadata.version` frontmatter. Explain that release bundles install `v9/agent-team/`, instruct readers of the repository checkout to read that file and its relative references, and label `vnext/` and old root references as historical. Do not include active v8 commands.
+- [ ] **Step 1: Observe the baseline (RED) with a fresh Luna agent.** Give it only the current repository-root `SKILL.md` path and this read-only scenario: “In a Git project with Beads, a user asks Agent-Team status. Which skill entrypoint and command would you follow? Do not run it.” Record its actual answer; the current root routes to the v8 controller, which violates the approved v9 route. Do not make this a source-grep test.
+- [ ] **Step 2: Replace root `SKILL.md` with a short v9 pointer, not a copy of the full skill.** Keep valid `name`, `description`, and `metadata.version` frontmatter. Explain that release bundles install `v9/agent-team/`, instruct readers of the repository checkout to read that file and its relative references, and label `vnext/` and old root references as historical. Do not include active v8 commands.
 
 ```markdown
 ---
@@ -78,7 +58,8 @@ Install the platform bundle from the v9 release; do not install the repository r
 Older `vnext/` and root `references/` material documents historical releases only.
 ```
 
-- [ ] **Step 4: Re-run the focused test and `git diff --check`; expect PASS and no whitespace errors.** Commit only these two files. Have an independent reviewer check root discovery versus packaged v9 behavior and return CLEAN before integration.
+- [ ] **Step 3: Observe the same scenario (GREEN) with a new fresh Luna agent reading the revised root and packaged v9 entrypoint.** Its answer must use `bd --readonly status --json`, say status makes no Agent-Team write, and not require a controller, Project Kickoff, or LeanCTX. If it fails, tighten only the routing wording and rerun once. This is the behavior check for a process document.
+- [ ] **Step 4: Run `git diff --check`, commit only `SKILL.md`, and have an independent reviewer check the root route against packaged v9 behavior.** Return CLEAN before integration.
 
 ### Task 2: Build independently checked platform bundles (`atv-uns.14`)
 
