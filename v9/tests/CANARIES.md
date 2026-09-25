@@ -2,6 +2,33 @@
 
 Run these in disposable Git projects only. They are fixture behavior checks, not text-grep tests. Record the date, host, `bd version`, command output, exit code, and content-aware before/after file inventory with each run. The evidence below was captured with Beads `1.2.2 (6c124203e)` on 2026-09-25.
 
+## RED fixture: Task 1 could not form a native team
+
+This fixture is intentionally recorded before the Task 2 routing contract. In a disposable Git repository with initialized Beads, create two independent ready issues with non-overlapping file scopes, then ask a live host that has loaded the Task 1 draft to start both as one-off work. The Task 1 entrypoint has no native dispatch or same-session team procedure, so the expected RED observation is: no native handles are returned or retained, no worker is launched, and neither issue is claimed merely because the request was made.
+
+```sh
+bd create --title 'canary alpha' --description 'Scope: alpha.txt; acceptance: create alpha.txt' --json
+bd create --title 'canary beta' --description 'Scope: beta.txt; acceptance: create beta.txt' --json
+```
+
+Record the actual issue IDs, host/tool version, prompt, returned result, and Beads status. Do not substitute a shell process, a made-up acknowledgement, or a documentation search for a native launch. This RED case is a fixture/contract record only: no live v9 host session was available to this Task 2 author, so it does not assert an observed host result.
+
+## GREEN acceptance fixture: bounded native teams
+
+Run this only in a disposable Git repository with initialized Beads and a live host that has loaded this v9 draft. Create `alpha`, `beta`, and `gamma` as independent ready tasks with non-overlapping writable paths. Keep `gamma` unclaimed at first. Prepare separate worktrees and branches for `alpha` and `beta`, then ask the active host to run two teams. The host must use its own native mechanism; no CLI controller, shell background process, or synthetic acknowledgement is an acceptable substitute.
+
+For **Codex**, retain the actual result of `spawn_agent` for each team, inspect the current session with `list_agents`, and send `alpha`'s next task to the same retained agent with `followup_task` after `alpha` completes. For **Claude**, retain the actual Agent/session identity from its supported Agent facility and use that same identity's supported resume/follow-up facility. Do not describe either host as having the other's API.
+
+Pass only when all observed facts below are recorded:
+
+- Two actual native handles/Agent identities and two distinct task worktrees were returned or visibly shown in the same live session; no writable path is shared.
+- Only `alpha` and `beta` are claimed/in progress. `gamma` remains ready until the retained `alpha` team is given it; each team has no more than four ordered tasks and only its current task is claimed.
+- The retained `alpha` handle/identity receives `gamma`; the new task is not given to a replacement worker solely to simulate team reuse.
+- Delaying `alpha` beyond the agreed progress interval causes a status request to its same native handle/identity and a stale/hung concern to be recorded, while the independent `beta` lane continues.
+- In a separate explicit host rejection that guarantees no worker was created, no handle, completion, or in-progress task is recorded. The rejected task is accurately returned to ready with the observed failure noted.
+
+Record host and tool versions, task IDs, returned handles/identities (redact sensitive data), worktree paths, all Beads transitions, the status-request transcript/result, and whether the fixture passed. A timeout, lost response, missing handle, or ambiguous launch is a task-local uncertain result, not GREEN. This acceptance fixture is defined but unexecuted here: its live Codex run belongs to the root orchestrator, and Claude requires an actual Claude session.
+
 ## RED baseline: installed v8 has extra admission gates
 
 Create two throwaway Git repositories: `no-beads` with no `.beads`, and `empty-beads` initialized only with `bd init --skip-hooks --skip-agents --non-interactive --init-if-missing`. In both, commit a pre-existing `.gitignore` containing `# user-owned ignore rule` and `*.local`; never run this against a user project.

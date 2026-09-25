@@ -15,9 +15,9 @@ Treat `status` as inspection. It must not initialize Beads, create project recor
 
 Do not make a project ready through optional tooling. Beads and Git are the only prerequisites here. Serena, Graphify, browsers, UI tools, and other aids are task-specific and never readiness gates. Do not probe, install, or invoke LeanCTX.
 
-This Task 1 draft does not dispatch native workers or claim that it can. Host-specific dispatch is added by a later revision; do not invent a shell-worker substitute.
+Native dispatch is available only through the active host's own Agent tooling. It has no controller, synthetic acknowledgement, shell-worker substitute, or cross-session worker promise. Follow [native host routing](references/HOSTS.md) for exact Codex and Claude differences; follow the [worker contract](references/WORKER_RULES.md) for developer and reviewer scope.
 
-Fixture checks can validate Beads command semantics, but cannot activate this uninstalled draft in a live host session. Treat live Codex/Claude invocation as a deferred core-acceptance canary, not as evidence from this Task 1 fixture.
+Fixture checks can validate Beads command semantics, but only a live host can prove native dispatch. Treat a live Codex or Claude invocation as a host-specific acceptance canary; never infer it from documentation or fixture output.
 
 ## Inspect the project
 
@@ -64,6 +64,14 @@ bd ready --limit 20 --json
 
 Give the orchestrator at most those 20 task rows and choose only disjoint work. Never load or paste a full tracker dump. A later native-dispatch revision claims the selected next task, one at a time, with `bd update ID --claim`; do not claim speculative or later tasks in this draft.
 
+## Native team dispatch
+
+After `start` reads its bounded ready page, choose only disjoint work. Default to at most two parallel teams. Give each team at most four ordered tasks and claim only the current task with `bd update ID --claim` immediately before native dispatch; never claim a later speculative task.
+
+Prepare a distinct Git worktree for each active task, pass bounded task context and applicable rules, and retain the actual native handle in this active session. On bounded waits, inspect the host result; if progress is absent after the agreed interval, request status through the same handle, record a stale/hung concern, and continue unrelated lanes. Refill a completed retained team with at most four more ordered tasks. An explicit no-launch rejection creates no handle or completion; an ambiguous launch is task-local uncertainty, not permission to invent a replacement.
+
+Use [native host routing](references/HOSTS.md) for host operations and [the worker contract](references/WORKER_RULES.md) for assignment limits. Do not promise independent review, integration, deployment, lifecycle control, or cross-session persistence before their later procedures and observed evidence exist.
+
 ## State and honest reporting
 
-Use [STATE.md](references/STATE.md) for Beads commands, one-time inputs, and the ownership of optional project records. Preserve existing project data. State what was observed, which command ran, whether a write was approved, and any Beads error. Never claim native dispatch, review, integration, deployment, or cross-session persistence before those capabilities are implemented and observed.
+Use [STATE.md](references/STATE.md) for Beads commands, one-time inputs, and the ownership of optional project records. Preserve existing project data. State what was observed, which command ran, whether a write was approved, and any Beads error. Never claim native dispatch, review, integration, deployment, or cross-session persistence unless that capability was actually implemented and observed in the active host session.
